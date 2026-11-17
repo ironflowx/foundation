@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+repository = "https://github.com/ironflowx/foundation"
+homepage = "https://github.com/ironflowx"
+authors = ["Ironflow contributors"]
+
+[workspace.dependencies]
+ironflowx-core = { path = "crates/ironflowx-core", version = "0.0.1" }
