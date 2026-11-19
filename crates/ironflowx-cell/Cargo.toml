@@ -1,0 +1,12 @@
+[package]
+name = "ironflowx-cell"
+description = "The Ironflow X ledger: one environment's durable commit log and read store. Placeholder: the first real release is 0.1.0."
+keywords = ["ironflow", "workflow", "event-driven"]
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true

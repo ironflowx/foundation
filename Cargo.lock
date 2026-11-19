@@ -10,5 +10,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironflowx-cell"
+version = "0.0.1"
+
+[[package]]
 name = "ironflowx-core"
+version = "0.0.1"
+
+[[package]]
+name = "ironflowx-events"
+version = "0.0.1"
+
+[[package]]
+name = "ironflowx-proto"
 version = "0.0.1"
