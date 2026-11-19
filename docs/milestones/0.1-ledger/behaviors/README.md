@@ -10,6 +10,8 @@ What a client observes in 0.1. Invariants that no single example can show are in
 
 IDs missing from these ranges are unassigned, except 005, which is retired.
 
+Each scenario is mapped to the spec stories that own it in [Spec 4, "Behavior coverage"](../specs/04-ledger.md#behavior-coverage).
+
 ## How they run
 
 The steps call `Operations`, never a URL or a status code. One set of steps, two adapters:

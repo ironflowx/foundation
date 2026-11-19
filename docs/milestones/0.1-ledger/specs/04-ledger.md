@@ -64,11 +64,69 @@ A ledger: one environment's commit log, read store and the single writer between
 
 - A good test drives the ledger through `Operations` or its own open, submit, read and close, and checks what a client or embedder observes. It does not assert on the writer's internals.
 - **Seams:** `Operations` (through `LocalOperations`) is the main one and the highest available; `Clock` (the manual clock) is the second. No new seam is added.
-- **Behaviors:** all 41 scenarios in the feature file pass in process on a temporary directory with a manual clock. Steps call `Operations`, never a URL. Scenarios tagged `@local` use fixtures only this adapter has.
+- **Behaviors:** all 41 scenarios in the feature file pass in process on a temporary directory with a manual clock; each is listed under "Behavior coverage" below. The runner fails on a skipped or undefined step. Steps call `Operations`, never a URL. Scenarios tagged `@local` use fixtures only this adapter has.
 - **Deterministic tests:** every row of the "Deterministic tests" table in the invariants doc: fold-delay (including the first event of a fresh ledger), the clock test, the replay test, the mismatched-open tests, the injected fold failure and the indeterminate append.
 - **Minting:** 10,000 minted tokens are distinct.
 - **Public-API snapshot and purity checks** from Spec 1 now cover all four crates.
 - **Prior art:** the unit tests of Spec 2 for event rules; none for a ledger in this repo. The segment log's own acceptance tests are the nearest model for crash-minded tests.
+
+## Behavior coverage
+
+All 41 scenarios in [`../behaviors/events.feature`](../behaviors/events.feature) are acceptance tests of this spec (story 23). The table maps each one to the stories that own it: the rule's unit tests in [Spec 2](02-event-rules.md), and any ledger story here beyond story 23.
+
+- A scenario is done when it passes under the behavior runner through `LocalOperations`, not when its rule is unit-tested.
+- Every ticket cut from this spec names, in its acceptance criteria, the `EVT` IDs it makes pass. Together the tickets name all 41, each exactly once.
+- The runner fails on a skipped or undefined step, so a scenario cannot drop out unnoticed. This spec is done when it reports 41 scenarios passed.
+
+| Scenario | Shows | Spec 2 stories | Spec 4 stories |
+|---|---|---|---|
+| **Emit** | | | |
+| EVT-001 | An emit returns a UUID event ID | 1, 41 | 23 |
+| EVT-002 | An event reads back with what was sent | 20, 21, 23, 34 | 23 |
+| EVT-003 | A non-object payload round-trips | 9 | 23 |
+| EVT-004 | No data stores `null` | 8 | 23 |
+| EVT-008 | An out-of-range version is refused | 22 | 23 |
+| EVT-009 | A version in range reads back as sent | 22 | 23 |
+| **Emit gates** | | | |
+| EVT-010 | An event needs a name | 2 | 23 |
+| EVT-011 | An invalid name is refused | 3, 5 | 23 |
+| EVT-012 | Unicode names, names at the limit and near-owned names are accepted | 3, 4, 7 | 23 |
+| EVT-013 | Owned names are refused | 6 | 23 |
+| EVT-014 | A top-level `$redacted` is refused | 18 | 23 |
+| EVT-015 | A nested `$redacted` is accepted | 19 | 23 |
+| EVT-016 | Malformed data, metadata or key is refused | 12–17, 20, 23 | 23 |
+| EVT-017 | Data over 524,288 bytes is refused; at the limit accepted | 10, 11 | 23 |
+| EVT-038 | Metadata over 65,536 bytes is refused; at the limit accepted | 20 | 23 |
+| EVT-039 | Data at the edges reads back byte for byte | 10, 15, 16, 17 | 23 |
+| **Batch** | | | |
+| EVT-020 | A bad item is refused and the others are stored | 2, 29 | 23, 15 |
+| EVT-021 | More than 100 items is refused whole | 28 | 23 |
+| EVT-022 | A key repeated in one batch returns the earlier item | 31 | 23 |
+| EVT-023 | An empty batch answers with no results | 32 | 23 |
+| EVT-024 | A batch commits in input order | 33, 36 | 23, 15 |
+| EVT-025 | Over 4 MiB of accepted data is refused whole | 30 | 23 |
+| **Idempotency** | | | |
+| EVT-030 | A repeated key returns the first event | 24 | 23 |
+| EVT-031 | Without a key every emit is new | 44 | 23 |
+| EVT-032 | A key is not scoped by event name | 25 | 23 |
+| EVT-033 | A key holds for as long as its event exists (`@local`) | 26 | 23, 26 |
+| EVT-035 | Well-formed keys are accepted | 23 | 23 |
+| EVT-036 | Every check runs before the idempotency lookup | 27 | 23 |
+| EVT-037 | A malformed key is refused | 23 | 23 |
+| **Reading** | | | |
+| EVT-040 | An unknown or unparseable ID is not found | 35 | 23 |
+| EVT-041 | Events list newest first | 36 | 23 |
+| EVT-042 | Events page by cursor | 38, 39 | 23 |
+| EVT-043 | A cursor is stable while events arrive | 38 | 23 |
+| EVT-045 | A cursor that is not a token is refused | 40 | 23 |
+| EVT-046 | The limit defaults to 20 and clamps at 200 | 37 | 23 |
+| EVT-053 | An empty environment lists nothing | 39 | 23 |
+| EVT-054 | A full last page has no next cursor | 39 | 23 |
+| EVT-055 | A cursor from another incarnation is refused (`@local`) | 40 | 23, 4 |
+| **Read your writes** | | | |
+| EVT-060 | An event is readable as soon as its emit returns | — | 23, 12 |
+| EVT-061 | A refused emit leaves nothing behind | 5 | 23, 14 |
+| EVT-062 | Another client reads it as soon as the emit returns | — | 23, 13, 25 |
 
 ## Out of Scope
 

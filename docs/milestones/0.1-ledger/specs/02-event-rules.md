@@ -55,6 +55,7 @@ One pure module decides what an event is. Given a submission, the current state 
 41. As the ledger, I want `decide` to draw an event ID only for each new event, from an iterator I supply, so that event rules stay pure.
 42. As the ledger, I want `fold` to apply one record to the read tables, so that the read store is derived only from the log.
 43. As a maintainer, I want event rules to hold every check, default and limit, so that an adapter over them holds no rule.
+44. As a client, I want every emit without an idempotency key to store a new event, so that two identical emits are two events unless I say otherwise.
 
 ## Implementation Decisions
 
@@ -75,7 +76,8 @@ One pure module decides what an event is. Given a submission, the current state 
 - **Seam:** the view and tables traits. Tests use a small in-memory implementation; the ledger's SQLite one is tested in Spec 4. No other seam is added.
 - **Coverage:** one unit test per row of the rules table, plus the `decide` ordering (a refused request with a known key is still refused), batch partial refusal, in-batch key reuse, and cursor encode, decode and refusal.
 - **Fold:** folding the same record twice leaves rows unchanged when the caller skips applied positions; the skip itself is the ledger's (Spec 4).
-- The behavior scenarios (EVT-001 to EVT-062) sample the same rules end to end and run in Spec 4. These unit tests exist so the rules are proven before the ledger is built.
+- **Scenario map:** the "Behavior coverage" table in [Spec 4](04-ledger.md#behavior-coverage) names, for each of the 41 scenarios, the stories here whose unit tests prove its rule. Every scenario except EVT-060 and EVT-062, which are the ledger's alone, has at least one.
+- The behavior scenarios sample the same rules end to end and run in Spec 4. These unit tests exist so the rules are proven before the ledger is built.
 - **Prior art:** none in this repo.
 
 ## Out of Scope
