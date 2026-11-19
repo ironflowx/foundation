@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 # Job names are the required status checks of the `main` ruleset. The toolchain comes from
-# rust-toolchain.toml; only public-api uses the nightly pinned in ci/public-api.sh (D21).
+# rust-toolchain.toml; only public-api uses the nightly pinned in ci/tools.env (D21).
 jobs:
   fmt:
     runs-on: ubuntu-latest
@@ -48,10 +48,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - run: grep -v '^#' ci/tools.env >> "$GITHUB_ENV"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@${{ env.CARGO_DENY }}
+      - run: cargo deny check
 
-  # LED-15: the pure crates' dependency allowlists, and each purity check rejecting its fixture.
-  # The clippy job enforces the call bans on the real crates.
+  # LED-15 and D17; see ci/README.md.
   purity:
     strategy:
       matrix:
@@ -59,44 +62,29 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-      - name: Dependency allowlists
-        run: |
-          ci/check-deps.sh crates/ironflowx-core/Cargo.toml ci/purity/ironflowx-core.allow
-          ci/check-deps.sh crates/ironflowx-events/Cargo.toml ci/purity/ironflowx-events.allow
-      - name: SequencedTime constructor outside the ledger, core included
-        run: ci/no-event-clock-outside-ledger.sh crates
-      - name: Fixtures each check must reject
-        run: |
-          ci/must-reject.sh "dependency not allowed: getrandom" -- \
-            ci/check-deps.sh ci/fixtures/forbidden-dep/Cargo.toml ci/purity/ironflowx-core.allow
-          ci/must-reject.sh \
-            'disallowed method `std::time::SystemTime::now`' \
-            'disallowed method `std::fs::read`' \
-            'disallowed method `std::path::Path::exists`' \
-            'disallowed type `std::net::TcpStream`' \
-            'disallowed method `std::thread::spawn`' \
-            'disallowed method `getrandom::u64`' \
-            'disallowed type `std::collections::HashMap`' \
-            'use of `println!`' -- \
-            cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
-          ci/must-reject.sh "incompatible with previous forbid" -- \
-            cargo clippy --locked --manifest-path ci/fixtures/allow-past-ban/Cargo.toml -- -D warnings
-          ci/must-reject.sh 'disallowed method `ironflowx_core::SequencedTime::from_event_clock`' -- \
-            cargo clippy --locked --manifest-path ci/fixtures/sequenced-time-outside-ledger/Cargo.toml -- -D warnings
-          ci/must-reject.sh "ci/fixtures/sequenced-time-outside-ledger/src/lib.rs" -- \
-            ci/no-event-clock-outside-ledger.sh ci/fixtures/sequenced-time-outside-ledger
+      - run: ci/purity.sh
 
   # D21, LED-6, LED-9, LED-13: any public API change is a reviewed snapshot change.
   public-api:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - run: grep -v '^#' ci/tools.env >> "$GITHUB_ENV"
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-public-api@0.52.0
+          tool: cargo-public-api@${{ env.CARGO_PUBLIC_API }}
       - run: ci/public-api.sh
-      - run: ci/no-bare-env-id.sh public-api/*.txt
-      - run: |
-          ci/must-reject.sh Ledger::open find_after ffi_open EnvironmentId::lookup \
-            OpenRequest::env Target::Env proto::Wrapper -- \
-            ci/no-bare-env-id.sh ci/fixtures/bare-environment-id.txt
+
+  # The workflow and ci/ scripts: a shell mistake here makes a check pass without checking.
+  lint-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: grep -v '^#' ci/tools.env >> "$GITHUB_ENV"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: shellcheck@${{ env.SHELLCHECK }}
+      # install-action has no actionlint manifest; go install checks the module against sum.golang.org.
+      - run: go install "github.com/rhysd/actionlint/cmd/actionlint@v$ACTIONLINT"
+      - run: '"$(go env GOPATH)/bin/actionlint"'
+      - run: shellcheck -x ci/*.sh

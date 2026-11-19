@@ -29,7 +29,7 @@ The core crate ships validated opaque IDs, the environment reference, one stored
 15. As a caller, I want four error kinds (`Invalid`, `NotFound`, `Unknown`, `Unavailable`) defined once, so that every module and door reports failures the same way.
 16. As a maintainer, I want the resource-name type removed, so that the crate holds one ID model.
 17. As a maintainer, I want clippy with warnings denied, `cargo-deny` and the tests to run on Linux and macOS for every PR, so that the "done when" checks exist from the first PR.
-18. As a maintainer, I want a dependency allowlist for each pure crate, checked from `cargo metadata`, so that a pure crate cannot gain an async runtime or an I/O crate (LED-15).
+18. As a maintainer, I want a dependency allowlist for each pure crate, checked from `cargo tree` for that crate alone, so that a pure crate cannot gain an async runtime or an I/O crate (LED-15).
 19. As a maintainer, I want lints that ban the ambient clock, the filesystem, the network, threads and OS randomness in pure crates, so that purity is checked in code, not only in dependencies.
 20. As a maintainer, I want each purity check to come with a fixture it must reject, so that a check that silently stops working is noticed.
 21. As a maintainer, I want the public API of each foundation crate compared with a committed snapshot, so that a new constructor or conversion is a visible, reviewed change (LED-6, LED-9, LED-13).
@@ -46,7 +46,7 @@ The core crate ships validated opaque IDs, the environment reference, one stored
 - **Clock:** a trait with one method returning the stored-time type. Core declares it and never calls it.
 - **Errors:** the four error kinds live in core. Messages belong to the modules that produce them.
 - **Removal:** the resource-name type and its tests are deleted outright, with no deprecation step. The crate description and the repo README's crate table are updated.
-- **CI:** one workflow, Linux and macOS. Jobs: format, clippy with warnings denied, tests, `cargo-deny`, the purity checks, and the public-API snapshot. The snapshot job alone uses a pinned nightly toolchain (D21); every other job uses the pinned stable.
+- **CI:** one workflow, Linux and macOS. `cargo-deny` runs once, on Linux, and checks both platforms' dependency graphs through the targets in `deny.toml`. The allowlist reads `cargo tree` for one crate, not `cargo metadata`, which unifies features across the workspace: the ledger's `uuid` `v7` would otherwise leak `getrandom` into core. Jobs: format, clippy with warnings denied, tests, `cargo-deny`, the purity checks, and the public-API snapshot. The snapshot job alone uses a pinned nightly toolchain (D21); every other job uses the pinned stable.
 - **Purity checks cover** core now and the event-rules crate as soon as it exists.
 
 ## Testing Decisions
