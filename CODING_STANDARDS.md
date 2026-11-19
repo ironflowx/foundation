@@ -6,3 +6,6 @@ Judgement rules for review. Anything a tool can check belongs in CI instead (`ci
   `invariants.md` updates that line in the same PR.
 - **Checks prove themselves.** A new CI check lands with a fixture that triggers every pattern it
   claims to catch, and `must-reject.sh` asserts it fails for that reason, not any failure.
+- **Rules are probed at their edges.** For code that accepts or refuses input, the reviewer runs
+  each limit's boundary (max, max+1, escaped forms) and the dependency features a downstream
+  build can switch on, rather than reading the tests.
