@@ -499,6 +499,74 @@ fn a_key_repeated_inside_one_batch_returns_the_earlier_items_event() {
     assert_eq!(env.stored(), ["a.ok"]);
 }
 
+/// A view over a store that fails on `last_sequence` and on looking up `bad_key`.
+struct Failing<'a> {
+    store: &'a Store,
+    bad_key: &'a str,
+}
+
+impl EventsView for Failing<'_> {
+    type Error = &'static str;
+    fn event_by_key(&self, key: &str) -> Result<Option<EventId>, &'static str> {
+        if key == self.bad_key {
+            return Err("lookup failed");
+        }
+        Ok(self.store.event_by_key(key).expect("in memory"))
+    }
+    fn last_sequence(&self) -> Result<u64, &'static str> {
+        Err("last sequence failed")
+    }
+    fn event(&self, _: EventId) -> Result<Option<Event>, &'static str> {
+        unreachable!()
+    }
+    fn events_before(&self, _: u64, _: usize) -> Result<Vec<Event>, &'static str> {
+        unreachable!()
+    }
+}
+
+#[test]
+fn the_last_sequence_is_read_only_when_an_event_is_new() {
+    let mut env = Env::new();
+    env.emit(with_key("seen", "k-0")).expect("accepted");
+    let view = Failing {
+        store: &env.store,
+        bad_key: "bad",
+    };
+    for (items, outcome) in [
+        (vec![], vec![]),
+        (vec![named("")], vec!["refused"]),
+        (vec![with_key("dup", "k-0"), named("")], vec!["duplicate", "refused"]),
+    ] {
+        let decision = decide(&view, &Submission::Batch(items), now(), &mut ids()).expect("decided");
+        let kinds: Vec<_> = decision
+            .outcome
+            .iter()
+            .map(|o| match o {
+                ItemOutcome::New(_) => "new",
+                ItemOutcome::Duplicate(_) => "duplicate",
+                ItemOutcome::Refused(_) => "refused",
+            })
+            .collect();
+        assert_eq!(kinds, outcome);
+        assert_eq!(decision.record, None);
+    }
+}
+
+#[test]
+fn a_failed_lookup_draws_no_id() {
+    let view = Failing {
+        store: &Store::default(),
+        bad_key: "bad",
+    };
+    let sub = Submission::Batch(vec![named("new"), with_key("later", "bad")]);
+    let mut fresh = ids();
+    assert_eq!(
+        decide(&view, &sub, now(), &mut fresh),
+        Err(Error::Store("lookup failed"))
+    );
+    assert_eq!(fresh.next(), Some(id(1)));
+}
+
 #[test]
 fn ids_are_drawn_only_for_new_events() {
     let mut env = Env::new();

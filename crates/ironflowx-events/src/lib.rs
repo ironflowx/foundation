@@ -12,7 +12,7 @@
 
 mod json;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 
 use ironflowx_core::{ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
@@ -193,35 +193,58 @@ pub fn decide<V: EventsView>(
             "batch data and metadata exceed 4 MiB",
         )));
     }
-    // 4. Idempotency lookup in input order, then 5. one ID per new event.
-    let mut sequence = view.last_sequence().map_err(Error::Store)?;
+    // 4. Every idempotency lookup, in input order, before anything is read or drawn for a new
+    // event: `Ok(Ok(emit))` may be new, `Ok(Err(id))` repeats a stored key.
+    let mut pending = BTreeSet::new();
+    let mut looked = Vec::with_capacity(items.len());
+    for item in checked {
+        looked.push(match item {
+            Ok(emit) => match emit.idempotency_key.as_deref() {
+                // Repeats a key earlier in this batch; resolved below.
+                Some(key) if pending.contains(key) => Ok(Ok(emit)),
+                Some(key) => match view.event_by_key(key).map_err(Error::Store)? {
+                    Some(id) => Ok(Err(id)),
+                    None => {
+                        pending.insert(key);
+                        Ok(Ok(emit))
+                    }
+                },
+                None => Ok(Ok(emit)),
+            },
+            Err(refusal) => Err(refusal),
+        });
+    }
+    // 5. One sequence and one ID per new event; the last sequence is read only if there is one.
+    let mut last = None;
     let mut keys = BTreeMap::new();
     let mut outcome = Vec::with_capacity(items.len());
     let mut events = Vec::new();
-    for item in checked {
+    for item in looked {
         let emit = match item {
-            Ok(emit) => emit,
+            Ok(Ok(emit)) => emit,
+            Ok(Err(id)) => {
+                outcome.push(ItemOutcome::Duplicate(id));
+                continue;
+            }
             Err(refusal) => {
                 outcome.push(ItemOutcome::Refused(refusal));
                 continue;
             }
         };
         let key = emit.idempotency_key.as_deref();
-        if let Some(key) = key {
-            let earlier = match keys.get(key) {
-                Some(&id) => Some(id),
-                None => view.event_by_key(key).map_err(Error::Store)?,
-            };
-            if let Some(id) = earlier {
-                outcome.push(ItemOutcome::Duplicate(id));
-                continue;
-            }
+        if let Some(&id) = key.and_then(|key| keys.get(key)) {
+            outcome.push(ItemOutcome::Duplicate(id));
+            continue;
         }
+        let sequence = match last {
+            Some(sequence) => sequence,
+            None => view.last_sequence().map_err(Error::Store)?,
+        } + 1;
+        last = Some(sequence);
         let id = fresh.next().expect("fresh yields an ID per new event");
         if let Some(key) = key {
             keys.insert(key, id);
         }
-        sequence += 1;
         outcome.push(ItemOutcome::New(id));
         events.push(NewEvent {
             sequence,
