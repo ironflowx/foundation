@@ -8,11 +8,10 @@ use std::fmt;
 
 use serde_core::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
-/// Checks one JSON text and says whether its top level is an object. With `forbid_redacted`,
-/// a top-level `$redacted` key is refused.
-pub(crate) fn check(text: &str, forbid_redacted: bool) -> Result<TopLevel, serde_json::Error> {
+/// Checks one JSON text, as event data or metadata, and says whether its top level is an object.
+pub(crate) fn check(text: &str, field: Checked) -> Result<TopLevel, serde_json::Error> {
     let mut de = serde_json::Deserializer::from_str(text);
-    let top = Value { forbid_redacted }.deserialize(&mut de)?;
+    let top = field.deserialize(&mut de)?;
     de.end()?;
     Ok(top)
 }
@@ -23,15 +22,14 @@ pub(crate) enum TopLevel {
     Other,
 }
 
-#[derive(Clone, Copy)]
-struct Value {
-    forbid_redacted: bool,
+/// The checker for one JSON value: where it sits decides whether `$redacted` is refused, which
+/// it is only as a top-level key of data.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Checked {
+    Data,
+    Metadata,
+    Inside,
 }
-
-/// The seed for a value inside a container: `$redacted` is refused only at the top level.
-const INSIDE: Value = Value {
-    forbid_redacted: false,
-};
 
 fn no_nul<E: de::Error>(s: &str) -> Result<(), E> {
     if s.contains('\0') {
@@ -40,14 +38,14 @@ fn no_nul<E: de::Error>(s: &str) -> Result<(), E> {
     Ok(())
 }
 
-impl<'de> DeserializeSeed<'de> for Value {
+impl<'de> DeserializeSeed<'de> for Checked {
     type Value = TopLevel;
     fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<TopLevel, D::Error> {
         d.deserialize_any(self)
     }
 }
 
-impl<'de> Visitor<'de> for Value {
+impl<'de> Visitor<'de> for Checked {
     type Value = TopLevel;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -79,7 +77,7 @@ impl<'de> Visitor<'de> for Value {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<TopLevel, A::Error> {
-        while seq.next_element_seed(INSIDE)?.is_some() {}
+        while seq.next_element_seed(Checked::Inside)?.is_some() {}
         Ok(TopLevel::Other)
     }
 
@@ -87,13 +85,13 @@ impl<'de> Visitor<'de> for Value {
         let mut keys = BTreeSet::new();
         while let Some(key) = map.next_key::<String>()? {
             no_nul(&key)?;
-            if self.forbid_redacted && key == "$redacted" {
+            if self == Self::Data && key == "$redacted" {
                 return Err(de::Error::custom("top-level $redacted key"));
             }
             if !keys.insert(key) {
                 return Err(de::Error::custom("repeated key"));
             }
-            map.next_value_seed(INSIDE)?;
+            map.next_value_seed(Checked::Inside)?;
         }
         Ok(TopLevel::Object)
     }

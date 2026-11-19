@@ -1,11 +1,14 @@
 //! Event rules through `decide`, `fold` and the queries, over an in-memory store.
 
+// D17: only the ledger stamps event time; these tests stand in for it, and only they may.
+#![expect(clippy::disallowed_methods)]
+
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 
 use std::num::NonZeroU32;
 
-use ironflowx_core::{ErrorKind, EventId, IncarnationToken, Timestamp};
+use ironflowx_core::{ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
 use ironflowx_events::{
     Decision, Emit, Error, Event, EventPage, EventTables, EventsView, ItemOutcome, Submission,
     decide, fold, get_event, list_events,
@@ -53,6 +56,11 @@ impl EventTables for Store {
 
 const NOW: Timestamp = Timestamp::from_millis(1_700_000_000_000);
 
+/// The event-clock reading every test decides at.
+fn now() -> SequencedTime {
+    SequencedTime::from_event_clock(NOW)
+}
+
 /// Distinct valid UUIDv7 event IDs, 1, 2, 3, ...
 fn ids() -> impl Iterator<Item = EventId> {
     (1u32..).map(|n| {
@@ -88,7 +96,7 @@ impl Env {
     }
 
     fn submit(&mut self, sub: Submission) -> Result<Vec<ItemOutcome>, Error<Infallible>> {
-        let Decision { outcome, record } = decide(&self.store, &sub, NOW, &mut self.fresh)?;
+        let Decision { outcome, record } = decide(&self.store, &sub, now(), &mut self.fresh)?;
         if let Some(record) = record {
             fold(&mut self.store, &record).expect("in memory");
         }
@@ -249,7 +257,6 @@ fn malformed_data_is_refused() {
         r#"{"a": 1, "a": 2}"#,
         r#"{"x": {"a": 1, "a": 2}}"#,
         r#"[{"a": 1, "a": 2}]"#,
-        r#"{"a": 1, "a": 2}"#,
         r#""x\u0000y""#,
         r#"{"k": "x\u0000y"}"#,
         r#"{"k\u0000": 1}"#,
@@ -364,7 +371,7 @@ fn a_repeated_key_returns_the_first_event_across_names_and_stores_nothing() {
     assert_eq!(first, ItemOutcome::New(id(1)));
     for name in ["order.placed", "order.cancelled"] {
         let sub = Submission::Emit(with_key(name, "k-1"));
-        let decision = decide(&env.store, &sub, NOW, &mut ids()).expect("accepted");
+        let decision = decide(&env.store, &sub, now(), &mut ids()).expect("accepted");
         assert_eq!(
             decision,
             Decision {
@@ -435,7 +442,7 @@ fn an_empty_batch_answers_with_no_results() {
     let decision = decide(
         &Store::default(),
         &Submission::Batch(vec![]),
-        NOW,
+        now(),
         &mut ids(),
     );
     assert_eq!(
@@ -495,7 +502,7 @@ fn ids_are_drawn_only_for_new_events() {
         with_key("dup.2", "k-2"),
     ]);
     let mut fresh = ids().skip(10);
-    let decision = decide(&env.store, &sub, NOW, &mut fresh).expect("accepted");
+    let decision = decide(&env.store, &sub, now(), &mut fresh).expect("accepted");
     assert_eq!(fresh.next(), Some(id(13)));
     let record = decision.record.expect("new events");
     assert_eq!(record.time, NOW);
@@ -546,7 +553,7 @@ fn replaying_the_same_records_into_fresh_tables_gives_the_same_rows() {
         Submission::Emit(with_key("a", "k")),
         Submission::Batch(vec![named("b"), with_data("[1]")]),
     ] {
-        let decision = decide(&env.store, &sub, NOW, &mut env.fresh).expect("accepted");
+        let decision = decide(&env.store, &sub, now(), &mut env.fresh).expect("accepted");
         let record = decision.record.expect("new events");
         fold(&mut env.store, &record).expect("in memory");
         records.push(record);
@@ -556,6 +563,23 @@ fn replaying_the_same_records_into_fresh_tables_gives_the_same_rows() {
         fold(&mut rebuilt, record).expect("in memory");
     }
     assert_eq!(rebuilt, env.store);
+}
+
+#[test]
+fn folding_a_record_onto_a_read_store_that_holds_it_leaves_the_rows_unchanged() {
+    let mut env = Env::new();
+    let sub = Submission::Batch(vec![with_key("a", "k"), named("b")]);
+    let record = decide(&env.store, &sub, now(), &mut env.fresh)
+        .expect("accepted")
+        .record
+        .expect("new events");
+    fold(&mut env.store, &record).expect("in memory");
+    let once = env.store.events.clone();
+    // The ledger skips applied positions (Spec 4); a store keyed by event sequence, as the
+    // read store is, keeps one row per event even if a record reaches fold again.
+    fold(&mut env.store, &record).expect("in memory");
+    assert_eq!(env.store.events, once);
+    assert_eq!(env.stored(), ["a", "b"]);
 }
 
 // ---- Reading ----

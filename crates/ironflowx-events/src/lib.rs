@@ -1,7 +1,7 @@
 //! Ironflow X event rules: what an event is and when an emit is refused.
 //!
 //! [`decide`] checks a submission against the current state and returns what to append;
-//! [`fold`] applies an appended record to the read tables; [`get_event`] and [`list_events`]
+//! [`fold`] applies an appended record to the read store; [`get_event`] and [`list_events`]
 //! read events back. Nothing here does I/O, reads a clock or draws randomness (LED-15): state
 //! comes through [`EventsView`] and goes out through [`EventTables`].
 
@@ -15,7 +15,15 @@ mod json;
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
-use ironflowx_core::{ErrorKind, EventId, IncarnationToken, Timestamp};
+use ironflowx_core::{ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
+
+// The limits of the rules table (architecture.md, "Event rules").
+const MAX_BATCH_ITEMS: usize = 100;
+const MAX_BATCH_BYTES: usize = 4 * 1024 * 1024;
+const MAX_NAME_BYTES: usize = 256;
+const MAX_DATA_BYTES: usize = 524_288;
+const MAX_METADATA_BYTES: usize = 65_536;
+const MAX_KEY_BYTES: usize = 256;
 
 /// One emit as a client sent it. Data and metadata are JSON text.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -38,7 +46,7 @@ pub enum Submission {
     Batch(Vec<Emit>),
 }
 
-/// A stored event, as the read tables hold it and the queries return it.
+/// A stored event, as the read store holds it and the queries return it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
     pub sequence: u64,
@@ -103,6 +111,13 @@ impl Refusal {
         }
     }
 
+    fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            kind: ErrorKind::NotFound,
+            message: message.into(),
+        }
+    }
+
     pub const fn kind(&self) -> ErrorKind {
         self.kind
     }
@@ -131,15 +146,14 @@ pub trait EventsView {
     fn events_before(&self, before: u64, limit: usize) -> Result<Vec<Event>, Self::Error>;
 }
 
-/// The read tables, as `fold` writes them.
+/// The read store, as `fold` writes it.
 pub trait EventTables {
     type Error;
     fn insert(&mut self, event: Event) -> Result<(), Self::Error>;
 }
 
-/// Decides a submission against the current state. `now` is the event-clock reading's
-/// timestamp (`SequencedTime::timestamp`); `fresh` yields one event ID per new event and is
-/// drawn only for those.
+/// Decides a submission against the current state. `now` is the event-clock reading that
+/// stamps the record; `fresh` yields one event ID per new event and is drawn only for those.
 ///
 /// # Panics
 ///
@@ -147,7 +161,7 @@ pub trait EventTables {
 pub fn decide<V: EventsView>(
     view: &V,
     sub: &Submission,
-    now: Timestamp,
+    now: SequencedTime,
     fresh: &mut impl Iterator<Item = EventId>,
 ) -> Result<Decision, Error<V::Error>> {
     let (items, batch) = match sub {
@@ -155,9 +169,9 @@ pub fn decide<V: EventsView>(
         Submission::Batch(items) => (items.as_slice(), true),
     };
     // 1. Batch count.
-    if items.len() > 100 {
+    if items.len() > MAX_BATCH_ITEMS {
         return Err(Error::Refused(Refusal::invalid(format!(
-            "batch size {} exceeds maximum of 100",
+            "batch size {} exceeds maximum of {MAX_BATCH_ITEMS}",
             items.len()
         ))));
     }
@@ -174,7 +188,7 @@ pub fn decide<V: EventsView>(
             e.data.as_ref().map_or(0, String::len) + e.metadata.as_ref().map_or(0, String::len)
         })
         .sum();
-    if bytes > 4 * 1024 * 1024 {
+    if bytes > MAX_BATCH_BYTES {
         return Err(Error::Refused(Refusal::invalid(
             "batch data and metadata exceed 4 MiB",
         )));
@@ -219,7 +233,10 @@ pub fn decide<V: EventsView>(
             idempotency_key: emit.idempotency_key.clone(),
         });
     }
-    let record = (!events.is_empty()).then_some(Record { time: now, events });
+    let record = (!events.is_empty()).then_some(Record {
+        time: now.timestamp(),
+        events,
+    });
     Ok(Decision { outcome, record })
 }
 
@@ -227,17 +244,17 @@ pub fn decide<V: EventsView>(
 fn check(emit: &Emit) -> Result<(), Refusal> {
     check_name(&emit.name)?;
     if let Some(data) = &emit.data {
-        if data.len() > 524_288 {
+        if data.len() > MAX_DATA_BYTES {
             return Err(Refusal::invalid("event data exceeds maximum size"));
         }
-        json::check(data, true)
+        json::check(data, json::Checked::Data)
             .map_err(|e| Refusal::invalid(format!("event data is invalid: {e}")))?;
     }
     if let Some(metadata) = &emit.metadata {
-        if metadata.len() > 65_536 {
+        if metadata.len() > MAX_METADATA_BYTES {
             return Err(Refusal::invalid("event metadata exceeds maximum size"));
         }
-        let top = json::check(metadata, false)
+        let top = json::check(metadata, json::Checked::Metadata)
             .map_err(|e| Refusal::invalid(format!("event metadata is invalid: {e}")))?;
         if top != json::TopLevel::Object {
             return Err(Refusal::invalid("event metadata is not a JSON object"));
@@ -250,7 +267,7 @@ fn check(emit: &Emit) -> Result<(), Refusal> {
         return Err(Refusal::invalid("event version is outside 1 to 2147483647"));
     }
     if let Some(key) = &emit.idempotency_key
-        && (key.is_empty() || key.len() > 256 || key.contains('\0'))
+        && (key.is_empty() || key.len() > MAX_KEY_BYTES || key.contains('\0'))
     {
         return Err(Refusal::invalid(
             "idempotency key must be 1 to 256 bytes with no NUL",
@@ -263,7 +280,7 @@ fn check_name(name: &str) -> Result<(), Refusal> {
     if name.is_empty() {
         return Err(Refusal::invalid("event name is required"));
     }
-    if name.len() > 256 {
+    if name.len() > MAX_NAME_BYTES {
         return Err(Refusal::invalid("event name exceeds 256 bytes"));
     }
     if name.split('.').any(str::is_empty) {
@@ -282,7 +299,7 @@ fn check_name(name: &str) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Applies one appended record to the read tables.
+/// Applies one appended record to the read store.
 pub fn fold<T: EventTables>(tables: &mut T, record: &Record) -> Result<(), T::Error> {
     for e in &record.events {
         tables.insert(Event {
@@ -344,12 +361,7 @@ fn decode_cursor(cursor: &str, token: IncarnationToken) -> Option<u64> {
 
 /// Reads one event by ID. An unknown ID, or one that does not parse, is `NotFound`.
 pub fn get_event<V: EventsView>(view: &V, id: &str) -> Result<Event, Error<V::Error>> {
-    let not_found = || {
-        Error::Refused(Refusal {
-            kind: ErrorKind::NotFound,
-            message: "event not found".into(),
-        })
-    };
+    let not_found = || Error::Refused(Refusal::not_found("event not found"));
     let id = id.parse().map_err(|_| not_found())?;
     view.event(id).map_err(Error::Store)?.ok_or_else(not_found)
 }

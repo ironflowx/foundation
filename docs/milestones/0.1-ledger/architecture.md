@@ -97,9 +97,10 @@ fn new_env_ref() -> EnvRef;   // a fresh UUIDv7 ID and a 128-bit token from the 
 // SubmitError Refused(Refusal) | Unknown | Unavailable              // Refused: a single emit, or a whole batch
 
 // ironflowx-events: pure. `fresh` yields one event ID per new event, minted by the writer.
-fn decide(view: &impl EventsView, sub: &Submission, now: SequencedTime,
-          fresh: &mut impl Iterator<Item = EventId>) -> Result<Decision, Refusal>;
-fn fold(tx: &mut impl EventTables, record: &Record) -> Result<(), FoldError>;
+fn decide<V: EventsView>(view: &V, sub: &Submission, now: SequencedTime,
+          fresh: &mut impl Iterator<Item = EventId>) -> Result<Decision, Error<V::Error>>;
+fn fold<T: EventTables>(tx: &mut T, record: &Record) -> Result<(), T::Error>;
+// Error<E> Refused(Refusal) | Store(E)   // E: the view's own read error
 ```
 
 ## Event rules
@@ -218,7 +219,7 @@ How the ledger uses the log:
 | D14 | The genesis record, not `read.db`, holds the directory's identity | A swapped or rebuilt read store cannot pass for another environment |
 | D15 | The writer is one serial task: decide, append, fsync, publish, acknowledge, fold, then the next submission. 0.1 sets no performance target | `decide` reads the read store, with no overlay of unfolded records to keep right |
 | D16 | `segment-log-core` comes from crates.io at exactly `0.1.0` | A published crate cannot depend on a git revision |
-| D17 | A lint, not the type system, keeps `SequencedTime`'s constructor inside `ironflowx-cell` | The type is in core so that pure event rules can take one, and Rust cannot open a constructor to one downstream crate only |
+| D17 | A lint, not the type system, keeps `SequencedTime`'s constructor inside `ironflowx-cell`. `ironflowx-events`' tests (`crates/ironflowx-events/tests/`) are exempt: they stand in for the ledger to call `decide` | The type is in core so that pure event rules can take one, and Rust cannot open a constructor to one downstream crate only |
 | D18 | `Timestamp` has one integer encoding, `i64` milliseconds. The SQLite impl is in `ironflowx-cell` on a private wrapper, and the log record uses the same pair | Core stays free of `rusqlite` (LED-15), and the log stores event time too |
 | D19 | `open` does not refuse a sealed log | The library reports a seal only on append. A refusal at open waits for it to expose one |
 | D20 | The behaviors run under the `cucumber` crate, in an unpublished workspace crate | The feature files are the spec, run from this folder |
