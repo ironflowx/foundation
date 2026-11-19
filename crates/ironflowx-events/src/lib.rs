@@ -254,9 +254,10 @@ fn check(emit: &Emit) -> Result<(), Refusal> {
         if metadata.len() > MAX_METADATA_BYTES {
             return Err(Refusal::invalid("event metadata exceeds maximum size"));
         }
-        let top = json::check(metadata, json::Checked::Metadata)
+        json::check(metadata, json::Checked::Metadata)
             .map_err(|e| Refusal::invalid(format!("event metadata is invalid: {e}")))?;
-        if top != json::TopLevel::Object {
+        // Valid JSON, so its first non-whitespace byte says whether it is an object.
+        if !metadata.trim_ascii_start().starts_with('{') {
             return Err(Refusal::invalid("event metadata is not a JSON object"));
         }
     }

@@ -233,6 +233,7 @@ fn any_json_value_is_stored_and_read_back_as_the_bytes_sent() {
         "42",
         r#"{"k": "😀"}"#,
         r#"{"n": 1.10, "big": 123456789012345678901234567890}"#,
+        "1.7976931348623157e308",
         r#"{  "spaced" :  true  }"#,
         &nested_arrays(127),
     ] {
@@ -269,6 +270,9 @@ fn malformed_data_is_refused() {
         "1 2",
         "1e400",
         "-1e400",
+        // serde_json's fast float parser rounds this to f64::MAX; correctly rounded it is inf.
+        "1.79769313486231581e308",
+        &"9".repeat(400),
         &nested_arrays(128),
         &format!("{}{}", r#"{"a":"#.repeat(128), "}".repeat(128)),
     ] {
@@ -308,15 +312,20 @@ fn metadata_is_absent_or_a_json_object_of_at_most_65536_bytes() {
         Some(at_limit)
     );
     assert_accepted(with_metadata(r#"{"$redacted": 1}"#));
+    assert_accepted(with_metadata(" \n{\"n\": 1.25}"));
     for metadata in [
         &blob("t", 65_537),
         r#"["t"]"#,
         "null",
         r#""t""#,
+        "1.25",
+        "1e400",
+        r#"{"n": 1e400}"#,
         r#"{"t": 1, "t": 2}"#,
         r#"{"t": "x\u0000"}"#,
         r#"{"t": "\udc00"}"#,
         r#"{"t": 1"#,
+        &format!("{}{}", r#"{"a":"#.repeat(128), "}".repeat(128)),
     ] {
         assert_refused(with_metadata(metadata));
     }

@@ -1,25 +1,25 @@
 //! The JSON text rules (D12): one `serde_json` pass with a visitor that decodes every key and
 //! string, so `serde_json` unescapes them and refuses unpaired surrogates, and the visitor
-//! refuses a repeated key and a NUL. `serde_json` itself refuses numbers out of `f64` range and
-//! nesting past 127: its recursion limit is 128, and the tests pin 127 accepted, 128 refused.
+//! refuses a repeated key and a NUL. `serde_json` itself refuses numbers out of `f64` range,
+//! correctly rounded (`float_roundtrip`), and nesting past 127: its recursion limit is 128, and
+//! the tests pin 127 accepted, 128 refused.
 
 use std::collections::BTreeSet;
 use std::fmt;
 
 use serde_core::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
-/// Checks one JSON text, as event data or metadata, and says whether its top level is an object.
-pub(crate) fn check(text: &str, field: Checked) -> Result<TopLevel, serde_json::Error> {
-    let mut de = serde_json::Deserializer::from_str(text);
-    let top = field.deserialize(&mut de)?;
-    de.end()?;
-    Ok(top)
-}
+/// With serde_json's `arbitrary_precision` on, which feature unification can do in any build, a
+/// number reaches the visitor as a one-entry map under this key, its range unchecked.
+// shortcut: in such a build an object whose first key is this one is taken for a number;
+// upgrade if a client ever needs that key.
+const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TopLevel {
-    Object,
-    Other,
+/// Checks one JSON text, as event data or metadata.
+pub(crate) fn check(text: &str, field: Checked) -> Result<(), serde_json::Error> {
+    let mut de = serde_json::Deserializer::from_str(text);
+    field.deserialize(&mut de)?;
+    de.end()
 }
 
 /// The checker for one JSON value: where it sits decides whether `$redacted` is refused, which
@@ -39,51 +39,59 @@ fn no_nul<E: de::Error>(s: &str) -> Result<(), E> {
 }
 
 impl<'de> DeserializeSeed<'de> for Checked {
-    type Value = TopLevel;
-    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<TopLevel, D::Error> {
+    type Value = ();
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
         d.deserialize_any(self)
     }
 }
 
 impl<'de> Visitor<'de> for Checked {
-    type Value = TopLevel;
+    type Value = ();
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("a JSON value")
     }
 
-    fn visit_bool<E: de::Error>(self, _: bool) -> Result<TopLevel, E> {
-        Ok(TopLevel::Other)
+    fn visit_bool<E: de::Error>(self, _: bool) -> Result<(), E> {
+        Ok(())
     }
 
-    fn visit_i64<E: de::Error>(self, _: i64) -> Result<TopLevel, E> {
-        Ok(TopLevel::Other)
+    fn visit_i64<E: de::Error>(self, _: i64) -> Result<(), E> {
+        Ok(())
     }
 
-    fn visit_u64<E: de::Error>(self, _: u64) -> Result<TopLevel, E> {
-        Ok(TopLevel::Other)
+    fn visit_u64<E: de::Error>(self, _: u64) -> Result<(), E> {
+        Ok(())
     }
 
-    fn visit_f64<E: de::Error>(self, _: f64) -> Result<TopLevel, E> {
-        Ok(TopLevel::Other)
+    fn visit_f64<E: de::Error>(self, _: f64) -> Result<(), E> {
+        Ok(())
     }
 
-    fn visit_unit<E: de::Error>(self) -> Result<TopLevel, E> {
-        Ok(TopLevel::Other)
+    fn visit_unit<E: de::Error>(self) -> Result<(), E> {
+        Ok(())
     }
 
-    fn visit_str<E: de::Error>(self, s: &str) -> Result<TopLevel, E> {
-        no_nul(s).map(|()| TopLevel::Other)
+    fn visit_str<E: de::Error>(self, s: &str) -> Result<(), E> {
+        no_nul(s)
     }
 
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<TopLevel, A::Error> {
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
         while seq.next_element_seed(Checked::Inside)?.is_some() {}
-        Ok(TopLevel::Other)
+        Ok(())
     }
 
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<TopLevel, A::Error> {
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
         let mut keys = BTreeSet::new();
         while let Some(key) = map.next_key::<String>()? {
+            if keys.is_empty() && key == NUMBER_TOKEN {
+                // Rust's parser rounds correctly, as float_roundtrip does in a default build.
+                let number: String = map.next_value()?;
+                return match number.parse::<f64>() {
+                    Ok(n) if n.is_finite() => Ok(()),
+                    _ => Err(de::Error::custom("number out of range")),
+                };
+            }
             no_nul(&key)?;
             if self == Self::Data && key == "$redacted" {
                 return Err(de::Error::custom("top-level $redacted key"));
@@ -93,6 +101,6 @@ impl<'de> Visitor<'de> for Checked {
             }
             map.next_value_seed(Checked::Inside)?;
         }
-        Ok(TopLevel::Object)
+        Ok(())
     }
 }
