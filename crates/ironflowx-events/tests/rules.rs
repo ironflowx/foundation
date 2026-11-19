@@ -5,12 +5,14 @@
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
+use std::ops::Bound::{Excluded, Unbounded};
 
 use std::num::NonZeroU32;
 
 use ironflowx_core::{ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
 use ironflowx_events::{
-    Decision, Emit, Error, Event, EventPage, EventTables, EventsView, ItemOutcome, Submission,
+    Decision, Emit, Error, Event, EventPage, EventTables, EventsView, ItemOutcome, NewEvent, Record,
+    Submission,
     decide, fold, get_event, list_events,
 };
 
@@ -35,10 +37,10 @@ impl EventsView for Store {
     fn event(&self, id: EventId) -> Result<Option<Event>, Infallible> {
         Ok(self.events.values().find(|e| e.id == id).cloned())
     }
-    fn events_before(&self, before: u64, limit: usize) -> Result<Vec<Event>, Infallible> {
+    fn events_before(&self, before: Option<u64>, limit: usize) -> Result<Vec<Event>, Infallible> {
         Ok(self
             .events
-            .range(..before)
+            .range((Unbounded, before.map_or(Unbounded, Excluded)))
             .rev()
             .take(limit)
             .map(|(_, e)| e.clone())
@@ -519,7 +521,7 @@ impl EventsView for Failing<'_> {
     fn event(&self, _: EventId) -> Result<Option<Event>, &'static str> {
         unreachable!()
     }
-    fn events_before(&self, _: u64, _: usize) -> Result<Vec<Event>, &'static str> {
+    fn events_before(&self, _: Option<u64>, _: usize) -> Result<Vec<Event>, &'static str> {
         unreachable!()
     }
 }
@@ -731,6 +733,38 @@ fn events_page_by_cursor_and_the_last_page_has_none() {
     let empty = list(&Env::new(), None, None);
     assert!(empty.events.is_empty());
     assert_eq!(empty.next, None);
+}
+
+/// A store whose one event takes the last event sequence there is.
+fn at_last_sequence() -> Env {
+    let mut env = Env::new();
+    let record = Record {
+        time: NOW,
+        events: vec![NewEvent {
+            sequence: u64::MAX,
+            id: id(1),
+            name: "last".into(),
+            data: "null".into(),
+            metadata: None,
+            version: 1,
+            idempotency_key: None,
+        }],
+    };
+    fold(&mut env.store, &record).expect("in memory");
+    env
+}
+
+#[test]
+fn an_event_at_the_last_sequence_is_listed() {
+    let env = at_last_sequence();
+    assert_eq!(names(&list(&env, None, None)), ["last"]);
+}
+
+#[test]
+fn an_emit_past_the_last_sequence_is_refused() {
+    let mut env = at_last_sequence();
+    assert!(matches!(env.emit(named("next")), Err(Error::Refused(_))));
+    assert_eq!(env.stored(), ["last"]);
 }
 
 #[test]

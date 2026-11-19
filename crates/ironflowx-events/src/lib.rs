@@ -142,8 +142,8 @@ pub trait EventsView {
     /// The highest event sequence stored; 0 when none is.
     fn last_sequence(&self) -> Result<u64, Self::Error>;
     fn event(&self, id: EventId) -> Result<Option<Event>, Self::Error>;
-    /// Up to `limit` events with a sequence below `before`, newest first.
-    fn events_before(&self, before: u64, limit: usize) -> Result<Vec<Event>, Self::Error>;
+    /// Up to `limit` events with a sequence below `before`, or any when `None`, newest first.
+    fn events_before(&self, before: Option<u64>, limit: usize) -> Result<Vec<Event>, Self::Error>;
 }
 
 /// The read store, as `fold` writes it.
@@ -239,7 +239,9 @@ pub fn decide<V: EventsView>(
         let sequence = match last {
             Some(sequence) => sequence,
             None => view.last_sequence().map_err(Error::Store)?,
-        } + 1;
+        }
+        .checked_add(1)
+        .ok_or_else(|| Error::Refused(Refusal::invalid("event sequences are used up")))?;
         last = Some(sequence);
         let id = fresh.next().expect("fresh yields an ID per new event");
         if let Some(key) = key {
@@ -356,11 +358,12 @@ pub fn list_events<V: EventsView>(
     limit: Option<NonZeroU32>,
     cursor: Option<&str>,
 ) -> Result<EventPage, Error<V::Error>> {
-    let before = match cursor {
-        None => u64::MAX,
-        Some(cursor) => decode_cursor(cursor, token)
-            .ok_or_else(|| Error::Refused(Refusal::invalid("invalid cursor")))?,
-    };
+    let before = cursor
+        .map(|cursor| {
+            decode_cursor(cursor, token)
+                .ok_or_else(|| Error::Refused(Refusal::invalid("invalid cursor")))
+        })
+        .transpose()?;
     let limit = limit.map_or(20, |l| l.get().min(200)) as usize;
     // One more than the page, so a full last page carries no cursor.
     let mut events = view
