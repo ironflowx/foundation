@@ -68,6 +68,9 @@ dependencies = [
 [[package]]
 name = "ironflowx-proto"
 version = "0.0.1"
+dependencies = [
+ "ironflowx-core",
+]
 
 [[package]]
 name = "itoa"
