@@ -83,6 +83,8 @@ jobs:
       - run: grep -v '^#' ci/tools.env >> "$GITHUB_ENV"
       - uses: taiki-e/install-action@v2
         with:
-          tool: actionlint@${{ env.ACTIONLINT }},shellcheck@${{ env.SHELLCHECK }}
-      - run: actionlint
+          tool: shellcheck@${{ env.SHELLCHECK }}
+      # install-action has no actionlint manifest; go install checks the module against sum.golang.org.
+      - run: go install "github.com/rhysd/actionlint/cmd/actionlint@v$ACTIONLINT"
+      - run: '"$(go env GOPATH)/bin/actionlint"'
       - run: shellcheck -x ci/*.sh
