@@ -1,6 +1,6 @@
 [package]
 name = "ironflowx-events"
-description = "Ironflow X event rules: what an event is and when an emit is refused. Placeholder: the first real release is 0.1.0."
+description = "Ironflow X event rules: what an event is and when an emit is refused."
 keywords = ["ironflow", "workflow", "event-driven"]
 readme = "../../README.md"
 version.workspace = true
@@ -10,3 +10,8 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
+
+[dependencies]
+ironflowx-core.workspace = true
+serde_core.workspace = true
+serde_json.workspace = true
