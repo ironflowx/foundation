@@ -8,7 +8,7 @@ A client that emits an event needs to know, the same way every time and through 
 
 ## Solution
 
-One pure module decides what an event is. Given a submission, the current state and an event-clock reading, it either refuses with a reason or returns what to append. A second function folds an appended record into the read tables, and queries read events back. The module does no I/O, reads no clock and draws no randomness, so the same rules hold for every caller.
+One pure module decides what an event is. Given a submission, the current state and an event-clock reading, it either refuses with a reason or returns what to append. A second function folds an appended record into the read store, and queries read events back. The module does no I/O, reads no clock and draws no randomness, so the same rules hold for every caller.
 
 ## User Stories
 
@@ -53,14 +53,14 @@ One pure module decides what an event is. Given a submission, the current state 
 39. As a client, I want the last page to carry no cursor, even when it is full, so that I know when to stop.
 40. As a client, I want a cursor that does not decode, or that names another incarnation, refused as invalid, so that a stale cursor cannot read the wrong environment.
 41. As the ledger, I want `decide` to draw an event ID only for each new event, from an iterator I supply, so that event rules stay pure.
-42. As the ledger, I want `fold` to apply one record to the read tables, so that the read store is derived only from the log.
+42. As the ledger, I want `fold` to apply one record to the read store, so that the read store is derived only from the log.
 43. As a maintainer, I want event rules to hold every check, default and limit, so that an adapter over them holds no rule.
 44. As a client, I want every emit without an idempotency key to store a new event, so that two identical emits are two events unless I say otherwise.
 
 ## Implementation Decisions
 
-- **Module:** event rules, in the event-rules crate. Pure (LED-15): it depends on core and `serde_json` only.
-- **Interface:** `decide` (submission, view of current state, event-clock time, iterator of fresh event IDs → decision or refusal), `fold` (record → read tables), and queries (event by ID; a page of events). The shapes are in the architecture doc.
+- **Module:** event rules, in the event-rules crate. Pure (LED-15): it depends on core and `serde_json` only, plus `serde_core`, which `serde_json` already pulls in, for the visitor traits.
+- **Interface:** `decide` (submission, view of current state, event-clock time, iterator of fresh event IDs → decision, or a refusal or store error), `fold` (record → read store), and queries (event by ID; a page of events). The shapes are in the architecture doc.
 - **Order of `decide`:** batch count, then per-item rules, then batch bytes over the items that passed, then the idempotency lookup in input order (a key seen earlier in the same batch counts), then one ID per new event (D5, D9, D10).
 - **Rules:** exactly the table in the architecture doc's "Event rules" section. Name character classes are Rust's `char::is_whitespace` and `char::is_control`; owned names match in exact case.
 - **JSON checking:** one `serde_json` pass with a visitor that deserializes every key and string, and errors on a repeated key, a NUL or a number out of range (D12). No second parser. Data and metadata are kept as the bytes sent.

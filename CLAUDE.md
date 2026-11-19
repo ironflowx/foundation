@@ -15,3 +15,7 @@ Single-context: one `GLOSSARY.md` at the root, and decisions in each milestone's
 ## CI
 
 Changing a crate's dependencies or public API, or adding a crate: read `ci/README.md`.
+
+## Review
+
+Reviewing a change: apply `CODING_STANDARDS.md`.
