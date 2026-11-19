@@ -16,7 +16,3 @@ ironflowx-core.workspace = true
 serde_core.workspace = true
 serde_json.workspace = true
 
-[dev-dependencies]
-# Tests run with serde_json's arbitrary_precision on, as feature unification can switch it on in
-# any build; numbers then reach the visitor as text. The normal build does not see it.
-serde_json = { workspace = true, features = ["arbitrary_precision"] }
