@@ -144,7 +144,7 @@ pub trait ironflowx_events::EventsView
 pub type ironflowx_events::EventsView::Error
 pub fn ironflowx_events::EventsView::event(&self, ironflowx_core::id::EventId) -> core::result::Result<core::option::Option<ironflowx_events::Event>, Self::Error>
 pub fn ironflowx_events::EventsView::event_by_key(&self, &str) -> core::result::Result<core::option::Option<ironflowx_core::id::EventId>, Self::Error>
-pub fn ironflowx_events::EventsView::events_before(&self, u64, usize) -> core::result::Result<alloc::vec::Vec<ironflowx_events::Event>, Self::Error>
+pub fn ironflowx_events::EventsView::events_before(&self, core::option::Option<u64>, usize) -> core::result::Result<alloc::vec::Vec<ironflowx_events::Event>, Self::Error>
 pub fn ironflowx_events::EventsView::last_sequence(&self) -> core::result::Result<u64, Self::Error>
 pub fn ironflowx_events::decide<V: ironflowx_events::EventsView>(&V, &ironflowx_events::Submission, ironflowx_core::time::SequencedTime, &mut impl core::iter::traits::iterator::Iterator<Item = ironflowx_core::id::EventId>) -> core::result::Result<ironflowx_events::Decision, ironflowx_events::Error<<V as ironflowx_events::EventsView>::Error>>
 pub fn ironflowx_events::fold<T: ironflowx_events::EventTables>(&mut T, &ironflowx_events::Record) -> core::result::Result<(), <T as ironflowx_events::EventTables>::Error>

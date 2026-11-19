@@ -9,9 +9,8 @@ use std::num::NonZeroU32;
 
 use ironflowx_core::{ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
 use ironflowx_events::{
-    Decision, Emit, Error, Event, EventPage, EventTables, EventsView, ItemOutcome, NewEvent, Record,
-    Submission,
-    decide, fold, get_event, list_events,
+    Decision, Emit, Error, Event, EventPage, EventTables, EventsView, ItemOutcome, NewEvent,
+    Record, Submission, decide, fold, get_event, list_events,
 };
 
 /// The read tables, in memory: the one seam.
@@ -244,6 +243,8 @@ fn any_json_value_is_stored_and_read_back_as_the_bytes_sent() {
         r#""text""#,
         "42",
         r#"{"k": "😀"}"#,
+        r#"{"k":"😀"}"#,
+        r#"{"k": "\ud83d\ude00"}"#,
         r#"{"n": 1.10, "big": 123456789012345678901234567890}"#,
         "1.7976931348623157e308",
         r#"{  "spaced" :  true  }"#,
@@ -268,6 +269,7 @@ fn data_is_at_most_524288_bytes_as_sent() {
 fn malformed_data_is_refused() {
     for data in [
         r#"{"a": 1, "a": 2}"#,
+        r#"{"a": 1, "\u0061": 2}"#,
         r#"{"x": {"a": 1, "a": 2}}"#,
         r#"[{"a": 1, "a": 2}]"#,
         r#""x\u0000y""#,
@@ -299,6 +301,7 @@ fn a_top_level_redacted_key_is_refused_and_a_nested_one_accepted() {
         r#"{"$redacted": false}"#,
         r#"{"a": 1, "$redacted": null}"#,
         r#"{"$redacted": 1}"#,
+        r#"{"\u0024redacted": 1}"#,
     ] {
         assert_refused(with_data(data));
     }
@@ -547,9 +550,13 @@ fn the_last_sequence_is_read_only_when_an_event_is_new() {
     for (items, outcome) in [
         (vec![], vec![]),
         (vec![named("")], vec!["refused"]),
-        (vec![with_key("dup", "k-0"), named("")], vec!["duplicate", "refused"]),
+        (
+            vec![with_key("dup", "k-0"), named("")],
+            vec!["duplicate", "refused"],
+        ),
     ] {
-        let decision = decide(&view, &Submission::Batch(items), now(), &mut ids()).expect("decided");
+        let decision =
+            decide(&view, &Submission::Batch(items), now(), &mut ids()).expect("decided");
         let kinds: Vec<_> = decision
             .outcome
             .iter()
@@ -577,6 +584,24 @@ fn a_failed_lookup_draws_no_id() {
         Err(Error::Store("lookup failed"))
     );
     assert_eq!(fresh.next(), Some(id(1)));
+}
+
+#[test]
+fn a_refused_item_does_not_claim_its_key() {
+    let mut env = Env::new();
+    let outcome = env
+        .submit(Submission::Batch(vec![
+            with_key("", "k"),
+            with_key("a.ok", "k"),
+            with_key("b.ok", "k"),
+        ]))
+        .expect("batch accepted");
+    assert!(matches!(outcome[0], ItemOutcome::Refused(_)));
+    assert_eq!(
+        outcome[1..],
+        [ItemOutcome::New(id(1)), ItemOutcome::Duplicate(id(1))]
+    );
+    assert_eq!(env.stored(), ["a.ok"]);
 }
 
 #[test]
@@ -625,6 +650,16 @@ fn a_batch_whose_accepted_data_and_metadata_total_over_4_mib_is_refused_whole() 
             .len(),
         9
     );
+
+    // The byte check runs before the lookup: items whose key is stored still count.
+    let mut env = Env::new();
+    env.emit(with_key("seen", "k")).expect("accepted");
+    let dup = Emit {
+        idempotency_key: Some("k".into()),
+        ..big.clone()
+    };
+    refusal_of(env.submit(Submission::Batch(vec![dup; 9])));
+    assert_eq!(env.stored(), ["seen"]);
 
     // Metadata counts too.
     let mut items = vec![big; 8];
@@ -804,6 +839,7 @@ fn a_cursor_that_does_not_decode_or_names_another_incarnation_is_invalid() {
         "not-a-token".into(),
         format!("{next}x"),
         format!("+{next}"),
+        next.replace('.', ".0"),
     ];
     let other = list_events(&env.store, token(2), NonZeroU32::new(1), None)
         .expect("listed")
