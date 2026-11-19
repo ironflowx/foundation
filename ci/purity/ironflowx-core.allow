@@ -1,0 +1,2 @@
+# Every crate ironflowx-core may depend on, directly or not (LED-15).
+uuid

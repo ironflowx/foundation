@@ -1,0 +1,6 @@
+# Every crate without its own clippy.toml. ironflowx-cell has an empty one: it alone may stamp
+# event time. The pure crates carry crates/ironflowx-core/clippy.toml, which repeats this ban:
+# clippy configs cannot include one another.
+disallowed-methods = [
+  { path = "ironflowx_core::SequencedTime::from_event_clock", reason = "only ironflowx-cell produces event time (D17)" },
+]

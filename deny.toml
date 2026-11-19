@@ -1,2 +1,6 @@
+[graph]
+# CI runs cargo-deny once, on Linux; check the dependency graph of both supported platforms.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin"]
+
 [licenses]
 allow = ["MIT"]

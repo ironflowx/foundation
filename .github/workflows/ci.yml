@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 # Job names are the required status checks of the `main` ruleset. The toolchain comes from
-# rust-toolchain.toml.
+# rust-toolchain.toml; only public-api uses the nightly pinned in ci/public-api.sh (D21).
 jobs:
   fmt:
     runs-on: ubuntu-latest
@@ -27,6 +27,13 @@ jobs:
       - uses: actions/checkout@v5
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+  # A separate job, not a matrix, so the required `clippy` check keeps its name.
+  clippy-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
   test:
     strategy:
       matrix:
@@ -36,8 +43,51 @@ jobs:
       - uses: actions/checkout@v5
       - run: cargo test --workspace --locked
 
+  # deny.toml lists the Linux and macOS targets, so one run covers both.
   deny:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # LED-15: the pure crates' dependency allowlists, and each purity check rejecting its fixture.
+  # The clippy job enforces the call bans on the real crates.
+  purity:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Dependency allowlists
+        run: |
+          ci/check-deps.sh crates/ironflowx-core/Cargo.toml ci/purity/ironflowx-core.allow
+          ci/check-deps.sh crates/ironflowx-events/Cargo.toml ci/purity/ironflowx-events.allow
+      - name: Fixtures each check must reject
+        run: |
+          ci/must-reject.sh "dependency not allowed: getrandom" \
+            ci/check-deps.sh ci/fixtures/forbidden-dep/Cargo.toml ci/purity/ironflowx-core.allow
+          ci/must-reject.sh 'disallowed method `std::time::SystemTime::now`' \
+            cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
+          ci/must-reject.sh 'disallowed method `std::fs::read`' \
+            cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
+          ci/must-reject.sh 'disallowed type `std::net::TcpStream`' \
+            cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
+          ci/must-reject.sh 'disallowed method `std::thread::spawn`' \
+            cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
+          ci/must-reject.sh 'disallowed method `getrandom::u64`' \
+            cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
+          ci/must-reject.sh 'disallowed method `ironflowx_core::SequencedTime::from_event_clock`' \
+            cargo clippy --locked --manifest-path ci/fixtures/sequenced-time-outside-ledger/Cargo.toml -- -D warnings
+
+  # D21, LED-6, LED-9, LED-13: any public API change is a reviewed snapshot change.
+  public-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-public-api@0.52.0
+      - run: ci/public-api.sh
+      - run: ci/no-bare-env-id.sh public-api/*.txt
+      - run: ci/must-reject.sh "bare EnvironmentId" ci/no-bare-env-id.sh ci/fixtures/bare-environment-id.txt

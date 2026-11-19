@@ -1,0 +1,35 @@
+use std::fmt;
+
+/// How a call failed. Every module and door reports failures with these kinds; the message
+/// belongs to the module that produces it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ErrorKind {
+    /// A rule refused the request. The same request is refused the same way.
+    Invalid,
+    /// No such resource, or its ID does not parse.
+    NotFound,
+    /// The outcome is unknown; the ledger is now unavailable until reopened.
+    Unknown,
+    /// The ledger failed and refuses every call until it is reopened.
+    Unavailable,
+}
+
+/// A text form that does not parse as the type it was parsed into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseError {
+    what: &'static str,
+}
+
+impl ParseError {
+    pub(crate) const fn new(what: &'static str) -> Self {
+        Self { what }
+    }
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid {}", self.what)
+    }
+}
+
+impl std::error::Error for ParseError {}

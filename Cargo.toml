@@ -13,3 +13,5 @@ authors = ["Ironflow contributors"]
 
 [workspace.dependencies]
 ironflowx-core = { path = "crates/ironflowx-core", version = "0.0.1" }
+# Parsing and validation only: no generation feature in the pure crates.
+uuid = { version = "1.29.3", default-features = false, features = ["std"] }

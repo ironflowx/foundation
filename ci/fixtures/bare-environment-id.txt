@@ -1,0 +1,1 @@
+pub async fn ironflowx_cell::Ledger::open(&std::path::Path, ironflowx_core::EnvironmentId) -> core::result::Result<Self, ironflowx_cell::OpenError>

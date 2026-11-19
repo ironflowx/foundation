@@ -1,0 +1,62 @@
+# Purity bans for the pure crates (LED-15), plus the SequencedTime constructor ban every crate
+# but ironflowx-cell carries (D17). ironflowx-events links this file.
+# Clippy cannot ban a whole module, so each function and type is listed.
+
+disallowed-methods = [
+  # Only the ledger stamps event time. Inside core itself the path does not resolve.
+  { path = "ironflowx_core::SequencedTime::from_event_clock", reason = "only ironflowx-cell produces event time (D17)", allow-invalid = true },
+
+  { path = "std::time::SystemTime::now", reason = "pure crates read no ambient clock; take a Timestamp or SequencedTime" },
+  { path = "std::time::Instant::now", reason = "pure crates read no ambient clock" },
+  { path = "std::time::SystemTime::elapsed", reason = "pure crates read no ambient clock" },
+  { path = "std::time::Instant::elapsed", reason = "pure crates read no ambient clock" },
+
+  { path = "std::fs::canonicalize", reason = "pure crates do no I/O" },
+  { path = "std::fs::copy", reason = "pure crates do no I/O" },
+  { path = "std::fs::create_dir", reason = "pure crates do no I/O" },
+  { path = "std::fs::create_dir_all", reason = "pure crates do no I/O" },
+  { path = "std::fs::exists", reason = "pure crates do no I/O" },
+  { path = "std::fs::hard_link", reason = "pure crates do no I/O" },
+  { path = "std::fs::metadata", reason = "pure crates do no I/O" },
+  { path = "std::fs::read", reason = "pure crates do no I/O" },
+  { path = "std::fs::read_dir", reason = "pure crates do no I/O" },
+  { path = "std::fs::read_link", reason = "pure crates do no I/O" },
+  { path = "std::fs::read_to_string", reason = "pure crates do no I/O" },
+  { path = "std::fs::remove_dir", reason = "pure crates do no I/O" },
+  { path = "std::fs::remove_dir_all", reason = "pure crates do no I/O" },
+  { path = "std::fs::remove_file", reason = "pure crates do no I/O" },
+  { path = "std::fs::rename", reason = "pure crates do no I/O" },
+  { path = "std::fs::set_permissions", reason = "pure crates do no I/O" },
+  { path = "std::fs::symlink_metadata", reason = "pure crates do no I/O" },
+  { path = "std::fs::write", reason = "pure crates do no I/O" },
+
+  { path = "std::net::ToSocketAddrs::to_socket_addrs", reason = "pure crates do no I/O" },
+
+  { path = "std::thread::spawn", reason = "pure crates start no threads" },
+  { path = "std::thread::scope", reason = "pure crates start no threads" },
+  { path = "std::thread::sleep", reason = "pure crates do not block" },
+
+  { path = "std::hash::RandomState::new", reason = "pure crates read no OS randomness" },
+  # shortcut: HashMap::default() still seeds from the OS; Default cannot be banned per type.
+  { path = "std::collections::HashMap::new", reason = "seeds from OS randomness; use BTreeMap" },
+  { path = "std::collections::HashMap::with_capacity", reason = "seeds from OS randomness; use BTreeMap" },
+  { path = "std::collections::HashSet::new", reason = "seeds from OS randomness; use BTreeSet" },
+  { path = "std::collections::HashSet::with_capacity", reason = "seeds from OS randomness; use BTreeSet" },
+  { path = "getrandom::fill", reason = "pure crates read no OS randomness" },
+  { path = "getrandom::fill_uninit", reason = "pure crates read no OS randomness" },
+  { path = "getrandom::getrandom", reason = "pure crates read no OS randomness" },
+  { path = "getrandom::u32", reason = "pure crates read no OS randomness" },
+  { path = "getrandom::u64", reason = "pure crates read no OS randomness" },
+]
+
+disallowed-types = [
+  { path = "std::fs::File", reason = "pure crates do no I/O" },
+  { path = "std::fs::OpenOptions", reason = "pure crates do no I/O" },
+  { path = "std::fs::DirBuilder", reason = "pure crates do no I/O" },
+  { path = "std::fs::ReadDir", reason = "pure crates do no I/O" },
+  { path = "std::net::TcpListener", reason = "pure crates do no I/O" },
+  { path = "std::net::TcpStream", reason = "pure crates do no I/O" },
+  { path = "std::net::UdpSocket", reason = "pure crates do no I/O" },
+  { path = "std::process::Command", reason = "pure crates do no I/O" },
+  { path = "std::thread::Builder", reason = "pure crates start no threads" },
+]

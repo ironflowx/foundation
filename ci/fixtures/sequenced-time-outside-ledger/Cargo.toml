@@ -1,0 +1,9 @@
+[package]
+name = "sequenced-time-outside-ledger"
+edition = "2024"
+publish = false
+
+[dependencies]
+ironflowx-core = { path = "../../../crates/ironflowx-core" }
+
+[workspace]
