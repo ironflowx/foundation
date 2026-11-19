@@ -1,0 +1,6 @@
+[package]
+name = "allow-past-ban"
+edition = "2024"
+publish = false
+
+[workspace]

@@ -75,8 +75,12 @@ jobs:
             'disallowed method `std::path::Path::exists`' \
             'disallowed type `std::net::TcpStream`' \
             'disallowed method `std::thread::spawn`' \
-            'disallowed method `getrandom::u64`' -- \
+            'disallowed method `getrandom::u64`' \
+            'disallowed type `std::collections::HashMap`' \
+            'use of `println!`' -- \
             cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
+          ci/must-reject.sh "incompatible with previous forbid" -- \
+            cargo clippy --locked --manifest-path ci/fixtures/allow-past-ban/Cargo.toml -- -D warnings
           ci/must-reject.sh 'disallowed method `ironflowx_core::SequencedTime::from_event_clock`' -- \
             cargo clippy --locked --manifest-path ci/fixtures/sequenced-time-outside-ledger/Cargo.toml -- -D warnings
           ci/must-reject.sh "ci/fixtures/sequenced-time-outside-ledger/src/lib.rs" -- \
@@ -93,5 +97,6 @@ jobs:
       - run: ci/public-api.sh
       - run: ci/no-bare-env-id.sh public-api/*.txt
       - run: |
-          ci/must-reject.sh Ledger::open find_after ffi_open EnvironmentId::lookup -- \
+          ci/must-reject.sh Ledger::open find_after ffi_open EnvironmentId::lookup \
+            OpenRequest::env Target::Env proto::Wrapper -- \
             ci/no-bare-env-id.sh ci/fixtures/bare-environment-id.txt

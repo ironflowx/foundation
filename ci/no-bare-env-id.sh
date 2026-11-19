@@ -2,10 +2,16 @@
 # Usage: ci/no-bare-env-id.sh <public-api snapshot...>
 # Fails if a public function takes an EnvironmentId without its token (LED-9): as a parameter
 # anywhere in its parameter list, or as `self` in any method of EnvironmentId other than its
-# std trait impls. A struct with a public EnvironmentId field is not caught.
+# std trait impls. Also fails on a public field or enum variant holding one, since a request
+# type would carry it in.
 set -euo pipefail
 found=$(perl -ne '
   next unless /^pub\b/;
+  if (!/\bfn\s/) {
+    # A field, tuple field or variant: `pub a::B::f: T`, `pub a::B::V(T)`, `pub struct a::B(pub T)`.
+    print if /EnvironmentId/ && !/^pub (use|mod|type|impl) / && !/^pub struct ironflowx_core::EnvironmentId\b/;
+    next;
+  }
   # The name, then the balanced parameter list: a closure parameter may hold its own "->".
   next unless /\bfn\s+([^\s(<]+)[^(]*(\((?:[^()]++|(?2))*\))/;
   my ($name, $params) = ($1, $2);
@@ -16,7 +22,7 @@ found=$(perl -ne '
   }
 ' "$@")
 if [ -n "$found" ]; then
-  echo "public functions taking a bare EnvironmentId (take an EnvRef):"
+  echo "public API taking a bare EnvironmentId (take an EnvRef):"
   echo "$found"
   exit 1
 fi

@@ -3,6 +3,11 @@
 //!
 //! This crate is pure: no I/O, no async runtime, no ambient clock, no randomness.
 
+// Purity (LED-15): forbid, so an inner #[allow] cannot switch these off.
+#![forbid(unsafe_code)]
+#![forbid(clippy::disallowed_methods, clippy::disallowed_types)]
+#![forbid(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]
+
 mod error;
 mod id;
 mod time;

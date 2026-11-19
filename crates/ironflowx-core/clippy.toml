@@ -58,20 +58,17 @@ disallowed-methods = [
   { path = "std::thread::scope", reason = "pure crates start no threads" },
   { path = "std::thread::sleep", reason = "pure crates do not block" },
 
-  { path = "std::hash::RandomState::new", reason = "pure crates read no OS randomness" },
-  # shortcut: HashMap::default() still seeds from the OS; Default cannot be banned per type.
-  { path = "std::collections::HashMap::new", reason = "seeds from OS randomness; use BTreeMap" },
-  { path = "std::collections::HashMap::with_capacity", reason = "seeds from OS randomness; use BTreeMap" },
-  { path = "std::collections::HashSet::new", reason = "seeds from OS randomness; use BTreeSet" },
-  { path = "std::collections::HashSet::with_capacity", reason = "seeds from OS randomness; use BTreeSet" },
   { path = "getrandom::fill", reason = "pure crates read no OS randomness" },
   { path = "getrandom::fill_uninit", reason = "pure crates read no OS randomness" },
-  { path = "getrandom::getrandom", reason = "pure crates read no OS randomness" },
   { path = "getrandom::u32", reason = "pure crates read no OS randomness" },
   { path = "getrandom::u64", reason = "pure crates read no OS randomness" },
 ]
 
 disallowed-types = [
+  # Seeded from the OS, and iterate in a different order every run: pure results must not.
+  { path = "std::collections::HashMap", reason = "random seed and order; use BTreeMap" },
+  { path = "std::collections::HashSet", reason = "random seed and order; use BTreeSet" },
+  { path = "std::hash::RandomState", reason = "pure crates read no OS randomness" },
   { path = "std::fs::File", reason = "pure crates do no I/O" },
   { path = "std::fs::OpenOptions", reason = "pure crates do no I/O" },
   { path = "std::fs::DirBuilder", reason = "pure crates do no I/O" },
