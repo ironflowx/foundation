@@ -1,1 +1,152 @@
 pub mod ironflowx_events
+pub enum ironflowx_events::Error<E>
+pub ironflowx_events::Error::Refused(ironflowx_events::Refusal)
+pub ironflowx_events::Error::Store(E)
+impl<E: core::clone::Clone> core::clone::Clone for ironflowx_events::Error<E>
+pub fn ironflowx_events::Error<E>::clone(&self) -> Self
+impl<E: core::cmp::Eq> core::cmp::Eq for ironflowx_events::Error<E>
+pub fn ironflowx_events::Error<E>::assert_fields_are_eq(&self)
+impl<E: core::cmp::PartialEq> core::cmp::PartialEq for ironflowx_events::Error<E>
+pub fn ironflowx_events::Error<E>::eq(&self, &Self) -> bool
+impl<E: core::cmp::PartialEq> core::marker::StructuralPartialEq for ironflowx_events::Error<E>
+impl<E: core::fmt::Debug> core::fmt::Debug for ironflowx_events::Error<E>
+pub fn ironflowx_events::Error<E>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum ironflowx_events::ItemOutcome
+pub ironflowx_events::ItemOutcome::Duplicate(ironflowx_core::id::EventId)
+pub ironflowx_events::ItemOutcome::New(ironflowx_core::id::EventId)
+pub ironflowx_events::ItemOutcome::Refused(ironflowx_events::Refusal)
+impl core::clone::Clone for ironflowx_events::ItemOutcome
+pub fn ironflowx_events::ItemOutcome::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_events::ItemOutcome
+pub fn ironflowx_events::ItemOutcome::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_events::ItemOutcome
+pub fn ironflowx_events::ItemOutcome::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_events::ItemOutcome
+pub fn ironflowx_events::ItemOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_events::ItemOutcome
+pub enum ironflowx_events::Submission
+pub ironflowx_events::Submission::Batch(alloc::vec::Vec<ironflowx_events::Emit>)
+pub ironflowx_events::Submission::Emit(ironflowx_events::Emit)
+impl core::clone::Clone for ironflowx_events::Submission
+pub fn ironflowx_events::Submission::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_events::Submission
+pub fn ironflowx_events::Submission::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_events::Submission
+pub fn ironflowx_events::Submission::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_events::Submission
+pub fn ironflowx_events::Submission::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_events::Submission
+pub struct ironflowx_events::Decision
+pub ironflowx_events::Decision::outcome: alloc::vec::Vec<ironflowx_events::ItemOutcome>
+pub ironflowx_events::Decision::record: core::option::Option<ironflowx_events::Record>
+impl core::clone::Clone for ironflowx_events::Decision
+pub fn ironflowx_events::Decision::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_events::Decision
+pub fn ironflowx_events::Decision::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_events::Decision
+pub fn ironflowx_events::Decision::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_events::Decision
+pub fn ironflowx_events::Decision::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_events::Decision
+pub struct ironflowx_events::Emit
+pub ironflowx_events::Emit::data: core::option::Option<alloc::string::String>
+pub ironflowx_events::Emit::idempotency_key: core::option::Option<alloc::string::String>
+pub ironflowx_events::Emit::metadata: core::option::Option<alloc::string::String>
+pub ironflowx_events::Emit::name: alloc::string::String
+pub ironflowx_events::Emit::version: core::option::Option<i64>
+impl core::clone::Clone for ironflowx_events::Emit
+pub fn ironflowx_events::Emit::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_events::Emit
+pub fn ironflowx_events::Emit::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_events::Emit
+pub fn ironflowx_events::Emit::eq(&self, &Self) -> bool
+impl core::default::Default for ironflowx_events::Emit
+pub fn ironflowx_events::Emit::default() -> Self
+impl core::fmt::Debug for ironflowx_events::Emit
+pub fn ironflowx_events::Emit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_events::Emit
+pub struct ironflowx_events::Event
+pub ironflowx_events::Event::data: alloc::string::String
+pub ironflowx_events::Event::id: ironflowx_core::id::EventId
+pub ironflowx_events::Event::idempotency_key: core::option::Option<alloc::string::String>
+pub ironflowx_events::Event::metadata: core::option::Option<alloc::string::String>
+pub ironflowx_events::Event::name: alloc::string::String
+pub ironflowx_events::Event::sequence: u64
+pub ironflowx_events::Event::time: ironflowx_core::time::Timestamp
+pub ironflowx_events::Event::version: i64
+impl core::clone::Clone for ironflowx_events::Event
+pub fn ironflowx_events::Event::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_events::Event
+pub fn ironflowx_events::Event::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_events::Event
+pub fn ironflowx_events::Event::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_events::Event
+pub fn ironflowx_events::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_events::Event
+pub struct ironflowx_events::EventPage
+pub ironflowx_events::EventPage::events: alloc::vec::Vec<ironflowx_events::Event>
+pub ironflowx_events::EventPage::next: core::option::Option<alloc::string::String>
+impl core::clone::Clone for ironflowx_events::EventPage
+pub fn ironflowx_events::EventPage::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_events::EventPage
+pub fn ironflowx_events::EventPage::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_events::EventPage
+pub fn ironflowx_events::EventPage::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_events::EventPage
+pub fn ironflowx_events::EventPage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_events::EventPage
+pub struct ironflowx_events::NewEvent
+pub ironflowx_events::NewEvent::data: alloc::string::String
+pub ironflowx_events::NewEvent::id: ironflowx_core::id::EventId
+pub ironflowx_events::NewEvent::idempotency_key: core::option::Option<alloc::string::String>
+pub ironflowx_events::NewEvent::metadata: core::option::Option<alloc::string::String>
+pub ironflowx_events::NewEvent::name: alloc::string::String
+pub ironflowx_events::NewEvent::sequence: u64
+pub ironflowx_events::NewEvent::version: i64
+impl core::clone::Clone for ironflowx_events::NewEvent
+pub fn ironflowx_events::NewEvent::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_events::NewEvent
+pub fn ironflowx_events::NewEvent::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_events::NewEvent
+pub fn ironflowx_events::NewEvent::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_events::NewEvent
+pub fn ironflowx_events::NewEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_events::NewEvent
+pub struct ironflowx_events::Record
+pub ironflowx_events::Record::events: alloc::vec::Vec<ironflowx_events::NewEvent>
+pub ironflowx_events::Record::time: ironflowx_core::time::Timestamp
+impl core::clone::Clone for ironflowx_events::Record
+pub fn ironflowx_events::Record::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_events::Record
+pub fn ironflowx_events::Record::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_events::Record
+pub fn ironflowx_events::Record::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_events::Record
+pub fn ironflowx_events::Record::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_events::Record
+pub struct ironflowx_events::Refusal
+impl ironflowx_events::Refusal
+pub const fn ironflowx_events::Refusal::kind(&self) -> ironflowx_core::error::ErrorKind
+pub fn ironflowx_events::Refusal::message(&self) -> &str
+impl core::clone::Clone for ironflowx_events::Refusal
+pub fn ironflowx_events::Refusal::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_events::Refusal
+pub fn ironflowx_events::Refusal::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_events::Refusal
+pub fn ironflowx_events::Refusal::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_events::Refusal
+pub fn ironflowx_events::Refusal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_events::Refusal
+pub trait ironflowx_events::EventTables
+pub type ironflowx_events::EventTables::Error
+pub fn ironflowx_events::EventTables::insert(&mut self, ironflowx_events::Event) -> core::result::Result<(), Self::Error>
+pub trait ironflowx_events::EventsView
+pub type ironflowx_events::EventsView::Error
+pub fn ironflowx_events::EventsView::event(&self, ironflowx_core::id::EventId) -> core::result::Result<core::option::Option<ironflowx_events::Event>, Self::Error>
+pub fn ironflowx_events::EventsView::event_by_key(&self, &str) -> core::result::Result<core::option::Option<ironflowx_core::id::EventId>, Self::Error>
+pub fn ironflowx_events::EventsView::events_before(&self, core::option::Option<u64>, usize) -> core::result::Result<alloc::vec::Vec<ironflowx_events::Event>, Self::Error>
+pub fn ironflowx_events::EventsView::last_sequence(&self) -> core::result::Result<u64, Self::Error>
+pub fn ironflowx_events::decide<V: ironflowx_events::EventsView>(&V, &ironflowx_events::Submission, ironflowx_core::time::SequencedTime, &mut impl core::iter::traits::iterator::Iterator<Item = ironflowx_core::id::EventId>) -> core::result::Result<ironflowx_events::Decision, ironflowx_events::Error<<V as ironflowx_events::EventsView>::Error>>
+pub fn ironflowx_events::fold<T: ironflowx_events::EventTables>(&mut T, &ironflowx_events::Record) -> core::result::Result<(), <T as ironflowx_events::EventTables>::Error>
+pub fn ironflowx_events::get_event<V: ironflowx_events::EventsView>(&V, &str) -> core::result::Result<ironflowx_events::Event, ironflowx_events::Error<<V as ironflowx_events::EventsView>::Error>>
+pub fn ironflowx_events::list_events<V: ironflowx_events::EventsView>(&V, ironflowx_core::id::IncarnationToken, core::option::Option<core::num::nonzero::NonZeroU32>, core::option::Option<&str>) -> core::result::Result<ironflowx_events::EventPage, ironflowx_events::Error<<V as ironflowx_events::EventsView>::Error>>

@@ -42,6 +42,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: cargo test --workspace --locked
+      # Feature unification can switch arbitrary_precision on in any embedder's build; numbers then reach the event rules' visitor as text.
+      - run: cargo test -p ironflowx-events --locked --features serde_json/arbitrary_precision
 
   # deny.toml lists the Linux and macOS targets, so one run covers both.
   deny:
