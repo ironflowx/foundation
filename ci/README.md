@@ -8,7 +8,7 @@ that silently stops working fails CI.
 |---|---|---|---|
 | `fmt`, `clippy`, `clippy-macos`, `test` | Formatting, lints with warnings denied, tests | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` | Fix the code |
 | `deny` | Licences and advisories, Linux and macOS graphs (`deny.toml`) | `cargo deny check` | Replace the dependency, or extend `deny.toml` with a reason |
-| `purity` | LED-15: pure crates' dependencies and calls; D17: only `ironflowx-cell` calls `SequencedTime::from_event_clock` (and `ironflowx-events`' tests, which stand in for the ledger) | `ci/purity.sh` | See [Pure crates](#pure-crates) |
+| `purity` | LED-15: pure crates' dependencies and calls; D17: only `ironflowx-cell` calls `SequencedTime::from_event_clock` (and one helper in `ironflowx-events`' `tests/rules.rs`, which stands in for the ledger) | `ci/purity.sh` | See [Pure crates](#pure-crates) |
 | `public-api` | D21: each crate's public API matches `public-api/<crate>.txt`; LED-9: nothing public takes a bare `EnvironmentId` | `ci/public-api.sh` | Review the printed diff, then `ci/public-api.sh --bless` and commit the snapshot |
 | `lint-ci` | actionlint and shellcheck over the workflow and `ci/*.sh` | `actionlint && shellcheck -x ci/*.sh` | Fix the script |
 

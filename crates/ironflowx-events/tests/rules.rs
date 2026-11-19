@@ -1,9 +1,7 @@
 //! Event rules through `decide`, `fold` and the queries, over an in-memory store.
 
-// D17: only the ledger stamps event time; these tests stand in for it, and only they may.
-#![expect(clippy::disallowed_methods)]
-
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::convert::Infallible;
 use std::ops::Bound::{Excluded, Unbounded};
 
@@ -48,17 +46,29 @@ impl EventsView for Store {
     }
 }
 
+/// The sequence of a row the store already holds.
+#[derive(Debug, PartialEq)]
+struct DuplicateRow(u64);
+
 impl EventTables for Store {
-    type Error = Infallible;
-    fn insert(&mut self, event: Event) -> Result<(), Infallible> {
-        self.events.insert(event.sequence, event);
-        Ok(())
+    type Error = DuplicateRow;
+    /// Refuses a second row for a sequence, as a unique-keyed table does.
+    fn insert(&mut self, event: Event) -> Result<(), DuplicateRow> {
+        match self.events.entry(event.sequence) {
+            Entry::Occupied(_) => Err(DuplicateRow(event.sequence)),
+            Entry::Vacant(row) => {
+                row.insert(event);
+                Ok(())
+            }
+        }
     }
 }
 
 const NOW: Timestamp = Timestamp::from_millis(1_700_000_000_000);
 
 /// The event-clock reading every test decides at.
+// D17: only the ledger stamps event time; this helper stands in for it, and only it may.
+#[expect(clippy::disallowed_methods)]
 fn now() -> SequencedTime {
     SequencedTime::from_event_clock(NOW)
 }
@@ -645,20 +655,27 @@ fn replaying_the_same_records_into_fresh_tables_gives_the_same_rows() {
 }
 
 #[test]
-fn folding_a_record_onto_a_read_store_that_holds_it_leaves_the_rows_unchanged() {
+fn folding_the_same_record_twice_leaves_rows_unchanged_when_the_caller_skips_applied_positions() {
     let mut env = Env::new();
     let sub = Submission::Batch(vec![with_key("a", "k"), named("b")]);
     let record = decide(&env.store, &sub, now(), &mut env.fresh)
         .expect("accepted")
         .record
         .expect("new events");
-    fold(&mut env.store, &record).expect("in memory");
-    let once = env.store.events.clone();
-    // The ledger skips applied positions (Spec 4); a store keyed by event sequence, as the
-    // read store is, keeps one row per event even if a record reaches fold again.
-    fold(&mut env.store, &record).expect("in memory");
-    assert_eq!(env.store.events, once);
+    // The log holds the record at position 0; the ledger skips applied positions (Spec 4).
+    let log = [record];
+    let mut applied = 0;
+    for _ in 0..2 {
+        for record in &log[applied..] {
+            fold(&mut env.store, record).expect("not yet applied");
+            applied += 1;
+        }
+    }
     assert_eq!(env.stored(), ["a", "b"]);
+    // Unskipped, the unique-keyed read store refuses the record and keeps its rows.
+    let once = env.store.events.clone();
+    assert_eq!(fold(&mut env.store, &log[0]), Err(DuplicateRow(1)));
+    assert_eq!(env.store.events, once);
 }
 
 // ---- Reading ----
