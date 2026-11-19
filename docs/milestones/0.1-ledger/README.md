@@ -22,6 +22,7 @@ The ledger's interface is the only way in; the writer, fold and read gate behind
 | [`architecture.md`](architecture.md) | C1, C2, C3, the flows, modules, seams, interfaces, event rules, errors, storage, decisions |
 | [`invariants.md`](invariants.md) | The properties 0.1 must prove, and how; the crash test |
 | [`behaviors/`](behaviors/README.md) | The executable scenarios, how they run, what is out of scope |
+| [`specs/`](specs/) | One spec per build-order step, in order: core types and CI, event rules, the `Operations` interface, the ledger, the crash test |
 
 ## Glossary
 
