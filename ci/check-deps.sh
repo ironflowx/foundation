@@ -1,19 +1,16 @@
 #!/usr/bin/env bash
 # Usage: ci/check-deps.sh <Cargo.toml> <allowlist>
 # Fails if the package at <Cargo.toml> depends, directly or not, on a crate the allowlist does
-# not name. Dev-dependencies do not count. Reads `cargo metadata` for the host platform (LED-15).
+# not name (LED-15). Dev-dependencies do not count.
+# `cargo tree` on that one package, not `cargo metadata`: metadata unifies features across the
+# workspace, so a feature another crate enables (uuid's v7 in the ledger) would leak in here.
 set -euo pipefail
-manifest=$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")
+manifest=$1
 allowlist=$2
-host=$(rustc -vV | sed -n 's/^host: //p')
 
-metadata=$(cargo metadata --format-version 1 --locked --manifest-path "$manifest" --filter-platform "$host")
-deps=$(jq -r --arg manifest "$manifest" '
-  (.packages | map({key: .id, value: .name}) | from_entries) as $names
-  | (.resolve.nodes | map({key: .id, value: .}) | from_entries) as $nodes
-  | (.packages[] | select(.manifest_path == $manifest) | .id) as $root
-  | [$root | recurse($nodes[.].deps[] | select(any(.dep_kinds[]; .kind != "dev")) | .pkg)]
-  | unique - [$root] | map($names[.]) | .[]' <<<"$metadata")
+# First line is the package itself.
+deps=$(cargo tree --locked --manifest-path "$manifest" -e normal,build --prefix none --format '{p}' \
+  | awk 'NR > 1 { print $1 }' | sort -u)
 
 status=0
 for dep in $deps; do

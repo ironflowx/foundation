@@ -18,3 +18,7 @@ pub fn spawns_a_thread() {
 pub fn reads_os_randomness() -> Result<u64, getrandom::Error> {
     getrandom::u64()
 }
+
+pub fn checks_a_path() -> bool {
+    std::path::Path::new("x").exists()
+}

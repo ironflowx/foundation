@@ -63,22 +63,24 @@ jobs:
         run: |
           ci/check-deps.sh crates/ironflowx-core/Cargo.toml ci/purity/ironflowx-core.allow
           ci/check-deps.sh crates/ironflowx-events/Cargo.toml ci/purity/ironflowx-events.allow
+      - name: SequencedTime constructor outside the ledger, core included
+        run: ci/no-event-clock-outside-ledger.sh crates
       - name: Fixtures each check must reject
         run: |
-          ci/must-reject.sh "dependency not allowed: getrandom" \
+          ci/must-reject.sh "dependency not allowed: getrandom" -- \
             ci/check-deps.sh ci/fixtures/forbidden-dep/Cargo.toml ci/purity/ironflowx-core.allow
-          ci/must-reject.sh 'disallowed method `std::time::SystemTime::now`' \
+          ci/must-reject.sh \
+            'disallowed method `std::time::SystemTime::now`' \
+            'disallowed method `std::fs::read`' \
+            'disallowed method `std::path::Path::exists`' \
+            'disallowed type `std::net::TcpStream`' \
+            'disallowed method `std::thread::spawn`' \
+            'disallowed method `getrandom::u64`' -- \
             cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
-          ci/must-reject.sh 'disallowed method `std::fs::read`' \
-            cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
-          ci/must-reject.sh 'disallowed type `std::net::TcpStream`' \
-            cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
-          ci/must-reject.sh 'disallowed method `std::thread::spawn`' \
-            cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
-          ci/must-reject.sh 'disallowed method `getrandom::u64`' \
-            cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
-          ci/must-reject.sh 'disallowed method `ironflowx_core::SequencedTime::from_event_clock`' \
+          ci/must-reject.sh 'disallowed method `ironflowx_core::SequencedTime::from_event_clock`' -- \
             cargo clippy --locked --manifest-path ci/fixtures/sequenced-time-outside-ledger/Cargo.toml -- -D warnings
+          ci/must-reject.sh "ci/fixtures/sequenced-time-outside-ledger/src/lib.rs" -- \
+            ci/no-event-clock-outside-ledger.sh ci/fixtures/sequenced-time-outside-ledger
 
   # D21, LED-6, LED-9, LED-13: any public API change is a reviewed snapshot change.
   public-api:
@@ -90,4 +92,6 @@ jobs:
           tool: cargo-public-api@0.52.0
       - run: ci/public-api.sh
       - run: ci/no-bare-env-id.sh public-api/*.txt
-      - run: ci/must-reject.sh "bare EnvironmentId" ci/no-bare-env-id.sh ci/fixtures/bare-environment-id.txt
+      - run: |
+          ci/must-reject.sh Ledger::open find_after ffi_open EnvironmentId::lookup -- \
+            ci/no-bare-env-id.sh ci/fixtures/bare-environment-id.txt

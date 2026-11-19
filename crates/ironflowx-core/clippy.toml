@@ -1,9 +1,12 @@
 # Purity bans for the pure crates (LED-15), plus the SequencedTime constructor ban every crate
 # but ironflowx-cell carries (D17). ironflowx-events links this file.
 # Clippy cannot ban a whole module, so each function and type is listed.
+# shortcut: a list is never complete, and an #[allow] gets past it; the dependency allowlist is
+# the backstop. Upgrade when a tool can ban whole std modules.
 
 disallowed-methods = [
-  # Only the ledger stamps event time. Inside core itself the path does not resolve.
+  # Only the ledger stamps event time. Inside core the path does not resolve, so
+  # ci/no-event-clock-outside-ledger.sh covers core.
   { path = "ironflowx_core::SequencedTime::from_event_clock", reason = "only ironflowx-cell produces event time (D17)", allow-invalid = true },
 
   { path = "std::time::SystemTime::now", reason = "pure crates read no ambient clock; take a Timestamp or SequencedTime" },
@@ -29,6 +32,25 @@ disallowed-methods = [
   { path = "std::fs::set_permissions", reason = "pure crates do no I/O" },
   { path = "std::fs::symlink_metadata", reason = "pure crates do no I/O" },
   { path = "std::fs::write", reason = "pure crates do no I/O" },
+
+  { path = "std::path::Path::canonicalize", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::exists", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::is_dir", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::is_file", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::is_symlink", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::metadata", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::read_dir", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::read_link", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::symlink_metadata", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::try_exists", reason = "pure crates do no I/O" },
+
+  { path = "std::env::current_dir", reason = "pure crates read no ambient state" },
+  { path = "std::env::var", reason = "pure crates read no ambient state" },
+  { path = "std::env::var_os", reason = "pure crates read no ambient state" },
+  { path = "std::env::vars", reason = "pure crates read no ambient state" },
+  { path = "std::io::stdin", reason = "pure crates do no I/O" },
+  { path = "std::io::stdout", reason = "pure crates do no I/O" },
+  { path = "std::io::stderr", reason = "pure crates do no I/O" },
 
   { path = "std::net::ToSocketAddrs::to_socket_addrs", reason = "pure crates do no I/O" },
 
@@ -57,6 +79,9 @@ disallowed-types = [
   { path = "std::net::TcpListener", reason = "pure crates do no I/O" },
   { path = "std::net::TcpStream", reason = "pure crates do no I/O" },
   { path = "std::net::UdpSocket", reason = "pure crates do no I/O" },
+  { path = "std::os::unix::net::UnixDatagram", reason = "pure crates do no I/O" },
+  { path = "std::os::unix::net::UnixListener", reason = "pure crates do no I/O" },
+  { path = "std::os::unix::net::UnixStream", reason = "pure crates do no I/O" },
   { path = "std::process::Command", reason = "pure crates do no I/O" },
   { path = "std::thread::Builder", reason = "pure crates start no threads" },
 ]
