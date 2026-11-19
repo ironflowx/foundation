@@ -6,5 +6,5 @@ Foundation crates are 0.x with no semver-stability promise.
 
 | Crate | Contents |
 | --- | --- |
-| ironflowx-core | Ironflow Resource Names |
+| ironflowx-core | IDs, the environment reference, stored and event-clock time, the clock trait, error kinds |
 | ironflowx | every foundation crate, re-exported |

@@ -1,0 +1,11 @@
+pub async fn ironflowx_cell::Ledger::open(&std::path::Path, ironflowx_core::EnvironmentId) -> core::result::Result<Self, ironflowx_cell::OpenError>
+pub fn ironflowx_cell::find_after(impl core::ops::Fn() -> bool, ironflowx_core::EnvironmentId) -> bool
+pub extern "C" fn ironflowx_cell::ffi_open(ironflowx_core::EnvironmentId)
+pub fn ironflowx_core::EnvironmentId::lookup(&self) -> bool
+pub fn ironflowx_core::EnvironmentId::eq(&self, &Self) -> bool
+pub fn ironflowx_core::EnvRef::id(&self) -> ironflowx_core::EnvironmentId
+pub ironflowx_proto::OpenRequest::env: ironflowx_core::id::EnvironmentId
+pub ironflowx_proto::Target::Env(ironflowx_core::id::EnvironmentId)
+pub struct ironflowx_proto::Wrapper(pub ironflowx_core::id::EnvironmentId)
+pub struct ironflowx_core::EnvironmentId(_)
+pub type ironflowx_core::EnvironmentId::Err = ironflowx_core::ParseError

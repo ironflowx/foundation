@@ -1,0 +1,1 @@
+# Empty: the ledger alone may call SequencedTime::from_event_clock (D17).

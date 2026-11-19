@@ -1,0 +1,154 @@
+pub mod ironflowx_core
+pub enum ironflowx_core::ErrorKind
+pub ironflowx_core::ErrorKind::Invalid
+pub ironflowx_core::ErrorKind::NotFound
+pub ironflowx_core::ErrorKind::Unavailable
+pub ironflowx_core::ErrorKind::Unknown
+impl core::clone::Clone for ironflowx_core::ErrorKind
+pub fn ironflowx_core::ErrorKind::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_core::ErrorKind
+impl core::cmp::Eq for ironflowx_core::ErrorKind
+impl core::cmp::PartialEq for ironflowx_core::ErrorKind
+pub fn ironflowx_core::ErrorKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_core::ErrorKind
+pub fn ironflowx_core::ErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_core::ErrorKind
+pub fn ironflowx_core::ErrorKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for ironflowx_core::ErrorKind
+impl core::marker::StructuralPartialEq for ironflowx_core::ErrorKind
+pub struct ironflowx_core::EnvRef
+impl ironflowx_core::EnvRef
+pub const fn ironflowx_core::EnvRef::id(&self) -> ironflowx_core::EnvironmentId
+pub const fn ironflowx_core::EnvRef::token(&self) -> ironflowx_core::IncarnationToken
+impl core::clone::Clone for ironflowx_core::EnvRef
+pub fn ironflowx_core::EnvRef::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_core::EnvRef
+impl core::cmp::Eq for ironflowx_core::EnvRef
+pub fn ironflowx_core::EnvRef::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_core::EnvRef
+pub fn ironflowx_core::EnvRef::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_core::EnvRef
+pub fn ironflowx_core::EnvRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_core::EnvRef
+pub fn ironflowx_core::EnvRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_core::EnvRef
+pub fn ironflowx_core::EnvRef::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for ironflowx_core::EnvRef
+impl core::marker::StructuralPartialEq for ironflowx_core::EnvRef
+impl core::str::traits::FromStr for ironflowx_core::EnvRef
+pub type ironflowx_core::EnvRef::Err = ironflowx_core::ParseError
+pub fn ironflowx_core::EnvRef::from_str(&str) -> core::result::Result<Self, ironflowx_core::ParseError>
+pub struct ironflowx_core::EnvironmentId(_)
+impl core::clone::Clone for ironflowx_core::EnvironmentId
+pub fn ironflowx_core::EnvironmentId::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_core::EnvironmentId
+impl core::cmp::Eq for ironflowx_core::EnvironmentId
+pub fn ironflowx_core::EnvironmentId::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_core::EnvironmentId
+pub fn ironflowx_core::EnvironmentId::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_core::EnvironmentId
+pub fn ironflowx_core::EnvironmentId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_core::EnvironmentId
+pub fn ironflowx_core::EnvironmentId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_core::EnvironmentId
+pub fn ironflowx_core::EnvironmentId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for ironflowx_core::EnvironmentId
+impl core::marker::StructuralPartialEq for ironflowx_core::EnvironmentId
+impl core::str::traits::FromStr for ironflowx_core::EnvironmentId
+pub type ironflowx_core::EnvironmentId::Err = ironflowx_core::ParseError
+pub fn ironflowx_core::EnvironmentId::from_str(&str) -> core::result::Result<Self, ironflowx_core::ParseError>
+pub struct ironflowx_core::EventId(_)
+impl core::clone::Clone for ironflowx_core::EventId
+pub fn ironflowx_core::EventId::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_core::EventId
+impl core::cmp::Eq for ironflowx_core::EventId
+pub fn ironflowx_core::EventId::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_core::EventId
+pub fn ironflowx_core::EventId::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_core::EventId
+pub fn ironflowx_core::EventId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_core::EventId
+pub fn ironflowx_core::EventId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_core::EventId
+pub fn ironflowx_core::EventId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for ironflowx_core::EventId
+impl core::marker::StructuralPartialEq for ironflowx_core::EventId
+impl core::str::traits::FromStr for ironflowx_core::EventId
+pub type ironflowx_core::EventId::Err = ironflowx_core::ParseError
+pub fn ironflowx_core::EventId::from_str(&str) -> core::result::Result<Self, ironflowx_core::ParseError>
+pub struct ironflowx_core::IncarnationToken
+impl core::clone::Clone for ironflowx_core::IncarnationToken
+pub fn ironflowx_core::IncarnationToken::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_core::IncarnationToken
+impl core::cmp::Eq for ironflowx_core::IncarnationToken
+pub fn ironflowx_core::IncarnationToken::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_core::IncarnationToken
+pub fn ironflowx_core::IncarnationToken::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_core::IncarnationToken
+pub fn ironflowx_core::IncarnationToken::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_core::IncarnationToken
+pub fn ironflowx_core::IncarnationToken::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_core::IncarnationToken
+pub fn ironflowx_core::IncarnationToken::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for ironflowx_core::IncarnationToken
+impl core::marker::StructuralPartialEq for ironflowx_core::IncarnationToken
+impl core::str::traits::FromStr for ironflowx_core::IncarnationToken
+pub type ironflowx_core::IncarnationToken::Err = ironflowx_core::ParseError
+pub fn ironflowx_core::IncarnationToken::from_str(&str) -> core::result::Result<Self, ironflowx_core::ParseError>
+pub struct ironflowx_core::ParseError
+impl core::clone::Clone for ironflowx_core::ParseError
+pub fn ironflowx_core::ParseError::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_core::ParseError
+pub fn ironflowx_core::ParseError::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_core::ParseError
+pub fn ironflowx_core::ParseError::eq(&self, &Self) -> bool
+impl core::error::Error for ironflowx_core::ParseError
+impl core::fmt::Debug for ironflowx_core::ParseError
+pub fn ironflowx_core::ParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_core::ParseError
+pub fn ironflowx_core::ParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_core::ParseError
+pub struct ironflowx_core::SequencedTime
+impl ironflowx_core::SequencedTime
+pub const fn ironflowx_core::SequencedTime::from_event_clock(ironflowx_core::Timestamp) -> Self
+pub const fn ironflowx_core::SequencedTime::timestamp(self) -> ironflowx_core::Timestamp
+impl core::clone::Clone for ironflowx_core::SequencedTime
+pub fn ironflowx_core::SequencedTime::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_core::SequencedTime
+impl core::cmp::Eq for ironflowx_core::SequencedTime
+pub fn ironflowx_core::SequencedTime::assert_fields_are_eq(&self)
+impl core::cmp::Ord for ironflowx_core::SequencedTime
+pub fn ironflowx_core::SequencedTime::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for ironflowx_core::SequencedTime
+pub fn ironflowx_core::SequencedTime::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for ironflowx_core::SequencedTime
+pub fn ironflowx_core::SequencedTime::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for ironflowx_core::SequencedTime
+pub fn ironflowx_core::SequencedTime::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_core::SequencedTime
+pub fn ironflowx_core::SequencedTime::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for ironflowx_core::SequencedTime
+impl core::marker::StructuralPartialEq for ironflowx_core::SequencedTime
+pub struct ironflowx_core::Timestamp
+impl ironflowx_core::Timestamp
+pub const fn ironflowx_core::Timestamp::as_millis(self) -> i64
+pub const fn ironflowx_core::Timestamp::from_millis(i64) -> Self
+impl core::clone::Clone for ironflowx_core::Timestamp
+pub fn ironflowx_core::Timestamp::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_core::Timestamp
+impl core::cmp::Eq for ironflowx_core::Timestamp
+pub fn ironflowx_core::Timestamp::assert_fields_are_eq(&self)
+impl core::cmp::Ord for ironflowx_core::Timestamp
+pub fn ironflowx_core::Timestamp::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for ironflowx_core::Timestamp
+pub fn ironflowx_core::Timestamp::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for ironflowx_core::Timestamp
+pub fn ironflowx_core::Timestamp::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for ironflowx_core::Timestamp
+pub fn ironflowx_core::Timestamp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_core::Timestamp
+pub fn ironflowx_core::Timestamp::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for ironflowx_core::Timestamp
+impl core::marker::StructuralPartialEq for ironflowx_core::Timestamp
+pub trait ironflowx_core::Clock
+pub fn ironflowx_core::Clock::now(&self) -> ironflowx_core::Timestamp
