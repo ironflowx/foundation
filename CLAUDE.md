@@ -11,3 +11,7 @@ The five default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready
 ### Domain docs
 
 Single-context: one `GLOSSARY.md` at the root, and decisions in each milestone's `architecture.md`. See `docs/agents/domain.md`.
+
+## CI
+
+Changing a crate's dependencies or public API, or adding a crate: read `ci/README.md`.
