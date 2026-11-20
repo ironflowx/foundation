@@ -122,7 +122,14 @@ fn existing(path: &Path, env: EnvRef, watermark: u64) -> Option<Connection> {
         && token == env.token().to_string()
         && format == FORMAT
         && applied <= watermark;
-    agrees.then_some(conn)
+    // `meta` can agree while the tables are damaged, and replay may touch none of them.
+    let intact = || -> rusqlite::Result<bool> {
+        conn.prepare(&format!("SELECT {EVENT_COLUMNS} LIMIT 0"))?;
+        conn.prepare("SELECT key, event_id FROM idempotency LIMIT 0")?;
+        let check: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+        Ok(check == "ok")
+    };
+    (agrees && intact().unwrap_or(false)).then_some(conn)
 }
 
 pub(crate) fn applied(conn: &Connection) -> rusqlite::Result<u64> {

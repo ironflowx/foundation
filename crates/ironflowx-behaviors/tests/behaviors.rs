@@ -20,9 +20,10 @@ const DAY: i64 = 86_400_000;
 #[derive(World)]
 #[world(init = Self::new)]
 struct Env {
+    // Before `dir`: fields drop in order, and the ledger must go before its directory.
+    ledger: Option<Ledger>,
     dir: TempDir,
     clock: ManualClock,
-    ledger: Option<Ledger>,
     emits: Vec<Result<EmitResponse, OpError>>,
     /// The data bytes of the last emit.
     sent: Option<Vec<u8>>,
@@ -692,6 +693,14 @@ fn cells(line: &str) -> String {
 async fn main() {
     Env::cucumber::<&str>()
         .with_parser(Unescaped)
+        // `close`, not a drop: dropping joins the writer thread on the runtime.
+        .after(|_, _, _, _, world| {
+            Box::pin(async move {
+                if let Some(ledger) = world.and_then(|w| w.ledger.take()) {
+                    ledger.close().await;
+                }
+            })
+        })
         .fail_on_skipped()
         .run_and_exit(concat!(
             env!("CARGO_MANIFEST_DIR"),

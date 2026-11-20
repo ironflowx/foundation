@@ -30,7 +30,7 @@ pub struct Ledger {
     pub(crate) store: Arc<Mutex<Connection>>,
     /// Set by `Drop`: the writer takes no further submission.
     stopping: Arc<AtomicBool>,
-    #[cfg(any(test, feature = "fault-points"))]
+    #[cfg(any(test, feature = "__fault-points"))]
     faults: Arc<faults::Faults>,
 }
 
@@ -153,7 +153,7 @@ impl Ledger {
             failed: false,
         }));
         let store = Arc::new(Mutex::new(recovered.conn));
-        #[cfg(any(test, feature = "fault-points"))]
+        #[cfg(any(test, feature = "__fault-points"))]
         let faults = Arc::<faults::Faults>::default();
         let (jobs, queue) = mpsc::channel();
         let stopping = Arc::<AtomicBool>::default();
@@ -166,7 +166,7 @@ impl Ledger {
             revision: recovered.revision,
             progress: progress.clone(),
             stopping: stopping.clone(),
-            #[cfg(any(test, feature = "fault-points"))]
+            #[cfg(any(test, feature = "__fault-points"))]
             faults: faults.clone(),
         };
         let writer = thread::Builder::new()
@@ -179,7 +179,7 @@ impl Ledger {
             progress,
             store,
             stopping,
-            #[cfg(any(test, feature = "fault-points"))]
+            #[cfg(any(test, feature = "__fault-points"))]
             faults,
         })
     }
@@ -210,7 +210,7 @@ impl Ledger {
     ///
     /// # Panics
     ///
-    /// Outside a tokio runtime, or if `q` panics.
+    /// Outside a tokio runtime. A query that panics fails the ledger instead.
     pub async fn read<R: Send + 'static>(
         &self,
         q: impl FnOnce(&ReadStore<'_>) -> Result<R, Error<StoreError>> + Send + 'static,
@@ -226,14 +226,16 @@ impl Ledger {
         }
         let store = self.store.clone();
         let answer = tokio::task::spawn_blocking(move || {
-            q(&ReadStore(&store.lock().expect("no query panicked")))
+            // Poisoned: an earlier query panicked holding it.
+            let conn = store.lock().ok()?;
+            Some(q(&ReadStore(&conn)))
         })
-        .await
-        .expect("the query does not panic");
+        .await;
         match answer {
-            Ok(r) => Ok(r),
-            Err(Error::Refused(r)) => Err(ReadError::Refused(r)),
-            Err(Error::Store(_)) => {
+            Ok(Some(Ok(r))) => Ok(r),
+            Ok(Some(Err(Error::Refused(r)))) => Err(ReadError::Refused(r)),
+            // A store error, a poisoned store or a panicking query.
+            _ => {
                 fail(&self.progress);
                 Err(ReadError::Unavailable)
             }
@@ -246,7 +248,7 @@ impl Ledger {
     ///
     /// Outside a tokio runtime.
     pub async fn close(mut self) {
-        #[cfg(any(test, feature = "fault-points"))]
+        #[cfg(any(test, feature = "__fault-points"))]
         self.faults.release_fold();
         let writer = self.writer.take();
         drop(self.jobs.take());
@@ -261,12 +263,14 @@ impl Ledger {
     }
 }
 
-/// Without `close`, dropping stops the writer after the submission in hand: queued ones end
-/// `Unknown`. The directory is released before it returns.
+/// Without `close`, dropping stops the writer after the submission in hand: queued ones, never
+/// decided, end `Unavailable`. It joins the writer thread, so it blocks until that submission's
+/// fsync and fold finish, and releases the directory before it returns. From async code, call
+/// [`Ledger::close`] instead.
 impl Drop for Ledger {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::SeqCst);
-        #[cfg(any(test, feature = "fault-points"))]
+        #[cfg(any(test, feature = "__fault-points"))]
         self.faults.release_fold();
         drop(self.jobs.take());
         if let Some(writer) = self.writer.take() {
@@ -289,7 +293,7 @@ struct Writer {
     revision: u64,
     progress: Arc<watch::Sender<Progress>>,
     stopping: Arc<AtomicBool>,
-    #[cfg(any(test, feature = "fault-points"))]
+    #[cfg(any(test, feature = "__fault-points"))]
     faults: Arc<faults::Faults>,
 }
 
@@ -307,11 +311,7 @@ impl Writer {
     fn run(mut self, queue: &mpsc::Receiver<Job>) {
         let _exit = FailOnExit(self.progress.clone());
         while let Ok(job) = queue.recv() {
-            if self.stopping.load(Ordering::SeqCst) {
-                // Dropped unanswered: the submitter sees `Unknown`.
-                break;
-            }
-            if self.progress.borrow().failed {
+            if self.stopping.load(Ordering::SeqCst) || self.progress.borrow().failed {
                 let _ = job.reply.send(Err(SubmitError::Unavailable));
                 continue;
             }
@@ -334,14 +334,18 @@ impl Writer {
         // D7: the event clock never goes back.
         let now = self.clock.now();
         let now = self.last_time.map_or(now, |t| t.max(now));
-        let decision = {
-            let conn = self.store.lock().expect("no query panicked");
-            ironflowx_events::decide(
+        let decision = match self.store.lock() {
+            Ok(conn) => ironflowx_events::decide(
                 &ReadStore(&conn),
                 sub,
                 SequencedTime::from_event_clock(now),
                 &mut std::iter::repeat_with(new_event_id),
-            )
+            ),
+            // Poisoned: a query panicked holding it.
+            Err(_) => {
+                fail(&self.progress);
+                return (Err(SubmitError::Unavailable), None);
+            }
         };
         let decision = match decision {
             Ok(d) => d,
@@ -371,14 +375,14 @@ impl Writer {
 
     /// Appends one record and waits for its fsync. No retry (D11).
     fn append(&mut self, payload: Vec<u8>) -> Result<u64, SubmitError> {
-        #[cfg(any(test, feature = "fault-points"))]
+        #[cfg(any(test, feature = "__fault-points"))]
         let fault = self.faults.take_append();
-        #[cfg(any(test, feature = "fault-points"))]
+        #[cfg(any(test, feature = "__fault-points"))]
         if fault == Some(faults::AppendFault::Lost) {
             return Err(SubmitError::Unknown);
         }
         let position = append(&self.log, ExpectedRevision::At(self.revision), payload)?;
-        #[cfg(any(test, feature = "fault-points"))]
+        #[cfg(any(test, feature = "__fault-points"))]
         if fault == Some(faults::AppendFault::Landed) {
             return Err(SubmitError::Unknown);
         }
@@ -387,7 +391,7 @@ impl Writer {
     }
 
     fn fold(&self, offset: u64, record: &Record) {
-        #[cfg(any(test, feature = "fault-points"))]
+        #[cfg(any(test, feature = "__fault-points"))]
         {
             self.faults.wait_while_held();
             if self.faults.take_fold() {
@@ -395,7 +399,10 @@ impl Writer {
                 return;
             }
         }
-        let mut conn = self.store.lock().expect("no query panicked");
+        let Ok(mut conn) = self.store.lock() else {
+            fail(&self.progress);
+            return;
+        };
         match store::apply(&mut conn, offset, Some(record)) {
             Ok(()) => self.progress.send_modify(|p| p.applied = offset + 1),
             Err(_) => fail(&self.progress),
@@ -554,7 +561,7 @@ fn log_read_error(e: segment_log_core::ReadError) -> OpenError {
     }
 }
 
-#[cfg(any(test, feature = "fault-points"))]
+#[cfg(any(test, feature = "__fault-points"))]
 mod faults {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Condvar, Mutex};
@@ -608,8 +615,8 @@ mod faults {
     }
 }
 
-/// Test hooks, behind the `fault-points` feature.
-#[cfg(any(test, feature = "fault-points"))]
+/// Test hooks, behind the internal `__fault-points` feature.
+#[cfg(any(test, feature = "__fault-points"))]
 impl Ledger {
     /// Holds the writer before its next fold, until [`Ledger::release_fold`].
     pub fn hold_fold(&self) {

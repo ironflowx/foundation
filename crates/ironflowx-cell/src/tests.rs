@@ -274,16 +274,49 @@ async fn a_read_store_of_another_incarnation_is_rebuilt() {
 
 #[tokio::test]
 async fn a_read_store_with_damaged_tables_is_rebuilt() {
+    // With something to replay, and with nothing: `meta` agrees with the genesis record
+    // either way.
+    for damage in [
+        "DROP TABLE events; UPDATE meta SET applied = 1",
+        "DROP TABLE events",
+        "DROP TABLE idempotency",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let env = new_env_ref();
+        let ledger = open(dir.path(), env).await;
+        emit(&ledger, keyed("a", "k")).await.unwrap();
+        ledger.close().await;
+        let conn = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
+        conn.execute_batch(damage).unwrap();
+        drop(conn);
+        let ledger = open(dir.path(), env).await;
+        assert_eq!(names(&ledger).await, ["a"], "{damage}");
+        let retry = LocalOperations::new(&ledger)
+            .emit(&Call::anonymous(), keyed("b", "k"))
+            .await
+            .unwrap();
+        assert!(retry.duplicate, "{damage}");
+    }
+}
+
+#[tokio::test]
+async fn a_panicking_query_fails_the_ledger_and_reopen_recovers() {
     let dir = tempfile::tempdir().unwrap();
     let env = new_env_ref();
     let ledger = open(dir.path(), env).await;
     emit(&ledger, named("a")).await.unwrap();
+    let answer = ledger
+        .read(
+            |_| -> Result<(), ironflowx_events::Error<crate::StoreError>> { panic!("a query bug") },
+        )
+        .await;
+    assert_eq!(answer, Err(crate::ReadError::Unavailable));
+    assert_eq!(all(&ledger).await.unwrap_err().kind, ErrorKind::Unavailable);
+    assert_eq!(
+        emit(&ledger, named("b")).await.unwrap_err().kind,
+        ErrorKind::Unavailable
+    );
     ledger.close().await;
-    // `meta` still agrees with the genesis record; the tables do not.
-    let conn = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
-    conn.execute_batch("DROP TABLE events; UPDATE meta SET applied = 1")
-        .unwrap();
-    drop(conn);
     let ledger = open(dir.path(), env).await;
     assert_eq!(names(&ledger).await, ["a"]);
 }

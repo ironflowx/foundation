@@ -162,7 +162,7 @@ The committed head and the applied position are exclusive log offsets: one past 
 | Log, genesis matches the `EnvRef` and format | Replays every record from the read store's applied position; ready |
 | Log, genesis differs in environment ID or token | `OpenError::WrongIncarnation` |
 | Log, genesis differs in format version, or the log's own format is unsupported | `OpenError::Format` |
-| `read.db` missing, without `meta`, unreadable, or `meta` disagrees with the genesis record | Deletes `read.db` and its `-wal` and `-shm` files, rebuilds from offset 0 |
+| `read.db` missing, without `meta`, unreadable, its tables damaged, or `meta` disagrees with the genesis record | Deletes `read.db` and its `-wal` and `-shm` files, rebuilds from offset 0 |
 | Applied position beyond the log's watermark | Rebuilds `read.db`, as above |
 | A replayed record carries another token or format | `OpenError::Corrupt` |
 | The log reports corruption, a gap or a foreign segment | `OpenError::Corrupt` |
@@ -171,7 +171,7 @@ The committed head and the applied position are exclusive log offsets: one past 
 
 The genesis record is the directory's identity; `read.db` is derived state and never trusted over it. The log binds every segment to one log ID, so a segment from another log does not open.
 
-Dropping a `Ledger` without `close` stops the writer after the submission in hand; queued submits end `Unknown`, and the lock is released before the drop returns.
+Dropping a `Ledger` without `close` stops the writer after the submission in hand; queued submits, never decided, end `Unavailable`. The drop joins the writer, so it blocks, and the lock is released before it returns; async code calls `close`.
 
 ## What is stored
 
@@ -220,7 +220,7 @@ How the ledger uses the log:
 | D12 | Event rules parse the bytes with `serde_json` (`from_slice`, which refuses invalid UTF-8 in the same pass) and a visitor that deserializes every key and string (never `IgnoredAny`), erroring on a repeated key, a NUL or a number out of range. `serde_json` hands keys over unescaped and refuses unpaired surrogate escapes, but only for values it decodes | No second JSON parser |
 | D13 | Environment and event IDs are UUIDv7 | One opaque ID format for every resource |
 | D14 | The genesis record, not `read.db`, holds the directory's identity | A swapped or rebuilt read store cannot pass for another environment |
-| D15 | The writer is one serial task: decide, append, fsync, publish, acknowledge, fold, then the next submission. 0.1 sets no performance target | `decide` reads the read store, with no overlay of unfolded records to keep right |
+| D15 | The writer is one serial thread: decide, append, fsync, publish, acknowledge, fold, then the next submission. 0.1 sets no performance target | `decide` reads the read store, with no overlay of unfolded records to keep right |
 | D16 | `segment-log-core` comes from crates.io at exactly `0.1.0` | A published crate cannot depend on a git revision |
 | D17 | A lint, not the type system, keeps `SequencedTime`'s constructor inside `ironflowx-cell`. One helper in `crates/ironflowx-events/tests/rules.rs` is exempt, by an `#[expect]` on that function alone: it stands in for the ledger to call `decide` | The type is in core so that pure event rules can take one, and Rust cannot open a constructor to one downstream crate only |
 | D18 | `Timestamp` has one integer encoding, `i64` milliseconds. The SQLite impl is in `ironflowx-cell` on a private wrapper, and the log record uses the same pair | Core stays free of `rusqlite` (LED-15), and the log stores event time too |
