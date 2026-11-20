@@ -88,13 +88,16 @@ trait Operations: Send + Sync {
 impl Ledger {
     async fn open(dir: &Path, env: EnvRef, clock: impl Clock) -> Result<Ledger, OpenError>;
     async fn submit(&self, sub: Submission) -> Result<Committed, SubmitError>;
-    async fn read<Q: Query>(&self, q: Q) -> Result<Q::Answer, ReadError>;
+    // q is a query from event rules (get_event, list_events) over the read store
+    async fn read<R>(&self, q: impl FnOnce(&ReadStore) -> Result<R, Error<StoreError>>) -> Result<R, ReadError>;
+    fn env(&self) -> EnvRef;
     async fn close(self);   // drains in-flight submits and the fold, then releases the directory lock
 }
 fn new_env_ref() -> EnvRef;   // a fresh UUIDv7 ID and a 128-bit token from the OS random source
 // Committed   { outcome: Vec<ItemOutcome> }   // one per item, in input order
 // ItemOutcome New(EventId) | Duplicate(EventId) | Refused(Refusal)   // Refused only inside a batch
 // SubmitError Refused(Refusal) | Unknown | Unavailable              // Refused: a single emit, or a whole batch
+// ReadError   Refused(Refusal) | Unavailable                        // a read-store failure fails the ledger
 
 // ironflowx-events: pure. `fresh` yields one event ID per new event, minted by the writer.
 fn decide<V: EventsView>(view: &V, sub: &Submission, now: SequencedTime,
@@ -141,9 +144,9 @@ The kind is contract. Four messages are contract too: `event name is required`, 
 
 ## Commit and read
 
-1. The writer is one task and takes one submission at a time (D15). For each it reads the event clock and calls `decide` against the read store, drawing IDs from a UUIDv7 generator.
+1. The writer is one thread and takes one submission at a time (D15). For each it reads the event clock and calls `decide` against the read store, drawing IDs from a UUIDv7 generator.
 2. Nothing to append (all refused, or all duplicates): it answers at once.
-3. Otherwise it appends one record holding every new event and waits for the log's fsync under `spawn_blocking`. Each new event takes the next event sequence, from 1, in input order.
+3. Otherwise it appends one record holding every new event and waits for the log's fsync, off the async threads. Each new event takes the next event sequence, from 1, in input order.
 4. It publishes the new committed head to the read gate, then acknowledges. Then it folds the record, before it takes the next submission, so the read store holds every earlier record when `decide` runs.
 5. A read snapshots the committed head when it arrives and waits until the applied position reaches it. So it sees every write acknowledged before it arrived, whoever made it.
 
@@ -159,8 +162,8 @@ The committed head and the applied position are exclusive log offsets: one past 
 | Log, genesis matches the `EnvRef` and format | Replays every record from the read store's applied position; ready |
 | Log, genesis differs in environment ID or token | `OpenError::WrongIncarnation` |
 | Log, genesis differs in format version, or the log's own format is unsupported | `OpenError::Format` |
-| `read.db` missing, without `meta`, unreadable, or `meta` disagrees with the genesis record | Deletes `read.db` and its `-wal` and `-shm` files, rebuilds from offset 0 |
-| Applied position beyond the log's watermark | Rebuilds `read.db`, as above |
+| `read.db` missing, without `meta`, unreadable, its tables damaged, or `meta` disagrees with the genesis record | Deletes `read.db` and its `-wal` and `-shm` files, rebuilds from offset 0 |
+| `read.db` names this environment and its applied position is beyond the log's watermark | `OpenError::Corrupt`, before a genesis record is written: the fold follows fsync, so the log lost durable records. The segment log truncates a bad frame in its newest segment as a torn tail, even with valid frames after it |
 | A replayed record carries another token or format | `OpenError::Corrupt` |
 | The log reports corruption, a gap or a foreign segment | `OpenError::Corrupt` |
 | Another process or `Ledger` holds the directory | `OpenError::Locked`, from the log's directory lock, which dies with the process |
@@ -168,7 +171,30 @@ The committed head and the applied position are exclusive log offsets: one past 
 
 The genesis record is the directory's identity; `read.db` is derived state and never trusted over it. The log binds every segment to one log ID, so a segment from another log does not open.
 
-Dropping a `Ledger` without `close` stops the writer; in-flight submits end `Unknown` and the lock is released when the log handle drops.
+Dropping a `Ledger` without `close` stops the writer after the submission in hand; queued submits, never decided, end `Unavailable`. The drop joins the writer, so it blocks, and the lock is released before it returns; async code calls `close`.
+
+### When open answers `Corrupt`
+
+`Corrupt` is for a person to resolve; the ledger never repairs itself. It comes from one of two places, and both look the same to the embedder:
+
+- **The log refused.** The segment log found damage it will not truncate on its own.
+- **The ledger refused.** The log opened, but `read.db` names this environment and has folded records the log no longer holds. The fold runs only after fsync, so the log lost acknowledged events: a bad frame the log truncated as a torn tail ([segment-log#178](https://github.com/ironflowx/segment-log/issues/178)), an older copy of the log restored, a deleted segment, or a lossy repair (below).
+
+Steps, with the embedder stopped:
+
+1. **Copy the whole directory** before changing anything.
+2. **Ask the log:** `segment-log-server repair verify` on `<dir>/log`. The `repair` subcommands, flags and exit codes are in the segment log's [Operator repair](https://github.com/ironflowx/segment-log/blob/v0.1.0/docs/architecture/api.md#operator-repair) section, the only source for them.
+3. **If verify reports damage**, the log refused. Only damage in the newest segment is repairable: run `repair truncate`, a dry run that prints the plan, then apply it.
+   - **Lossless plan:** reopen the ledger. It replays and opens.
+   - **Lossy plan:** acknowledged records are dropped and the tool needs `--drop-acknowledged`, which leaves the log sealed. Go to step 4, then read the note on a sealed log.
+   - **Other damage** (an older segment, the headers) is not repairable in 0.1: restore the directory from a backup.
+4. **If verify is clean**, or after a lossy repair, the ledger refused. Prefer restoring the directory from a backup at least as new as the last acknowledged emit. To accept the loss instead, delete `<dir>/read.db` and its `-wal` and `-shm` files and reopen: the ledger rebuilds the read store from the log as it now is. This deletion is the one step that accepts lost events.
+
+After accepting a loss, the lost events are gone for good, and so are their idempotency keys: a client's keyed retry stores a new event instead of returning the original. New events reuse the lost event sequences, so a cursor issued before the loss can page into events stored after it.
+
+A sealed log, after a lossy repair, opens and reads, and refuses every emit with `Unavailable` (D19). 0.1 cannot unseal it. To take writes again, create a new environment (`new_env_ref`) in a new directory; moving events into it is outside 0.1.
+
+`WrongIncarnation` and `Format` are not damage: the `EnvRef` or the build does not match the directory. Open it with the `EnvRef` it was created with, or with a build that reads its format.
 
 ## What is stored
 
@@ -188,7 +214,7 @@ A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 
 | `serde_json` | Pinned in the first PR; the 127 depth limit is checked against it | Event rules | D12 |
 | `uuid` | Pinned, `v7` | Event and environment IDs | |
 | `getrandom` | Pinned | `new_env_ref` | OS random source |
-| `tokio` | Pinned | The writer task, `spawn_blocking`, the read gate | |
+| `tokio` | Pinned | `spawn_blocking` for open, reads and close; the read gate; the answer to a submission | |
 
 How the ledger uses the log:
 
@@ -206,7 +232,7 @@ How the ledger uses the log:
 | D1 | `Operations` in 0.1 is `emit`, `emit_batch`, `get_event`, `list_events`, as hand-written Rust types. Data and metadata are bytes that must hold JSON (D22); optional fields are `Option` | Event rules own every data and range check, for every door: duplicate keys, lone surrogates and invalid UTF-8 exist only in the bytes as sent |
 | D2 | Every `Operations` call takes a `Call`, opaque and empty in 0.1 | The trait does not change shape when 0.2 adds the credential |
 | D3 | Read your writes through a committed head published before the acknowledgment ([Commit and read](#commit-and-read)) | One fsync on the acknowledgment path, and read your writes holds across clients |
-| D4 | The append is the segment log's blocking call, run under `spawn_blocking` on the writer's task | The writer is the log's only writer, so it knows when a commit lands |
+| D4 | The append is the segment log's blocking call, made on the writer's own thread | The writer is the log's only writer, so it knows when a commit lands |
 | D5 | Every check, including the version range, runs before the idempotency lookup | The same request is refused the same way, first time or repeat |
 | D6 | Events list newest first by event sequence | Commit order is total, so two events never tie |
 | D7 | The event clock never goes back: each record's time is the later of the clock and the last committed time | Restarts and clock steps keep event time ordered |
@@ -217,7 +243,7 @@ How the ledger uses the log:
 | D12 | Event rules parse the bytes with `serde_json` (`from_slice`, which refuses invalid UTF-8 in the same pass) and a visitor that deserializes every key and string (never `IgnoredAny`), erroring on a repeated key, a NUL or a number out of range. `serde_json` hands keys over unescaped and refuses unpaired surrogate escapes, but only for values it decodes | No second JSON parser |
 | D13 | Environment and event IDs are UUIDv7 | One opaque ID format for every resource |
 | D14 | The genesis record, not `read.db`, holds the directory's identity | A swapped or rebuilt read store cannot pass for another environment |
-| D15 | The writer is one serial task: decide, append, fsync, publish, acknowledge, fold, then the next submission. 0.1 sets no performance target | `decide` reads the read store, with no overlay of unfolded records to keep right |
+| D15 | The writer is one serial thread: decide, append, fsync, publish, acknowledge, fold, then the next submission. 0.1 sets no performance target | `decide` reads the read store, with no overlay of unfolded records to keep right |
 | D16 | `segment-log-core` comes from crates.io at exactly `0.1.0` | A published crate cannot depend on a git revision |
 | D17 | A lint, not the type system, keeps `SequencedTime`'s constructor inside `ironflowx-cell`. One helper in `crates/ironflowx-events/tests/rules.rs` is exempt, by an `#[expect]` on that function alone: it stands in for the ledger to call `decide` | The type is in core so that pure event rules can take one, and Rust cannot open a constructor to one downstream crate only |
 | D18 | `Timestamp` has one integer encoding, `i64` milliseconds. The SQLite impl is in `ironflowx-cell` on a private wrapper, and the log record uses the same pair | Core stays free of `rusqlite` (LED-15), and the log stores event time too |

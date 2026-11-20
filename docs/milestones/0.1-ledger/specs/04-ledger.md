@@ -48,7 +48,7 @@ A ledger: one environment's commit log, read store and the single writer between
 - **Module:** the ledger, in the ledger crate, with `LocalOperations`, the host clock and the manual clock beside it. It is the only crate that touches disk, the clock and randomness. It uses `tokio`.
 - **Interface:** open (directory, environment reference, clock), submit, read (a query from event rules), close, and a function that mints a fresh environment reference. Everything behind it (writer, fold, read gate) is implementation.
 - **Minting:** a UUIDv7 environment ID and a 128-bit token from the OS random source. Event IDs are UUIDv7, minted by the writer and handed to `decide` (D10, D13).
-- **Writer:** one serial task. For each submission: read the event clock, `decide` against the read store, append one record, wait for fsync off the async threads, publish the committed head, acknowledge, fold, then take the next submission (D3, D4, D15). A submission with nothing to append is answered at once.
+- **Writer:** one serial thread. For each submission: read the event clock, `decide` against the read store, append one record, wait for fsync off the async threads, publish the committed head, acknowledge, fold, then take the next submission (D3, D4, D15). A submission with nothing to append is answered at once.
 - **Event clock:** each record's time is the later of the clock reading and the last committed time; the last committed time is recovered on open (D7).
 - **Read gate:** a read snapshots the committed head on arrival and waits until the applied position reaches it.
 - **Storage:** a segment log directory and a SQLite read store, as in the architecture doc's "What is stored". Offset 0 is the genesis record. The fold writes a record's rows and the new applied position in one transaction and skips a record below the applied position.
@@ -57,7 +57,7 @@ A ledger: one environment's commit log, read store and the single writer between
 - **Failure:** an indeterminate append answers `Unknown` and the ledger then refuses every call until reopened; there is no append retry (D11). A fold or read-store failure does the same with `Unavailable`.
 - **Stored time in SQLite:** a private wrapper in this crate implements the SQLite conversions over the one `i64` millisecond encoding (D18).
 - **`LocalOperations`:** maps each request to a submission or query and each outcome to an answer. Several can share one ledger.
-- **Test hooks:** holding the fold and injecting an append or fold fault sit behind the `fault-points` cargo feature, which no published build enables.
+- **Test hooks:** holding the fold and injecting an append or fold fault sit behind the `__fault-points` cargo feature, which no published build enables.
 - **Behavior runner:** the `cucumber` crate in an unpublished workspace crate, reading the feature file from the milestone folder (D20).
 
 ## Testing Decisions

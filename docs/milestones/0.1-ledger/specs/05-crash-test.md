@@ -34,13 +34,13 @@ A test that kills the ledger's process on purpose. A parent process drives a chi
 ## Implementation Decisions
 
 - **Shape:** a parent process and a child process talking over a pipe. The child owns the ledger; the parent sends keyed and unkeyed emits and mixed batches, and decides when to kill.
-- **Fault points:** the child is built with the `fault-points` cargo feature. Named points: before the append, after fsync and before the acknowledgment, after the acknowledgment and before the fold, mid-fold, during open. At a named point the child and parent meet at a barrier, so the kill lands exactly there.
+- **Fault points:** the child is built with the `__fault-points` cargo feature. Named points: before the append, after fsync and before the acknowledgment, after the acknowledgment and before the fold, mid-fold, during open. At a named point the child and parent meet at a barrier, so the kill lands exactly there.
 - **Clock:** the child uses the manual clock, and the seed steps it forwards and backwards.
 - **What the parent records:** each acknowledged event ID and key, the cursor of its last list, and each request that got no answer. Every new event carries a unique marker in its metadata, so the parent can find it without its ID. The parent also knows each item's expected outcome.
 - **Observation:** the parent reads the read store directly, read-only, for event sequences and the applied position. Everything else it checks through the reopened ledger.
 - **After each kill:** reopen twice and assert the properties in the invariants doc's "Crash test" section.
 - **Budget:** every PR runs all named kill points and 100 seeded kills, on Linux and macOS. There is no longer scheduled run in 0.1; a longer soak is run by hand before publishing.
-- **CI check:** no published crate enables `fault-points` by default or through a dependency.
+- **CI check:** no published crate enables `__fault-points` by default or through a dependency.
 - **Claim:** a kill keeps the operating system's page cache, so this proves crash durability, not power-loss durability.
 
 ## Testing Decisions
