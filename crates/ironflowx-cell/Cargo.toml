@@ -31,3 +31,9 @@ uuid = { workspace = true, features = ["v7"] }
 [dev-dependencies]
 tempfile = "3.27.0"
 tokio = { version = "=1.54.1", default-features = false, features = ["rt", "macros", "time"] }
+
+# A lossy `as` wrapped a cursor sequence into an empty page once; casts here go through
+# `try_from`, or carry a commented `#[expect]`.
+[lints.clippy]
+cast_possible_wrap = "warn"
+cast_possible_truncation = "warn"

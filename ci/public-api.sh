@@ -2,7 +2,8 @@
 # Usage: ci/public-api.sh [--bless]
 # Compares each foundation crate's public API with its snapshot in public-api/ (D21); any
 # difference fails. --bless rewrites the snapshots after a reviewed change.
-# Then checks LED-9 over the snapshots, and that check rejecting its fixture.
+# Then checks LED-9 and that no dependency type is public over the snapshots, and each check
+# rejecting its fixture.
 # Needs cargo-public-api and the nightly pinned in ci/tools.env (ci/install-tools.sh).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -26,6 +27,9 @@ if ! git diff --quiet -- public-api/ || [ -n "$untracked" ]; then
 fi
 
 ci/no-bare-env-id.sh public-api/*.txt
+ci/no-dependency-types.sh public-api/*.txt
 ci/must-reject.sh Ledger::open find_after ffi_open EnvironmentId::lookup \
   OpenRequest::env Target::Env proto::Wrapper -- \
   ci/no-bare-env-id.sh ci/fixtures/bare-environment-id.txt
+ci/must-reject.sh rusqlite::error::Error segment_log_core::engine tokio::runtime uuid::Uuid -- \
+  ci/no-dependency-types.sh ci/fixtures/dependency-type.txt

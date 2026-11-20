@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Runs every CI check before a push. Enable once per clone: git config core.hooksPath .githooks
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/ci/check.sh"

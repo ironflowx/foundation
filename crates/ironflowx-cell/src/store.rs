@@ -243,8 +243,11 @@ impl EventsView for ReadStore<'_> {
         // A cursor past every sequence lists from the newest.
         let before = before.map_or(i64::MAX, |b| i64::try_from(b).unwrap_or(i64::MAX));
         store_err(self.0.prepare(&sql).and_then(|mut stmt| {
-            stmt.query_map(params![before, limit as i64], row_event)?
-                .collect()
+            stmt.query_map(
+                params![before, i64::try_from(limit).unwrap_or(i64::MAX)],
+                row_event,
+            )?
+            .collect()
         }))
     }
 }
