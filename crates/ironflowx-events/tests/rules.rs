@@ -250,7 +250,7 @@ fn any_json_value_is_stored_and_read_back_as_the_bytes_sent() {
         r#"{  "spaced" :  true  }"#,
         &nested_arrays(127),
     ] {
-        assert_eq!(assert_accepted(with_data(data)).data, data);
+        assert_eq!(assert_accepted(with_data(data)).data, data.as_bytes());
     }
 }
 
@@ -309,6 +309,32 @@ fn a_top_level_redacted_key_is_refused_and_a_nested_one_accepted() {
     assert_accepted(with_data(r#"[{"$redacted": true}]"#));
 }
 
+#[test]
+fn invalid_utf8_in_data_or_metadata_is_refused() {
+    for bytes in [
+        &b"\"\xff\""[..],
+        b"{\"k\": \"\xff\"}",
+        b"{\"\xff\": 1}",
+        // A two-byte sequence cut short, an overlong "/", and a surrogate encoded as bytes.
+        b"\"\xc3\"",
+        b"\"\xc0\xaf\"",
+        b"\"\xed\xa0\x80\"",
+        b"\xff",
+    ] {
+        assert_refused(Emit {
+            data: Some(bytes.to_vec()),
+            ..named("order.placed")
+        });
+        assert_refused(Emit {
+            metadata: Some([b"{\"t\": ", bytes, b"}"].concat()),
+            ..named("order.placed")
+        });
+    }
+    // The same shapes with valid UTF-8 are accepted, so the bytes above are what is refused.
+    assert_accepted(with_data("\"\u{e9}\""));
+    assert_accepted(with_metadata("{\"t\": \"\u{e9}\"}"));
+}
+
 // ---- Metadata ----
 
 fn with_metadata(metadata: &str) -> Emit {
@@ -324,7 +350,7 @@ fn metadata_is_absent_or_a_json_object_of_at_most_65536_bytes() {
     let at_limit = blob("t", 65_536);
     assert_eq!(
         assert_accepted(with_metadata(&at_limit)).metadata,
-        Some(at_limit)
+        Some(at_limit.into_bytes())
     );
     assert_accepted(with_metadata(r#"{"$redacted": 1}"#));
     assert_accepted(with_metadata(" \n{\"n\": 1.25}"));

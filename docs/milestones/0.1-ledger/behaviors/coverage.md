@@ -133,7 +133,7 @@ No conformance scenario is in 0.1 scope. No event-only scenario exists to map.
 | "API Payload Limits", Max Event Data (l.902) | 512 KB measured as JSON; `invalid_argument`; no event written | EVT-017 |
 | l.902 | covers `TriggerSync`, `PubSubService.Emit`, `AppendEvent`, invoke, A2A | 0.4 / 0.14 / 0.13 / 0.6 |
 | l.902 | webhook bodies 1 MB | 0.12 |
-| Unique keys and storable text (l.903) | data and metadata: no repeated key, NUL, invalid UTF-8, unpaired surrogate; `invalid_argument`; nothing written | EVT-016; invalid UTF-8: EVT-016 too, since data and metadata are bytes (D22; the rows arrive with #23) |
+| Unique keys and storable text (l.903) | data and metadata: no repeated key, NUL, invalid UTF-8, unpaired surrogate; `invalid_argument`; nothing written | EVT-016; invalid UTF-8: EVT-016 too, since data and metadata are bytes (D22) |
 | l.903 | idempotency key: no NUL | EVT-016 |
 | l.903 | idempotency key: no invalid UTF-8 | Out of scope: 0.3 (raw bytes reach only through a header door; `Operations` takes valid UTF-8). No 0.3 scenario yet: note for the 0.3 sweep |
 | l.903 | NATS terminates, webhooks keep one value for a repeated key | 0.17, 0.12 |
@@ -214,7 +214,7 @@ No conformance scenario is in 0.1 scope. No event-only scenario exists to map.
 | 0175 Decision | duplicate key at any depth refused | EVT-016 |
 | 0175 Decision | keys compare after unescaping | EVT-016 (resolved) |
 | 0175 Decision | NUL in a key or string; a top-level string counts | EVT-016 (resolved) |
-| 0175 Decision | invalid UTF-8; unpaired high or lone low surrogate | Surrogates: EVT-016; invalid UTF-8: EVT-016 (D22; the rows arrive with #23) |
+| 0175 Decision | invalid UTF-8; unpaired high or lone low surrogate | Surrogates: EVT-016; invalid UTF-8: EVT-016 (D22) |
 | 0175 Decision | metadata gets the same check | EVT-016 |
 | 0175 Decision | idempotency key: NUL refused, no key format added | NUL: EVT-016. Changed: 1–256 bytes, `""` refused (EVT-035, EVT-037) |
 | 0175 Decision | idempotency key: invalid UTF-8 | Out of scope: 0.3 (header bytes) |

@@ -1,4 +1,5 @@
-//! The JSON text rules (D12): one `serde_json` pass with a visitor that decodes every key and
+//! The JSON rules (D12): one `serde_json` pass over the bytes as sent, which refuses invalid
+//! UTF-8 (D22), with a visitor that decodes every key and
 //! string, so `serde_json` unescapes them and refuses unpaired surrogates, and the visitor
 //! refuses a repeated key and a NUL. `serde_json` itself refuses numbers out of `f64` range,
 //! correctly rounded (`float_roundtrip`), and nesting past 127: its recursion limit is 128, and
@@ -15,9 +16,9 @@ use serde_core::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, 
 // upgrade if a client ever needs that key.
 const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 
-/// Checks one JSON text, as event data or metadata.
-pub(crate) fn check(text: &str, field: Checked) -> Result<(), serde_json::Error> {
-    let mut de = serde_json::Deserializer::from_str(text);
+/// Checks the bytes of one JSON value, as event data or metadata.
+pub(crate) fn check(bytes: &[u8], field: Checked) -> Result<(), serde_json::Error> {
+    let mut de = serde_json::Deserializer::from_slice(bytes);
     field.deserialize(&mut de)?;
     de.end()
 }
