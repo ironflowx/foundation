@@ -475,3 +475,167 @@ fn append(log: &SegmentLog, expected: ExpectedRevision, payload: Vec<u8>) {
     .wait()
     .unwrap();
 }
+
+/// A ledger at `dir` holding events "a" and "b", closed.
+async fn two_events(dir: &Path, env: EnvRef) {
+    let ledger = open(dir, env).await;
+    emit(&ledger, keyed("a", "ka")).await.unwrap();
+    emit(&ledger, keyed("b", "kb")).await.unwrap();
+    ledger.close().await;
+}
+
+/// What a test does to `read.db`, and why.
+type Damage = (&'static str, fn(&Path));
+
+/// The Open table's rebuild rows: each damage to `read.db` alone is rebuilt from the log.
+#[tokio::test]
+async fn a_read_store_that_cannot_be_trusted_is_rebuilt() {
+    let damages: [Damage; 4] = [
+        ("missing", |db| std::fs::remove_file(db).unwrap()),
+        ("without meta", |db| {
+            let conn = rusqlite::Connection::open(db).unwrap();
+            conn.execute_batch("DROP TABLE meta").unwrap();
+        }),
+        ("unreadable", |db| {
+            std::fs::write(db, b"not a database").unwrap()
+        }),
+        ("applied beyond the watermark", |db| {
+            let conn = rusqlite::Connection::open(db).unwrap();
+            conn.execute_batch("UPDATE meta SET applied = 999").unwrap();
+        }),
+    ];
+    for (why, damage) in damages {
+        let dir = tempfile::tempdir().unwrap();
+        let env = new_env_ref();
+        two_events(dir.path(), env).await;
+        damage(&dir.path().join("read.db"));
+        let ledger = open(dir.path(), env).await;
+        assert_eq!(names(&ledger).await, ["b", "a"], "{why}");
+        let retry = LocalOperations::new(&ledger)
+            .emit(&Call::anonymous(), keyed("x", "ka"))
+            .await
+            .unwrap();
+        assert!(retry.duplicate, "{why}");
+        // Sequences continue after the rebuilt rows.
+        emit(&ledger, named("c")).await.unwrap();
+        assert_eq!(names(&ledger).await, ["c", "b", "a"], "{why}");
+    }
+}
+
+fn segment(dir: &Path) -> std::path::PathBuf {
+    dir.join("log").join(format!("{:020}.seg", 0))
+}
+
+#[tokio::test]
+async fn a_corrupt_log_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    two_events(dir.path(), env).await;
+    // The log truncates a bad frame in its unsealed newest segment as a torn write; in a sealed
+    // segment it reports corruption.
+    SegmentLog::open(dir.path().join("log"), Options::default())
+        .unwrap()
+        .seal()
+        .unwrap();
+    // One byte inside the first record's frame, with later frames intact behind it.
+    let path = segment(dir.path());
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[64 + 40] ^= 0xff;
+    std::fs::write(&path, bytes).unwrap();
+    let err = Ledger::open(dir.path(), env, clock()).await.err();
+    assert!(matches!(err, Some(OpenError::Corrupt)), "{err:?}");
+}
+
+#[tokio::test]
+async fn a_log_in_an_unsupported_format_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    two_events(dir.path(), env).await;
+    // The segment header's format version (bytes 4..6), under a valid header checksum.
+    let path = segment(dir.path());
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[4..6].copy_from_slice(&999u16.to_le_bytes());
+    let crc = crc32c(&bytes[..60]);
+    bytes[60..64].copy_from_slice(&crc.to_le_bytes());
+    std::fs::write(&path, bytes).unwrap();
+    let err = Ledger::open(dir.path(), env, clock()).await.err();
+    assert!(matches!(err, Some(OpenError::Format)), "{err:?}");
+}
+
+/// CRC-32C (Castagnoli), bitwise: the segment header's checksum.
+fn crc32c(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &b in bytes {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0x82f6_3b78
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+/// D19: a sealed log opens and reads; the first emit is a fault.
+#[tokio::test]
+async fn a_sealed_log_opens_and_reads_and_refuses_the_first_emit() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    two_events(dir.path(), env).await;
+    SegmentLog::open(dir.path().join("log"), Options::default())
+        .unwrap()
+        .seal()
+        .unwrap();
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(names(&ledger).await, ["b", "a"]);
+    let err = emit(&ledger, named("c")).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Unavailable);
+    assert_eq!(all(&ledger).await.unwrap_err().kind, ErrorKind::Unavailable);
+}
+
+/// A submission still queued when the ledger is dropped was never decided: it is not stored.
+#[tokio::test]
+async fn a_submission_queued_at_drop_is_not_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    ledger.hold_fold();
+    emit(&ledger, named("a")).await.unwrap();
+    {
+        // Queued behind the held fold; its caller gives up waiting.
+        let queued = emit(&ledger, named("queued"));
+        tokio::pin!(queued);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut queued)
+                .await
+                .is_err()
+        );
+    }
+    drop(ledger);
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(names(&ledger).await, ["a"]);
+}
+
+/// Close, unlike drop, finishes every queued submission.
+#[tokio::test]
+async fn close_finishes_queued_submissions() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = std::sync::Arc::new(open(dir.path(), env).await);
+    ledger.hold_fold();
+    emit(&ledger, named("a")).await.unwrap();
+    let queued = tokio::spawn({
+        let ledger = ledger.clone();
+        async move { emit(&ledger, named("queued")).await }
+    });
+    // Let it reach the writer's queue.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!queued.is_finished());
+    ledger.release_fold();
+    let id = queued.await.unwrap().unwrap();
+    std::sync::Arc::into_inner(ledger).unwrap().close().await;
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(get(&ledger, &id).await.unwrap().name, "queued");
+}
