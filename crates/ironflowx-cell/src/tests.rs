@@ -535,7 +535,7 @@ async fn a_log_behind_its_read_store_is_refused() {
 /// itself refuses, so open answers `Corrupt` without the read store, changes no file, and keeps
 /// refusing.
 #[tokio::test]
-async fn a_damaged_unsealed_log_is_refused_without_its_read_store() {
+async fn damage_before_a_later_record_is_refused_without_its_read_store() {
     let dir = tempfile::tempdir().unwrap();
     let env = new_env_ref();
     two_events(dir.path(), env).await;
@@ -544,10 +544,11 @@ async fn a_damaged_unsealed_log_is_refused_without_its_read_store() {
     let mut bytes = std::fs::read(&path).unwrap();
     bytes[64 + 40] ^= 0xff;
     std::fs::write(&path, &bytes).unwrap();
+    let files = listing(dir.path());
     for _ in 0..2 {
         let err = Ledger::open(dir.path(), env, clock()).await.err();
         assert!(matches!(err, Some(OpenError::Corrupt)), "{err:?}");
-        // The log itself refuses, not only the ledger (segment-log 0.1.1, ADR 0068).
+        // The log itself refuses, not only the ledger (segment-log 0.1.1, segment-log ADR 0068).
         let err = SegmentLog::open(dir.path().join("log"), Options::default()).err();
         assert!(
             matches!(err, Some(segment_log_core::OpenError::Corrupt { .. })),
@@ -555,6 +556,57 @@ async fn a_damaged_unsealed_log_is_refused_without_its_read_store() {
         );
     }
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(listing(dir.path()), files);
+}
+
+/// A bad last record has nothing after it, so the log cannot tell it from a torn write and
+/// truncates it. Only `read.db` remembers it was acknowledged: with it, open refuses; without it,
+/// open recovers the records before it and the last one is lost unreported.
+#[tokio::test]
+async fn a_bad_last_record_is_truncated_and_only_the_read_store_notices() {
+    let damages: [Damage; 2] = [
+        ("a flipped byte in the last frame", |path| {
+            let mut bytes = std::fs::read(path).unwrap();
+            *bytes.last_mut().unwrap() ^= 0xff;
+            std::fs::write(path, bytes).unwrap();
+        }),
+        ("a torn write: the last frame cut short", |path| {
+            let len = std::fs::metadata(path).unwrap().len();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_len(len - 5)
+                .unwrap();
+        }),
+    ];
+    for (why, damage) in damages {
+        let dir = tempfile::tempdir().unwrap();
+        let env = new_env_ref();
+        two_events(dir.path(), env).await;
+        damage(&segment(dir.path()));
+        let err = Ledger::open(dir.path(), env, clock()).await.err();
+        assert!(matches!(err, Some(OpenError::Corrupt)), "{why}: {err:?}");
+        std::fs::remove_file(dir.path().join("read.db")).unwrap();
+        let ledger = open(dir.path(), env).await;
+        assert_eq!(names(&ledger).await, ["a"], "{why}");
+    }
+}
+
+/// Every path under `dir`, relative to it.
+fn listing(dir: &Path) -> BTreeSet<std::path::PathBuf> {
+    let mut out = BTreeSet::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path.clone());
+            }
+            out.insert(path.strip_prefix(dir).unwrap().to_path_buf());
+        }
+    }
+    out
 }
 
 fn segment(dir: &Path) -> std::path::PathBuf {
@@ -566,8 +618,8 @@ async fn a_corrupt_log_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let env = new_env_ref();
     two_events(dir.path(), env).await;
-    // Covers a sealed segment; `a_damaged_unsealed_log_is_refused_without_its_read_store` covers
-    // an unsealed one.
+    // Covers a sealed segment; `damage_before_a_later_record_is_refused_without_its_read_store`
+    // covers an unsealed one.
     SegmentLog::open(dir.path().join("log"), Options::default())
         .unwrap()
         .seal()

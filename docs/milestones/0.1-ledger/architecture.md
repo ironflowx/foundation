@@ -163,7 +163,7 @@ The committed head and the applied position are exclusive log offsets: one past 
 | Log, genesis differs in environment ID or token | `OpenError::WrongIncarnation` |
 | Log, genesis differs in format version, or the log's own format is unsupported | `OpenError::Format` |
 | `read.db` missing, without `meta`, unreadable, its tables damaged, or `meta` disagrees with the genesis record | Deletes `read.db` and its `-wal` and `-shm` files, rebuilds from offset 0 |
-| `read.db` names this environment and its applied position is beyond the log's watermark | `OpenError::Corrupt`, before a genesis record is written: the fold follows fsync, so the log lost durable records, for example an older copy of the log restored |
+| `read.db` names this environment and its applied position is beyond the log's watermark | `OpenError::Corrupt`, before a genesis record is written: the fold follows fsync, so the log lost durable records: an older copy of the log restored, or a bad last frame the log truncated as a torn tail (nothing after it shows it was acknowledged). Without `read.db`, that last record is lost unreported |
 | A replayed record carries another token or format | `OpenError::Corrupt` |
 | The log reports corruption (including a bad frame in its newest segment with valid frames of the log after it), a gap or a foreign segment | `OpenError::Corrupt` |
 | Another process or `Ledger` holds the directory | `OpenError::Locked`, from the log's directory lock, which dies with the process |
@@ -178,7 +178,7 @@ Dropping a `Ledger` without `close` stops the writer after the submission in han
 `Corrupt` is for a person to resolve; the ledger never repairs itself. It comes from one of two places, and both look the same to the embedder:
 
 - **The log refused.** The segment log found damage it will not truncate on its own.
-- **The ledger refused.** The log opened, but `read.db` names this environment and has folded records the log no longer holds. The fold runs only after fsync, so the log lost acknowledged events: an older copy of the log restored, a deleted segment, or a lossy repair (below).
+- **The ledger refused.** The log opened, but `read.db` names this environment and has folded records the log no longer holds. The fold runs only after fsync, so the log lost acknowledged events: a bad last frame the log truncated as a torn tail (with no valid frame after it, the log cannot tell damage from a torn write), an older copy of the log restored, a deleted segment, or a lossy repair (below).
 
 Steps, with the embedder stopped:
 
@@ -187,7 +187,7 @@ Steps, with the embedder stopped:
 3. **If verify reports damage**, the log refused. Only damage in the newest segment is repairable: run `repair truncate`, a dry run that prints the plan, then apply it.
    - **Lossless plan:** reopen the ledger. It replays and opens.
    - **Lossy plan:** acknowledged records are dropped and the tool needs `--drop-acknowledged`, which leaves the log sealed. Go to step 4, then read the note on a sealed log.
-     Class F, a bad frame in the newest unsealed segment with valid frames of the log after it, is always lossy. If the tool refuses its plan, restore from a backup.
+     The segment log's repair class F ([segment-log ADR 0068](https://github.com/ironflowx/segment-log/blob/v0.1.1/docs/decisions/0068-open-refuses-damage-with-acknowledged-groups-after-it.md)) is a bad frame in the newest unsealed segment with valid frames of the log after it. Its plan is always lossy: apply it with `--drop-acknowledged`. The tool refuses it (exit code 3) when the damage is in the second-newest segment, when the second-newest segment lacks its closing run, or when the seal run would reach the last acknowledged frame after the cut; then restore from a backup.
    - **Other damage** (an older segment, the headers) is not repairable in 0.1: restore the directory from a backup.
 4. **If verify is clean**, or after a lossy repair, the ledger refused. Prefer restoring the directory from a backup at least as new as the last acknowledged emit. To accept the loss instead, delete `<dir>/read.db` and its `-wal` and `-shm` files and reopen: the ledger rebuilds the read store from the log as it now is. This deletion is the one step that accepts lost events.
 
