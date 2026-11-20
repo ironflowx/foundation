@@ -94,7 +94,7 @@ All 41 scenarios in [`../behaviors/events.feature`](../behaviors/events.feature)
 | EVT-013 | Owned names are refused | 6 | 23 |
 | EVT-014 | A top-level `$redacted` is refused | 18 | 23 |
 | EVT-015 | A nested `$redacted` is accepted | 19 | 23 |
-| EVT-016 | Malformed data, metadata or key is refused | 12–17, 20, 23 | 23 |
+| EVT-016 | Malformed data, metadata or key is refused | 12–17, 20, 23, 45 | 23 |
 | EVT-017 | Data over 524,288 bytes is refused; at the limit accepted | 10, 11 | 23 |
 | EVT-038 | Metadata over 65,536 bytes is refused; at the limit accepted | 20 | 23 |
 | EVT-039 | Data at the edges reads back byte for byte | 10, 15, 16, 17 | 23 |

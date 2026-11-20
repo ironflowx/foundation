@@ -26,8 +26,9 @@ The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It 
 ## Conventions
 
 - Tags: a stable `@EVT-nnn` ID and `@release-0.1`. IDs are never reused.
-- A quoted table cell is a JSON string literal after Gherkin unescaping. A data cell is the JSON text sent, byte for byte.
-- Lengths count UTF-8 bytes. Sizes are the bytes of the JSON text as sent.
+- A quoted table cell is a JSON string literal after Gherkin unescaping. A data cell is the JSON sent, byte for byte.
+- A data or metadata cell that starts `built:` describes its input (`built: 128 nested arrays`, `built: a string holding the byte 0xFF`), and the step builds it: a feature file is UTF-8 and cannot hold an invalid byte itself. A description the step does not know fails the step; it is never sent as data.
+- Lengths count UTF-8 bytes. Sizes are the bytes of the JSON as sent.
 - The background is "a fresh environment and a client": no credential in 0.1. "Another client" is a second `LocalOperations` over the same ledger.
 - "N days ago" steps the `ManualClock`.
 - `@local`: the scenario needs a fixture only `LocalOperations` has (the clock, a second incarnation). The remote adapter skips it until it can drive them.
@@ -37,7 +38,7 @@ The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It 
 | Left out | Where |
 |---|---|
 | The verified emitter | 0.2 |
-| The wire format, timestamps on the wire, a limit the wire cannot carry, invalid UTF-8 | 0.3 (door) |
+| The wire format, timestamps on the wire, a limit the wire cannot carry, invalid UTF-8 in an idempotency key | 0.3 (door) |
 | Emits from a run, the version a function receives, paging back, totals, filters, listing event names | 0.4 |
 | Keys per environment | 0.9 |
 | Restart durability as a scenario | A property: the crash test proves it (`../invariants.md`) |

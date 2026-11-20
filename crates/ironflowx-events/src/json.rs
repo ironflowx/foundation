@@ -1,4 +1,5 @@
-//! The JSON text rules (D12): one `serde_json` pass with a visitor that decodes every key and
+//! The JSON rules (D12): one `serde_json` pass over the bytes as sent, which refuses invalid
+//! UTF-8 (D22), with a visitor that decodes every key and
 //! string, so `serde_json` unescapes them and refuses unpaired surrogates, and the visitor
 //! refuses a repeated key and a NUL. `serde_json` itself refuses numbers out of `f64` range,
 //! correctly rounded (`float_roundtrip`), and nesting past 127: its recursion limit is 128, and
@@ -6,18 +7,41 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::sync::LazyLock;
 
 use serde_core::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 /// With serde_json's `arbitrary_precision` on, which feature unification can do in any build, a
 /// number reaches the visitor as a one-entry map under this key, its range unchecked.
 // shortcut: in such a build an object whose first key is this one is taken for a number;
-// upgrade if a client ever needs that key.
+// upgrade if a client ever needs that key there. A default build reads it as any other key.
 const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 
-/// Checks one JSON text, as event data or metadata.
-pub(crate) fn check(text: &str, field: Checked) -> Result<(), serde_json::Error> {
-    let mut de = serde_json::Deserializer::from_str(text);
+/// Whether this build's serde_json hands numbers over as maps: a dependency's feature is not
+/// visible to `cfg`, so one number is parsed to find out. Not an integer: one that fits 64 bits
+/// arrives as an integer in either build.
+static NUMBERS_ARE_MAPS: LazyLock<bool> = LazyLock::new(|| {
+    struct Probe;
+    impl<'de> Visitor<'de> for Probe {
+        type Value = bool;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a number")
+        }
+        fn visit_f64<E: de::Error>(self, _: f64) -> Result<bool, E> {
+            Ok(false)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, _: A) -> Result<bool, A::Error> {
+            Ok(true)
+        }
+    }
+    serde_json::Deserializer::from_str("0.5")
+        .deserialize_any(Probe)
+        .unwrap_or(false)
+});
+
+/// Checks the bytes of one JSON value, as event data or metadata.
+pub(crate) fn check(bytes: &[u8], field: Checked) -> Result<(), serde_json::Error> {
+    let mut de = serde_json::Deserializer::from_slice(bytes);
     field.deserialize(&mut de)?;
     de.end()
 }
@@ -84,7 +108,7 @@ impl<'de> Visitor<'de> for Checked {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
         let mut keys = BTreeSet::new();
         while let Some(key) = map.next_key::<String>()? {
-            if keys.is_empty() && key == NUMBER_TOKEN {
+            if *NUMBERS_ARE_MAPS && keys.is_empty() && key == NUMBER_TOKEN {
                 // Rust's parser rounds correctly, as float_roundtrip does in a default build.
                 let number: String = map.next_value()?;
                 return match number.parse::<f64>() {

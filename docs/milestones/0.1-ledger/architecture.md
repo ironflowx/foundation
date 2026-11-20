@@ -70,14 +70,14 @@ trait Operations: Send + Sync {
     fn get_event(&self, cx: &Call, req: GetEventRequest) -> impl Future<Output = Result<Event, OpError>> + Send;
     fn list_events(&self, cx: &Call, req: ListEventsRequest) -> impl Future<Output = Result<EventPage, OpError>> + Send;
 }
-// EmitRequest      { name: String, data: Option<String> /* JSON text; None stores null */,
-//                    metadata: Option<String> /* JSON object text */, version: Option<i64> /* None stores 1 */,
+// EmitRequest      { name: String, data: Option<Vec<u8>> /* one JSON value (D22); None stores null */,
+//                    metadata: Option<Vec<u8>> /* one JSON object */, version: Option<i64> /* None stores 1 */,
 //                    idempotency_key: Option<String> /* None: no key */ }
 // EmitResponse     { event_id: EventId, duplicate: bool }
 // EmitBatchRequest { items: Vec<EmitRequest> }
 // EmitBatchResponse{ items: Vec<Result<EmitResponse, OpError>> }  // one per input, in input order
 // GetEventRequest  { event_id: String }                            // an ID that does not parse is NotFound
-// Event            { event_id, name, data /* the JSON text as sent */, metadata: Option<String>, version: i64,
+// Event            { event_id, name, data: Vec<u8> /* the bytes as sent */, metadata: Option<Vec<u8>>, version: i64,
 //                    idempotency_key: Option<String>, time: Timestamp }
 // ListEventsRequest{ limit: Option<NonZeroU32> /* None 20, above 200 clamps to 200 */, cursor: Option<String> }
 // EventPage        { events: Vec<Event> /* newest first */, next: Option<String> /* None on the last page */ }
@@ -119,7 +119,7 @@ fn fold<T: EventTables>(tx: &mut T, record: &Record) -> Result<(), T::Error>;
 | Name | Segments split on `.`; none empty. No Unicode whitespace (`char::is_whitespace`), no control character (`char::is_control`) | EVT-011, EVT-012 |
 | Name | Owned, so refused, in exact case: `ironflowx`, `ironflowx.…`, `$system`, `$system.…` | EVT-012, EVT-013 |
 | Data | Absent stores `null`. Otherwise one JSON value of at most 524,288 bytes as sent, stored and returned as those bytes | EVT-003, EVT-004, EVT-017, EVT-039 |
-| Data, metadata | Nested at most 127 deep; no number outside `f64` range; no key repeated in one object at any depth, comparing keys after unescaping; no NUL in any key or string after unescaping; no unpaired surrogate escape | EVT-016, EVT-039 |
+| Data, metadata | Valid UTF-8. Nested at most 127 deep; no number outside `f64` range; no key repeated in one object at any depth, comparing keys after unescaping; no NUL in any key or string after unescaping; no unpaired surrogate escape | EVT-016, EVT-039 |
 | Data | A top-level object key `$redacted`, whatever its value, is refused; nested ones are accepted | EVT-014, EVT-015 |
 | Metadata | Absent, or a JSON object of at most 65,536 bytes as sent | EVT-016, EVT-038 |
 | Version | Absent stores 1; otherwise 1 to 2,147,483,647 | EVT-002, EVT-008, EVT-009 |
@@ -203,7 +203,7 @@ How the ledger uses the log:
 
 | # | Decision | Why |
 |---|---|---|
-| D1 | `Operations` in 0.1 is `emit`, `emit_batch`, `get_event`, `list_events`, as hand-written Rust types. Data and metadata are JSON text; optional fields are `Option` | Event rules own every data and range check, for every door: duplicate keys and lone surrogates exist only in JSON text |
+| D1 | `Operations` in 0.1 is `emit`, `emit_batch`, `get_event`, `list_events`, as hand-written Rust types. Data and metadata are bytes that must hold JSON (D22); optional fields are `Option` | Event rules own every data and range check, for every door: duplicate keys, lone surrogates and invalid UTF-8 exist only in the bytes as sent |
 | D2 | Every `Operations` call takes a `Call`, opaque and empty in 0.1 | The trait does not change shape when 0.2 adds the credential |
 | D3 | Read your writes through a committed head published before the acknowledgment ([Commit and read](#commit-and-read)) | One fsync on the acknowledgment path, and read your writes holds across clients |
 | D4 | The append is the segment log's blocking call, run under `spawn_blocking` on the writer's task | The writer is the log's only writer, so it knows when a commit lands |
@@ -214,7 +214,7 @@ How the ledger uses the log:
 | D9 | A batch is one record: items are checked one by one, new items commit together, and the answer has one result per input in order | Partial validation, atomic commit |
 | D10 | The writer mints event IDs (UUIDv7) and `decide` draws them only for new events | Event rules stay pure; an ID exists before the record is written |
 | D11 | An unknown append outcome closes the ledger until reopen; there is no append retry | After reopen the log says whether the record landed |
-| D12 | Event rules parse with `serde_json` and a visitor that deserializes every key and string (never `IgnoredAny`), erroring on a repeated key, a NUL or a number out of range. `serde_json` hands keys over unescaped and refuses unpaired surrogate escapes, but only for values it decodes | No second JSON parser |
+| D12 | Event rules parse the bytes with `serde_json` (`from_slice`, which refuses invalid UTF-8 in the same pass) and a visitor that deserializes every key and string (never `IgnoredAny`), erroring on a repeated key, a NUL or a number out of range. `serde_json` hands keys over unescaped and refuses unpaired surrogate escapes, but only for values it decodes | No second JSON parser |
 | D13 | Environment and event IDs are UUIDv7 | One opaque ID format for every resource |
 | D14 | The genesis record, not `read.db`, holds the directory's identity | A swapped or rebuilt read store cannot pass for another environment |
 | D15 | The writer is one serial task: decide, append, fsync, publish, acknowledge, fold, then the next submission. 0.1 sets no performance target | `decide` reads the read store, with no overlay of unfolded records to keep right |
@@ -224,3 +224,4 @@ How the ledger uses the log:
 | D19 | `open` does not refuse a sealed log | The library reports a seal only on append. A refusal at open waits for it to expose one |
 | D20 | The behaviors run under the `cucumber` crate, in an unpublished workspace crate | The feature files are the spec, run from this folder |
 | D21 | The public-API checks compare `cargo-public-api` output with a committed snapshot, on a pinned nightly toolchain in one CI job | The tool needs rustdoc JSON, which stable does not emit. Every other job stays on the pinned stable |
+| D22 | Event data and metadata are bytes by type and JSON by rule: `Vec<u8>` in `Operations` and event rules, which still require one JSON value for data and one JSON object for metadata under every rule in the table, and refuse invalid UTF-8. When a non-JSON payload is needed, the event gains an optional first-class content type: absent means JSON, non-JSON data is stored and returned as sent, and every feature that reads inside data skips it. 0.1 builds nothing for the content type | The engine reads inside data (`$redacted` now; filters, keys, schemas and redaction later), so data cannot be opaque. JSON-only can gain a content type later without touching a stored event; the reverse cannot be undone. Bytes by type puts the UTF-8 check in event rules, for every door |

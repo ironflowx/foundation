@@ -170,7 +170,7 @@ Feature: Emitting events and reading them back
   # go: docs/adr/0175-require-unique-keys-in-event-data.md
   # go: internal/server/connect/payload_marker_test.go TestEventDoorsRejectDuplicateKeyOnTheWire
   # go: internal/server/connect/payload_marker_test.go TestEventDoorsRejectNulOnTheWire
-  # go: none for "not JSON", depth and metadata shape: Ironflow X takes JSON text (architecture.md, Event rules)
+  # go: none for "not JSON", depth and metadata shape: Ironflow X takes the JSON as bytes (architecture.md, Event rules)
   Scenario Outline: Malformed event data is refused
     When the client emits event "order.placed" whose <part> is <text>
     Then the emit is refused as invalid
@@ -187,13 +187,15 @@ Feature: Emitting events and reading them back
       | data            | {"k": "\ud800"}                    | unpaired high surrogate       |
       | data            | {"k": "\udc00"}                    | lone low surrogate            |
       | data            | {"k": 1                            | not JSON                      |
-      | data            | 128 nested arrays                  | deeper than 127               |
+      | data            | built: 128 nested arrays           | deeper than 127               |
       | data            | 1e400                              | number out of range           |
       | data            | ["ok", "\ud800"]                   | unpaired surrogate in an array |
+      | data            | built: a string holding the byte 0xFF | invalid UTF-8              |
       | metadata        | {"t": 1, "t": 2}                   | duplicate key                 |
       | metadata        | ["t"]                              | not an object                 |
       | metadata        | {"t": "x\u0000"}                   | NUL                           |
       | metadata        | {"t": "\udc00"}                    | lone low surrogate            |
+      | metadata        | built: an object whose "t" is a string holding the byte 0xFF | invalid UTF-8 |
       | idempotency key | "k\u0000"                          | NUL                           |
 
   @EVT-017 @release-0.1
@@ -220,15 +222,15 @@ Feature: Emitting events and reading them back
 
   @EVT-039 @release-0.1
   # go: internal/server/event_emit_connect_migration_test.go TestEventEmitConnectMigration (round trip)
-  # go: none for depth and byte-exact text: Ironflow X stores the JSON text as sent (architecture.md, Event rules)
+  # go: none for depth and byte-exact text: Ironflow X stores the bytes as sent (architecture.md, Event rules)
   Scenario Outline: Data at the edges is accepted and reads back byte for byte
     When the client emits event "edge.case" with data <data>
     And the client reads that event by ID
-    Then its data is exactly the text sent
+    Then its data is exactly the bytes sent
 
     Examples:
       | data                       |
-      | 127 nested arrays          |
+      | built: 127 nested arrays   |
       | {"k": "\ud83d\ude00"}      |
       | {"n": 1.10, "big": 123456789012345678901234567890} |
       | {  "spaced" :  true  }     |

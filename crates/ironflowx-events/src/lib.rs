@@ -25,14 +25,14 @@ const MAX_DATA_BYTES: usize = 524_288;
 const MAX_METADATA_BYTES: usize = 65_536;
 const MAX_KEY_BYTES: usize = 256;
 
-/// One emit as a client sent it. Data and metadata are JSON text.
+/// One emit as a client sent it. Data and metadata are bytes that must hold JSON (D22).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Emit {
     pub name: String,
     /// `None` stores `null`.
-    pub data: Option<String>,
+    pub data: Option<Vec<u8>>,
     /// A JSON object, or `None`.
-    pub metadata: Option<String>,
+    pub metadata: Option<Vec<u8>>,
     /// `None` stores 1.
     pub version: Option<i64>,
     /// `None`: no key.
@@ -52,9 +52,9 @@ pub struct Event {
     pub sequence: u64,
     pub id: EventId,
     pub name: String,
-    /// The JSON text as sent; `null` when none was.
-    pub data: String,
-    pub metadata: Option<String>,
+    /// The bytes as sent; the JSON `null` when none were.
+    pub data: Vec<u8>,
+    pub metadata: Option<Vec<u8>>,
     pub version: i64,
     pub idempotency_key: Option<String>,
     pub time: Timestamp,
@@ -66,8 +66,8 @@ pub struct NewEvent {
     pub sequence: u64,
     pub id: EventId,
     pub name: String,
-    pub data: String,
-    pub metadata: Option<String>,
+    pub data: Vec<u8>,
+    pub metadata: Option<Vec<u8>>,
     pub version: i64,
     pub idempotency_key: Option<String>,
 }
@@ -184,9 +184,7 @@ pub fn decide<V: EventsView>(
     let bytes: usize = checked
         .iter()
         .flatten()
-        .map(|e| {
-            e.data.as_ref().map_or(0, String::len) + e.metadata.as_ref().map_or(0, String::len)
-        })
+        .map(|e| e.data.as_ref().map_or(0, Vec::len) + e.metadata.as_ref().map_or(0, Vec::len))
         .sum();
     if bytes > MAX_BATCH_BYTES {
         return Err(Error::Refused(Refusal::invalid(
@@ -252,7 +250,7 @@ pub fn decide<V: EventsView>(
             sequence,
             id,
             name: emit.name.clone(),
-            data: emit.data.clone().unwrap_or_else(|| "null".into()),
+            data: emit.data.clone().unwrap_or_else(|| b"null".to_vec()),
             metadata: emit.metadata.clone(),
             version: emit.version.unwrap_or(1),
             idempotency_key: emit.idempotency_key.clone(),
@@ -282,7 +280,7 @@ fn check(emit: &Emit) -> Result<(), Refusal> {
         json::check(metadata, json::Checked::Metadata)
             .map_err(|e| Refusal::invalid(format!("event metadata is invalid: {e}")))?;
         // Valid JSON, so its first non-whitespace byte says whether it is an object.
-        if !metadata.trim_ascii_start().starts_with('{') {
+        if !metadata.trim_ascii_start().starts_with(b"{") {
             return Err(Refusal::invalid("event metadata is not a JSON object"));
         }
     }
