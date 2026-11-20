@@ -163,7 +163,7 @@ The committed head and the applied position are exclusive log offsets: one past 
 | Log, genesis differs in environment ID or token | `OpenError::WrongIncarnation` |
 | Log, genesis differs in format version, or the log's own format is unsupported | `OpenError::Format` |
 | `read.db` missing, without `meta`, unreadable, its tables damaged, or `meta` disagrees with the genesis record | Deletes `read.db` and its `-wal` and `-shm` files, rebuilds from offset 0 |
-| Applied position beyond the log's watermark | Rebuilds `read.db`, as above |
+| `read.db` names this environment and its applied position is beyond the log's watermark | `OpenError::Corrupt`, before a genesis record is written: the fold follows fsync, so the log lost durable records. The segment log truncates a bad frame in its newest segment as a torn tail, even with valid frames after it |
 | A replayed record carries another token or format | `OpenError::Corrupt` |
 | The log reports corruption, a gap or a foreign segment | `OpenError::Corrupt` |
 | Another process or `Ledger` holds the directory | `OpenError::Locked`, from the log's directory lock, which dies with the process |

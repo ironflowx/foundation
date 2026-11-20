@@ -490,7 +490,7 @@ type Damage = (&'static str, fn(&Path));
 /// The Open table's rebuild rows: each damage to `read.db` alone is rebuilt from the log.
 #[tokio::test]
 async fn a_read_store_that_cannot_be_trusted_is_rebuilt() {
-    let damages: [Damage; 4] = [
+    let damages: [Damage; 3] = [
         ("missing", |db| std::fs::remove_file(db).unwrap()),
         ("without meta", |db| {
             let conn = rusqlite::Connection::open(db).unwrap();
@@ -498,10 +498,6 @@ async fn a_read_store_that_cannot_be_trusted_is_rebuilt() {
         }),
         ("unreadable", |db| {
             std::fs::write(db, b"not a database").unwrap()
-        }),
-        ("applied beyond the watermark", |db| {
-            let conn = rusqlite::Connection::open(db).unwrap();
-            conn.execute_batch("UPDATE meta SET applied = 999").unwrap();
         }),
     ];
     for (why, damage) in damages {
@@ -519,6 +515,37 @@ async fn a_read_store_that_cannot_be_trusted_is_rebuilt() {
         // Sequences continue after the rebuilt rows.
         emit(&ledger, named("c")).await.unwrap();
         assert_eq!(names(&ledger).await, ["c", "b", "a"], "{why}");
+    }
+}
+
+/// The read store proves the log lost durable records: refused, not rebuilt over.
+#[tokio::test]
+async fn a_log_behind_its_read_store_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    two_events(dir.path(), env).await;
+    let conn = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
+    conn.execute_batch("UPDATE meta SET applied = 999").unwrap();
+    drop(conn);
+    let err = Ledger::open(dir.path(), env, clock()).await.err();
+    assert!(matches!(err, Some(OpenError::Corrupt)), "{err:?}");
+}
+
+/// A bad byte early in the unsealed newest segment: the log truncates from it, dropping the
+/// acknowledged records after it. The read store remembers them, so open refuses instead of
+/// writing a new genesis record and opening empty, and keeps refusing.
+#[tokio::test]
+async fn a_log_truncated_under_acknowledged_events_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    two_events(dir.path(), env).await;
+    let path = segment(dir.path());
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[64 + 40] ^= 0xff;
+    std::fs::write(&path, bytes).unwrap();
+    for _ in 0..2 {
+        let err = Ledger::open(dir.path(), env, clock()).await.err();
+        assert!(matches!(err, Some(OpenError::Corrupt)), "{err:?}");
     }
 }
 

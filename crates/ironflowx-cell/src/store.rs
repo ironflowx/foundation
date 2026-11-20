@@ -108,20 +108,32 @@ fn create(path: &Path, env: EnvRef) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-fn existing(path: &Path, env: EnvRef, watermark: u64) -> Option<Connection> {
-    if !path.exists() {
-        return None;
-    }
-    let conn = Connection::open(path).ok()?;
+/// The applied position `read.db` records, if it is readable and its `meta` names this
+/// environment and format.
+pub(crate) fn recorded(dir: &Path, env: EnvRef) -> Option<u64> {
+    let path = dir.join("read.db");
+    path.exists()
+        .then(|| Connection::open(&path).ok())
+        .flatten()
+        .and_then(|conn| ours(&conn, env))
+}
+
+fn ours(conn: &Connection, env: EnvRef) -> Option<u64> {
     let (applied, id, token, format): (u64, String, String, u16) = conn
         .query_row("SELECT applied, env_id, token, format FROM meta", [], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })
         .ok()?;
-    let agrees = id == env.id().to_string()
-        && token == env.token().to_string()
-        && format == FORMAT
-        && applied <= watermark;
+    let ours = id == env.id().to_string() && token == env.token().to_string() && format == FORMAT;
+    ours.then_some(applied)
+}
+
+fn existing(path: &Path, env: EnvRef, watermark: u64) -> Option<Connection> {
+    if !path.exists() {
+        return None;
+    }
+    let conn = Connection::open(path).ok()?;
+    let agrees = ours(&conn, env).is_some_and(|applied| applied <= watermark);
     // `meta` can agree while the tables are damaged, and replay may touch none of them.
     let intact = || -> rusqlite::Result<bool> {
         conn.prepare(&format!("SELECT {EVENT_COLUMNS} LIMIT 0"))?;

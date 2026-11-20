@@ -464,6 +464,11 @@ fn recover(dir: &Path, env: EnvRef) -> Result<Recovered, OpenError> {
             }
         }
     })?;
+    // The fold runs only after fsync, so a read store of this environment ahead of the log
+    // proves the log lost durable records. Refuse, before a genesis could paper over it.
+    if store::recorded(dir, env).is_some_and(|applied| applied > log.watermark()) {
+        return Err(OpenError::Corrupt);
+    }
     if log.watermark() == 0 {
         append(&log, ExpectedRevision::Empty, record::genesis(env))
             .map_err(|e| OpenError::Io(std::io::Error::other(format!("genesis: {e:?}"))))?;
