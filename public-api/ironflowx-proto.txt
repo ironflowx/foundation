@@ -116,7 +116,10 @@ impl core::cmp::Eq for ironflowx_proto::OpError
 pub fn ironflowx_proto::OpError::assert_fields_are_eq(&self)
 impl core::cmp::PartialEq for ironflowx_proto::OpError
 pub fn ironflowx_proto::OpError::eq(&self, &Self) -> bool
+impl core::error::Error for ironflowx_proto::OpError
 impl core::fmt::Debug for ironflowx_proto::OpError
+pub fn ironflowx_proto::OpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_proto::OpError
 pub fn ironflowx_proto::OpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_proto::OpError
 pub trait ironflowx_proto::Operations: core::marker::Send + core::marker::Sync

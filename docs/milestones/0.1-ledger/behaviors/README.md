@@ -27,7 +27,7 @@ The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It 
 
 - Tags: a stable `@EVT-nnn` ID and `@release-0.1`. IDs are never reused.
 - A quoted table cell is a JSON string literal after Gherkin unescaping. A data cell is the JSON sent, byte for byte.
-- A cell that describes its input (`128 nested arrays`, `a string holding the byte 0xFF`) is built by the step: a feature file is UTF-8 and cannot hold an invalid byte itself.
+- A data or metadata cell that starts `built:` describes its input (`built: 128 nested arrays`, `built: a string holding the byte 0xFF`), and the step builds it: a feature file is UTF-8 and cannot hold an invalid byte itself. A description the step does not know fails the step; it is never sent as data.
 - Lengths count UTF-8 bytes. Sizes are the bytes of the JSON as sent.
 - The background is "a fresh environment and a client": no credential in 0.1. "Another client" is a second `LocalOperations` over the same ledger.
 - "N days ago" steps the `ManualClock`.

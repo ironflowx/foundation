@@ -187,15 +187,15 @@ Feature: Emitting events and reading them back
       | data            | {"k": "\ud800"}                    | unpaired high surrogate       |
       | data            | {"k": "\udc00"}                    | lone low surrogate            |
       | data            | {"k": 1                            | not JSON                      |
-      | data            | 128 nested arrays                  | deeper than 127               |
+      | data            | built: 128 nested arrays           | deeper than 127               |
       | data            | 1e400                              | number out of range           |
       | data            | ["ok", "\ud800"]                   | unpaired surrogate in an array |
-      | data            | a string holding the byte 0xFF     | invalid UTF-8                 |
+      | data            | built: a string holding the byte 0xFF | invalid UTF-8              |
       | metadata        | {"t": 1, "t": 2}                   | duplicate key                 |
       | metadata        | ["t"]                              | not an object                 |
       | metadata        | {"t": "x\u0000"}                   | NUL                           |
       | metadata        | {"t": "\udc00"}                    | lone low surrogate            |
-      | metadata        | an object whose "t" is a string holding the byte 0xFF | invalid UTF-8 |
+      | metadata        | built: an object whose "t" is a string holding the byte 0xFF | invalid UTF-8 |
       | idempotency key | "k\u0000"                          | NUL                           |
 
   @EVT-017 @release-0.1
@@ -230,7 +230,7 @@ Feature: Emitting events and reading them back
 
     Examples:
       | data                       |
-      | 127 nested arrays          |
+      | built: 127 nested arrays   |
       | {"k": "\ud83d\ude00"}      |
       | {"n": 1.10, "big": 123456789012345678901234567890} |
       | {  "spaced" :  true  }     |

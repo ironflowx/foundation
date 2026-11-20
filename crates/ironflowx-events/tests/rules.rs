@@ -319,7 +319,10 @@ fn invalid_utf8_in_data_or_metadata_is_refused() {
         b"\"\xc3\"",
         b"\"\xc0\xaf\"",
         b"\"\xed\xa0\x80\"",
+        // After an escape serde_json validates through its scratch buffer, another path.
+        b"\"\\n\xff\"",
         b"\xff",
+        b"{}\xff",
     ] {
         assert_refused(Emit {
             data: Some(bytes.to_vec()),
@@ -333,6 +336,31 @@ fn invalid_utf8_in_data_or_metadata_is_refused() {
     // The same shapes with valid UTF-8 are accepted, so the bytes above are what is refused.
     assert_accepted(with_data("\"\u{e9}\""));
     assert_accepted(with_metadata("{\"t\": \"\u{e9}\"}"));
+}
+
+#[test]
+fn serde_jsons_number_key_is_an_ordinary_key() {
+    // With `arbitrary_precision` on, numbers print as written, and such a build takes an object
+    // whose first key is this one for a number (the shortcut in json.rs), so it is not probed.
+    let printed = serde_json::from_str::<serde_json::Value>("1e2")
+        .unwrap()
+        .to_string();
+    if printed == "1e2" {
+        return;
+    }
+    for data in [
+        r#"{"$serde_json::private::Number": "1", "a": 2}"#,
+        r#"{"$serde_json::private::Number": "x"}"#,
+        r#"{"$serde_json::private::Number": {"a": 1}}"#,
+    ] {
+        assert_accepted(with_data(data));
+        assert_accepted(with_metadata(data));
+    }
+    // It is still held to every rule.
+    assert_refused(with_data(
+        r#"{"$serde_json::private::Number": "1", "$serde_json::private::Number": "2"}"#,
+    ));
+    assert_refused(with_data(r#"{"$serde_json::private::Number": "x\u0000"}"#));
 }
 
 // ---- Metadata ----
