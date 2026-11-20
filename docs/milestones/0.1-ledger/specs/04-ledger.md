@@ -53,7 +53,7 @@ A ledger: one environment's commit log, read store and the single writer between
 - **Read gate:** a read snapshots the committed head on arrival and waits until the applied position reaches it.
 - **Storage:** a segment log directory and a SQLite read store, as in the architecture doc's "What is stored". Offset 0 is the genesis record. The fold writes a record's rows and the new applied position in one transaction and skips a record below the applied position.
 - **Open:** the rows of the architecture doc's "Open" table, log first, then read store. The genesis record is the directory's identity (D8, D14). A sealed log is not refused at open (D19).
-- **Log use:** `segment-log-core` at exactly 0.1.0 from crates.io (D16), one stream, expected-revision checks, no log idempotency key, the options and error mapping in the architecture doc's "Depends on". The log's own types stay private to this crate.
+- **Log use:** `segment-log-core` at exactly 0.1.1 from crates.io (D16), one stream, expected-revision checks, no log idempotency key, the options and error mapping in the architecture doc's "Depends on". The log's own types stay private to this crate.
 - **Failure:** an indeterminate append answers `Unknown` and the ledger then refuses every call until reopened; there is no append retry (D11). A fold or read-store failure does the same with `Unavailable`.
 - **Stored time in SQLite:** a private wrapper in this crate implements the SQLite conversions over the one `i64` millisecond encoding (D18).
 - **`LocalOperations`:** maps each request to a submission or query and each outcome to an answer. Several can share one ledger.

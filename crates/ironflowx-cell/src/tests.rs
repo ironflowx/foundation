@@ -531,22 +531,30 @@ async fn a_log_behind_its_read_store_is_refused() {
     assert!(matches!(err, Some(OpenError::Corrupt)), "{err:?}");
 }
 
-/// A bad byte early in the unsealed newest segment: the log truncates from it, dropping the
-/// acknowledged records after it. The read store remembers them, so open refuses instead of
-/// writing a new genesis record and opening empty, and keeps refusing.
+/// A bad byte early in the unsealed newest segment, with acknowledged records after it: the log
+/// itself refuses, so open answers `Corrupt` without the read store, changes no file, and keeps
+/// refusing.
 #[tokio::test]
-async fn a_log_truncated_under_acknowledged_events_is_refused() {
+async fn a_damaged_unsealed_log_is_refused_without_its_read_store() {
     let dir = tempfile::tempdir().unwrap();
     let env = new_env_ref();
     two_events(dir.path(), env).await;
+    std::fs::remove_file(dir.path().join("read.db")).unwrap();
     let path = segment(dir.path());
     let mut bytes = std::fs::read(&path).unwrap();
     bytes[64 + 40] ^= 0xff;
-    std::fs::write(&path, bytes).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
     for _ in 0..2 {
         let err = Ledger::open(dir.path(), env, clock()).await.err();
         assert!(matches!(err, Some(OpenError::Corrupt)), "{err:?}");
+        // The log itself refuses, not only the ledger (segment-log 0.1.1, ADR 0068).
+        let err = SegmentLog::open(dir.path().join("log"), Options::default()).err();
+        assert!(
+            matches!(err, Some(segment_log_core::OpenError::Corrupt { .. })),
+            "{err:?}"
+        );
     }
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
 
 fn segment(dir: &Path) -> std::path::PathBuf {
@@ -558,8 +566,8 @@ async fn a_corrupt_log_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let env = new_env_ref();
     two_events(dir.path(), env).await;
-    // The log truncates a bad frame in its unsealed newest segment as a torn write; in a sealed
-    // segment it reports corruption.
+    // Covers a sealed segment; `a_damaged_unsealed_log_is_refused_without_its_read_store` covers
+    // an unsealed one.
     SegmentLog::open(dir.path().join("log"), Options::default())
         .unwrap()
         .seal()
