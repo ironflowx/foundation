@@ -89,4 +89,4 @@ jobs:
       # install-action has no actionlint manifest; go install checks the module against sum.golang.org.
       - run: go install "github.com/rhysd/actionlint/cmd/actionlint@v$ACTIONLINT"
       - run: '"$(go env GOPATH)/bin/actionlint"'
-      - run: shellcheck -x ci/*.sh
+      - run: shellcheck -x ci/*.sh .githooks/*

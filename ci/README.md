@@ -4,13 +4,16 @@
 check is proven by a fixture in `fixtures/` that it must reject (`must-reject.sh`), so a check
 that silently stops working fails CI.
 
+`ci/check.sh` runs every job below locally, in order, and stops at the first failure: run it
+before you push. `git config core.hooksPath .githooks` makes `git push` run it.
+
 | Job | Enforces | Run locally | When it fails |
 |---|---|---|---|
 | `fmt`, `clippy`, `clippy-macos`, `test` | Formatting, lints with warnings denied, tests | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` | Fix the code |
 | `deny` | Licences and advisories, Linux and macOS graphs (`deny.toml`) | `cargo deny check` | Replace the dependency, or extend `deny.toml` with a reason |
 | `purity` | LED-15: pure crates' dependencies and calls; D17: only `ironflowx-cell` calls `SequencedTime::from_event_clock` (and one helper in `ironflowx-events`' `tests/rules.rs`, which stands in for the ledger) | `ci/purity.sh` | See [Pure crates](#pure-crates) |
-| `public-api` | D21: each crate's public API matches `public-api/<crate>.txt`; LED-9: nothing public takes a bare `EnvironmentId` | `ci/public-api.sh` | Review the printed diff, then `ci/public-api.sh --bless` and commit the snapshot |
-| `lint-ci` | actionlint and shellcheck over the workflow and `ci/*.sh` | `actionlint && shellcheck -x ci/*.sh` | Fix the script |
+| `public-api` | D21: each crate's public API matches `public-api/<crate>.txt`; LED-9: nothing public takes a bare `EnvironmentId`; no public API names a dependency's type (`rusqlite`, `segment_log_core`, `tokio`, `uuid`, `getrandom`) | `ci/public-api.sh` | Review the printed diff, then `ci/public-api.sh --bless` and commit the snapshot |
+| `lint-ci` | actionlint and shellcheck over the workflow, `ci/*.sh` and `.githooks/*` | `actionlint && shellcheck -x ci/*.sh .githooks/*` | Fix the script |
 
 ## Pure crates
 

@@ -33,7 +33,7 @@ pub(crate) fn events(token: IncarnationToken, record: &Record) -> Vec<u8> {
     out.extend_from_slice(&FORMAT.to_le_bytes());
     put(&mut out, token.to_string().as_bytes());
     out.extend_from_slice(&record.time.as_millis().to_le_bytes());
-    out.extend_from_slice(&(record.events.len() as u32).to_le_bytes());
+    out.extend_from_slice(&len(record.events.len()).to_le_bytes());
     for e in &record.events {
         out.extend_from_slice(&e.sequence.to_le_bytes());
         put(&mut out, e.id.to_string().as_bytes());
@@ -46,8 +46,13 @@ pub(crate) fn events(token: IncarnationToken, record: &Record) -> Vec<u8> {
     out
 }
 
+/// Event rules bound a record to 100 events and about 4.1 MiB, so every length fits.
+fn len(n: usize) -> u32 {
+    u32::try_from(n).expect("event rules bound a record's lengths")
+}
+
 fn put(out: &mut Vec<u8>, bytes: &[u8]) {
-    out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(&len(bytes.len()).to_le_bytes());
     out.extend_from_slice(bytes);
 }
 
