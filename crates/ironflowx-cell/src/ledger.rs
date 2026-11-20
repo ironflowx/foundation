@@ -1,0 +1,587 @@
+//! The ledger: open, the writer, the read gate and close (architecture.md, "Commit and read"
+//! and "Open").
+
+use std::fmt;
+use std::path::Path;
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
+
+use ironflowx_core::{Clock, EnvRef, EventId, SequencedTime, Timestamp};
+use ironflowx_events::{Error, ItemOutcome, Record, Refusal, Submission};
+use rusqlite::Connection;
+use segment_log_core::{
+    AppendError, CommitError, ExpectedRevision, NewRecord, Options, SegmentLog, Submit,
+};
+use tokio::sync::{oneshot, watch};
+
+use crate::record::{self, FORMAT, LogRecord};
+use crate::store::{self, ReadStore, StoreError};
+
+const STREAM: &[u8] = b"events";
+
+/// One environment's commit log, read store and the single writer between them.
+pub struct Ledger {
+    env: EnvRef,
+    // `Option`s so that `Drop` can close the queue, then join the writer.
+    jobs: Option<mpsc::Sender<Job>>,
+    writer: Option<thread::JoinHandle<()>>,
+    progress: Arc<watch::Sender<Progress>>,
+    pub(crate) store: Arc<Mutex<Connection>>,
+    #[cfg(any(test, feature = "fault-points"))]
+    faults: Arc<faults::Faults>,
+}
+
+/// What a submission committed: one outcome per item, in input order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Committed {
+    pub outcome: Vec<ItemOutcome>,
+}
+
+/// A submission failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubmitError {
+    /// A single emit, or a whole batch, was refused by a rule.
+    Refused(Refusal),
+    /// The append's outcome is unknown; the ledger is now unavailable until reopened.
+    Unknown,
+    /// The ledger failed and refuses every call until it is reopened.
+    Unavailable,
+}
+
+/// A read failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadError {
+    Refused(Refusal),
+    Unavailable,
+}
+
+/// Why a directory did not open.
+#[derive(Debug)]
+pub enum OpenError {
+    /// Another process or `Ledger` holds the directory.
+    Locked,
+    /// The directory belongs to another environment ID or incarnation token.
+    WrongIncarnation,
+    /// The directory is in another format.
+    Format,
+    /// The log is damaged or holds a foreign record.
+    Corrupt,
+    Io(std::io::Error),
+}
+
+impl fmt::Display for OpenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Locked => f.write_str("the ledger directory is in use"),
+            Self::WrongIncarnation => {
+                f.write_str("the ledger directory belongs to another environment or incarnation")
+            }
+            Self::Format => f.write_str("the ledger directory is in another format"),
+            Self::Corrupt => f.write_str("the ledger log is corrupt"),
+            Self::Io(e) => write!(f, "ledger I/O: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for OpenError {}
+
+impl From<std::io::Error> for OpenError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+/// The read gate. Both positions are exclusive log offsets.
+#[derive(Debug, Clone, Copy)]
+struct Progress {
+    committed: u64,
+    applied: u64,
+    failed: bool,
+}
+
+struct Job {
+    sub: Submission,
+    reply: oneshot::Sender<Result<Committed, SubmitError>>,
+}
+
+/// Mints a fresh environment reference: a UUIDv7 ID and a 128-bit token from the OS random
+/// source.
+///
+/// # Panics
+///
+/// If the OS random source fails.
+pub fn new_env_ref() -> EnvRef {
+    let mut bits = [0; 16];
+    getrandom::fill(&mut bits).expect("the OS random source works");
+    format!(
+        "{}.{:032x}",
+        uuid::Uuid::now_v7(),
+        u128::from_le_bytes(bits)
+    )
+    .parse()
+    .expect("a UUIDv7 and 32 hex digits parse")
+}
+
+fn new_event_id() -> EventId {
+    uuid::Uuid::now_v7()
+        .to_string()
+        .parse()
+        .expect("a UUIDv7 parses")
+}
+
+impl Ledger {
+    /// Opens the environment `env` in `dir`, creating it if `dir` is empty or missing.
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime.
+    pub async fn open(
+        dir: &Path,
+        env: EnvRef,
+        clock: impl Clock + Send + 'static,
+    ) -> Result<Self, OpenError> {
+        let dir = dir.to_owned();
+        let recovered = tokio::task::spawn_blocking(move || recover(&dir, env))
+            .await
+            .expect("open does not panic")?;
+        let progress = Arc::new(watch::Sender::new(Progress {
+            committed: recovered.watermark,
+            applied: recovered.watermark,
+            failed: false,
+        }));
+        let store = Arc::new(Mutex::new(recovered.conn));
+        #[cfg(any(test, feature = "fault-points"))]
+        let faults = Arc::<faults::Faults>::default();
+        let (jobs, queue) = mpsc::channel();
+        let writer = Writer {
+            log: recovered.log,
+            store: store.clone(),
+            clock: Box::new(clock),
+            env,
+            last_time: recovered.last_time,
+            revision: recovered.revision,
+            progress: progress.clone(),
+            #[cfg(any(test, feature = "fault-points"))]
+            faults: faults.clone(),
+        };
+        let writer = thread::Builder::new()
+            .name("ironflowx-ledger-writer".into())
+            .spawn(move || writer.run(&queue))?;
+        Ok(Self {
+            env,
+            jobs: Some(jobs),
+            writer: Some(writer),
+            progress,
+            store,
+            #[cfg(any(test, feature = "fault-points"))]
+            faults,
+        })
+    }
+
+    /// The environment this ledger was opened with.
+    pub const fn env(&self) -> EnvRef {
+        self.env
+    }
+
+    /// Commits a submission. Answers once its record is durable, or at once when nothing is
+    /// new.
+    pub async fn submit(&self, sub: Submission) -> Result<Committed, SubmitError> {
+        if self.progress.borrow().failed {
+            return Err(SubmitError::Unavailable);
+        }
+        let (reply, answer) = oneshot::channel();
+        self.jobs
+            .as_ref()
+            .expect("set until drop")
+            .send(Job { sub, reply })
+            .map_err(|_| SubmitError::Unavailable)?;
+        // Dropped unanswered: the writer stopped mid-submission.
+        answer.await.unwrap_or(Err(SubmitError::Unknown))
+    }
+
+    /// Runs a query from event rules once the read store holds every write acknowledged
+    /// before this call.
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime, or if `q` panics.
+    pub async fn read<R: Send + 'static>(
+        &self,
+        q: impl FnOnce(&ReadStore<'_>) -> Result<R, Error<StoreError>> + Send + 'static,
+    ) -> Result<R, ReadError> {
+        let mut gate = self.progress.subscribe();
+        let head = gate.borrow().committed;
+        let ready = gate
+            .wait_for(|p| p.failed || p.applied >= head)
+            .await
+            .is_ok_and(|p| !p.failed);
+        if !ready {
+            return Err(ReadError::Unavailable);
+        }
+        let store = self.store.clone();
+        let answer = tokio::task::spawn_blocking(move || {
+            q(&ReadStore(&store.lock().expect("no query panicked")))
+        })
+        .await
+        .expect("the query does not panic");
+        match answer {
+            Ok(r) => Ok(r),
+            Err(Error::Refused(r)) => Err(ReadError::Refused(r)),
+            Err(Error::Store(_)) => {
+                fail(&self.progress);
+                Err(ReadError::Unavailable)
+            }
+        }
+    }
+
+    /// Finishes queued submissions and the fold, then releases the directory.
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime.
+    pub async fn close(self) {
+        tokio::task::spawn_blocking(move || drop(self))
+            .await
+            .expect("drop does not panic");
+    }
+}
+
+/// Without `close`, dropping still stops the writer and releases the directory before it
+/// returns.
+impl Drop for Ledger {
+    fn drop(&mut self) {
+        #[cfg(any(test, feature = "fault-points"))]
+        self.faults.release_fold();
+        drop(self.jobs.take());
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+    }
+}
+
+fn fail(progress: &watch::Sender<Progress>) {
+    progress.send_modify(|p| p.failed = true);
+}
+
+struct Writer {
+    log: SegmentLog,
+    store: Arc<Mutex<Connection>>,
+    clock: Box<dyn Clock + Send>,
+    env: EnvRef,
+    /// The last committed event time; `None` before the first record.
+    last_time: Option<Timestamp>,
+    revision: u64,
+    progress: Arc<watch::Sender<Progress>>,
+    #[cfg(any(test, feature = "fault-points"))]
+    faults: Arc<faults::Faults>,
+}
+
+impl Writer {
+    /// One submission at a time: decide, append, fsync, publish, acknowledge, fold (D15).
+    fn run(mut self, queue: &mpsc::Receiver<Job>) {
+        while let Ok(job) = queue.recv() {
+            if self.progress.borrow().failed {
+                let _ = job.reply.send(Err(SubmitError::Unavailable));
+                continue;
+            }
+            let (answer, record) = self.decide(&job.sub);
+            let Some((record, offset)) = record else {
+                let _ = job.reply.send(answer);
+                continue;
+            };
+            self.progress.send_modify(|p| p.committed = offset + 1);
+            let _ = job.reply.send(answer);
+            self.fold(offset, &record);
+        }
+    }
+
+    /// The answer, and the record and its offset if one was appended.
+    fn decide(
+        &mut self,
+        sub: &Submission,
+    ) -> (Result<Committed, SubmitError>, Option<(Record, u64)>) {
+        // D7: the event clock never goes back.
+        let now = self
+            .last_time
+            .map_or(self.clock.now(), |t| t.max(self.clock.now()));
+        let decision = {
+            let conn = self.store.lock().expect("no query panicked");
+            ironflowx_events::decide(
+                &ReadStore(&conn),
+                sub,
+                SequencedTime::from_event_clock(now),
+                &mut std::iter::repeat_with(new_event_id),
+            )
+        };
+        let decision = match decision {
+            Ok(d) => d,
+            Err(Error::Refused(r)) => return (Err(SubmitError::Refused(r)), None),
+            Err(Error::Store(_)) => {
+                fail(&self.progress);
+                return (Err(SubmitError::Unavailable), None);
+            }
+        };
+        let committed = Committed {
+            outcome: decision.outcome,
+        };
+        let Some(record) = decision.record else {
+            return (Ok(committed), None);
+        };
+        match self.append(record::events(self.env.token(), &record)) {
+            Ok(offset) => {
+                self.last_time = Some(record.time);
+                (Ok(committed), Some((record, offset)))
+            }
+            Err(e) => {
+                fail(&self.progress);
+                (Err(e), None)
+            }
+        }
+    }
+
+    /// Appends one record and waits for its fsync. No retry (D11).
+    fn append(&mut self, payload: Vec<u8>) -> Result<u64, SubmitError> {
+        #[cfg(any(test, feature = "fault-points"))]
+        let fault = self.faults.take_append();
+        #[cfg(any(test, feature = "fault-points"))]
+        if fault == Some(faults::AppendFault::Lost) {
+            return Err(SubmitError::Unknown);
+        }
+        let position = append(&self.log, ExpectedRevision::At(self.revision), payload)?;
+        #[cfg(any(test, feature = "fault-points"))]
+        if fault == Some(faults::AppendFault::Landed) {
+            return Err(SubmitError::Unknown);
+        }
+        self.revision = position.revision;
+        Ok(position.offset)
+    }
+
+    fn fold(&self, offset: u64, record: &Record) {
+        #[cfg(any(test, feature = "fault-points"))]
+        {
+            self.faults.wait_while_held();
+            if self.faults.take_fold() {
+                fail(&self.progress);
+                return;
+            }
+        }
+        let mut conn = self.store.lock().expect("no query panicked");
+        match store::apply(&mut conn, offset, Some(record)) {
+            Ok(()) => self.progress.send_modify(|p| p.applied = offset + 1),
+            Err(_) => fail(&self.progress),
+        }
+    }
+}
+
+fn append(
+    log: &SegmentLog,
+    expected: ExpectedRevision,
+    payload: Vec<u8>,
+) -> Result<segment_log_core::Position, SubmitError> {
+    let pending = log
+        .append(Submit {
+            records: vec![NewRecord {
+                stream: STREAM.to_vec(),
+                expected,
+                key: None,
+                payload,
+            }],
+        })
+        // Every other append error cannot happen by construction: a fault all the same.
+        .map_err(|_: AppendError| SubmitError::Unavailable)?;
+    match pending.wait() {
+        Ok(mut c) => Ok(c.records.remove(0)),
+        Err(CommitError::Indeterminate) => Err(SubmitError::Unknown),
+        Err(_) => Err(SubmitError::Unavailable),
+    }
+}
+
+struct Recovered {
+    log: SegmentLog,
+    conn: Connection,
+    watermark: u64,
+    last_time: Option<Timestamp>,
+    revision: u64,
+}
+
+/// The rows of the "Open" table: the log first, under its lock, then the read store.
+fn recover(dir: &Path, env: EnvRef) -> Result<Recovered, OpenError> {
+    std::fs::create_dir_all(dir)?;
+    let options = Options {
+        linger: std::time::Duration::ZERO,
+        group_byte_cap: 8 * 1024 * 1024,
+        pending_byte_budget: 16 * 1024 * 1024,
+        ..Options::default()
+    };
+    let log = SegmentLog::open(dir.join("log"), options).map_err(|e| {
+        use segment_log_core::OpenError as E;
+        match e {
+            E::Locked => OpenError::Locked,
+            E::UnsupportedVersion(_) => OpenError::Format,
+            E::Corrupt { .. } | E::LogIdMismatch { .. } | E::Gap { .. } | E::NotSealed => {
+                OpenError::Corrupt
+            }
+            E::Io(e) => OpenError::Io(e),
+            e @ (E::Exhausted | E::InvalidOptions(_)) => {
+                OpenError::Io(std::io::Error::other(format!("{e:?}")))
+            }
+        }
+    })?;
+    if log.watermark() == 0 {
+        append(&log, ExpectedRevision::Empty, record::genesis(env))
+            .map_err(|e| OpenError::Io(std::io::Error::other(format!("genesis: {e:?}"))))?;
+    }
+    match decode(&log, 0)? {
+        LogRecord::Genesis { format, .. } if format != FORMAT => return Err(OpenError::Format),
+        LogRecord::Genesis { env: genesis, .. } if genesis != env => {
+            return Err(OpenError::WrongIncarnation);
+        }
+        LogRecord::Genesis { .. } => {}
+        LogRecord::Events { .. } => return Err(OpenError::Corrupt),
+    }
+    let watermark = log.watermark();
+    let mut conn = store::open(dir, env, watermark)?;
+    let mut from = store::applied(&conn).map_err(std::io::Error::other)?;
+    while from < watermark {
+        let records = log.read(from, 64).map_err(read_error)?;
+        if records.is_empty() {
+            return Err(OpenError::Corrupt);
+        }
+        for r in records {
+            let record = match r.offset {
+                0 => None,
+                _ => Some(events_record(&r.payload, env)?),
+            };
+            store::apply(&mut conn, r.offset, record.as_ref()).map_err(std::io::Error::other)?;
+            from = r.offset + 1;
+        }
+    }
+    let last_time = match watermark {
+        0 | 1 => None,
+        _ => match decode(&log, watermark - 1)? {
+            LogRecord::Events { record, .. } => Some(record.time),
+            LogRecord::Genesis { .. } => return Err(OpenError::Corrupt),
+        },
+    };
+    let revision = log.stream_head(STREAM).ok_or(OpenError::Corrupt)?.revision;
+    Ok(Recovered {
+        log,
+        conn,
+        watermark,
+        last_time,
+        revision,
+    })
+}
+
+/// A later record: it must carry this incarnation's token and format (LED-8).
+fn events_record(payload: &[u8], env: EnvRef) -> Result<Record, OpenError> {
+    match record::decode(payload) {
+        Some(LogRecord::Events {
+            format,
+            token,
+            record,
+        }) if format == FORMAT && token == env.token() => Ok(record),
+        _ => Err(OpenError::Corrupt),
+    }
+}
+
+fn decode(log: &SegmentLog, offset: u64) -> Result<LogRecord, OpenError> {
+    let records = log.read(offset, 1).map_err(read_error)?;
+    let payload = &records.first().ok_or(OpenError::Corrupt)?.payload;
+    // A genesis in another format may not decode as this one: check the format first.
+    if let [0, lo, hi, ..] = payload[..]
+        && u16::from_le_bytes([lo, hi]) != FORMAT
+    {
+        return Err(OpenError::Format);
+    }
+    record::decode(payload).ok_or(OpenError::Corrupt)
+}
+
+fn read_error(e: segment_log_core::ReadError) -> OpenError {
+    match e {
+        segment_log_core::ReadError::Corrupt { .. } => OpenError::Corrupt,
+        segment_log_core::ReadError::Io(e) => OpenError::Io(e),
+    }
+}
+
+#[cfg(any(test, feature = "fault-points"))]
+mod faults {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Condvar, Mutex};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AppendFault {
+        /// The record is not appended.
+        Lost,
+        /// The record is appended and durable.
+        Landed,
+    }
+
+    #[derive(Default)]
+    pub struct Faults {
+        held: Mutex<bool>,
+        released: Condvar,
+        append: Mutex<Option<AppendFault>>,
+        fold: AtomicBool,
+    }
+
+    impl Faults {
+        pub fn hold_fold(&self) {
+            *self.held.lock().unwrap() = true;
+        }
+
+        pub fn release_fold(&self) {
+            *self.held.lock().unwrap() = false;
+            self.released.notify_all();
+        }
+
+        pub fn wait_while_held(&self) {
+            let held = self.held.lock().unwrap();
+            drop(self.released.wait_while(held, |h| *h).unwrap());
+        }
+
+        pub fn fail_append(&self, fault: AppendFault) {
+            *self.append.lock().unwrap() = Some(fault);
+        }
+
+        pub fn take_append(&self) -> Option<AppendFault> {
+            self.append.lock().unwrap().take()
+        }
+
+        pub fn fail_fold(&self) {
+            self.fold.store(true, Ordering::SeqCst);
+        }
+
+        pub fn take_fold(&self) -> bool {
+            self.fold.swap(false, Ordering::SeqCst)
+        }
+    }
+}
+
+/// Test hooks, behind the `fault-points` feature.
+#[cfg(any(test, feature = "fault-points"))]
+impl Ledger {
+    /// Holds the writer before its next fold, until [`Ledger::release_fold`].
+    pub fn hold_fold(&self) {
+        self.faults.hold_fold();
+    }
+
+    pub fn release_fold(&self) {
+        self.faults.release_fold();
+    }
+
+    /// The next append answers `Unknown`. With `landed`, its record is appended and durable
+    /// first; without, it is not appended.
+    pub fn fail_next_append(&self, landed: bool) {
+        self.faults.fail_append(if landed {
+            faults::AppendFault::Landed
+        } else {
+            faults::AppendFault::Lost
+        });
+    }
+
+    /// The next fold fails, after its submission is acknowledged.
+    pub fn fail_next_fold(&self) {
+        self.faults.fail_fold();
+    }
+}

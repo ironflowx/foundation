@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 source ci/tools.env
 rustup toolchain install "$NIGHTLY" --profile minimal --no-self-update >/dev/null
 mkdir -p public-api
-for crate in ironflowx-core ironflowx-events ironflowx-proto ironflowx-cell ironflowx; do
+for crate in ironflowx-core ironflowx-events ironflowx-proto ironflowx-cell ironflowx ironflowx-behaviors; do
   # -ss keeps derived impls, so a new derive (an Ord, a From) shows in the diff. Hidden items
   # are documented too, so a second #[doc(hidden)] constructor shows.
   RUSTDOCFLAGS="-Zunstable-options --document-hidden-items" cargo "+$NIGHTLY" public-api --color never -p "$crate" -ss > "public-api/$crate.txt"

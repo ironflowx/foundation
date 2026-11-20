@@ -1,6 +1,6 @@
 [package]
 name = "ironflowx-cell"
-description = "The Ironflow X ledger: one environment's durable commit log and read store. Placeholder: the first real release is 0.1.0."
+description = "The Ironflow X ledger: one environment's durable commit log and read store."
 keywords = ["ironflow", "workflow", "event-driven"]
 readme = "../../README.md"
 version.workspace = true
@@ -10,3 +10,22 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
+
+[features]
+# Test hooks: hold the fold, inject an append or fold fault. No published build enables it.
+fault-points = []
+
+[dependencies]
+ironflowx-core.workspace = true
+ironflowx-events.workspace = true
+ironflowx-proto.workspace = true
+getrandom = { version = "=0.4.3", default-features = false }
+rusqlite = { version = "=0.43.0", default-features = false, features = ["bundled", "fallible_uint"] }
+# D16: exactly 0.1.0, from crates.io.
+segment-log-core = "=0.1.0"
+tokio = { version = "=1.54.1", default-features = false, features = ["rt", "sync"] }
+uuid = { workspace = true, features = ["v7"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "=1.54.1", default-features = false, features = ["rt", "macros", "time"] }

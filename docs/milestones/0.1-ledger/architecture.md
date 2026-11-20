@@ -88,13 +88,16 @@ trait Operations: Send + Sync {
 impl Ledger {
     async fn open(dir: &Path, env: EnvRef, clock: impl Clock) -> Result<Ledger, OpenError>;
     async fn submit(&self, sub: Submission) -> Result<Committed, SubmitError>;
-    async fn read<Q: Query>(&self, q: Q) -> Result<Q::Answer, ReadError>;
+    // q is a query from event rules (get_event, list_events) over the read store
+    async fn read<R>(&self, q: impl FnOnce(&ReadStore) -> Result<R, Error<StoreError>>) -> Result<R, ReadError>;
+    fn env(&self) -> EnvRef;
     async fn close(self);   // drains in-flight submits and the fold, then releases the directory lock
 }
 fn new_env_ref() -> EnvRef;   // a fresh UUIDv7 ID and a 128-bit token from the OS random source
 // Committed   { outcome: Vec<ItemOutcome> }   // one per item, in input order
 // ItemOutcome New(EventId) | Duplicate(EventId) | Refused(Refusal)   // Refused only inside a batch
 // SubmitError Refused(Refusal) | Unknown | Unavailable              // Refused: a single emit, or a whole batch
+// ReadError   Refused(Refusal) | Unavailable                        // a read-store failure fails the ledger
 
 // ironflowx-events: pure. `fresh` yields one event ID per new event, minted by the writer.
 fn decide<V: EventsView>(view: &V, sub: &Submission, now: SequencedTime,

@@ -3,4 +3,9 @@
 targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin"]
 
 [licenses]
-allow = ["MIT"]
+allow = [
+  "MIT",
+  # unicode-ident's Unicode data tables; reached only by the proc macros of dev-dependencies
+  # (tokio's test macros, cucumber).
+  "Unicode-3.0",
+]
