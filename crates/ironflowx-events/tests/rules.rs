@@ -342,10 +342,10 @@ fn invalid_utf8_in_data_or_metadata_is_refused() {
 fn serde_jsons_number_key_is_an_ordinary_key() {
     // With `arbitrary_precision` on, numbers print as written, and such a build takes an object
     // whose first key is this one for a number (the shortcut in json.rs), so it is not probed.
-    let printed = serde_json::from_str::<serde_json::Value>("1e2")
+    let printed = serde_json::from_str::<serde_json::Value>("0.10")
         .unwrap()
         .to_string();
-    if printed == "1e2" {
+    if printed == "0.10" {
         return;
     }
     for data in [
