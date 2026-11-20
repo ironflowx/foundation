@@ -144,9 +144,9 @@ The kind is contract. Four messages are contract too: `event name is required`, 
 
 ## Commit and read
 
-1. The writer is one task and takes one submission at a time (D15). For each it reads the event clock and calls `decide` against the read store, drawing IDs from a UUIDv7 generator.
+1. The writer is one thread and takes one submission at a time (D15). For each it reads the event clock and calls `decide` against the read store, drawing IDs from a UUIDv7 generator.
 2. Nothing to append (all refused, or all duplicates): it answers at once.
-3. Otherwise it appends one record holding every new event and waits for the log's fsync under `spawn_blocking`. Each new event takes the next event sequence, from 1, in input order.
+3. Otherwise it appends one record holding every new event and waits for the log's fsync, off the async threads. Each new event takes the next event sequence, from 1, in input order.
 4. It publishes the new committed head to the read gate, then acknowledges. Then it folds the record, before it takes the next submission, so the read store holds every earlier record when `decide` runs.
 5. A read snapshots the committed head when it arrives and waits until the applied position reaches it. So it sees every write acknowledged before it arrived, whoever made it.
 
@@ -171,7 +171,7 @@ The committed head and the applied position are exclusive log offsets: one past 
 
 The genesis record is the directory's identity; `read.db` is derived state and never trusted over it. The log binds every segment to one log ID, so a segment from another log does not open.
 
-Dropping a `Ledger` without `close` stops the writer; in-flight submits end `Unknown` and the lock is released when the log handle drops.
+Dropping a `Ledger` without `close` stops the writer after the submission in hand; queued submits end `Unknown`, and the lock is released before the drop returns.
 
 ## What is stored
 
@@ -191,7 +191,7 @@ A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 
 | `serde_json` | Pinned in the first PR; the 127 depth limit is checked against it | Event rules | D12 |
 | `uuid` | Pinned, `v7` | Event and environment IDs | |
 | `getrandom` | Pinned | `new_env_ref` | OS random source |
-| `tokio` | Pinned | The writer task, `spawn_blocking`, the read gate | |
+| `tokio` | Pinned | `spawn_blocking` for open, reads and close; the read gate; the answer to a submission | |
 
 How the ledger uses the log:
 
@@ -209,7 +209,7 @@ How the ledger uses the log:
 | D1 | `Operations` in 0.1 is `emit`, `emit_batch`, `get_event`, `list_events`, as hand-written Rust types. Data and metadata are bytes that must hold JSON (D22); optional fields are `Option` | Event rules own every data and range check, for every door: duplicate keys, lone surrogates and invalid UTF-8 exist only in the bytes as sent |
 | D2 | Every `Operations` call takes a `Call`, opaque and empty in 0.1 | The trait does not change shape when 0.2 adds the credential |
 | D3 | Read your writes through a committed head published before the acknowledgment ([Commit and read](#commit-and-read)) | One fsync on the acknowledgment path, and read your writes holds across clients |
-| D4 | The append is the segment log's blocking call, run under `spawn_blocking` on the writer's task | The writer is the log's only writer, so it knows when a commit lands |
+| D4 | The append is the segment log's blocking call, made on the writer's own thread | The writer is the log's only writer, so it knows when a commit lands |
 | D5 | Every check, including the version range, runs before the idempotency lookup | The same request is refused the same way, first time or repeat |
 | D6 | Events list newest first by event sequence | Commit order is total, so two events never tie |
 | D7 | The event clock never goes back: each record's time is the later of the clock and the last committed time | Restarts and clock steps keep event time ordered |

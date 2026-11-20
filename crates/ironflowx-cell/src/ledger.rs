@@ -3,6 +3,7 @@
 
 use std::fmt;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
@@ -27,6 +28,8 @@ pub struct Ledger {
     writer: Option<thread::JoinHandle<()>>,
     progress: Arc<watch::Sender<Progress>>,
     pub(crate) store: Arc<Mutex<Connection>>,
+    /// Set by `Drop`: the writer takes no further submission.
+    stopping: Arc<AtomicBool>,
     #[cfg(any(test, feature = "fault-points"))]
     faults: Arc<faults::Faults>,
 }
@@ -153,6 +156,7 @@ impl Ledger {
         #[cfg(any(test, feature = "fault-points"))]
         let faults = Arc::<faults::Faults>::default();
         let (jobs, queue) = mpsc::channel();
+        let stopping = Arc::<AtomicBool>::default();
         let writer = Writer {
             log: recovered.log,
             store: store.clone(),
@@ -161,6 +165,7 @@ impl Ledger {
             last_time: recovered.last_time,
             revision: recovered.revision,
             progress: progress.clone(),
+            stopping: stopping.clone(),
             #[cfg(any(test, feature = "fault-points"))]
             faults: faults.clone(),
         };
@@ -173,6 +178,7 @@ impl Ledger {
             writer: Some(writer),
             progress,
             store,
+            stopping,
             #[cfg(any(test, feature = "fault-points"))]
             faults,
         })
@@ -239,17 +245,27 @@ impl Ledger {
     /// # Panics
     ///
     /// Outside a tokio runtime.
-    pub async fn close(self) {
-        tokio::task::spawn_blocking(move || drop(self))
-            .await
-            .expect("drop does not panic");
+    pub async fn close(mut self) {
+        #[cfg(any(test, feature = "fault-points"))]
+        self.faults.release_fold();
+        let writer = self.writer.take();
+        drop(self.jobs.take());
+        tokio::task::spawn_blocking(move || {
+            if let Some(writer) = writer {
+                let _ = writer.join();
+            }
+            drop(self);
+        })
+        .await
+        .expect("drop does not panic");
     }
 }
 
-/// Without `close`, dropping still stops the writer and releases the directory before it
-/// returns.
+/// Without `close`, dropping stops the writer after the submission in hand: queued ones end
+/// `Unknown`. The directory is released before it returns.
 impl Drop for Ledger {
     fn drop(&mut self) {
+        self.stopping.store(true, Ordering::SeqCst);
         #[cfg(any(test, feature = "fault-points"))]
         self.faults.release_fold();
         drop(self.jobs.take());
@@ -272,14 +288,29 @@ struct Writer {
     last_time: Option<Timestamp>,
     revision: u64,
     progress: Arc<watch::Sender<Progress>>,
+    stopping: Arc<AtomicBool>,
     #[cfg(any(test, feature = "fault-points"))]
     faults: Arc<faults::Faults>,
+}
+
+/// However the writer ends, a panic included, the ledger is failed, so no read waits forever.
+struct FailOnExit(Arc<watch::Sender<Progress>>);
+
+impl Drop for FailOnExit {
+    fn drop(&mut self) {
+        fail(&self.0);
+    }
 }
 
 impl Writer {
     /// One submission at a time: decide, append, fsync, publish, acknowledge, fold (D15).
     fn run(mut self, queue: &mpsc::Receiver<Job>) {
+        let _exit = FailOnExit(self.progress.clone());
         while let Ok(job) = queue.recv() {
+            if self.stopping.load(Ordering::SeqCst) {
+                // Dropped unanswered: the submitter sees `Unknown`.
+                break;
+            }
             if self.progress.borrow().failed {
                 let _ = job.reply.send(Err(SubmitError::Unavailable));
                 continue;
@@ -301,9 +332,8 @@ impl Writer {
         sub: &Submission,
     ) -> (Result<Committed, SubmitError>, Option<(Record, u64)>) {
         // D7: the event clock never goes back.
-        let now = self
-            .last_time
-            .map_or(self.clock.now(), |t| t.max(self.clock.now()));
+        let now = self.clock.now();
+        let now = self.last_time.map_or(now, |t| t.max(now));
         let decision = {
             let conn = self.store.lock().expect("no query panicked");
             ironflowx_events::decide(
@@ -431,7 +461,7 @@ fn recover(dir: &Path, env: EnvRef) -> Result<Recovered, OpenError> {
         append(&log, ExpectedRevision::Empty, record::genesis(env))
             .map_err(|e| OpenError::Io(std::io::Error::other(format!("genesis: {e:?}"))))?;
     }
-    match decode(&log, 0)? {
+    match read_record(&log, 0)? {
         LogRecord::Genesis { format, .. } if format != FORMAT => return Err(OpenError::Format),
         LogRecord::Genesis { env: genesis, .. } if genesis != env => {
             return Err(OpenError::WrongIncarnation);
@@ -440,25 +470,15 @@ fn recover(dir: &Path, env: EnvRef) -> Result<Recovered, OpenError> {
         LogRecord::Events { .. } => return Err(OpenError::Corrupt),
     }
     let watermark = log.watermark();
-    let mut conn = store::open(dir, env, watermark)?;
-    let mut from = store::applied(&conn).map_err(std::io::Error::other)?;
-    while from < watermark {
-        let records = log.read(from, 64).map_err(read_error)?;
-        if records.is_empty() {
-            return Err(OpenError::Corrupt);
-        }
-        for r in records {
-            let record = match r.offset {
-                0 => None,
-                _ => Some(events_record(&r.payload, env)?),
-            };
-            store::apply(&mut conn, r.offset, record.as_ref()).map_err(std::io::Error::other)?;
-            from = r.offset + 1;
-        }
-    }
+    let conn = match replay(&log, store::open(dir, env, watermark, false)?, env)? {
+        Ok(conn) => conn,
+        // `meta` agreed but the tables did not: rebuild from the log, once.
+        Err(_) => replay(&log, store::open(dir, env, watermark, true)?, env)?
+            .map_err(std::io::Error::other)?,
+    };
     let last_time = match watermark {
         0 | 1 => None,
-        _ => match decode(&log, watermark - 1)? {
+        _ => match read_record(&log, watermark - 1)? {
             LogRecord::Events { record, .. } => Some(record.time),
             LogRecord::Genesis { .. } => return Err(OpenError::Corrupt),
         },
@@ -473,6 +493,36 @@ fn recover(dir: &Path, env: EnvRef) -> Result<Recovered, OpenError> {
     })
 }
 
+/// Folds every record from the read store's applied position to the log's watermark. The
+/// outer error is the log's; the inner, the read store's.
+fn replay(
+    log: &SegmentLog,
+    mut conn: Connection,
+    env: EnvRef,
+) -> Result<rusqlite::Result<Connection>, OpenError> {
+    let mut from = match store::applied(&conn) {
+        Ok(applied) => applied,
+        Err(e) => return Ok(Err(e)),
+    };
+    while from < log.watermark() {
+        let records = log.read(from, 64).map_err(log_read_error)?;
+        if records.is_empty() {
+            return Err(OpenError::Corrupt);
+        }
+        for r in records {
+            let record = match r.offset {
+                0 => None,
+                _ => Some(events_record(&r.payload, env)?),
+            };
+            if let Err(e) = store::apply(&mut conn, r.offset, record.as_ref()) {
+                return Ok(Err(e));
+            }
+            from = r.offset + 1;
+        }
+    }
+    Ok(Ok(conn))
+}
+
 /// A later record: it must carry this incarnation's token and format (LED-8).
 fn events_record(payload: &[u8], env: EnvRef) -> Result<Record, OpenError> {
     match record::decode(payload) {
@@ -485,8 +535,8 @@ fn events_record(payload: &[u8], env: EnvRef) -> Result<Record, OpenError> {
     }
 }
 
-fn decode(log: &SegmentLog, offset: u64) -> Result<LogRecord, OpenError> {
-    let records = log.read(offset, 1).map_err(read_error)?;
+fn read_record(log: &SegmentLog, offset: u64) -> Result<LogRecord, OpenError> {
+    let records = log.read(offset, 1).map_err(log_read_error)?;
     let payload = &records.first().ok_or(OpenError::Corrupt)?.payload;
     // A genesis in another format may not decode as this one: check the format first.
     if let [0, lo, hi, ..] = payload[..]
@@ -497,7 +547,7 @@ fn decode(log: &SegmentLog, offset: u64) -> Result<LogRecord, OpenError> {
     record::decode(payload).ok_or(OpenError::Corrupt)
 }
 
-fn read_error(e: segment_log_core::ReadError) -> OpenError {
+fn log_read_error(e: segment_log_core::ReadError) -> OpenError {
     match e {
         segment_log_core::ReadError::Corrupt { .. } => OpenError::Corrupt,
         segment_log_core::ReadError::Io(e) => OpenError::Io(e),

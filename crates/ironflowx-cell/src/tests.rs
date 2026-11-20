@@ -273,6 +273,41 @@ async fn a_read_store_of_another_incarnation_is_rebuilt() {
 }
 
 #[tokio::test]
+async fn a_read_store_with_damaged_tables_is_rebuilt() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    emit(&ledger, named("a")).await.unwrap();
+    ledger.close().await;
+    // `meta` still agrees with the genesis record; the tables do not.
+    let conn = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
+    conn.execute_batch("DROP TABLE events; UPDATE meta SET applied = 1")
+        .unwrap();
+    drop(conn);
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(names(&ledger).await, ["a"]);
+}
+
+#[tokio::test]
+async fn a_cursor_past_every_sequence_lists_from_the_newest() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    emit(&ledger, named("a")).await.unwrap();
+    let page = LocalOperations::new(&ledger)
+        .list_events(
+            &Call::anonymous(),
+            ListEventsRequest {
+                limit: None,
+                cursor: Some(format!("{}.{}", env.token(), u64::MAX)),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.events.len(), 1);
+}
+
+#[tokio::test]
 async fn a_second_open_is_locked_and_dropping_releases_it() {
     let dir = tempfile::tempdir().unwrap();
     let env = new_env_ref();

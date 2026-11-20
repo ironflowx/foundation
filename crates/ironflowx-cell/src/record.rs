@@ -29,12 +29,8 @@ pub(crate) fn genesis(env: EnvRef) -> Vec<u8> {
 }
 
 pub(crate) fn events(token: IncarnationToken, record: &Record) -> Vec<u8> {
-    events_in_format(FORMAT, token, record)
-}
-
-pub(crate) fn events_in_format(format: u16, token: IncarnationToken, record: &Record) -> Vec<u8> {
     let mut out = vec![EVENTS];
-    out.extend_from_slice(&format.to_le_bytes());
+    out.extend_from_slice(&FORMAT.to_le_bytes());
     put(&mut out, token.to_string().as_bytes());
     out.extend_from_slice(&record.time.as_millis().to_le_bytes());
     out.extend_from_slice(&(record.events.len() as u32).to_le_bytes());

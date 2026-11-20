@@ -23,7 +23,7 @@ impl fmt::Display for StoreError {
 impl std::error::Error for StoreError {}
 
 /// Private, so that `rusqlite` stays out of the public API.
-fn q<T>(r: rusqlite::Result<T>) -> Result<T, StoreError> {
+fn store_err<T>(r: rusqlite::Result<T>) -> Result<T, StoreError> {
     r.map_err(StoreError)
 }
 
@@ -74,10 +74,16 @@ CREATE TABLE meta (applied INTEGER NOT NULL, env_id TEXT NOT NULL, token TEXT NO
 ";
 
 /// Opens `read.db` if it exists, has `meta`, agrees with the genesis record and is not ahead of
-/// the log. Otherwise deletes it and creates an empty one at applied position 0.
-pub(crate) fn open(dir: &Path, env: EnvRef, watermark: u64) -> std::io::Result<Connection> {
+/// the log. Otherwise, or with `rebuild`, deletes it and creates an empty one at applied
+/// position 0.
+pub(crate) fn open(
+    dir: &Path,
+    env: EnvRef,
+    watermark: u64,
+    rebuild: bool,
+) -> std::io::Result<Connection> {
     let path = dir.join("read.db");
-    if let Some(conn) = existing(&path, env, watermark) {
+    if !rebuild && let Some(conn) = existing(&path, env, watermark) {
         return Ok(conn);
     }
     for suffix in ["", "-wal", "-shm"] {
@@ -195,27 +201,29 @@ impl EventsView for ReadStore<'_> {
             .0
             .query_row(sql, [key], |r| r.get::<_, Id>(0))
             .optional();
-        q(id).map(|id| id.map(|id| id.0))
+        store_err(id).map(|id| id.map(|id| id.0))
     }
 
     fn last_sequence(&self) -> Result<u64, StoreError> {
         let sql = "SELECT COALESCE(MAX(sequence), 0) FROM events";
-        q(self.0.query_row(sql, [], |r| r.get(0)))
+        store_err(self.0.query_row(sql, [], |r| r.get(0)))
     }
 
     fn event(&self, id: EventId) -> Result<Option<Event>, StoreError> {
         let sql = format!("SELECT {EVENT_COLUMNS} WHERE id = ?1");
-        q(self
-            .0
-            .query_row(&sql, [id.to_string()], row_event)
-            .optional())
+        store_err(
+            self.0
+                .query_row(&sql, [id.to_string()], row_event)
+                .optional(),
+        )
     }
 
     fn events_before(&self, before: Option<u64>, limit: usize) -> Result<Vec<Event>, StoreError> {
         let sql =
             format!("SELECT {EVENT_COLUMNS} WHERE sequence < ?1 ORDER BY sequence DESC LIMIT ?2");
-        let before = before.map_or(i64::MAX, |b| b as i64);
-        q(self.0.prepare(&sql).and_then(|mut stmt| {
+        // A cursor past every sequence lists from the newest.
+        let before = before.map_or(i64::MAX, |b| i64::try_from(b).unwrap_or(i64::MAX));
+        store_err(self.0.prepare(&sql).and_then(|mut stmt| {
             stmt.query_map(params![before, limit as i64], row_event)?
                 .collect()
         }))
