@@ -4,7 +4,7 @@ Build-order step 2 of [0.1 Ledger](../README.md). Needs Spec 1.
 
 ## Problem Statement
 
-A client that emits an event needs to know, the same way every time and through every door, whether the event is accepted and what is stored. Today nothing decides that. If the checks lived in each door, they would drift apart, and some of them (repeated keys, lone surrogates) can only be made on the JSON text itself.
+A client that emits an event needs to know, the same way every time and through every door, whether the event is accepted and what is stored. Today nothing decides that. If the checks lived in each door, they would drift apart, and some of them (repeated keys, lone surrogates, invalid UTF-8) can only be made on the bytes as sent.
 
 ## Solution
 
@@ -31,7 +31,7 @@ One pure module decides what an event is. Given a submission, the current state 
 17. As a client, I want a number outside `f64` range refused, so that no reader fails on it.
 18. As a client, I want a top-level `$redacted` key in data refused whatever its value, so that I cannot forge a redaction marker.
 19. As a client, I want a nested `$redacted` key accepted, so that the rule takes no more than it needs.
-20. As a client, I want metadata to be absent or a JSON object of at most 65,536 bytes, under the same text rules as data, so that metadata is bounded and well formed.
+20. As a client, I want metadata to be absent or a JSON object of at most 65,536 bytes, under the same rules as data, so that metadata is bounded and well formed.
 21. As a client, I want an absent version to store 1, so that I need not set one.
 22. As a client, I want a version from 1 to 2,147,483,647 stored as sent, and anything else refused, so that zero never silently means "unset".
 23. As a client, I want an idempotency key of 1 to 256 bytes with no NUL accepted, and an empty or longer one refused, so that a key is always usable.
@@ -56,6 +56,7 @@ One pure module decides what an event is. Given a submission, the current state 
 42. As the ledger, I want `fold` to apply one record to the read store, so that the read store is derived only from the log.
 43. As a maintainer, I want event rules to hold every check, default and limit, so that an adapter over them holds no rule.
 44. As a client, I want every emit without an idempotency key to store a new event, so that two identical emits are two events unless I say otherwise.
+45. As a door, I want data and metadata taken as bytes and invalid UTF-8 in them refused by event rules, so that no door has to make that check itself.
 
 ## Implementation Decisions
 
@@ -63,7 +64,7 @@ One pure module decides what an event is. Given a submission, the current state 
 - **Interface:** `decide` (submission, view of current state, event-clock time, iterator of fresh event IDs → decision, or a refusal or store error), `fold` (record → read store), and queries (event by ID; a page of events). The shapes are in the architecture doc.
 - **Order of `decide`:** batch count, then per-item rules, then batch bytes over the items that passed, then the idempotency lookup in input order (a key seen earlier in the same batch counts), then one ID per new event (D5, D9, D10).
 - **Rules:** exactly the table in the architecture doc's "Event rules" section. Name character classes are Rust's `char::is_whitespace` and `char::is_control`; owned names match in exact case.
-- **JSON checking:** one `serde_json` pass with a visitor that deserializes every key and string, and errors on a repeated key, a NUL or a number out of range (D12). No second parser. Data and metadata are kept as the bytes sent.
+- **JSON checking:** data and metadata arrive as bytes (D22). One `serde_json` pass over them, which refuses invalid UTF-8, with a visitor that deserializes every key and string, and errors on a repeated key, a NUL or a number out of range (D12). No second parser. Data and metadata are kept as the bytes sent.
 - **State access:** `decide` reads through a view trait and `fold` writes through a tables trait, so the crate never names SQLite. The ledger supplies the real ones (Spec 4).
 - **Refusals:** a refusal carries the `Invalid` kind and a message. Three messages are contract here: "event name is required", "event data exceeds maximum size", "batch size {n} exceeds maximum of 100". "event not found" is contract for the by-ID query.
 - **Event sequence:** starts at 1 and is assigned in input order within a record.

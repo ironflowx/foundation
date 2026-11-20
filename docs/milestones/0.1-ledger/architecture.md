@@ -70,14 +70,14 @@ trait Operations: Send + Sync {
     fn get_event(&self, cx: &Call, req: GetEventRequest) -> impl Future<Output = Result<Event, OpError>> + Send;
     fn list_events(&self, cx: &Call, req: ListEventsRequest) -> impl Future<Output = Result<EventPage, OpError>> + Send;
 }
-// EmitRequest      { name: String, data: Option<String> /* JSON text; None stores null */,
-//                    metadata: Option<String> /* JSON object text */, version: Option<i64> /* None stores 1 */,
+// EmitRequest      { name: String, data: Option<Vec<u8>> /* one JSON value (D22); None stores null */,
+//                    metadata: Option<Vec<u8>> /* one JSON object */, version: Option<i64> /* None stores 1 */,
 //                    idempotency_key: Option<String> /* None: no key */ }
 // EmitResponse     { event_id: EventId, duplicate: bool }
 // EmitBatchRequest { items: Vec<EmitRequest> }
 // EmitBatchResponse{ items: Vec<Result<EmitResponse, OpError>> }  // one per input, in input order
 // GetEventRequest  { event_id: String }                            // an ID that does not parse is NotFound
-// Event            { event_id, name, data /* the JSON text as sent */, metadata: Option<String>, version: i64,
+// Event            { event_id, name, data: Vec<u8> /* the bytes as sent */, metadata: Option<Vec<u8>>, version: i64,
 //                    idempotency_key: Option<String>, time: Timestamp }
 // ListEventsRequest{ limit: Option<NonZeroU32> /* None 20, above 200 clamps to 200 */, cursor: Option<String> }
 // EventPage        { events: Vec<Event> /* newest first */, next: Option<String> /* None on the last page */ }
@@ -119,7 +119,7 @@ fn fold<T: EventTables>(tx: &mut T, record: &Record) -> Result<(), T::Error>;
 | Name | Segments split on `.`; none empty. No Unicode whitespace (`char::is_whitespace`), no control character (`char::is_control`) | EVT-011, EVT-012 |
 | Name | Owned, so refused, in exact case: `ironflowx`, `ironflowx.…`, `$system`, `$system.…` | EVT-012, EVT-013 |
 | Data | Absent stores `null`. Otherwise one JSON value of at most 524,288 bytes as sent, stored and returned as those bytes | EVT-003, EVT-004, EVT-017, EVT-039 |
-| Data, metadata | Nested at most 127 deep; no number outside `f64` range; no key repeated in one object at any depth, comparing keys after unescaping; no NUL in any key or string after unescaping; no unpaired surrogate escape | EVT-016, EVT-039 |
+| Data, metadata | Valid UTF-8. Nested at most 127 deep; no number outside `f64` range; no key repeated in one object at any depth, comparing keys after unescaping; no NUL in any key or string after unescaping; no unpaired surrogate escape | EVT-016, EVT-039 |
 | Data | A top-level object key `$redacted`, whatever its value, is refused; nested ones are accepted | EVT-014, EVT-015 |
 | Metadata | Absent, or a JSON object of at most 65,536 bytes as sent | EVT-016, EVT-038 |
 | Version | Absent stores 1; otherwise 1 to 2,147,483,647 | EVT-002, EVT-008, EVT-009 |

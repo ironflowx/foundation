@@ -29,9 +29,9 @@ impl core::fmt::Debug for ironflowx_proto::EmitBatchResponse
 pub fn ironflowx_proto::EmitBatchResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_proto::EmitBatchResponse
 pub struct ironflowx_proto::EmitRequest
-pub ironflowx_proto::EmitRequest::data: core::option::Option<alloc::string::String>
+pub ironflowx_proto::EmitRequest::data: core::option::Option<alloc::vec::Vec<u8>>
 pub ironflowx_proto::EmitRequest::idempotency_key: core::option::Option<alloc::string::String>
-pub ironflowx_proto::EmitRequest::metadata: core::option::Option<alloc::string::String>
+pub ironflowx_proto::EmitRequest::metadata: core::option::Option<alloc::vec::Vec<u8>>
 pub ironflowx_proto::EmitRequest::name: alloc::string::String
 pub ironflowx_proto::EmitRequest::version: core::option::Option<i64>
 impl core::clone::Clone for ironflowx_proto::EmitRequest
@@ -56,10 +56,10 @@ impl core::fmt::Debug for ironflowx_proto::EmitResponse
 pub fn ironflowx_proto::EmitResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_proto::EmitResponse
 pub struct ironflowx_proto::Event
-pub ironflowx_proto::Event::data: alloc::string::String
+pub ironflowx_proto::Event::data: alloc::vec::Vec<u8>
 pub ironflowx_proto::Event::event_id: ironflowx_core::id::EventId
 pub ironflowx_proto::Event::idempotency_key: core::option::Option<alloc::string::String>
-pub ironflowx_proto::Event::metadata: core::option::Option<alloc::string::String>
+pub ironflowx_proto::Event::metadata: core::option::Option<alloc::vec::Vec<u8>>
 pub ironflowx_proto::Event::name: alloc::string::String
 pub ironflowx_proto::Event::time: ironflowx_core::time::Timestamp
 pub ironflowx_proto::Event::version: i64

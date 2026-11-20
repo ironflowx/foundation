@@ -42,7 +42,7 @@ impl Operations for Fixed {
         Ok(Event {
             event_id: ID.parse().unwrap(),
             name: "a".into(),
-            data: "null".into(),
+            data: b"null".to_vec(),
             metadata: None,
             version: 1,
             idempotency_key: None,
@@ -75,7 +75,7 @@ fn drive<O: Operations>(ops: &O) {
     let cx = Call::anonymous();
     let req = EmitRequest {
         name: "a".into(),
-        data: Some("{}".into()),
+        data: Some(b"{}".to_vec()),
         metadata: None,
         version: None,
         idempotency_key: Some("k".into()),

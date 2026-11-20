@@ -170,7 +170,7 @@ Feature: Emitting events and reading them back
   # go: docs/adr/0175-require-unique-keys-in-event-data.md
   # go: internal/server/connect/payload_marker_test.go TestEventDoorsRejectDuplicateKeyOnTheWire
   # go: internal/server/connect/payload_marker_test.go TestEventDoorsRejectNulOnTheWire
-  # go: none for "not JSON", depth and metadata shape: Ironflow X takes JSON text (architecture.md, Event rules)
+  # go: none for "not JSON", depth and metadata shape: Ironflow X takes the JSON as bytes (architecture.md, Event rules)
   Scenario Outline: Malformed event data is refused
     When the client emits event "order.placed" whose <part> is <text>
     Then the emit is refused as invalid
@@ -220,11 +220,11 @@ Feature: Emitting events and reading them back
 
   @EVT-039 @release-0.1
   # go: internal/server/event_emit_connect_migration_test.go TestEventEmitConnectMigration (round trip)
-  # go: none for depth and byte-exact text: Ironflow X stores the JSON text as sent (architecture.md, Event rules)
+  # go: none for depth and byte-exact text: Ironflow X stores the bytes as sent (architecture.md, Event rules)
   Scenario Outline: Data at the edges is accepted and reads back byte for byte
     When the client emits event "edge.case" with data <data>
     And the client reads that event by ID
-    Then its data is exactly the text sent
+    Then its data is exactly the bytes sent
 
     Examples:
       | data                       |

@@ -19,7 +19,7 @@ One trait, `Operations`, names the four things a client can do in 0.1: emit, emi
 5. As a client, I want one operation to list a page of events, with an optional limit and an optional cursor, so that I can page through an environment.
 6. As a client, I want a zero limit to be impossible to express, so that I cannot ask for an empty page by mistake.
 7. As a client, I want every failure as an error kind and a message, so that I can decide whether to retry from the kind alone.
-8. As a client, I want data and metadata passed as JSON text, so that the engine sees exactly the bytes I sent.
+8. As a client, I want data and metadata passed as bytes, so that the engine sees exactly the bytes I sent.
 9. As an implementer of the 0.2 operation layer, I want every call to take an opaque call context, so that adding the credential does not change the trait's shape.
 10. As an implementer of the 0.3 door, I want hand-written Rust message types, so that I can map a wire format onto them without the interface depending on that format.
 11. As a test author, I want adapters to be generic over the trait, so that the same steps run against the in-process adapter now and a remote one later.
@@ -29,7 +29,7 @@ One trait, `Operations`, names the four things a client can do in 0.1: emit, emi
 
 - **Module:** the `Operations` interface, in the interface crate. It depends on core only and holds no logic.
 - **Trait:** four async operations (`emit`, `emit_batch`, `get_event`, `list_events`), each taking a call context and a request. Futures are `Send`. No `dyn` use in 0.1; adapters are generic (D1).
-- **Messages:** the field lists in the architecture doc's "Interfaces" section. Optional fields are `Option`; data and metadata are JSON text; the list limit is a non-zero integer.
+- **Messages:** the field lists in the architecture doc's "Interfaces" section. Optional fields are `Option`; data and metadata are bytes that must hold JSON (D22); the list limit is a non-zero integer.
 - **Call context:** an opaque value with no fields in 0.1 and one constructor for an anonymous call (D2).
 - **Error:** an error kind from core and a message.
 - **Defaults and limits are not here.** The version default, the page-limit default and clamp, and every check belong to event rules.

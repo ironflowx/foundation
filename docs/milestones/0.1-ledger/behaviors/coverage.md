@@ -133,7 +133,7 @@ No conformance scenario is in 0.1 scope. No event-only scenario exists to map.
 | "API Payload Limits", Max Event Data (l.902) | 512 KB measured as JSON; `invalid_argument`; no event written | EVT-017 |
 | l.902 | covers `TriggerSync`, `PubSubService.Emit`, `AppendEvent`, invoke, A2A | 0.4 / 0.14 / 0.13 / 0.6 |
 | l.902 | webhook bodies 1 MB | 0.12 |
-| Unique keys and storable text (l.903) | data and metadata: no repeated key, NUL, invalid UTF-8, unpaired surrogate; `invalid_argument`; nothing written | EVT-016; invalid UTF-8: excluded by type (`String`), a door case for 0.3 |
+| Unique keys and storable text (l.903) | data and metadata: no repeated key, NUL, invalid UTF-8, unpaired surrogate; `invalid_argument`; nothing written | EVT-016; invalid UTF-8: EVT-016 too, since data and metadata are bytes (D22; the rows arrive with #23) |
 | l.903 | idempotency key: no NUL | EVT-016 |
 | l.903 | idempotency key: no invalid UTF-8 | Out of scope: 0.3 (raw bytes reach only through a header door; `Operations` takes valid UTF-8). No 0.3 scenario yet: note for the 0.3 sweep |
 | l.903 | NATS terminates, webhooks keep one value for a repeated key | 0.17, 0.12 |
@@ -214,7 +214,7 @@ No conformance scenario is in 0.1 scope. No event-only scenario exists to map.
 | 0175 Decision | duplicate key at any depth refused | EVT-016 |
 | 0175 Decision | keys compare after unescaping | EVT-016 (resolved) |
 | 0175 Decision | NUL in a key or string; a top-level string counts | EVT-016 (resolved) |
-| 0175 Decision | invalid UTF-8; unpaired high or lone low surrogate | Surrogates: EVT-016; invalid UTF-8: excluded by type (`String`), 0.3 |
+| 0175 Decision | invalid UTF-8; unpaired high or lone low surrogate | Surrogates: EVT-016; invalid UTF-8: EVT-016 (D22; the rows arrive with #23) |
 | 0175 Decision | metadata gets the same check | EVT-016 |
 | 0175 Decision | idempotency key: NUL refused, no key format added | NUL: EVT-016. Changed: 1–256 bytes, `""` refused (EVT-035, EVT-037) |
 | 0175 Decision | idempotency key: invalid UTF-8 | Out of scope: 0.3 (header bytes) |
@@ -295,7 +295,7 @@ Deliberate changes, each a behavior Ironflow X states on purpose:
 - Owned names are `ironflowx`, `ironflowx.…`, `$system` and `$system.…`, exact case (EVT-012, EVT-013), per decision 84.
 - Version 0 is refused instead of coerced to 1 (EVT-008); an empty idempotency key is refused instead of meaning no key (EVT-037).
 - An empty batch answers with no results, as today (EVT-023); a key repeated inside one batch dedups (EVT-022); each item's metadata is capped at 64 KiB (EVT-038), and a batch's data plus metadata at 4 MiB (EVT-025), both new.
-- Data and metadata are stored and returned as the JSON text sent, and the size limit counts those bytes, not compact JSON (EVT-017, EVT-039). Nesting is capped at 127, `serde_json`'s limit.
+- Data and metadata are stored and returned as the bytes sent, and the size limit counts those bytes, not compact JSON (EVT-017, EVT-039). Nesting is capped at 127, `serde_json`'s limit.
 
 No other docs claim or conformance scenario contradicts a scenario. Three near-misses, none blocking:
 
@@ -307,3 +307,4 @@ No other docs claim or conformance scenario contradicts a scenario. Three near-m
 
 - Three event-capability surfaces have no release line in the header: `ExplainEventMatch` / `ironflow events explain` (ADR 0153), `RedactEvent` / `ironflow event redact`, and the `IRONFLOW_EVENT_RETENTION_DAYS` pruner. Add each to the header's "Later in this capability" line, or to a release row.
 - Idempotency key with invalid UTF-8 (configuration.md l.903, ADR 0175): carry it into the 0.3 sweep as a door scenario.
+- The JSON door (0.3) embeds event data as a JSON value, with no base64, and passes that value's raw bytes through without re-serialising it, or "stored as sent" breaks (EVT-039, D22).

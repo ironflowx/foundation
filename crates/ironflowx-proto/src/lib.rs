@@ -64,10 +64,10 @@ pub struct OpError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmitRequest {
     pub name: String,
-    /// JSON text; `None` stores `null`.
-    pub data: Option<String>,
-    /// JSON object text.
-    pub metadata: Option<String>,
+    /// The bytes of one JSON value; `None` stores `null` (D22).
+    pub data: Option<Vec<u8>>,
+    /// The bytes of one JSON object.
+    pub metadata: Option<Vec<u8>>,
     /// `None` stores 1.
     pub version: Option<i64>,
     /// `None`: no key.
@@ -107,9 +107,9 @@ pub struct GetEventRequest {
 pub struct Event {
     pub event_id: EventId,
     pub name: String,
-    /// The JSON text as sent.
-    pub data: String,
-    pub metadata: Option<String>,
+    /// The bytes as sent; the JSON `null` when none were.
+    pub data: Vec<u8>,
+    pub metadata: Option<Vec<u8>>,
     pub version: i64,
     pub idempotency_key: Option<String>,
     pub time: Timestamp,
