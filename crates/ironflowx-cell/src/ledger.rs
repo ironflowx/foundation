@@ -67,7 +67,8 @@ pub enum OpenError {
     WrongIncarnation,
     /// The directory is in another format.
     Format,
-    /// The log is damaged or holds a foreign record.
+    /// The log is damaged, holds a foreign record, or lost records the read store already
+    /// folded. Needs a person: architecture.md, "When open answers `Corrupt`".
     Corrupt,
     Io(std::io::Error),
 }

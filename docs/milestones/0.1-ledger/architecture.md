@@ -173,6 +173,29 @@ The genesis record is the directory's identity; `read.db` is derived state and n
 
 Dropping a `Ledger` without `close` stops the writer after the submission in hand; queued submits, never decided, end `Unavailable`. The drop joins the writer, so it blocks, and the lock is released before it returns; async code calls `close`.
 
+### When open answers `Corrupt`
+
+`Corrupt` is for a person to resolve; the ledger never repairs itself. It comes from one of two places, and both look the same to the embedder:
+
+- **The log refused.** The segment log found damage it will not truncate on its own.
+- **The ledger refused.** The log opened, but `read.db` names this environment and has folded records the log no longer holds. The fold runs only after fsync, so the log lost acknowledged events: a bad frame the log truncated as a torn tail ([segment-log#178](https://github.com/ironflowx/segment-log/issues/178)), an older copy of the log restored, a deleted segment, or a lossy repair (below).
+
+Steps, with the embedder stopped:
+
+1. **Copy the whole directory** before changing anything.
+2. **Ask the log:** `segment-log-server repair verify` on `<dir>/log`. The `repair` subcommands, flags and exit codes are in the segment log's [Operator repair](https://github.com/ironflowx/segment-log/blob/v0.1.0/docs/architecture/api.md#operator-repair) section, the only source for them.
+3. **If verify reports damage**, the log refused. Only damage in the newest segment is repairable: run `repair truncate`, a dry run that prints the plan, then apply it.
+   - **Lossless plan:** reopen the ledger. It replays and opens.
+   - **Lossy plan:** acknowledged records are dropped and the tool needs `--drop-acknowledged`, which leaves the log sealed. Go to step 4, then read the note on a sealed log.
+   - **Other damage** (an older segment, the headers) is not repairable in 0.1: restore the directory from a backup.
+4. **If verify is clean**, or after a lossy repair, the ledger refused. Prefer restoring the directory from a backup at least as new as the last acknowledged emit. To accept the loss instead, delete `<dir>/read.db` and its `-wal` and `-shm` files and reopen: the ledger rebuilds the read store from the log as it now is. This deletion is the one step that accepts lost events.
+
+After accepting a loss, the lost events are gone for good, and so are their idempotency keys: a client's keyed retry stores a new event instead of returning the original. New events reuse the lost event sequences, so a cursor issued before the loss can page into events stored after it.
+
+A sealed log, after a lossy repair, opens and reads, and refuses every emit with `Unavailable` (D19). 0.1 cannot unseal it. To take writes again, create a new environment (`new_env_ref`) in a new directory; moving events into it is outside 0.1.
+
+`WrongIncarnation` and `Format` are not damage: the `EnvRef` or the build does not match the directory. Open it with the `EnvRef` it was created with, or with a build that reads its format.
+
 ## What is stored
 
 | Where | Holds |
