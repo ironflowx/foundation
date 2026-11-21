@@ -9,7 +9,7 @@ before you push. `git config core.hooksPath .githooks` makes `git push` run it.
 
 | Job | Enforces | Run locally | When it fails |
 |---|---|---|---|
-| `fmt`, `clippy`, `clippy-macos`, `test` | Formatting, lints with warnings denied, tests | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` | Fix the code |
+| `fmt`, `clippy`, `clippy-macos`, `test` | Formatting, lints with warnings denied, tests; `test` runs the crash test on Linux and macOS with `CRASH_KILLS=100` | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `env -u CRASH_SEED CRASH_KILLS=100 cargo test --workspace` | Fix the code |
 | `deny` | Licences and advisories, Linux and macOS graphs (`deny.toml`) | `cargo deny check` | Replace the dependency, or extend `deny.toml` with a reason |
 | `purity` | LED-15: pure crates' dependencies and calls; D17: only `ironflowx-cell` calls `SequencedTime::from_event_clock` (and one helper in `ironflowx-events`' `tests/rules.rs`, which stands in for the ledger); crash test: no published crate (no `publish = false`) can build with `__fault-points`: by default, through a dependency or a feature of its own, on any target (`ci/no-fault-points.sh`) | `ci/purity.sh` | See [Pure crates](#pure-crates); for `__fault-points`, drop it from the published crate's defaults or dependency |
 | `public-api` | D21: each crate's public API matches `public-api/<crate>.txt`; LED-9: nothing public takes a bare `EnvironmentId`; no public API names a dependency's type (`rusqlite`, `segment_log_core`, `tokio`, `uuid`, `getrandom`) | `ci/public-api.sh` | Review the printed diff, then `ci/public-api.sh --bless` and commit the snapshot |
