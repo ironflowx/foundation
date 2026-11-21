@@ -19,7 +19,8 @@ step() {
 }
 step cargo fmt --all --check
 step cargo clippy --workspace --all-targets --locked -- -D warnings
-step cargo test --workspace --locked
+# CI's crash-test budget, whatever a replay left in the shell.
+step env -u CRASH_SEED CRASH_KILLS=100 cargo test --workspace --locked
 step cargo test -p ironflowx-events --locked --features serde_json/arbitrary_precision
 step cargo deny check
 step ci/purity.sh
