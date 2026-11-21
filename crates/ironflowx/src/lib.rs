@@ -1,5 +1,6 @@
 //! Ironflow foundation crates in one dependency.
-//!
-//! Each foundation crate is re-exported as a module as it is published.
 
+pub use ironflowx_cell as cell;
 pub use ironflowx_core as core;
+pub use ironflowx_events as events;
+pub use ironflowx_proto as proto;

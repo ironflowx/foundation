@@ -662,6 +662,9 @@ impl cucumber::Parser<&'static str> for Unescaped {
         let mut feature =
             Feature::parse(text, GherkinEnv::default()).unwrap_or_else(|e| panic!("{path}: {e}"));
         feature.path = Some(path.into());
+        // Spec 4: all 41 run, so a scenario cannot drop out unnoticed. Cucumber counts each
+        // outline example, so it reports more.
+        assert_eq!(feature.scenarios.len(), 41, "the 0.1 scenarios");
         let feature = feature.expand_examples().expect("examples expand");
         futures::stream::iter(vec![Ok(feature)])
     }

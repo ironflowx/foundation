@@ -76,7 +76,7 @@ All 41 scenarios in [`../behaviors/events.feature`](../behaviors/events.feature)
 
 - A scenario is done when it passes under the behavior runner through `LocalOperations`, not when its rule is unit-tested.
 - Every ticket cut from this spec names, in its acceptance criteria, the `EVT` IDs it makes pass. Together the tickets name all 41, each exactly once.
-- The runner fails on a skipped or undefined step, so a scenario cannot drop out unnoticed. This spec is done when it reports 41 scenarios passed.
+- The runner fails on a skipped or undefined step, so a scenario cannot drop out unnoticed. This spec is done when all 41 pass: the runner asserts the feature holds 41, and reports 95 because it counts each outline example.
 
 | Scenario | Shows | Spec 2 stories | Spec 4 stories |
 |---|---|---|---|
