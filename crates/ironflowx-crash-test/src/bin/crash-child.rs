@@ -7,7 +7,9 @@
 //! - `batch <item> <item> ...` emits a batch and prints `<result> <result> ...`, one per item
 //!   in input order, or `err:<kind>` for the whole batch;
 //! - `list <limit> <cursor>|-` lists a page and prints `page <next>|- <event-id> ...`, or
-//!   `err:<kind>`.
+//!   `err:<kind>`;
+//! - `clock <millis>` steps the manual clock by `<millis>`, which may be negative, and prints
+//!   `ok`.
 //!
 //! An item is `<name>,<key>|-,<marker>`: the marker goes in the metadata as
 //! `{"marker":"<marker>"}`, so the parent finds the event without its ID.
@@ -121,7 +123,7 @@ fn main() {
         .expect("a runtime");
     runtime.block_on(async {
         let clock = ManualClock::new(Timestamp::from_millis(1_700_000_000_000));
-        let ledger = Ledger::open(&dir, env, clock)
+        let ledger = Ledger::open(&dir, env, clock.clone())
             .await
             .expect("the ledger opens");
         let ops = LocalOperations::new(&ledger);
@@ -163,6 +165,10 @@ fn main() {
                             }
                             Err(e) => format!("err:{:?}", e.kind),
                         }
+                    }
+                    "clock" => {
+                        clock.step(rest.parse().expect("a step in milliseconds"));
+                        "ok".to_owned()
                     }
                     _ => panic!("unknown request {line:?}"),
                 }
