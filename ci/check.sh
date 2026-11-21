@@ -5,7 +5,18 @@
 # Commit first: public-api compares the snapshots with git.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-step() { echo "== $*"; "$@"; }
+# Each step's output is shown only if it fails, so a passing run stays a few lines long.
+step() {
+  echo "== $*"
+  local out
+  out=$(mktemp)
+  if ! "$@" >"$out" 2>&1; then
+    cat "$out"
+    rm -f "$out"
+    exit 1
+  fi
+  rm -f "$out"
+}
 step cargo fmt --all --check
 step cargo clippy --workspace --all-targets --locked -- -D warnings
 step cargo test --workspace --locked

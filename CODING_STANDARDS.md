@@ -6,6 +6,8 @@ Judgement rules for review. Anything a tool can check belongs in CI instead (`ci
   `decisions.md`, `invariants.md`, the behaviors) updates that line in the same PR. A new decision
   gets the next D-number in `decisions.md`; an overturned one is marked superseded, not deleted.
   The issue that planned the work is not updated after it closes.
+- **Assertions can fail.** For each new assertion, the reviewer names the defect it catches.
+  One that no defect can fail is deleted; one looser than its case allows is tightened.
 - **Checks prove themselves.** A new CI check lands with a fixture that triggers every pattern it
   claims to catch, and `must-reject.sh` asserts it fails for that reason, not any failure.
 - **Rules are probed at their edges.** For code that accepts or refuses input, the reviewer runs
