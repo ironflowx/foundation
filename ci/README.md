@@ -6,7 +6,12 @@ that silently stops working fails CI.
 
 `ci/check.sh` runs every job below but `soak` locally, in order, and stops at the first failure: run it
 before you push. `git config core.hooksPath .githooks` makes `git push` run it. The root
-`Makefile` names these commands and the release steps; `make` lists them.
+`Makefile` names these commands; `make` lists them.
+
+A release is `make release VERSION=X.Y.Z` (`ci/release.sh`): from a clean `main` that matches
+`origin/main` with green CI, it publishes every crate without `publish = false`, then tags and
+pushes `vX.Y.Z`. A rerun skips what is already done. Rehearse it first with
+`make release-dry-run VERSION=X.Y.Z`, which runs every check and `cargo publish --dry-run`.
 
 | Job | Enforces | Run locally | When it fails |
 |---|---|---|---|
