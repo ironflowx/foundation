@@ -271,20 +271,24 @@ fn run(dir: &Path, env: EnvRef) -> Seen {
     let count = requests.len();
     for (i, request) in requests.into_iter().enumerate() {
         let label = format!("request {}", i + 1);
-        let (line, items) = match request {
-            Request::Emit(item) => (format!("emit {}", item.line()), vec![item]),
+        let (line, items, batch) = match request {
+            Request::Emit(item) => (format!("emit {}", item.line()), vec![item], false),
             Request::Batch(items) => {
                 let lines: Vec<_> = items.iter().map(Item::line).collect();
-                (format!("batch {}", lines.join(" ")), items)
+                (format!("batch {}", lines.join(" ")), items, true)
             }
             Request::List(limit) => {
                 let Answer::Line(page) = child.request(&format!("list {limit} -")) else {
                     panic!("{label}: a list stopped at the point");
                 };
-                let mut words = page.strip_prefix("page ").expect("a page").split(' ');
+                let Some(page) = page.strip_prefix("page ") else {
+                    panic!("{label}: the list answered {page}");
+                };
+                let mut words = page.split(' ');
                 let next = words.next().expect("a cursor").to_owned();
                 assert_ne!(next, "-", "{label}: the page is not the last");
-                let ids = words.map(str::to_owned).collect();
+                let ids: Vec<String> = words.map(str::to_owned).collect();
+                assert!(!ids.is_empty(), "{label}: the page holds an event");
                 seen.cursor = Some((label, limit, ids, next));
                 continue;
             }
@@ -300,6 +304,9 @@ fn run(dir: &Path, env: EnvRef) -> Seen {
             break;
         };
         let results: Vec<&str> = answer.split(' ').collect();
+        if batch && items.len() > 1 && results.len() == 1 {
+            panic!("{label}: the whole batch failed: {answer}");
+        }
         assert_eq!(results.len(), items.len(), "{label}: one result per item");
         for ((item, expect), result) in items.iter().zip(expect).zip(&results) {
             seen.answer(&label, item, expect, result);
@@ -380,24 +387,6 @@ async fn check(ops: &LocalOperations<'_>, seen: &Seen) -> Result<Vec<Event>, Str
             return Err(format!("{}: {id} reads back another event", item.request));
         }
     }
-    for (key, (request, id)) in &seen.keys {
-        let again = EmitRequest {
-            name: "crash.again".into(),
-            data: None,
-            metadata: None,
-            version: None,
-            idempotency_key: Some(key.clone()),
-        };
-        match ops.emit(&cx, again).await {
-            Ok(r) if r.duplicate && r.event_id.to_string() == *id => {}
-            other => {
-                return Err(format!(
-                    "{request}: acknowledged key {key} answers {other:?}, not its original {id}"
-                ));
-            }
-        }
-    }
-
     let page = ops
         .list_events(
             &cx,
@@ -410,22 +399,20 @@ async fn check(ops: &LocalOperations<'_>, seen: &Seen) -> Result<Vec<Event>, Str
         .map_err(|e| format!("events list: {e}"))?;
     assert!(page.next.is_none(), "one page holds every event");
     let newest_first: Vec<String> = page.events.iter().map(|e| e.event_id.to_string()).collect();
-    let stored: BTreeSet<&str> = page.events.iter().filter_map(marker).collect();
+    // Oldest first, an unmarked event as `None`, so a stray or doubled event shows.
+    let listed: Vec<Option<&str>> = page.events.iter().rev().map(marker).collect();
+    let stored: BTreeSet<&str> = listed.iter().flatten().copied().collect();
     let sent: BTreeSet<&str> = seen.items.iter().map(|i| i.marker.as_str()).collect();
-    if let Some(stray) = stored.difference(&sent).next() {
-        return Err(format!("an event with marker {stray} that no request sent"));
+    if let Some(stray) = listed.iter().find(|m| m.is_none_or(|m| !sent.contains(m))) {
+        return Err(format!(
+            "an event with marker {stray:?} that no request sent"
+        ));
     }
     for item in &seen.items {
         if item.expect != Expect::New && stored.contains(item.marker.as_str()) {
             return Err(format!(
                 "{}: {} was {:?} yet stored an event",
                 item.request, item.marker, item.expect
-            ));
-        }
-        if item.acked.is_some() && !stored.contains(item.marker.as_str()) {
-            return Err(format!(
-                "{}: acknowledged {} is not listed",
-                item.request, item.marker
             ));
         }
     }
@@ -446,6 +433,33 @@ async fn check(ops: &LocalOperations<'_>, seen: &Seen) -> Result<Vec<Event>, Str
                 new.len()
             ));
         }
+    }
+
+    // Exactly the acknowledged new events, once each, in acknowledgment order, then nothing or
+    // all of the unanswered request's new events.
+    let acked: Vec<&SentItem> = seen.items.iter().filter(|i| i.acked.is_some()).collect();
+    for (n, item) in acked.iter().enumerate() {
+        if listed.get(n) != Some(&Some(item.marker.as_str())) {
+            return Err(format!(
+                "{}: acknowledged {} is not event {} of {listed:?}",
+                item.request,
+                item.marker,
+                n + 1
+            ));
+        }
+    }
+    let rest = listed.get(acked.len()..).unwrap_or_default();
+    let unanswered: Vec<Option<&str>> = seen
+        .items
+        .iter()
+        .filter(|i| seen.unanswered.contains(&i.request) && i.expect == Expect::New)
+        .map(|i| Some(i.marker.as_str()))
+        .collect();
+    if !rest.is_empty() && rest != unanswered {
+        return Err(format!(
+            "{:?}: after the acknowledged events come {rest:?}, not nothing or {unanswered:?}",
+            seen.unanswered
+        ));
     }
 
     if let Some((request, limit, ids, cursor)) = &seen.cursor {
@@ -472,6 +486,25 @@ async fn check(ops: &LocalOperations<'_>, seen: &Seen) -> Result<Vec<Event>, Str
             return Err(format!(
                 "{request}: its cursor pages {got:?}, not from the same place {expected:?}"
             ));
+        }
+    }
+
+    // Last, after every read: a lost key makes this emit store a new event.
+    for (key, (request, id)) in &seen.keys {
+        let again = EmitRequest {
+            name: "crash.again".into(),
+            data: None,
+            metadata: None,
+            version: None,
+            idempotency_key: Some(key.clone()),
+        };
+        match ops.emit(&cx, again).await {
+            Ok(r) if r.duplicate && r.event_id.to_string() == *id => {}
+            other => {
+                return Err(format!(
+                    "{request}: acknowledged key {key} answers {other:?}, not its original {id}"
+                ));
+            }
         }
     }
     Ok(page.events.into_iter().rev().collect())

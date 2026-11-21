@@ -6,7 +6,8 @@
 //!   or `err:<kind>`;
 //! - `batch <item> <item> ...` emits a batch and prints `<result> <result> ...`, one per item
 //!   in input order, or `err:<kind>` for the whole batch;
-//! - `list <limit> <cursor>|-` lists a page and prints `page <next>|- <event-id> ...`.
+//! - `list <limit> <cursor>|-` lists a page and prints `page <next>|- <event-id> ...`, or
+//!   `err:<kind>`.
 //!
 //! An item is `<name>,<key>|-,<marker>`: the marker goes in the metadata as
 //! `{"marker":"<marker>"}`, so the parent finds the event without its ID.
@@ -50,6 +51,11 @@ fn item(text: &str) -> EmitRequest {
     let [name, key, marker] = text.split(',').collect::<Vec<_>>()[..] else {
         panic!("an item is <name>,<key>|-,<marker>: {text:?}");
     };
+    // It goes into the JSON unescaped.
+    assert!(
+        marker.bytes().all(|b| b.is_ascii_alphanumeric()),
+        "a marker is ASCII letters and digits: {marker:?}"
+    );
     EmitRequest {
         name: name.to_owned(),
         data: None,
@@ -114,7 +120,7 @@ fn main() {
                             words.extend(page.events.iter().map(|e| e.event_id.to_string()));
                             format!("page {}", words.join(" "))
                         }
-                        Err(e) => format!("err {:?}", e.kind),
+                        Err(e) => format!("err:{:?}", e.kind),
                     }
                 }
                 _ => panic!("unknown request {line:?}"),
