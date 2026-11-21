@@ -77,6 +77,13 @@ jobs:
           tool: cargo-public-api@${{ env.CARGO_PUBLIC_API }}
       - run: ci/public-api.sh
 
+  # D16: docs name only the segment-log version Cargo.toml pins.
+  doc-pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: ci/doc-pins.sh
+
   # The workflow and ci/ scripts: a shell mistake here makes a check pass without checking.
   lint-ci:
     runs-on: ubuntu-latest

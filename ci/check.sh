@@ -13,6 +13,7 @@ step cargo test -p ironflowx-events --locked --features serde_json/arbitrary_pre
 step cargo deny check
 step ci/purity.sh
 step ci/public-api.sh
+step ci/doc-pins.sh
 step actionlint
 step shellcheck -x ci/*.sh .githooks/*
 echo "== all CI checks passed"
