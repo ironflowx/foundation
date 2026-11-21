@@ -2,9 +2,10 @@
 //!
 //! Opens the ledger in `<dir>` with a manual clock and prints `ready`. Then, per stdin line:
 //!
-//! - `emit <item>` emits one item and prints `ack <event-id> new|dup` or `err <kind>`;
-//! - `batch <item> <item> ...` emits a batch and prints `batch <result> <result> ...`, each
-//!   result `new:<event-id>`, `dup:<event-id>` or `err:<kind>`, in input order;
+//! - `emit <item>` emits one item and prints `<result>`: `new:<event-id>`, `dup:<event-id>`
+//!   or `err:<kind>`;
+//! - `batch <item> <item> ...` emits a batch and prints `<result> <result> ...`, one per item
+//!   in input order, or `err:<kind>` for the whole batch;
 //! - `list <limit> <cursor>|-` lists a page and prints `page <next>|- <event-id> ...`.
 //!
 //! An item is `<name>,<key>|-,<marker>`: the marker goes in the metadata as
@@ -47,7 +48,7 @@ fn at_point(point: FaultPoint) {
 
 fn item(text: &str) -> EmitRequest {
     let [name, key, marker] = text.split(',').collect::<Vec<_>>()[..] else {
-        panic!("an item is <name>,<key>,<marker>: {text:?}");
+        panic!("an item is <name>,<key>|-,<marker>: {text:?}");
     };
     EmitRequest {
         name: name.to_owned(),
@@ -58,7 +59,7 @@ fn item(text: &str) -> EmitRequest {
     }
 }
 
-fn result(r: &Result<EmitResponse, OpError>) -> String {
+fn encode(r: &Result<EmitResponse, OpError>) -> String {
     match r {
         Ok(r) if r.duplicate => format!("dup:{}", r.event_id),
         Ok(r) => format!("new:{}", r.event_id),
@@ -93,19 +94,12 @@ fn main() {
             let line = line.expect("the pipe reads");
             let (verb, rest) = line.split_once(' ').unwrap_or((&line, ""));
             let answer = match verb {
-                "emit" => match ops.emit(&cx, item(rest)).await {
-                    Ok(r) if r.duplicate => format!("ack {} dup", r.event_id),
-                    Ok(r) => format!("ack {} new", r.event_id),
-                    Err(e) => format!("err {:?}", e.kind),
-                },
+                "emit" => encode(&ops.emit(&cx, item(rest)).await),
                 "batch" => {
                     let items = rest.split(' ').map(item).collect();
                     match ops.emit_batch(&cx, EmitBatchRequest { items }).await {
-                        Ok(r) => {
-                            let results: Vec<_> = r.items.iter().map(result).collect();
-                            format!("batch {}", results.join(" "))
-                        }
-                        Err(e) => format!("err {:?}", e.kind),
+                        Ok(r) => r.items.iter().map(encode).collect::<Vec<_>>().join(" "),
+                        Err(e) => encode(&Err(e)),
                     }
                 }
                 "list" => {

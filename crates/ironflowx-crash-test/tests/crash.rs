@@ -32,7 +32,7 @@ struct Driver {
 #[derive(Debug, PartialEq, Eq)]
 enum Answer {
     Line(String),
-    /// The child stopped at the named point and waits there to be killed.
+    /// The child stopped at its point and waits there to be killed.
     AtPoint,
 }
 
@@ -299,15 +299,7 @@ fn run(dir: &Path, env: EnvRef) -> Seen {
             seen.unanswered(&label, &items, &expect);
             break;
         };
-        let results: Vec<String> = match answer.split_once(' ') {
-            Some(("batch", rest)) => rest.split(' ').map(str::to_owned).collect(),
-            Some(("ack", rest)) => {
-                let (id, kind) = rest.split_once(' ').expect("ack <id> new|dup");
-                vec![format!("{kind}:{id}")]
-            }
-            Some(("err", kind)) => vec![format!("err:{kind}")],
-            _ => panic!("{label}: the child answered {answer:?}"),
-        };
+        let results: Vec<&str> = answer.split(' ').collect();
         assert_eq!(results.len(), items.len(), "{label}: one result per item");
         for ((item, expect), result) in items.iter().zip(expect).zip(&results) {
             seen.answer(&label, item, expect, result);
@@ -437,6 +429,7 @@ async fn check(ops: &LocalOperations<'_>, seen: &Seen) -> Result<Vec<Event>, Str
             ));
         }
     }
+    // Before the append nothing can be present; later kill points (#6) make this branch bite.
     for request in &seen.unanswered {
         let new: Vec<_> = seen
             .items
