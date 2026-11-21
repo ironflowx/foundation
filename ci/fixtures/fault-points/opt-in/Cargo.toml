@@ -1,0 +1,9 @@
+[package]
+name = "opt-in"
+edition = "2024"
+
+[features]
+debug-hooks = ["dep:ironflowx-cell", "ironflowx-cell/__fault-points"]
+
+[dependencies]
+ironflowx-cell = { path = "../../../../crates/ironflowx-cell", optional = true }

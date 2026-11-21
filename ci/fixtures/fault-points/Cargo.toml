@@ -1,0 +1,4 @@
+# Crash-test fixture: published crates that can build with the fault points, each in its own way.
+[workspace]
+resolver = "3"
+members = ["on-by-default", "through-dependency", "opt-in"]

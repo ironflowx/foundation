@@ -37,7 +37,7 @@ A public-API check compares `cargo-public-api` output for the four crates with a
 
 ## Crash test
 
-A parent process drives a child process that owns the ledger, over a pipe, with keyed and unkeyed emits and mixed batches. The child is built with the `__fault-points` cargo feature, which no published build enables (a CI check, [#37](https://github.com/ironflowx/foundation/issues/37)); the parent reads `read.db` directly, read-only, to see sequences and the applied position.
+A parent process drives a child process that owns the ledger, over a pipe, with keyed and unkeyed emits and mixed batches. The child is built with the `__fault-points` cargo feature, which no published build can enable: `ci/no-fault-points.sh` checks each published crate's own dependency tree, so the crash-test crate enabling it does not leak into the check; the parent reads `read.db` directly, read-only, to see sequences and the applied position.
 
 - **Named kill points**, each run deterministically first, the child and parent meeting at a barrier: before the append, after fsync and before the acknowledgment, after the acknowledgment and before the fold, mid-fold, and during open. Then seeded random kills; the seed is printed and replays the run.
 - **The parent records** each acknowledged event ID and key, the cursor of its last list, and each request with no answer. Every new event carries a unique marker in its metadata, so the parent can find it without its ID; it also knows each item's expected outcome.
