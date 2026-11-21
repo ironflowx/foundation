@@ -1,4 +1,4 @@
-# 0.1 Ledger: invariants
+# Invariants
 
 The properties release 0.1 must prove. A behavior shows one example; an invariant holds for every input. The **S** properties are proven by the crash test below in 0.1, and by a seeded fault simulator in a later release.
 

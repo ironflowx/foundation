@@ -1,4 +1,4 @@
-# 0.1 Ledger: events coverage sweep
+# Events coverage sweep (0.1)
 
 > Moved here with release 0.1. Scenarios cited as EVT-nnn are in [`events.feature`](events.feature). An item marked "deferred to 0.N" is harvested again when that release is drafted (plan decisions 71, 89).
 

@@ -1,4 +1,4 @@
-# 0.1 Ledger: behaviors
+# Behaviors
 
 What a client observes in 0.1. Invariants that no single example can show are in [`../invariants.md`](../invariants.md); the rules these scenarios sample are in [`../architecture.md`](../architecture.md#event-rules).
 
@@ -10,7 +10,7 @@ What a client observes in 0.1. Invariants that no single example can show are in
 
 IDs missing from these ranges are unassigned, except 005, which is retired.
 
-Each scenario is mapped to the spec stories that own it in [Spec 4, "Behavior coverage"](../specs/04-ledger.md#behavior-coverage).
+Each scenario is mapped to the spec stories that own it in [Spec 4, "Behavior coverage"](https://github.com/ironflowx/foundation/blob/93f0bb261276d7522180d7307464256239a44030/docs/milestones/0.1-ledger/specs/04-ledger.md#behavior-coverage).
 
 ## How they run
 

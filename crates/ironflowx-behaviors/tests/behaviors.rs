@@ -707,7 +707,7 @@ async fn main() {
         .fail_on_skipped()
         .run_and_exit(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/milestones/0.1-ledger/behaviors/events.feature"
+            "/../../docs/behaviors/events.feature"
         ))
         .await;
 }

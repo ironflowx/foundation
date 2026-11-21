@@ -10,7 +10,11 @@ The five default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready
 
 ### Domain docs
 
-Single-context: one `GLOSSARY.md` at the root, and decisions in each milestone's `architecture.md`. See `docs/agents/domain.md`.
+Single-context: one `GLOSSARY.md` at the root, and one `docs/decisions.md` numbered across milestones. See `docs/agents/domain.md`.
+
+### Docs
+
+Milestone plans (PRDs, specs, slices) live in GitHub issues. `docs/` describes the system as it is now, by topic, never in per-milestone folders. A PR that changes behavior, an interface or a decision updates `docs/` in the same PR. See `docs/README.md`.
 
 ## CI
 
