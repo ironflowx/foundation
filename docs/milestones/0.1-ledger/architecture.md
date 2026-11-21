@@ -163,9 +163,9 @@ The committed head and the applied position are exclusive log offsets: one past 
 | Log, genesis differs in environment ID or token | `OpenError::WrongIncarnation` |
 | Log, genesis differs in format version, or the log's own format is unsupported | `OpenError::Format` |
 | `read.db` missing, without `meta`, unreadable, its tables damaged, or `meta` disagrees with the genesis record | Deletes `read.db` and its `-wal` and `-shm` files, rebuilds from offset 0 |
-| `read.db` names this environment and its applied position is beyond the log's watermark | `OpenError::Corrupt`, before a genesis record is written: the fold follows fsync, so the log lost durable records. The segment log truncates a bad frame in its newest segment as a torn tail, even with valid frames after it |
+| `read.db` names this environment and its applied position is beyond the log's watermark | `OpenError::Corrupt`, before a genesis record is written: the fold follows fsync, so the log lost durable records: an older copy of the log restored, or, after a crash, a bad last frame the log truncated as a torn tail (a crash writes no close frame, so nothing after it shows it was acknowledged). Without `read.db`, that last record is lost unreported |
 | A replayed record carries another token or format | `OpenError::Corrupt` |
-| The log reports corruption, a gap or a foreign segment | `OpenError::Corrupt` |
+| The log reports corruption (including a bad frame in its newest segment with a later record or a close frame after it), a gap or a foreign segment | `OpenError::Corrupt` |
 | Another process or `Ledger` holds the directory | `OpenError::Locked`, from the log's directory lock, which dies with the process |
 | Any other I/O failure | `OpenError::Io` |
 
@@ -178,15 +178,16 @@ Dropping a `Ledger` without `close` stops the writer after the submission in han
 `Corrupt` is for a person to resolve; the ledger never repairs itself. It comes from one of two places, and both look the same to the embedder:
 
 - **The log refused.** The segment log found damage it will not truncate on its own.
-- **The ledger refused.** The log opened, but `read.db` names this environment and has folded records the log no longer holds. The fold runs only after fsync, so the log lost acknowledged events: a bad frame the log truncated as a torn tail ([segment-log#178](https://github.com/ironflowx/segment-log/issues/178)), an older copy of the log restored, a deleted segment, or a lossy repair (below).
+- **The ledger refused.** The log opened, but `read.db` names this environment and has folded records the log no longer holds. The fold runs only after fsync, so the log lost acknowledged events: after a crash, a bad last frame the log truncated as a torn tail (a clean close writes a close frame that proves the records before it; a crash writes none, so the log cannot tell damage from a torn write), an older copy of the log restored, a deleted segment, or a lossy repair (below).
 
 Steps, with the embedder stopped:
 
 1. **Copy the whole directory** before changing anything.
-2. **Ask the log:** `segment-log-server repair verify` on `<dir>/log`. The `repair` subcommands, flags and exit codes are in the segment log's [Operator repair](https://github.com/ironflowx/segment-log/blob/v0.1.0/docs/architecture/api.md#operator-repair) section, the only source for them.
+2. **Ask the log:** `segment-log-server repair verify` on `<dir>/log`. The `repair` subcommands, flags and exit codes are in the segment log's [Operator repair](https://github.com/ironflowx/segment-log/blob/v0.2.0/docs/architecture/api.md#operator-repair) section, the only source for them.
 3. **If verify reports damage**, the log refused. Only damage in the newest segment is repairable: run `repair truncate`, a dry run that prints the plan, then apply it.
    - **Lossless plan:** reopen the ledger. It replays and opens.
    - **Lossy plan:** acknowledged records are dropped and the tool needs `--drop-acknowledged`, which leaves the log sealed. Go to step 4, then read the note on a sealed log.
+     The segment log's repair class F ([segment-log ADR 0068](https://github.com/ironflowx/segment-log/blob/v0.2.0/docs/decisions/0068-open-refuses-damage-with-acknowledged-groups-after-it.md)) is a bad frame in the newest unsealed segment with a later record or a close frame after it. Its plan is always lossy: apply it with `--drop-acknowledged`. The tool refuses it (exit code 3) when the damage is in the second-newest segment, when the second-newest segment lacks its closing run, or when the seal run would reach the last acknowledged record after the cut; then restore from a backup.
    - **Other damage** (an older segment, the headers) is not repairable in 0.1: restore the directory from a backup.
 4. **If verify is clean**, or after a lossy repair, the ledger refused. Prefer restoring the directory from a backup at least as new as the last acknowledged emit. To accept the loss instead, delete `<dir>/read.db` and its `-wal` and `-shm` files and reopen: the ledger rebuilds the read store from the log as it now is. This deletion is the one step that accepts lost events.
 
@@ -209,7 +210,7 @@ A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 
 
 | Crate | Version | Used | Relied on |
 |---|---|---|---|
-| `segment-log-core` | `=0.1.0` from crates.io (MIT) | `SegmentLog::open`, `append` → `Pending::wait`, `read(from, max)`, `watermark` | See below |
+| `segment-log-core` | `=0.2.0` from crates.io (MIT) | `SegmentLog::open`, `append` → `Pending::wait`, `read(from, max)`, `watermark` | See below |
 | `rusqlite` | Pinned in the first PR, `bundled` | Read store | One transaction per folded record |
 | `serde_json` | Pinned in the first PR; the 127 depth limit is checked against it | Event rules | D12 |
 | `uuid` | Pinned, `v7` | Event and environment IDs | |
@@ -224,6 +225,7 @@ How the ledger uses the log:
 - **A sealed log:** nothing in 0.1 seals one; only the log's operator repair tool does. The library opens it without an error and cannot say it is sealed until an append, so `open` succeeds, reads work, and the first emit is the fault above (D19).
 - **Names:** the log's `Record`, `Position` and `Committed` types stay private to `ironflowx-cell`. This repo calls them the log record and the log offset; the ledger's own terms are in [`GLOSSARY.md`](../../../GLOSSARY.md).
 - **Durability:** `wait` returns after the record's `sync_data`, which is a full flush on Linux and macOS. 0.1 claims crash durability on both. Power-loss durability is unclaimed until the simulator proves it.
+- **Close:** `close`, and dropping a `Ledger`, drop the log cleanly, so it writes a close frame after the last record (segment-log format version 4, [ADR 0071](https://github.com/ironflowx/segment-log/blob/v0.2.0/docs/decisions/0071-a-clean-drop-writes-a-close-frame.md)). The upgrade is one-way: once a build on `segment-log-core` 0.2 has opened a directory, a build on 0.1 answers `Format` for it.
 
 ## Decisions
 
@@ -244,7 +246,7 @@ How the ledger uses the log:
 | D13 | Environment and event IDs are UUIDv7 | One opaque ID format for every resource |
 | D14 | The genesis record, not `read.db`, holds the directory's identity | A swapped or rebuilt read store cannot pass for another environment |
 | D15 | The writer is one serial thread: decide, append, fsync, publish, acknowledge, fold, then the next submission. 0.1 sets no performance target | `decide` reads the read store, with no overlay of unfolded records to keep right |
-| D16 | `segment-log-core` comes from crates.io at exactly `0.1.0` | A published crate cannot depend on a git revision |
+| D16 | `segment-log-core` comes from crates.io at an exact version, now `0.2.0` | A published crate cannot depend on a git revision |
 | D17 | A lint, not the type system, keeps `SequencedTime`'s constructor inside `ironflowx-cell`. One helper in `crates/ironflowx-events/tests/rules.rs` is exempt, by an `#[expect]` on that function alone: it stands in for the ledger to call `decide` | The type is in core so that pure event rules can take one, and Rust cannot open a constructor to one downstream crate only |
 | D18 | `Timestamp` has one integer encoding, `i64` milliseconds. The SQLite impl is in `ironflowx-cell` on a private wrapper, and the log record uses the same pair | Core stays free of `rusqlite` (LED-15), and the log stores event time too |
 | D19 | `open` does not refuse a sealed log | The library reports a seal only on append. A refusal at open waits for it to expose one |
