@@ -163,6 +163,7 @@ The committed head and the applied position are exclusive log offsets: one past 
 | Log, genesis differs in environment ID or token | `OpenError::WrongIncarnation` |
 | Log, genesis differs in format version, or the log's own format is unsupported | `OpenError::Format` |
 | `read.db` missing, without `meta`, unreadable, its tables damaged, or `meta` disagrees with the genesis record | Deletes `read.db` and its `-wal` and `-shm` files, rebuilds from offset 0 |
+| The log ends in a torn last frame, after a crash | The log truncates it; opens with the records before it |
 | `read.db` names this environment and its applied position is beyond the log's watermark | `OpenError::Corrupt`, before a genesis record is written: the fold follows fsync, so the log lost durable records: an older copy of the log restored, or, after a crash, a bad last frame the log truncated as a torn tail (a crash writes no close frame, so nothing after it shows it was acknowledged). Without `read.db`, that last record is lost unreported |
 | A replayed record carries another token or format | `OpenError::Corrupt` |
 | The log reports corruption (including a bad frame in its newest segment with a later record or a close frame after it), a gap or a foreign segment | `OpenError::Corrupt` |
@@ -210,7 +211,7 @@ A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 
 
 | Crate | Version | Used | Relied on |
 |---|---|---|---|
-| `segment-log-core` | `=0.2.0` from crates.io (MIT) | `SegmentLog::open`, `append` → `Pending::wait`, `read(from, max)`, `watermark` | See below |
+| `segment-log-core` | Pinned exactly (D16), from crates.io (MIT) | `SegmentLog::open`, `append` → `Pending::wait`, `read(from, max)`, `watermark` | See below |
 | `rusqlite` | Pinned in the first PR, `bundled` | Read store | One transaction per folded record |
 | `serde_json` | Pinned in the first PR; the 127 depth limit is checked against it | Event rules | D12 |
 | `uuid` | Pinned, `v7` | Event and environment IDs | |
@@ -246,7 +247,7 @@ How the ledger uses the log:
 | D13 | Environment and event IDs are UUIDv7 | One opaque ID format for every resource |
 | D14 | The genesis record, not `read.db`, holds the directory's identity | A swapped or rebuilt read store cannot pass for another environment |
 | D15 | The writer is one serial thread: decide, append, fsync, publish, acknowledge, fold, then the next submission. 0.1 sets no performance target | `decide` reads the read store, with no overlay of unfolded records to keep right |
-| D16 | `segment-log-core` comes from crates.io at an exact version, now `0.2.0` | A published crate cannot depend on a git revision |
+| D16 | `segment-log-core` comes from crates.io at an exact version, pinned only in `crates/ironflowx-cell/Cargo.toml`; tag-pinned links to its docs match it (`ci/doc-pins.sh`) | A published crate cannot depend on a git revision |
 | D17 | A lint, not the type system, keeps `SequencedTime`'s constructor inside `ironflowx-cell`. One helper in `crates/ironflowx-events/tests/rules.rs` is exempt, by an `#[expect]` on that function alone: it stands in for the ledger to call `decide` | The type is in core so that pure event rules can take one, and Rust cannot open a constructor to one downstream crate only |
 | D18 | `Timestamp` has one integer encoding, `i64` milliseconds. The SQLite impl is in `ironflowx-cell` on a private wrapper, and the log record uses the same pair | Core stays free of `rusqlite` (LED-15), and the log stores event time too |
 | D19 | `open` does not refuse a sealed log | The library reports a seal only on append. A refusal at open waits for it to expose one |

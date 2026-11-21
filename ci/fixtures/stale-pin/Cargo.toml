@@ -1,0 +1,2 @@
+[dependencies]
+segment-log-core = "=0.2.0"
