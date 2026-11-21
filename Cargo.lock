@@ -988,9 +988,9 @@ dependencies = [
 
 [[package]]
 name = "segment-log-core"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb8da5403d412699beb5ceff6eb2821a06c006a0036328432a8aa8258ecc0ef5"
+checksum = "7d8a51a368c7d9cb56baea242733cb15fd8f0be2ca8223c882b9d22c78b3618c"
 
 [[package]]
 name = "semver"

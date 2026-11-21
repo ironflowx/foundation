@@ -531,39 +531,60 @@ async fn a_log_behind_its_read_store_is_refused() {
     assert!(matches!(err, Some(OpenError::Corrupt)), "{err:?}");
 }
 
-/// A bad byte early in the unsealed newest segment, with acknowledged records after it: the log
+/// A bad byte in an acknowledged record of the unsealed newest segment, after a clean close: a
+/// later record, or the close frame the close wrote, proves the record was acknowledged. The log
 /// itself refuses, so open answers `Corrupt` without the read store, changes no file, and keeps
 /// refusing.
 #[tokio::test]
-async fn damage_before_a_later_record_is_refused_without_its_read_store() {
-    let dir = tempfile::tempdir().unwrap();
-    let env = new_env_ref();
-    two_events(dir.path(), env).await;
-    std::fs::remove_file(dir.path().join("read.db")).unwrap();
-    let path = segment(dir.path());
-    let mut bytes = std::fs::read(&path).unwrap();
-    bytes[64 + 40] ^= 0xff;
-    std::fs::write(&path, &bytes).unwrap();
-    let files = listing(dir.path());
-    for _ in 0..2 {
-        let err = Ledger::open(dir.path(), env, clock()).await.err();
-        assert!(matches!(err, Some(OpenError::Corrupt)), "{err:?}");
-        // The log itself refuses, not only the ledger (segment-log 0.1.1, segment-log ADR 0068).
-        let err = SegmentLog::open(dir.path().join("log"), Options::default()).err();
-        assert!(
-            matches!(err, Some(segment_log_core::OpenError::Corrupt { .. })),
-            "{err:?}"
+async fn damage_to_an_acknowledged_record_is_refused_without_its_read_store() {
+    for (why, last) in [
+        ("the first record, later records after it", false),
+        ("the last record, only the close frame after it", true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let env = new_env_ref();
+        two_events(dir.path(), env).await;
+        std::fs::remove_file(dir.path().join("read.db")).unwrap();
+        let path = segment(dir.path());
+        let mut bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            bytes[bytes.len() - 24],
+            7,
+            "{why}: the segment ends with a close frame"
         );
+        let at = if last {
+            bytes.len() - CLOSE_FRAME - 1
+        } else {
+            64 + 40
+        };
+        bytes[at] ^= 0xff;
+        std::fs::write(&path, &bytes).unwrap();
+        let files = listing(dir.path());
+        for _ in 0..2 {
+            let err = Ledger::open(dir.path(), env, clock()).await.err();
+            assert!(matches!(err, Some(OpenError::Corrupt)), "{why}: {err:?}");
+            // The log itself refuses, not only the ledger (segment-log ADRs 0068 and 0071).
+            let err = SegmentLog::open(dir.path().join("log"), Options::default()).err();
+            assert!(
+                matches!(err, Some(segment_log_core::OpenError::Corrupt { .. })),
+                "{why}: {err:?}"
+            );
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "{why}");
+        assert_eq!(listing(dir.path()), files, "{why}");
     }
-    assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    assert_eq!(listing(dir.path()), files);
 }
 
-/// A bad last record has nothing after it, so the log cannot tell it from a torn write and
-/// truncates it. Only `read.db` remembers it was acknowledged: with it, open refuses; without it,
-/// open recovers the records before it and the last one is lost unreported.
+/// A clean close writes a close frame of this many bytes after its last record (segment-log
+/// format version 4).
+const CLOSE_FRAME: usize = 32;
+
+/// A crash writes no close frame, so a bad last record has nothing after it: the log cannot tell
+/// it from a torn write and truncates it. Only `read.db` remembers it was acknowledged: with it,
+/// open refuses; without it, open recovers the records before it and the last one is lost
+/// unreported.
 #[tokio::test]
-async fn a_bad_last_record_is_truncated_and_only_the_read_store_notices() {
+async fn after_a_crash_a_bad_last_record_is_truncated_and_only_the_read_store_notices() {
     let damages: [Damage; 2] = [
         ("a flipped byte in the last frame", |path| {
             let mut bytes = std::fs::read(path).unwrap();
@@ -571,26 +592,40 @@ async fn a_bad_last_record_is_truncated_and_only_the_read_store_notices() {
             std::fs::write(path, bytes).unwrap();
         }),
         ("a torn write: the last frame cut short", |path| {
-            let len = std::fs::metadata(path).unwrap().len();
-            std::fs::OpenOptions::new()
-                .write(true)
-                .open(path)
-                .unwrap()
-                .set_len(len - 5)
-                .unwrap();
+            cut(path, 5)
         }),
     ];
     for (why, damage) in damages {
         let dir = tempfile::tempdir().unwrap();
         let env = new_env_ref();
         two_events(dir.path(), env).await;
-        damage(&segment(dir.path()));
+        let path = segment(dir.path());
+        // What a crash leaves: the same bytes, without the close frame.
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            bytes[bytes.len() - 24],
+            7,
+            "{why}: the segment ends with a close frame"
+        );
+        cut(&path, CLOSE_FRAME as u64);
+        damage(&path);
         let err = Ledger::open(dir.path(), env, clock()).await.err();
         assert!(matches!(err, Some(OpenError::Corrupt)), "{why}: {err:?}");
         std::fs::remove_file(dir.path().join("read.db")).unwrap();
         let ledger = open(dir.path(), env).await;
         assert_eq!(names(&ledger).await, ["a"], "{why}");
     }
+}
+
+/// Cuts the last `n` bytes off the file at `path`.
+fn cut(path: &Path, n: u64) {
+    let len = std::fs::metadata(path).unwrap().len();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_len(len - n)
+        .unwrap();
 }
 
 /// Every path under `dir`, relative to it.
@@ -618,7 +653,7 @@ async fn a_corrupt_log_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let env = new_env_ref();
     two_events(dir.path(), env).await;
-    // Covers a sealed segment; `damage_before_a_later_record_is_refused_without_its_read_store`
+    // Covers a sealed segment; `damage_to_an_acknowledged_record_is_refused_without_its_read_store`
     // covers an unsealed one.
     SegmentLog::open(dir.path().join("log"), Options::default())
         .unwrap()
