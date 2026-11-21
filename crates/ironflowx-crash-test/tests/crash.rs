@@ -19,6 +19,10 @@ use ironflowx_proto::{Call, EmitRequest, Event, GetEventRequest, ListEventsReque
 /// fails the test instead of hanging it.
 const ANSWER_DEADLINE: Duration = Duration::from_secs(30);
 
+/// How long the parent listens, after the child stops before its acknowledgment, for an
+/// answer that must not come.
+const NO_ANSWER_GRACE: Duration = Duration::from_millis(200);
+
 /// The child process, stopped at its `crossing`-th pass of `point`. Dropping it kills the
 /// child, so a failed assertion leaves no process parked at a point.
 struct Driver {
@@ -26,14 +30,6 @@ struct Driver {
     stdin: ChildStdin,
     /// The child's stdout lines, read on their own thread so each read can time out.
     lines: mpsc::Receiver<std::io::Result<String>>,
-}
-
-/// What the child answered to one request.
-#[derive(Debug, PartialEq, Eq)]
-enum Answer {
-    Line(String),
-    /// The child stopped at its point and waits there to be killed.
-    AtPoint,
 }
 
 impl Driver {
@@ -78,16 +74,47 @@ impl Driver {
         }
     }
 
-    /// Sends one request line; the child names only the point it was given, so `at` carries
-    /// nothing to check.
-    fn request(&mut self, line: &str) -> Answer {
+    fn send(&mut self, line: &str) {
         writeln!(self.stdin, "{line}").expect("the pipe writes");
-        let answer = self.line(&format!("an answer to {line:?}"));
-        if answer.starts_with("at ") {
-            Answer::AtPoint
-        } else {
-            Answer::Line(answer)
+    }
+
+    /// The answer to a request that must not stop at the point.
+    fn answer(&self, request: &str) -> String {
+        let line = self.line(&format!("an answer to {request}"));
+        assert!(
+            !line.starts_with("at "),
+            "{request}: the child stopped at the point too early"
+        );
+        line
+    }
+
+    /// The answer to the request that stops at `point`, if the child sends one before it
+    /// stops: only after the acknowledgment does it, and the two lines come in either order.
+    /// The child names only the point it was given, so `at` carries nothing to check.
+    fn stop(&self, request: &str, point: FaultPoint) -> Option<String> {
+        let lines = if point == FaultPoint::AfterAck { 2 } else { 1 };
+        let mut answer = None;
+        let mut stopped = false;
+        for _ in 0..lines {
+            let line = self.line(&format!("{request} to stop at {}", point.name()));
+            if line.starts_with("at ") {
+                stopped = true;
+            } else {
+                answer = Some(line);
+            }
         }
+        assert!(stopped, "{request}: the child stopped at {}", point.name());
+        if answer.is_none() {
+            // shortcut: a timed wait can miss a late answer but never fails a correct point; a
+            // hook that knew whether the reply was sent would make it exact.
+            if let Ok(Ok(line)) = self.lines.recv_timeout(NO_ANSWER_GRACE) {
+                panic!(
+                    "{request}: answered {line:?} though stopped before the acknowledgment, at {}",
+                    point.name()
+                );
+            }
+        }
+        answer
     }
 
     /// SIGKILL: no destructor, flush or close runs in the child.
@@ -159,6 +186,8 @@ struct Seen {
     cursor: Option<(String, u32, Vec<String>, String)>,
     /// The request the kill left without an answer.
     unanswered: Vec<String>,
+    /// The request the child stopped at the point on, answered or not.
+    stopped: Option<String>,
 }
 
 impl Seen {
@@ -258,18 +287,17 @@ fn workload() -> Vec<Request> {
     ]
 }
 
-/// The number of requests in `workload` that append a record, so the last one stops at the
-/// "before the append" point.
-const APPENDS: u64 = 5;
+/// The appends of `workload` to kill on: its fourth is a single emit, its fifth a batch.
+const SINGLE_APPEND: u64 = 4;
+const BATCH_APPEND: u64 = 5;
 
-/// Runs the workload until the child stops before its last append, checking every answer,
-/// then kills the child.
-fn run(dir: &Path, env: EnvRef) -> Seen {
-    let mut child = Driver::spawn(dir, env, FaultPoint::BeforeAppend.name(), APPENDS);
+/// Runs the workload until the child stops at `point` on its `append`-th append, checking
+/// every answer, then kills the child.
+fn run(dir: &Path, env: EnvRef, point: FaultPoint, append: u64) -> Seen {
+    let mut child = Driver::spawn(dir, env, point.name(), append);
     let mut seen = Seen::default();
-    let requests = workload();
-    let count = requests.len();
-    for (i, request) in requests.into_iter().enumerate() {
+    let mut appends = 0;
+    for (i, request) in workload().into_iter().enumerate() {
         let label = format!("request {}", i + 1);
         let (line, items, batch) = match request {
             Request::Emit(item) => (format!("emit {}", item.line()), vec![item], false),
@@ -278,9 +306,8 @@ fn run(dir: &Path, env: EnvRef) -> Seen {
                 (format!("batch {}", lines.join(" ")), items, true)
             }
             Request::List(limit) => {
-                let Answer::Line(page) = child.request(&format!("list {limit} -")) else {
-                    panic!("{label}: a list stopped at the point");
-                };
+                child.send(&format!("list {limit} -"));
+                let page = child.answer(&label);
                 let Some(page) = page.strip_prefix("page ") else {
                     panic!("{label}: the list answered {page}");
                 };
@@ -294,12 +321,16 @@ fn run(dir: &Path, env: EnvRef) -> Seen {
             }
         };
         let expect = seen.expect(&items);
-        let Answer::Line(answer) = child.request(&line) else {
-            assert_eq!(
-                i + 1,
-                count,
-                "{label}: only the last request stops at the point"
-            );
+        appends += u64::from(expect.contains(&Expect::New));
+        let stops = expect.contains(&Expect::New) && appends == append;
+        child.send(&line);
+        let answer = if stops {
+            seen.stopped = Some(label.clone());
+            child.stop(&label, point)
+        } else {
+            Some(child.answer(&label))
+        };
+        let Some(answer) = answer else {
             seen.unanswered(&label, &items, &expect);
             break;
         };
@@ -311,11 +342,13 @@ fn run(dir: &Path, env: EnvRef) -> Seen {
         for ((item, expect), result) in items.iter().zip(expect).zip(&results) {
             seen.answer(&label, item, expect, result);
         }
+        if stops {
+            break;
+        }
     }
-    assert_eq!(
-        seen.unanswered.len(),
-        1,
-        "the child stopped at its last append"
+    assert!(
+        seen.stopped.is_some(),
+        "the workload has an append {append} to stop at"
     );
     child.kill();
     seen
@@ -416,7 +449,8 @@ async fn check(ops: &LocalOperations<'_>, seen: &Seen) -> Result<Vec<Event>, Str
             ));
         }
     }
-    // Before the append nothing can be present; later kill points (#6) make this branch bite.
+    // Before the append none are present and after fsync all are; a batch split across records
+    // would leave some, which this names (D9: a batch is one record).
     for request in &seen.unanswered {
         let new: Vec<_> = seen
             .items
@@ -537,30 +571,80 @@ fn read_store(dir: &Path) -> (Vec<(u64, String)>, u64) {
     (events, applied)
 }
 
-#[test]
-fn killed_before_the_append() {
-    // Before the append, the unanswered batch cannot have reached the log: its new events must
-    // all be absent, the strict half of "all or nothing".
+/// Kills the child at `point` on its `append`-th append, then checks what the read store held
+/// before reopen, which of the stopped request's new events reopen shows, and that two reopens
+/// agree.
+fn kill_at(point: FaultPoint, append: u64) {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let env = ironflowx_cell::new_env_ref();
-    let seen = run(dir.path(), env);
+    let seen = run(dir.path(), env, point, append);
+    let stopped = seen.stopped.as_deref().expect("the child stopped");
+    let name = point.name();
+
+    // Every point is before the stopped request's fold, so the read store holds exactly the
+    // earlier requests' events until reopen folds the rest.
+    let earlier: Vec<&String> = seen
+        .items
+        .iter()
+        .filter(|i| i.request != stopped)
+        .filter_map(|i| i.acked.as_ref())
+        .collect();
+    let (folded, _) = read_store(dir.path());
+    assert_eq!(
+        folded.iter().map(|(_, id)| id).collect::<Vec<_>>(),
+        earlier,
+        "{stopped}: killed at {name}, nothing of it is folded before reopen"
+    );
 
     let first = reopen(dir.path(), env, &seen).unwrap_or_else(|e| panic!("{e}"));
-    let unanswered = &seen.unanswered[0];
-    assert!(
-        !seen.items.iter().any(|i| &i.request == unanswered
-            && first.events.iter().any(|e| marker(e) == Some(&i.marker))),
-        "{unanswered}: nothing of it is stored before the append"
+    let new: Vec<&SentItem> = seen
+        .items
+        .iter()
+        .filter(|i| i.request == stopped && i.expect == Expect::New)
+        .collect();
+    let present = new
+        .iter()
+        .filter(|i| first.events.iter().any(|e| marker(e) == Some(&i.marker)))
+        .count();
+    // Before the append the record cannot reach the log; after fsync it is durable.
+    let expected = if point == FaultPoint::BeforeAppend {
+        0
+    } else {
+        new.len()
+    };
+    assert_eq!(
+        present,
+        expected,
+        "{stopped}: killed at {name}, {present} of its {} new events are present after reopen",
+        new.len()
     );
     let second = reopen(dir.path(), env, &seen).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(first, second, "two reopens agree");
+    assert_eq!(first, second, "killed at {name}, two reopens agree");
+}
+
+#[test]
+fn killed_before_the_append() {
+    kill_at(FaultPoint::BeforeAppend, SINGLE_APPEND);
+    kill_at(FaultPoint::BeforeAppend, BATCH_APPEND);
+}
+
+#[test]
+fn killed_after_fsync() {
+    kill_at(FaultPoint::AfterFsync, SINGLE_APPEND);
+    kill_at(FaultPoint::AfterFsync, BATCH_APPEND);
+}
+
+#[test]
+fn killed_after_the_acknowledgment() {
+    kill_at(FaultPoint::AfterAck, SINGLE_APPEND);
+    kill_at(FaultPoint::AfterAck, BATCH_APPEND);
 }
 
 #[test]
 fn a_broken_expectation_names_its_request() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let env = ironflowx_cell::new_env_ref();
-    let mut seen = run(dir.path(), env);
+    let mut seen = run(dir.path(), env, FaultPoint::BeforeAppend, BATCH_APPEND);
     // A key the client saw acknowledged that the ledger never stored.
     let (request, id) = seen.keys["k1"].clone();
     seen.keys.insert("k-missing".into(), (request.clone(), id));
