@@ -90,7 +90,7 @@ impl Driver {
     }
 
     /// The answer to the request that stops at `point`, if the child sends one before it
-    /// stops: only after the acknowledgment (and so mid-fold) does it, and the two lines come in either order.
+    /// stops: only after the acknowledgment, as mid-fold is, does it, and the two lines come in either order.
     /// Before it, a `probe` proves no answer is on its way. The child names only the point it
     /// was given, so `at` carries nothing to check.
     fn stop(&mut self, request: &str, point: FaultPoint) -> Option<String> {
@@ -661,8 +661,7 @@ fn kill_at(
     workload: Vec<Request>,
 ) -> (Seen, Snapshot) {
     // During open needs a record for open to fold: stop after the acknowledgment first.
-    let opened = point == FaultPoint::DuringOpen;
-    let seen = if opened {
+    let seen = if point == FaultPoint::DuringOpen {
         let seen = run(dir, env, FaultPoint::AfterAck, append, workload);
         kill_during_open(dir, env);
         seen
@@ -672,14 +671,13 @@ fn kill_at(
     let stopped = seen.stopped.as_deref().expect("the child stopped");
     let name = point.name();
 
-    // Every other point is before the stopped request's fold or, mid-fold, inside it, which the
-    // kill rolls back: the read store holds exactly the earlier requests' events until reopen
-    // folds the rest, its rows and applied position moving together. During open, the killed
-    // reopen had folded the stopped request too.
-    let expected: Vec<&String> = seen
+    // Every point is before the stopped request's fold or, mid-fold, inside it, which the kill
+    // rolls back: the read store holds exactly the earlier requests' events until reopen folds
+    // the rest, its rows and applied position moving together.
+    let earlier: Vec<&String> = seen
         .items
         .iter()
-        .filter(|i| opened || i.request != stopped)
+        .filter(|i| i.request != stopped)
         .filter_map(|i| i.acked.as_ref())
         .collect();
     let (folded, applied) = read_store(dir);
@@ -689,22 +687,21 @@ fn kill_at(
         .iter()
         .filter(|i| i.request == stopped)
         .filter_map(|i| i.acked.as_ref());
-    for id in mine.filter(|_| !opened) {
+    for id in mine {
         assert!(
             !folded.contains(&id),
             "{stopped}: killed at {name}, its {id} is folded before reopen"
         );
     }
     assert_eq!(
-        folded, expected,
-        "killed at {name} on {stopped}: before reopen the read store holds every acknowledged \
-         event folded so far"
+        folded, earlier,
+        "killed at {name} on {stopped}: before reopen the read store holds every earlier \
+         acknowledged event"
     );
     // The genesis is record 0 and each earlier append one more record.
     assert_eq!(
-        applied,
-        append + u64::from(opened),
-        "killed at {name} on {stopped}: before reopen the applied position follows the folded \
+        applied, append,
+        "killed at {name} on {stopped}: before reopen the applied position follows the earlier \
          records"
     );
 
@@ -740,7 +737,7 @@ fn kill_at(
     (seen, first)
 }
 
-/// Kills a reopen of `dir` once open has folded the record the last kill left unfolded.
+/// Kills a reopen of `dir` as it is about to fold the record the last kill left unfolded.
 fn kill_during_open(dir: &Path, env: EnvRef) {
     let child = Driver::start(dir, env, FaultPoint::DuringOpen.name(), 1);
     let line = child.line("the reopen to stop during open");

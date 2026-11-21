@@ -18,7 +18,7 @@
 //!
 //! On its `<crossing>`-th pass of the fault point named `<point>`, it prints `at <point>` and
 //! waits there for the parent to kill it: the barrier that makes the kill land exactly at the
-//! point (D23).
+//! point (D23). At `during-open` that is before `ready`, which it then never prints.
 
 use std::future::{Future, poll_fn};
 use std::io::{BufRead, Write};

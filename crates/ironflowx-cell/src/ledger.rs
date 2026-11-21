@@ -533,12 +533,12 @@ fn replay(
                 0 => None,
                 _ => Some(events_record(&r.payload, env)?),
             };
-            if let Err(e) = store::apply(&mut conn, r.offset, record.as_ref()) {
-                return Ok(Err(e));
-            }
             #[cfg(feature = "__fault-points")]
             if record.is_some() {
                 point::reach(point::FaultPoint::DuringOpen);
+            }
+            if let Err(e) = store::apply(&mut conn, r.offset, record.as_ref()) {
+                return Ok(Err(e));
             }
             from = r.offset + 1;
         }
@@ -595,7 +595,7 @@ pub mod point {
         /// Inside the read store's transaction for one record: its rows written, the applied
         /// position not yet moved, nothing committed.
         MidFold,
-        /// Open has folded a record the read store lacked and has not finished.
+        /// Open is about to fold a record the read store lacks.
         DuringOpen,
     }
 
