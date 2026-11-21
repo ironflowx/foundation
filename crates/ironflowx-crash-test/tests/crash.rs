@@ -19,10 +19,6 @@ use ironflowx_proto::{Call, EmitRequest, Event, GetEventRequest, ListEventsReque
 /// fails the test instead of hanging it.
 const ANSWER_DEADLINE: Duration = Duration::from_secs(30);
 
-/// How long the parent listens, after the child stops before its acknowledgment, for an
-/// answer that must not come.
-const NO_ANSWER_GRACE: Duration = Duration::from_millis(200);
-
 /// The child process, stopped at its `crossing`-th pass of `point`. Dropping it kills the
 /// child, so a failed assertion leaves no process parked at a point.
 struct Driver {
@@ -90,8 +86,9 @@ impl Driver {
 
     /// The answer to the request that stops at `point`, if the child sends one before it
     /// stops: only after the acknowledgment does it, and the two lines come in either order.
-    /// The child names only the point it was given, so `at` carries nothing to check.
-    fn stop(&self, request: &str, point: FaultPoint) -> Option<String> {
+    /// Before it, a `probe` proves no answer is on its way. The child names only the point it
+    /// was given, so `at` carries nothing to check.
+    fn stop(&mut self, request: &str, point: FaultPoint) -> Option<String> {
         let lines = if point == FaultPoint::AfterAck { 2 } else { 1 };
         let mut answer = None;
         let mut stopped = false;
@@ -103,16 +100,20 @@ impl Driver {
                 answer = Some(line);
             }
         }
-        assert!(stopped, "{request}: the child stopped at {}", point.name());
+        assert!(
+            stopped,
+            "{request}: the child answered without stopping at {}",
+            point.name()
+        );
         if answer.is_none() {
-            // shortcut: a timed wait can miss a late answer but never fails a correct point; a
-            // hook that knew whether the reply was sent would make it exact.
-            if let Ok(Ok(line)) = self.lines.recv_timeout(NO_ANSWER_GRACE) {
-                panic!(
-                    "{request}: answered {line:?} though stopped before the acknowledgment, at {}",
-                    point.name()
-                );
-            }
+            self.send("probe");
+            let line = self.line(&format!("{request} to be pending"));
+            assert_eq!(
+                line,
+                "pending",
+                "{request}: answered though stopped before the acknowledgment, at {}",
+                point.name()
+            );
         }
         answer
     }
@@ -287,8 +288,9 @@ fn workload() -> Vec<Request> {
     ]
 }
 
-/// The appends of `workload` to kill on: its fourth is a single emit, its fifth a batch.
+/// The append of `workload` that is a single emit: its fourth.
 const SINGLE_APPEND: u64 = 4;
+/// The append of `workload` that is a mixed batch: its fifth.
 const BATCH_APPEND: u64 = 5;
 
 /// Runs the workload until the child stops at `point` on its `append`-th append, checking
@@ -589,11 +591,29 @@ fn kill_at(point: FaultPoint, append: u64) {
         .filter(|i| i.request != stopped)
         .filter_map(|i| i.acked.as_ref())
         .collect();
-    let (folded, _) = read_store(dir.path());
+    let (folded, applied) = read_store(dir.path());
+    let folded: Vec<&String> = folded.iter().map(|(_, id)| id).collect();
+    let mine = seen
+        .items
+        .iter()
+        .filter(|i| i.request == stopped)
+        .filter_map(|i| i.acked.as_ref());
+    for id in mine {
+        assert!(
+            !folded.contains(&id),
+            "{stopped}: killed at {name}, its {id} is folded before reopen"
+        );
+    }
     assert_eq!(
-        folded.iter().map(|(_, id)| id).collect::<Vec<_>>(),
-        earlier,
-        "{stopped}: killed at {name}, nothing of it is folded before reopen"
+        folded, earlier,
+        "killed at {name} on {stopped}: before reopen the read store holds every earlier \
+         acknowledged event"
+    );
+    // The genesis is record 0 and each earlier append one more record.
+    assert_eq!(
+        applied, append,
+        "killed at {name} on {stopped}: before reopen the applied position follows the earlier \
+         records"
     );
 
     let first = reopen(dir.path(), env, &seen).unwrap_or_else(|e| panic!("{e}"));
@@ -617,6 +637,11 @@ fn kill_at(point: FaultPoint, append: u64) {
         expected,
         "{stopped}: killed at {name}, {present} of its {} new events are present after reopen",
         new.len()
+    );
+    assert_eq!(
+        first.applied,
+        append + u64::from(expected != 0),
+        "killed at {name} on {stopped}: reopen folds every durable record"
     );
     let second = reopen(dir.path(), env, &seen).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(first, second, "killed at {name}, two reopens agree");

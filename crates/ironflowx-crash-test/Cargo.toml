@@ -11,7 +11,7 @@ license.workspace = true
 ironflowx-core.workspace = true
 ironflowx-cell = { workspace = true, features = ["__fault-points"] }
 ironflowx-proto.workspace = true
-tokio = { version = "=1.54.1", default-features = false, features = ["rt"] }
+tokio = { version = "=1.54.1", default-features = false, features = ["rt", "sync"] }
 
 [dev-dependencies]
 rusqlite = { version = "=0.43.0", default-features = false, features = ["bundled"] }
