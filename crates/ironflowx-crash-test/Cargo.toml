@@ -1,0 +1,18 @@
+[package]
+name = "ironflowx-crash-test"
+description = "Kills a process that owns a ledger at named fault points and checks what survives (#6). Unpublished."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ironflowx-core.workspace = true
+ironflowx-cell = { workspace = true, features = ["__fault-points"] }
+ironflowx-proto.workspace = true
+tokio = { version = "=1.54.1", default-features = false, features = ["rt"] }
+
+[dev-dependencies]
+rusqlite = { version = "=0.43.0", default-features = false, features = ["bundled"] }
+tempfile = "3.27.0"
