@@ -2,6 +2,7 @@
 //! through the pipe, then checks the directory through a reopened ledger and, read-only, the
 //! read store, for the sequences and applied position no public interface exposes.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
 use std::num::NonZeroU32;
 use std::os::unix::process::ExitStatusExt;
@@ -12,7 +13,7 @@ use std::time::Duration;
 
 use ironflowx_cell::{FaultPoint, Ledger, LocalOperations, ManualClock};
 use ironflowx_core::{EnvRef, Timestamp};
-use ironflowx_proto::{Call, Event, GetEventRequest, ListEventsRequest, Operations};
+use ironflowx_proto::{Call, EmitRequest, Event, GetEventRequest, ListEventsRequest, Operations};
 
 /// How long the parent waits for one line from the child before failing, so a stalled child
 /// fails the test instead of hanging it.
@@ -30,10 +31,9 @@ struct Driver {
 /// What the child answered to one request.
 #[derive(Debug, PartialEq, Eq)]
 enum Answer {
-    Acked(String),
-    Failed(String),
+    Line(String),
     /// The child stopped at the named point and waits there to be killed.
-    AtPoint(String),
+    AtPoint,
 }
 
 impl Driver {
@@ -78,14 +78,15 @@ impl Driver {
         }
     }
 
-    fn emit(&mut self, name: &str) -> Answer {
-        writeln!(self.stdin, "emit {name}").expect("the pipe writes");
-        let line = self.line(&format!("an answer to emit {name}"));
-        match line.split_once(' ') {
-            Some(("ack", id)) => Answer::Acked(id.to_owned()),
-            Some(("err", kind)) => Answer::Failed(kind.to_owned()),
-            Some(("at", point)) => Answer::AtPoint(point.to_owned()),
-            _ => panic!("the child answered {line:?}"),
+    /// Sends one request line; the child names only the point it was given, so `at` carries
+    /// nothing to check.
+    fn request(&mut self, line: &str) -> Answer {
+        writeln!(self.stdin, "{line}").expect("the pipe writes");
+        let answer = self.line(&format!("an answer to {line:?}"));
+        if answer.starts_with("at ") {
+            Answer::AtPoint
+        } else {
+            Answer::Line(answer)
         }
     }
 
@@ -109,10 +110,222 @@ impl Drop for Driver {
     }
 }
 
+/// A name event rules refuse: it has an empty segment.
+const REFUSED_NAME: &str = "crash..refused";
+
+/// One item of a request, as a client builds it.
+struct Item {
+    name: &'static str,
+    key: Option<&'static str>,
+    /// Unique per item; the child puts it in the metadata.
+    marker: String,
+}
+
+impl Item {
+    fn line(&self) -> String {
+        format!("{},{},{}", self.name, self.key.unwrap_or("-"), self.marker)
+    }
+}
+
+enum Request {
+    Emit(Item),
+    Batch(Vec<Item>),
+    /// A page of this many events, from the newest.
+    List(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Expect {
+    New,
+    Dup,
+    Refused,
+}
+
+/// One item the parent sent, what it expected, and the event ID it got back, if any.
+struct SentItem {
+    request: String,
+    marker: String,
+    expect: Expect,
+    acked: Option<String>,
+}
+
+/// Everything a client saw before the kill.
+#[derive(Default)]
+struct Seen {
+    items: Vec<SentItem>,
+    /// Each acknowledged key, the request that bound it, and its event ID.
+    keys: BTreeMap<String, (String, String)>,
+    /// The last list: its request, limit, the event IDs it returned and its cursor.
+    cursor: Option<(String, u32, Vec<String>, String)>,
+    /// The request the kill left without an answer.
+    unanswered: Vec<String>,
+}
+
+impl Seen {
+    /// Each item's outcome, from the keys acknowledged so far and those earlier in the request.
+    fn expect(&self, items: &[Item]) -> Vec<Expect> {
+        let mut earlier = BTreeSet::new();
+        items
+            .iter()
+            .map(|i| match i.key {
+                _ if i.name == REFUSED_NAME => Expect::Refused,
+                Some(k) if self.keys.contains_key(k) || !earlier.insert(k) => Expect::Dup,
+                _ => Expect::New,
+            })
+            .collect()
+    }
+
+    /// Checks one item's answer, `new:<id>`, `dup:<id>` or `err:<kind>`, and records it.
+    fn answer(&mut self, request: &str, item: &Item, expect: Expect, answer: &str) {
+        let acked = match (expect, answer.split_once(':')) {
+            (Expect::New, Some(("new", id))) => {
+                if let Some(k) = item.key {
+                    self.keys
+                        .insert(k.to_owned(), (request.to_owned(), id.to_owned()));
+                }
+                Some(id.to_owned())
+            }
+            (Expect::Dup, Some(("dup", id))) => {
+                let (_, original) = &self.keys[item.key.expect("a duplicate has a key")];
+                assert_eq!(
+                    id, original,
+                    "{request}: a duplicate answers the original ID"
+                );
+                None
+            }
+            (Expect::Refused, Some(("err", "Invalid"))) => None,
+            _ => panic!(
+                "{request}: {} expected {expect:?}, got {answer}",
+                item.marker
+            ),
+        };
+        self.items.push(SentItem {
+            request: request.to_owned(),
+            marker: item.marker.clone(),
+            expect,
+            acked,
+        });
+    }
+
+    fn unanswered(&mut self, request: &str, items: &[Item], expect: &[Expect]) {
+        self.unanswered.push(request.to_owned());
+        for (item, &expect) in items.iter().zip(expect) {
+            self.items.push(SentItem {
+                request: request.to_owned(),
+                marker: item.marker.clone(),
+                expect,
+                acked: None,
+            });
+        }
+    }
+}
+
+/// What a real client sends: keyed and unkeyed emits, a duplicate and a refused emit, mixed
+/// batches with new items, stored and in-batch duplicates and refusals, and a list between
+/// them. The last request is a mixed batch, the fifth to append.
+fn workload() -> Vec<Request> {
+    let mut n = 0;
+    let mut item = |name, key| {
+        n += 1;
+        Item {
+            name,
+            key,
+            marker: format!("m{n}"),
+        }
+    };
+    vec![
+        Request::Emit(item("crash.keyed", Some("k1"))),
+        Request::Emit(item("crash.unkeyed", None)),
+        Request::Emit(item("crash.again", Some("k1"))),
+        Request::Emit(item(REFUSED_NAME, None)),
+        Request::Batch(vec![
+            item("crash.keyed", Some("k2")),
+            item("crash.unkeyed", None),
+            item("crash.again", Some("k1")),
+            item(REFUSED_NAME, Some("k9")),
+            item("crash.again", Some("k2")),
+        ]),
+        Request::List(3),
+        Request::Emit(item("crash.keyed", Some("k3"))),
+        Request::Batch(vec![
+            item("crash.keyed", Some("k4")),
+            item("crash.again", Some("k2")),
+            item(REFUSED_NAME, None),
+            item("crash.unkeyed", None),
+            item("crash.again", Some("k4")),
+            item("crash.again", Some("k3")),
+        ]),
+    ]
+}
+
+/// The number of requests in `workload` that append a record, so the last one stops at the
+/// "before the append" point.
+const APPENDS: u64 = 5;
+
+/// Runs the workload until the child stops before its last append, checking every answer,
+/// then kills the child.
+fn run(dir: &Path, env: EnvRef) -> Seen {
+    let mut child = Driver::spawn(dir, env, FaultPoint::BeforeAppend.name(), APPENDS);
+    let mut seen = Seen::default();
+    let requests = workload();
+    let count = requests.len();
+    for (i, request) in requests.into_iter().enumerate() {
+        let label = format!("request {}", i + 1);
+        let (line, items) = match request {
+            Request::Emit(item) => (format!("emit {}", item.line()), vec![item]),
+            Request::Batch(items) => {
+                let lines: Vec<_> = items.iter().map(Item::line).collect();
+                (format!("batch {}", lines.join(" ")), items)
+            }
+            Request::List(limit) => {
+                let Answer::Line(page) = child.request(&format!("list {limit} -")) else {
+                    panic!("{label}: a list stopped at the point");
+                };
+                let mut words = page.strip_prefix("page ").expect("a page").split(' ');
+                let next = words.next().expect("a cursor").to_owned();
+                assert_ne!(next, "-", "{label}: the page is not the last");
+                let ids = words.map(str::to_owned).collect();
+                seen.cursor = Some((label, limit, ids, next));
+                continue;
+            }
+        };
+        let expect = seen.expect(&items);
+        let Answer::Line(answer) = child.request(&line) else {
+            assert_eq!(
+                i + 1,
+                count,
+                "{label}: only the last request stops at the point"
+            );
+            seen.unanswered(&label, &items, &expect);
+            break;
+        };
+        let results: Vec<String> = match answer.split_once(' ') {
+            Some(("batch", rest)) => rest.split(' ').map(str::to_owned).collect(),
+            Some(("ack", rest)) => {
+                let (id, kind) = rest.split_once(' ').expect("ack <id> new|dup");
+                vec![format!("{kind}:{id}")]
+            }
+            Some(("err", kind)) => vec![format!("err:{kind}")],
+            _ => panic!("{label}: the child answered {answer:?}"),
+        };
+        assert_eq!(results.len(), items.len(), "{label}: one result per item");
+        for ((item, expect), result) in items.iter().zip(expect).zip(&results) {
+            seen.answer(&label, item, expect, result);
+        }
+    }
+    assert_eq!(
+        seen.unanswered.len(),
+        1,
+        "the child stopped at its last append"
+    );
+    child.kill();
+    seen
+}
+
 /// What two reopens must agree on.
 #[derive(Debug, PartialEq, Eq)]
 struct Snapshot {
-    /// Every event a client lists, oldest first, with every field.
+    /// Every event a client lists, oldest first, with every field, keys included.
     events: Vec<Event>,
     /// Each event's sequence and ID in the read store, in sequence order.
     sequences: Vec<(u64, String)>,
@@ -123,9 +336,16 @@ fn clock() -> ManualClock {
     ManualClock::new(Timestamp::from_millis(1_700_000_000_000))
 }
 
-/// Reopens the directory, checks it holds exactly the acknowledged emits, in order, closes,
-/// then reads the read store.
-fn reopen(dir: &Path, env: EnvRef, acked: &[(String, String)]) -> Snapshot {
+fn marker(event: &Event) -> Option<&str> {
+    std::str::from_utf8(event.metadata.as_deref()?)
+        .ok()?
+        .strip_prefix(r#"{"marker":""#)?
+        .strip_suffix(r#""}"#)
+}
+
+/// Reopens the directory, checks every promise a client saw before the kill, closes, then
+/// reads the read store. A broken promise is an error naming its request.
+fn reopen(dir: &Path, env: EnvRef, seen: &Seen) -> Result<Snapshot, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("a runtime");
@@ -133,46 +353,135 @@ fn reopen(dir: &Path, env: EnvRef, acked: &[(String, String)]) -> Snapshot {
         let ledger = Ledger::open(dir, env, clock())
             .await
             .expect("the ledger reopens after the kill");
-        let ops = LocalOperations::new(&ledger);
-        let cx = Call::anonymous();
-        for (name, id) in acked {
-            let event = ops
-                .get_event(
-                    &cx,
-                    GetEventRequest {
-                        event_id: id.clone(),
-                    },
-                )
-                .await
-                .unwrap_or_else(|e| panic!("acknowledged {name} ({id}) reads back: {e:?}"));
-            assert_eq!(&event.name, name);
-        }
-        let page = ops
-            .list_events(
-                &cx,
-                ListEventsRequest {
-                    limit: NonZeroU32::new(200),
-                    cursor: None,
-                },
-            )
-            .await
-            .expect("events list");
-        assert!(page.next.is_none(), "one page holds every event");
+        let checked = check(&LocalOperations::new(&ledger), seen).await;
         ledger.close().await;
-        page.events.into_iter().rev().collect::<Vec<_>>()
-    });
-    let expected: Vec<&String> = acked.iter().map(|(n, _)| n).collect();
-    assert_eq!(
-        events.iter().map(|e| &e.name).collect::<Vec<_>>(),
-        expected,
-        "every acknowledged emit, in order, and nothing of the unanswered one"
-    );
+        checked
+    })?;
     let (sequences, applied) = read_store(dir);
-    Snapshot {
+    Ok(Snapshot {
         events,
         sequences,
         applied,
+    })
+}
+
+/// Every client-visible promise; returns every event, oldest first.
+async fn check(ops: &LocalOperations<'_>, seen: &Seen) -> Result<Vec<Event>, String> {
+    let cx = Call::anonymous();
+    for item in &seen.items {
+        let Some(id) = &item.acked else { continue };
+        let event = ops
+            .get_event(
+                &cx,
+                GetEventRequest {
+                    event_id: id.clone(),
+                },
+            )
+            .await
+            .map_err(|e| {
+                format!(
+                    "{}: acknowledged {id} does not read back: {e}",
+                    item.request
+                )
+            })?;
+        if marker(&event) != Some(&item.marker) {
+            return Err(format!("{}: {id} reads back another event", item.request));
+        }
     }
+    for (key, (request, id)) in &seen.keys {
+        let again = EmitRequest {
+            name: "crash.again".into(),
+            data: None,
+            metadata: None,
+            version: None,
+            idempotency_key: Some(key.clone()),
+        };
+        match ops.emit(&cx, again).await {
+            Ok(r) if r.duplicate && r.event_id.to_string() == *id => {}
+            other => {
+                return Err(format!(
+                    "{request}: acknowledged key {key} answers {other:?}, not its original {id}"
+                ));
+            }
+        }
+    }
+
+    let page = ops
+        .list_events(
+            &cx,
+            ListEventsRequest {
+                limit: NonZeroU32::new(200),
+                cursor: None,
+            },
+        )
+        .await
+        .map_err(|e| format!("events list: {e}"))?;
+    assert!(page.next.is_none(), "one page holds every event");
+    let newest_first: Vec<String> = page.events.iter().map(|e| e.event_id.to_string()).collect();
+    let stored: BTreeSet<&str> = page.events.iter().filter_map(marker).collect();
+    let sent: BTreeSet<&str> = seen.items.iter().map(|i| i.marker.as_str()).collect();
+    if let Some(stray) = stored.difference(&sent).next() {
+        return Err(format!("an event with marker {stray} that no request sent"));
+    }
+    for item in &seen.items {
+        if item.expect != Expect::New && stored.contains(item.marker.as_str()) {
+            return Err(format!(
+                "{}: {} was {:?} yet stored an event",
+                item.request, item.marker, item.expect
+            ));
+        }
+        if item.acked.is_some() && !stored.contains(item.marker.as_str()) {
+            return Err(format!(
+                "{}: acknowledged {} is not listed",
+                item.request, item.marker
+            ));
+        }
+    }
+    for request in &seen.unanswered {
+        let new: Vec<_> = seen
+            .items
+            .iter()
+            .filter(|i| &i.request == request && i.expect == Expect::New)
+            .collect();
+        let present = new
+            .iter()
+            .filter(|i| stored.contains(i.marker.as_str()))
+            .count();
+        if present != 0 && present != new.len() {
+            return Err(format!(
+                "{request}: {present} of its {} new events are present",
+                new.len()
+            ));
+        }
+    }
+
+    if let Some((request, limit, ids, cursor)) = &seen.cursor {
+        let at = newest_first
+            .iter()
+            .position(|id| Some(id) == ids.last())
+            .ok_or_else(|| format!("{request}: the last listed event is gone"))?;
+        let expected: Vec<&String> = newest_first[at + 1..]
+            .iter()
+            .take(*limit as usize)
+            .collect();
+        let next = ops
+            .list_events(
+                &cx,
+                ListEventsRequest {
+                    limit: NonZeroU32::new(*limit),
+                    cursor: Some(cursor.clone()),
+                },
+            )
+            .await
+            .map_err(|e| format!("{request}: its cursor no longer pages: {e}"))?;
+        let got: Vec<String> = next.events.iter().map(|e| e.event_id.to_string()).collect();
+        if got.iter().collect::<Vec<_>>() != expected {
+            return Err(format!(
+                "{request}: its cursor pages {got:?}, not from the same place {expected:?}"
+            ));
+        }
+    }
+    Ok(page.events.into_iter().rev().collect())
 }
 
 /// Each event's sequence and ID, and the applied position, read-only.
@@ -204,32 +513,35 @@ fn read_store(dir: &Path) -> (Vec<(u64, String)>, u64) {
 
 #[test]
 fn killed_before_the_append() {
-    // Before the append, the unanswered emit cannot have reached the log: it must leave
-    // nothing, the strict half of "nothing or a whole record".
-    let point = FaultPoint::BeforeAppend.name();
+    // Before the append, the unanswered batch cannot have reached the log: its new events must
+    // all be absent, the strict half of "all or nothing".
     let dir = tempfile::tempdir().expect("a temporary directory");
     let env = ironflowx_cell::new_env_ref();
-    let mut child = Driver::spawn(dir.path(), env, point, 6);
-    let mut acked = Vec::new();
-    let mut stopped = false;
-    for i in 1..=6 {
-        let name = format!("crash.e{i}");
-        match child.emit(&name) {
-            Answer::Acked(id) => acked.push((name, id)),
-            // The child names only the point it was given, so the name proves nothing;
-            // that it stopped on the sixth emit, after five acks, is the check.
-            Answer::AtPoint(_) => {
-                stopped = true;
-                break;
-            }
-            Answer::Failed(kind) => panic!("{name} failed: {kind}"),
-        }
-    }
-    assert!(stopped, "the child stopped at its sixth append");
-    assert_eq!(acked.len(), 5);
-    child.kill();
+    let seen = run(dir.path(), env);
 
-    let first = reopen(dir.path(), env, &acked);
-    let second = reopen(dir.path(), env, &acked);
+    let first = reopen(dir.path(), env, &seen).unwrap_or_else(|e| panic!("{e}"));
+    let unanswered = &seen.unanswered[0];
+    assert!(
+        !seen.items.iter().any(|i| &i.request == unanswered
+            && first.events.iter().any(|e| marker(e) == Some(&i.marker))),
+        "{unanswered}: nothing of it is stored before the append"
+    );
+    let second = reopen(dir.path(), env, &seen).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(first, second, "two reopens agree");
+}
+
+#[test]
+fn a_broken_expectation_names_its_request() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let env = ironflowx_cell::new_env_ref();
+    let mut seen = run(dir.path(), env);
+    // A key the client saw acknowledged that the ledger never stored.
+    let (request, id) = seen.keys["k1"].clone();
+    seen.keys.insert("k-missing".into(), (request.clone(), id));
+
+    let err = reopen(dir.path(), env, &seen).expect_err("a missing acknowledged key fails");
+    assert!(
+        err.starts_with(&format!("{request}: acknowledged key k-missing")),
+        "the failure names the request: {err}"
+    );
 }
