@@ -4,7 +4,7 @@
 check is proven by a fixture in `fixtures/` that it must reject (`must-reject.sh`), so a check
 that silently stops working fails CI.
 
-`ci/check.sh` runs every job below locally, in order, and stops at the first failure: run it
+`ci/check.sh` runs every job below but `soak` locally, in order, and stops at the first failure: run it
 before you push. `git config core.hooksPath .githooks` makes `git push` run it.
 
 | Job | Enforces | Run locally | When it fails |
@@ -14,6 +14,7 @@ before you push. `git config core.hooksPath .githooks` makes `git push` run it.
 | `purity` | LED-15: pure crates' dependencies and calls; D17: only `ironflowx-cell` calls `SequencedTime::from_event_clock` (and one helper in `ironflowx-events`' `tests/rules.rs`, which stands in for the ledger); crash test: no published crate (no `publish = false`) can build with `__fault-points`: by default, through a dependency or a feature of its own, on any target (`ci/no-fault-points.sh`) | `ci/purity.sh` | See [Pure crates](#pure-crates); for `__fault-points`, drop it from the published crate's defaults or dependency |
 | `public-api` | D21: each crate's public API matches `public-api/<crate>.txt`; LED-9: nothing public takes a bare `EnvironmentId`; no public API names a dependency's type (`rusqlite`, `segment_log_core`, `tokio`, `uuid`, `getrandom`) | `ci/public-api.sh` | Review the printed diff, then `ci/public-api.sh --bless` and commit the snapshot |
 | `doc-pins` | D16: docs name only the `segment-log-core` version `crates/ironflowx-cell/Cargo.toml` pins (tag-pinned links) | `ci/doc-pins.sh` | Re-pin the printed links to the new tag, or drop the version from the line |
+| `soak` | The crash test's longer soak before publishing: `inputs.kills` seeded kills (10000 by default) on Linux and macOS. Runs only when started by hand, with every other job, and is not required | `gh workflow run ci --ref <branch> -f kills=10000`; on your machine, `env -u CRASH_SEED CRASH_KILLS=10000 cargo test -p ironflowx-crash-test --locked --test crash seeded_random_kills` | Replay the printed `CRASH_SEED=<seed> CRASH_KILLS=1` and fix the ledger |
 | `lint-ci` | actionlint and shellcheck over the workflow, `ci/*.sh` and `.githooks/*` | `actionlint && shellcheck -x ci/*.sh .githooks/*` | Fix the script |
 
 ## Pure crates
