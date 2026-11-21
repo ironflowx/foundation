@@ -56,7 +56,7 @@ jobs:
           tool: cargo-deny@${{ env.CARGO_DENY }}
       - run: cargo deny check
 
-  # LED-15 and D17; see ci/README.md.
+  # LED-15, D17 and the crash test's fault points; see ci/README.md.
   purity:
     strategy:
       matrix:

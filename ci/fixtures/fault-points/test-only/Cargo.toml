@@ -1,0 +1,7 @@
+[package]
+name = "test-only"
+edition = "2024"
+publish = false
+
+[dependencies]
+on-by-default = { path = "../on-by-default" }

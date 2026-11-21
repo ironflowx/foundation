@@ -1,0 +1,6 @@
+[package]
+name = "through-dependency"
+edition = "2024"
+
+[dependencies]
+ironflowx-cell = { path = "../../../../crates/ironflowx-cell", features = ["__fault-points"] }

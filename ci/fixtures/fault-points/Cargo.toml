@@ -1,0 +1,5 @@
+# Crash-test fixture: two published crates that can build with the fault points, and an
+# unpublished one that may.
+[workspace]
+resolver = "3"
+members = ["on-by-default", "through-dependency", "test-only"]
