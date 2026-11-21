@@ -90,7 +90,8 @@ impl Driver {
     }
 
     /// The answer to the request that stops at `point`, if the child sends one before it
-    /// stops: only after the acknowledgment, as mid-fold is, does it, and the two lines come in either order.
+    /// stops: only at a point after the acknowledgment (after-ack, mid-fold) does it, and the
+    /// two lines come in either order.
     /// Before it, a `probe` proves no answer is on its way. The child names only the point it
     /// was given, so `at` carries nothing to check.
     fn stop(&mut self, request: &str, point: FaultPoint) -> Option<String> {
@@ -737,7 +738,8 @@ fn kill_at(
     (seen, first)
 }
 
-/// Kills a reopen of `dir` as it is about to fold the record the last kill left unfolded.
+/// Kills a reopen of `dir` inside its fold of the record the last kill left unfolded, its rows
+/// written and nothing committed.
 fn kill_during_open(dir: &Path, env: EnvRef) {
     let child = Driver::start(dir, env, FaultPoint::DuringOpen.name(), 1);
     let line = child.line("the reopen to stop during open");
