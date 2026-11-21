@@ -751,7 +751,7 @@ const POINTS: [FaultPoint; 3] = [
     FaultPoint::AfterAck,
 ];
 
-/// Fails to build when a point is added, until it is in `POINTS`.
+/// Fails to build when a point is added, as a reminder to add it to `POINTS`.
 const _: fn(FaultPoint) = |p| match p {
     FaultPoint::BeforeAppend | FaultPoint::AfterFsync | FaultPoint::AfterAck => {}
 };
@@ -805,8 +805,9 @@ fn random_workload(rng: &mut Rng) -> Vec<Request> {
         })
         .collect();
     if appends(&requests) == 0 {
-        requests.push(Request::Emit(item(rng)));
+        // Unkeyed and allowed, so always new.
         requests.push(Request::Emit(Item {
+            name: "crash.random",
             key: None,
             ..item(rng)
         }));
@@ -822,7 +823,7 @@ fn kill_seeded(seed: u64) {
     let workload = random_workload(&mut rng);
     let point = POINTS[rng.below(POINTS.len() as u64) as usize];
     let append = 1 + rng.below(appends(&workload));
-    let behind = rng.below(60_000);
+    let behind = 1 + rng.below(60_000);
     let dir = tempfile::tempdir().expect("a temporary directory");
     let env = ironflowx_cell::new_env_ref();
     let shown = kill_at(dir.path(), env, point, append, workload);
