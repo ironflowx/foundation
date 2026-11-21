@@ -6,8 +6,14 @@ Judgement rules for review. Anything a tool can check belongs in CI instead (`ci
   `decisions.md`, `invariants.md`, the behaviors) updates that line in the same PR. A new decision
   gets the next D-number in `decisions.md`; an overturned one is marked superseded, not deleted.
   The issue that planned the work is not updated after it closes.
-- **Assertions can fail.** For each new assertion, the reviewer names the defect it catches.
-  One that no defect can fail is deleted; one looser than its case allows is tightened.
+- **Assertions can fail.** For each new or changed assertion, the reviewer names the defect it
+  catches and the nearest defect it lets through. One that no defect can fail is deleted; one
+  looser than its case allows is tightened: when the test knows the exact expected value, the
+  assertion compares to it, not `>=`, "non-decreasing" or "is some". Generalizing a shared test
+  helper keeps each existing caller's assertions as strict as before.
+- **Test checks land red.** A new check in a test is shown failing against the defect named for
+  it (a one-line change to the code under test, then reverted), and the PR says which change
+  turned it red.
 - **Checks prove themselves.** A new CI check lands with a fixture that triggers every pattern it
   claims to catch, and `must-reject.sh` asserts it fails for that reason, not any failure.
 - **Rules are probed at their edges.** For code that accepts or refuses input, the reviewer runs
