@@ -10,7 +10,9 @@ before you push. `git config core.hooksPath .githooks` makes `git push` run it. 
 
 A release is `make release VERSION=X.Y.Z` (`ci/release.sh`): from a clean `main` that matches
 `origin/main` with green CI, it publishes every crate without `publish = false`, then tags and
-pushes `vX.Y.Z`. A rerun skips what is already done. Rehearse it first with
+pushes `vX.Y.Z`; the tag starts `.github/workflows/release.yml`, which creates the GitHub
+release from that version's `CHANGELOG.md` section, so add the section before you start. A rerun
+skips what is already done. Rehearse it first with
 `make release-dry-run VERSION=X.Y.Z`, which runs every check and `cargo publish --dry-run`.
 
 | Job | Enforces | Run locally | When it fails |

@@ -1,0 +1,30 @@
+name: release
+
+# A `vX.Y.Z` tag publishes a GitHub release with the tag's CHANGELOG section. ci/release.sh
+# (`make release VERSION=X.Y.Z`) publishes the crates and pushes the tag that starts it.
+# segment-log's release.yml has the same shape; it also attaches a server binary.
+on:
+  push:
+    tags: ["v[0-9]*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: The tag matches the workspace version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, Cargo.toml $version" >&2; exit 1; }
+      - name: Notes
+        run: |
+          # The notes are the CHANGELOG section of this version, up to the next "## " heading.
+          awk -v v="## ${GITHUB_REF_NAME#v} " 'index($0, v) == 1 { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md >notes.md
+          test -s notes.md || { echo "no CHANGELOG section for $GITHUB_REF_NAME" >&2; exit 1; }
+      - run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}

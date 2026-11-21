@@ -1,5 +1,6 @@
 #!/bin/bash
-# Publishes a release: every published crate to crates.io, then the `vVERSION` tag. A crates.io
+# Publishes a release: every published crate to crates.io, then the `vVERSION` tag, which starts
+# .github/workflows/release.yml to create the GitHub release from CHANGELOG.md. A crates.io
 # version can never be republished, so the script refuses to start unless the tree is exactly
 # origin/main with green CI, asks for the version again before it uploads, and skips every step
 # that is already done, so a rerun after a failure is safe. --dry-run runs every check and
@@ -33,6 +34,7 @@ head="$(git rev-parse HEAD)"
 [ "$head" = "$(git rev-parse origin/main)" ] || fail "HEAD is not origin/main; pull or push first"
 cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
 [ "$cargo_version" = "$version" ] || fail "Cargo.toml says $cargo_version, not $version"
+grep -q "^## $version " CHANGELOG.md || fail "CHANGELOG.md has no '## $version ' section"
 ci="$(gh run list --workflow "$workflow" --commit "$head" --event push --json conclusion -q '.[0].conclusion')"
 [ "$ci" = success ] || fail "CI on ${head:0:7} is '${ci:-not run}', not success"
 for tag in "${tags[@]}"; do
@@ -68,3 +70,4 @@ for tag in "${tags[@]}"; do
 	git rev-parse -q --verify "refs/tags/$tag" >/dev/null || run git tag -a "$tag" -m "$tag" "$head"
 done
 run git push origin "${tags[@]}"
+[ -n "$dry_run" ] || echo "release.yml is building the GitHub release: gh run list --workflow release -L 1"
