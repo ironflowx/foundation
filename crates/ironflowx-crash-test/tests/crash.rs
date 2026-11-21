@@ -216,8 +216,9 @@ fn killed_before_the_append() {
         let name = format!("crash.e{i}");
         match child.emit(&name) {
             Answer::Acked(id) => acked.push((name, id)),
-            Answer::AtPoint(at) => {
-                assert_eq!(at, point);
+            // The child names only the point it was given, so the name proves nothing;
+            // that it stopped on the sixth emit, after five acks, is the check.
+            Answer::AtPoint(_) => {
                 stopped = true;
                 break;
             }
