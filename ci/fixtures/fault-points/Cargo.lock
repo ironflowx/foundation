@@ -165,6 +165,13 @@ name = "on-by-default"
 version = "0.0.0"
 
 [[package]]
+name = "opt-in"
+version = "0.0.0"
+dependencies = [
+ "ironflowx-cell",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -294,13 +301,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "test-only"
-version = "0.0.0"
-dependencies = [
- "on-by-default",
 ]
 
 [[package]]

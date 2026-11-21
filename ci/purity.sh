@@ -2,8 +2,7 @@
 # Usage: ci/purity.sh
 # LED-15 and D17: the pure crates' dependency allowlists, the SequencedTime constructor outside
 # the ledger; the crash test's fault points in no published build; and each check rejecting its
-# fixture. The clippy job enforces the call bans on the
-# real crates.
+# fixture. The clippy job enforces the call bans on the real crates.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -35,6 +34,7 @@ ci/no-fault-points.sh crates
     ci/no-event-clock-outside-ledger.sh ci/fixtures/sequenced-time-outside-ledger
   ci/must-reject.sh \
     "on-by-default/Cargo.toml: published crate can enable __fault-points on on-by-default" \
-    "through-dependency/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" -- \
+    "through-dependency/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" \
+    "opt-in/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" -- \
     ci/no-fault-points.sh ci/fixtures/fault-points
 }
