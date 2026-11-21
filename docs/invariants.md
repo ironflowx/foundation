@@ -48,6 +48,6 @@ A parent process drives a child process that owns the ledger, over a pipe, with 
   - both reopens give the same events, keys, sequences and applied position;
   - the recorded cursor still pages from the same place.
 
-Every PR runs the named kill points and 100 seeded kills, on Linux and macOS. 0.1 has no longer scheduled run; a longer soak is run by hand before publishing.
+Not built yet: [#6](https://github.com/ironflowx/foundation/issues/6) builds it. Until it lands, the **S** proofs above are pending. Once it lands, every PR runs the named kill points and 100 seeded kills, on Linux and macOS. 0.1 has no longer scheduled run; a longer soak is run by hand before publishing.
 
 A kill keeps the operating system's page cache, so this test proves crash durability, not power-loss durability. The simulator proves the second in a later release.
