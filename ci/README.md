@@ -5,7 +5,8 @@ check is proven by a fixture in `fixtures/` that it must reject (`must-reject.sh
 that silently stops working fails CI.
 
 `ci/check.sh` runs every job below but `soak` locally, in order, and stops at the first failure: run it
-before you push. `git config core.hooksPath .githooks` makes `git push` run it.
+before you push. `git config core.hooksPath .githooks` makes `git push` run it. The root
+`Makefile` names these commands and the release steps; `make` lists them.
 
 | Job | Enforces | Run locally | When it fails |
 |---|---|---|---|
