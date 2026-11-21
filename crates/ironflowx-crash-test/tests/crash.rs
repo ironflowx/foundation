@@ -30,6 +30,13 @@ struct Driver {
 
 impl Driver {
     fn spawn(dir: &Path, env: EnvRef, point: &str, crossing: u64) -> Self {
+        let driver = Self::start(dir, env, point, crossing);
+        assert_eq!(driver.line("ready"), "ready", "the child opens its ledger");
+        driver
+    }
+
+    /// The child, before its ledger has opened.
+    fn start(dir: &Path, env: EnvRef, point: &str, crossing: u64) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_crash-child"))
             .arg(dir)
             .arg(env.to_string())
@@ -49,13 +56,11 @@ impl Driver {
                 }
             }
         });
-        let driver = Self {
+        Self {
             child,
             stdin,
             lines,
-        };
-        assert_eq!(driver.line("ready"), "ready", "the child opens its ledger");
-        driver
+        }
     }
 
     fn line(&self, expecting: &str) -> String {
@@ -85,11 +90,15 @@ impl Driver {
     }
 
     /// The answer to the request that stops at `point`, if the child sends one before it
-    /// stops: only after the acknowledgment does it, and the two lines come in either order.
+    /// stops: only after the acknowledgment (and so mid-fold) does it, and the two lines come in either order.
     /// Before it, a `probe` proves no answer is on its way. The child names only the point it
     /// was given, so `at` carries nothing to check.
     fn stop(&mut self, request: &str, point: FaultPoint) -> Option<String> {
-        let lines = if point == FaultPoint::AfterAck { 2 } else { 1 };
+        let lines = if matches!(point, FaultPoint::AfterAck | FaultPoint::MidFold) {
+            2
+        } else {
+            1
+        };
         let mut answer = None;
         let mut stopped = false;
         for _ in 0..lines {
@@ -651,16 +660,26 @@ fn kill_at(
     append: u64,
     workload: Vec<Request>,
 ) -> (Seen, Snapshot) {
-    let seen = run(dir, env, point, append, workload);
+    // During open needs a record for open to fold: stop after the acknowledgment first.
+    let opened = point == FaultPoint::DuringOpen;
+    let seen = if opened {
+        let seen = run(dir, env, FaultPoint::AfterAck, append, workload);
+        kill_during_open(dir, env);
+        seen
+    } else {
+        run(dir, env, point, append, workload)
+    };
     let stopped = seen.stopped.as_deref().expect("the child stopped");
     let name = point.name();
 
-    // Every point is before the stopped request's fold, so the read store holds exactly the
-    // earlier requests' events until reopen folds the rest.
-    let earlier: Vec<&String> = seen
+    // Every other point is before the stopped request's fold or, mid-fold, inside it, which the
+    // kill rolls back: the read store holds exactly the earlier requests' events until reopen
+    // folds the rest, its rows and applied position moving together. During open, the killed
+    // reopen had folded the stopped request too.
+    let expected: Vec<&String> = seen
         .items
         .iter()
-        .filter(|i| i.request != stopped)
+        .filter(|i| opened || i.request != stopped)
         .filter_map(|i| i.acked.as_ref())
         .collect();
     let (folded, applied) = read_store(dir);
@@ -670,21 +689,22 @@ fn kill_at(
         .iter()
         .filter(|i| i.request == stopped)
         .filter_map(|i| i.acked.as_ref());
-    for id in mine {
+    for id in mine.filter(|_| !opened) {
         assert!(
             !folded.contains(&id),
             "{stopped}: killed at {name}, its {id} is folded before reopen"
         );
     }
     assert_eq!(
-        folded, earlier,
-        "killed at {name} on {stopped}: before reopen the read store holds every earlier \
-         acknowledged event"
+        folded, expected,
+        "killed at {name} on {stopped}: before reopen the read store holds every acknowledged \
+         event folded so far"
     );
     // The genesis is record 0 and each earlier append one more record.
     assert_eq!(
-        applied, append,
-        "killed at {name} on {stopped}: before reopen the applied position follows the earlier \
+        applied,
+        append + u64::from(opened),
+        "killed at {name} on {stopped}: before reopen the applied position follows the folded \
          records"
     );
 
@@ -718,6 +738,18 @@ fn kill_at(
     let second = reopen(dir, env, &seen).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(first, second, "killed at {name}, two reopens agree");
     (seen, first)
+}
+
+/// Kills a reopen of `dir` once open has folded the record the last kill left unfolded.
+fn kill_during_open(dir: &Path, env: EnvRef) {
+    let child = Driver::start(dir, env, FaultPoint::DuringOpen.name(), 1);
+    let line = child.line("the reopen to stop during open");
+    assert_eq!(
+        line,
+        format!("at {}", FaultPoint::DuringOpen.name()),
+        "the reopen stops during open, before it is ready"
+    );
+    child.kill();
 }
 
 /// `kill_at` with the fixed workload, in a fresh directory.
@@ -756,6 +788,18 @@ fn killed_after_the_acknowledgment() {
 }
 
 #[test]
+fn killed_mid_fold() {
+    kill_named(FaultPoint::MidFold, SINGLE_APPEND);
+    kill_named(FaultPoint::MidFold, BATCH_APPEND);
+}
+
+#[test]
+fn killed_during_open() {
+    kill_named(FaultPoint::DuringOpen, SINGLE_APPEND);
+    kill_named(FaultPoint::DuringOpen, BATCH_APPEND);
+}
+
+#[test]
 fn a_broken_expectation_names_its_request() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let env = ironflowx_cell::new_env_ref();
@@ -778,15 +822,21 @@ fn a_broken_expectation_names_its_request() {
 }
 
 /// Every named point, for the seeded kills to choose from.
-const POINTS: [FaultPoint; 3] = [
+const POINTS: [FaultPoint; 5] = [
     FaultPoint::BeforeAppend,
     FaultPoint::AfterFsync,
     FaultPoint::AfterAck,
+    FaultPoint::MidFold,
+    FaultPoint::DuringOpen,
 ];
 
 /// Fails to build when a point is added, as a reminder to add it to `POINTS`.
 const _: fn(FaultPoint) = |p| match p {
-    FaultPoint::BeforeAppend | FaultPoint::AfterFsync | FaultPoint::AfterAck => {}
+    FaultPoint::BeforeAppend
+    | FaultPoint::AfterFsync
+    | FaultPoint::AfterAck
+    | FaultPoint::MidFold
+    | FaultPoint::DuringOpen => {}
 };
 
 /// splitmix64: the seed is all a run depends on, so a run replays.

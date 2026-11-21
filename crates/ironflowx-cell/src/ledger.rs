@@ -536,6 +536,10 @@ fn replay(
             if let Err(e) = store::apply(&mut conn, r.offset, record.as_ref()) {
                 return Ok(Err(e));
             }
+            #[cfg(feature = "__fault-points")]
+            if record.is_some() {
+                point::reach(point::FaultPoint::DuringOpen);
+            }
             from = r.offset + 1;
         }
     }
@@ -588,6 +592,11 @@ pub mod point {
         AfterFsync,
         /// The submitter is answered and the record not yet folded into the read store.
         AfterAck,
+        /// Inside the read store's transaction for one record: its rows written, the applied
+        /// position not yet moved, nothing committed.
+        MidFold,
+        /// Open has folded a record the read store lacked and has not finished.
+        DuringOpen,
     }
 
     impl FaultPoint {
@@ -597,6 +606,8 @@ pub mod point {
                 Self::BeforeAppend => "before-append",
                 Self::AfterFsync => "after-fsync",
                 Self::AfterAck => "after-ack",
+                Self::MidFold => "mid-fold",
+                Self::DuringOpen => "during-open",
             }
         }
     }
