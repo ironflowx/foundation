@@ -659,6 +659,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironflowx-crash-test"
+version = "0.0.1"
+dependencies = [
+ "ironflowx-cell",
+ "ironflowx-core",
+ "ironflowx-proto",
+ "rusqlite",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "ironflowx-events"
 version = "0.0.1"
 dependencies = [

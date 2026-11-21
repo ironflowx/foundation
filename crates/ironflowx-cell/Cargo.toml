@@ -12,9 +12,9 @@ homepage.workspace = true
 authors.workspace = true
 
 [features]
-# Internal and unstable, not part of the API: test hooks that hold the fold and inject an
-# append or fold fault, which can make a durable commit answer `Unknown`. For this repo's
-# crash test only; no published build enables it.
+# Internal and unstable, not part of the API: test hooks that hold the fold, inject an
+# append or fold fault, which can make a durable commit answer `Unknown`, and call a hook at
+# each named kill point. For this repo's crash test only; no published build enables it.
 __fault-points = []
 
 [dependencies]
