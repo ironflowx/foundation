@@ -410,7 +410,7 @@ impl Writer {
             fail(&self.progress);
             return;
         };
-        match store::apply(&mut conn, offset, Some(record)) {
+        match store::apply(&mut conn, offset, Some(record), false) {
             Ok(()) => self.progress.send_modify(|p| p.applied = offset + 1),
             Err(_) => fail(&self.progress),
         }
@@ -533,7 +533,7 @@ fn replay(
                 0 => None,
                 _ => Some(events_record(&r.payload, env)?),
             };
-            if let Err(e) = store::apply(&mut conn, r.offset, record.as_ref()) {
+            if let Err(e) = store::apply(&mut conn, r.offset, record.as_ref(), true) {
                 return Ok(Err(e));
             }
             from = r.offset + 1;
@@ -588,6 +588,11 @@ pub mod point {
         AfterFsync,
         /// The submitter is answered and the record not yet folded into the read store.
         AfterAck,
+        /// Inside the writer's read store transaction for one record: its rows written, the
+        /// applied position not yet moved, nothing committed.
+        MidFold,
+        /// The same place in open's recovery, folding a record the read store lacks.
+        DuringOpen,
     }
 
     impl FaultPoint {
@@ -597,6 +602,8 @@ pub mod point {
                 Self::BeforeAppend => "before-append",
                 Self::AfterFsync => "after-fsync",
                 Self::AfterAck => "after-ack",
+                Self::MidFold => "mid-fold",
+                Self::DuringOpen => "during-open",
             }
         }
     }

@@ -30,6 +30,13 @@ struct Driver {
 
 impl Driver {
     fn spawn(dir: &Path, env: EnvRef, point: &str, crossing: u64) -> Self {
+        let driver = Self::start(dir, env, point, crossing);
+        assert_eq!(driver.line("ready"), "ready", "the child opens its ledger");
+        driver
+    }
+
+    /// The child, before its ledger has opened.
+    fn start(dir: &Path, env: EnvRef, point: &str, crossing: u64) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_crash-child"))
             .arg(dir)
             .arg(env.to_string())
@@ -49,13 +56,11 @@ impl Driver {
                 }
             }
         });
-        let driver = Self {
+        Self {
             child,
             stdin,
             lines,
-        };
-        assert_eq!(driver.line("ready"), "ready", "the child opens its ledger");
-        driver
+        }
     }
 
     fn line(&self, expecting: &str) -> String {
@@ -85,11 +90,16 @@ impl Driver {
     }
 
     /// The answer to the request that stops at `point`, if the child sends one before it
-    /// stops: only after the acknowledgment does it, and the two lines come in either order.
+    /// stops: only at a point after the acknowledgment (after-ack, mid-fold) does it, and the
+    /// two lines come in either order.
     /// Before it, a `probe` proves no answer is on its way. The child names only the point it
     /// was given, so `at` carries nothing to check.
     fn stop(&mut self, request: &str, point: FaultPoint) -> Option<String> {
-        let lines = if point == FaultPoint::AfterAck { 2 } else { 1 };
+        let lines = if matches!(point, FaultPoint::AfterAck | FaultPoint::MidFold) {
+            2
+        } else {
+            1
+        };
         let mut answer = None;
         let mut stopped = false;
         for _ in 0..lines {
@@ -651,12 +661,20 @@ fn kill_at(
     append: u64,
     workload: Vec<Request>,
 ) -> (Seen, Snapshot) {
-    let seen = run(dir, env, point, append, workload);
+    // During open needs a record for open to fold: stop after the acknowledgment first.
+    let seen = if point == FaultPoint::DuringOpen {
+        let seen = run(dir, env, FaultPoint::AfterAck, append, workload);
+        kill_during_open(dir, env);
+        seen
+    } else {
+        run(dir, env, point, append, workload)
+    };
     let stopped = seen.stopped.as_deref().expect("the child stopped");
     let name = point.name();
 
-    // Every point is before the stopped request's fold, so the read store holds exactly the
-    // earlier requests' events until reopen folds the rest.
+    // Every point is before the stopped request's fold or, mid-fold, inside it, which the kill
+    // rolls back: the read store holds exactly the earlier requests' events until reopen folds
+    // the rest, its rows and applied position moving together.
     let earlier: Vec<&String> = seen
         .items
         .iter()
@@ -720,6 +738,19 @@ fn kill_at(
     (seen, first)
 }
 
+/// Kills a reopen of `dir` inside its fold of the record the last kill left unfolded, its rows
+/// written and nothing committed.
+fn kill_during_open(dir: &Path, env: EnvRef) {
+    let child = Driver::start(dir, env, FaultPoint::DuringOpen.name(), 1);
+    let line = child.line("the reopen to stop during open");
+    assert_eq!(
+        line,
+        format!("at {}", FaultPoint::DuringOpen.name()),
+        "the reopen stops during open, before it is ready"
+    );
+    child.kill();
+}
+
 /// `kill_at` with the fixed workload, in a fresh directory.
 fn kill_named(point: FaultPoint, append: u64) {
     let dir = tempfile::tempdir().expect("a temporary directory");
@@ -756,6 +787,18 @@ fn killed_after_the_acknowledgment() {
 }
 
 #[test]
+fn killed_mid_fold() {
+    kill_named(FaultPoint::MidFold, SINGLE_APPEND);
+    kill_named(FaultPoint::MidFold, BATCH_APPEND);
+}
+
+#[test]
+fn killed_during_open() {
+    kill_named(FaultPoint::DuringOpen, SINGLE_APPEND);
+    kill_named(FaultPoint::DuringOpen, BATCH_APPEND);
+}
+
+#[test]
 fn a_broken_expectation_names_its_request() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let env = ironflowx_cell::new_env_ref();
@@ -778,15 +821,21 @@ fn a_broken_expectation_names_its_request() {
 }
 
 /// Every named point, for the seeded kills to choose from.
-const POINTS: [FaultPoint; 3] = [
+const POINTS: [FaultPoint; 5] = [
     FaultPoint::BeforeAppend,
     FaultPoint::AfterFsync,
     FaultPoint::AfterAck,
+    FaultPoint::MidFold,
+    FaultPoint::DuringOpen,
 ];
 
 /// Fails to build when a point is added, as a reminder to add it to `POINTS`.
 const _: fn(FaultPoint) = |p| match p {
-    FaultPoint::BeforeAppend | FaultPoint::AfterFsync | FaultPoint::AfterAck => {}
+    FaultPoint::BeforeAppend
+    | FaultPoint::AfterFsync
+    | FaultPoint::AfterAck
+    | FaultPoint::MidFold
+    | FaultPoint::DuringOpen => {}
 };
 
 /// splitmix64: the seed is all a run depends on, so a run replays.

@@ -169,7 +169,7 @@ async fn replaying_folds_each_record_exactly_once() {
             events: vec![],
         };
         for offset in 0..applied {
-            crate::store::apply(&mut conn, offset, Some(&record)).unwrap();
+            crate::store::apply(&mut conn, offset, Some(&record), false).unwrap();
         }
         assert_eq!(crate::store::applied(&conn).unwrap(), applied);
     }
