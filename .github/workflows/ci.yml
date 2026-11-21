@@ -4,12 +4,20 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Runs the crash-test soak (the `soak` job) alongside every other job, on the ref you pick.
+  workflow_dispatch:
+    inputs:
+      kills:
+        description: Seeded kills per platform
+        type: number
+        default: 10000
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # The event in the key keeps a push to main from cancelling a soak running on main.
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 # Job names are the required status checks of the `main` ruleset. The toolchain comes from
@@ -100,3 +108,17 @@ jobs:
       - run: go install "github.com/rhysd/actionlint/cmd/actionlint@v$ACTIONLINT"
       - run: '"$(go env GOPATH)/bin/actionlint"'
       - run: shellcheck -x ci/*.sh .githooks/*
+
+  # The longer crash-test soak run by hand before publishing (docs/invariants.md); not a required check.
+  soak:
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CRASH_KILLS: ${{ inputs.kills }}
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo test -p ironflowx-crash-test --locked --test crash seeded_random_kills
