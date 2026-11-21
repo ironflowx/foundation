@@ -1,4 +1,4 @@
-# 0.1 Ledger: architecture
+# Architecture
 
 One environment's commit path, as foundation crates linked into an embedder's process.
 
@@ -224,33 +224,8 @@ How the ledger uses the log:
 - **Records:** one stream, `events`; the genesis record expects `ExpectedRevision::Empty`, each later one `At(last revision)`. No log key: the ledger keeps its own idempotency.
 - **Errors:** `CommitError::Indeterminate` is `Unknown`. `CommitError::Poisoned` and `AppendError::Poisoned` are `Unavailable`. Every other append or commit error (`Full`, `TooLarge`, `Invalid`, `Sealed`, `WrongRevision`, `KeyConflict`, `PartialRetry`, `Exhausted`) cannot happen by construction; if one does, the ledger treats it as a fault: `Unavailable` until reopened.
 - **A sealed log:** nothing in 0.1 seals one; only the log's operator repair tool does. The library opens it without an error and cannot say it is sealed until an append, so `open` succeeds, reads work, and the first emit is the fault above (D19).
-- **Names:** the log's `Record`, `Position` and `Committed` types stay private to `ironflowx-cell`. This repo calls them the log record and the log offset; the ledger's own terms are in [`GLOSSARY.md`](../../../GLOSSARY.md).
+- **Names:** the log's `Record`, `Position` and `Committed` types stay private to `ironflowx-cell`. This repo calls them the log record and the log offset; the ledger's own terms are in [`GLOSSARY.md`](../GLOSSARY.md).
 - **Durability:** `wait` returns after the record's `sync_data`, which is a full flush on Linux and macOS. 0.1 claims crash durability on both. Power-loss durability is unclaimed until the simulator proves it.
 - **Close:** `close`, and dropping a `Ledger`, drop the log cleanly, so it writes a close frame after the last record (segment-log format version 4, [ADR 0071](https://github.com/ironflowx/segment-log/blob/v0.2.0/docs/decisions/0071-a-clean-drop-writes-a-close-frame.md)). The upgrade is one-way: once a build on `segment-log-core` 0.2 has opened a directory, a build on 0.1 answers `Format` for it.
 
-## Decisions
-
-| # | Decision | Why |
-|---|---|---|
-| D1 | `Operations` in 0.1 is `emit`, `emit_batch`, `get_event`, `list_events`, as hand-written Rust types. Data and metadata are bytes that must hold JSON (D22); optional fields are `Option` | Event rules own every data and range check, for every door: duplicate keys, lone surrogates and invalid UTF-8 exist only in the bytes as sent |
-| D2 | Every `Operations` call takes a `Call`, opaque and empty in 0.1 | The trait does not change shape when 0.2 adds the credential |
-| D3 | Read your writes through a committed head published before the acknowledgment ([Commit and read](#commit-and-read)) | One fsync on the acknowledgment path, and read your writes holds across clients |
-| D4 | The append is the segment log's blocking call, made on the writer's own thread | The writer is the log's only writer, so it knows when a commit lands |
-| D5 | Every check, including the version range, runs before the idempotency lookup | The same request is refused the same way, first time or repeat |
-| D6 | Events list newest first by event sequence | Commit order is total, so two events never tie |
-| D7 | The event clock never goes back: each record's time is the later of the clock and the last committed time | Restarts and clock steps keep event time ordered |
-| D8 | A ledger refuses a directory whose format version or incarnation differs | Formats change freely before 1.0; a loud refusal beats a silent misread |
-| D9 | A batch is one record: items are checked one by one, new items commit together, and the answer has one result per input in order | Partial validation, atomic commit |
-| D10 | The writer mints event IDs (UUIDv7) and `decide` draws them only for new events | Event rules stay pure; an ID exists before the record is written |
-| D11 | An unknown append outcome closes the ledger until reopen; there is no append retry | After reopen the log says whether the record landed |
-| D12 | Event rules parse the bytes with `serde_json` (`from_slice`, which refuses invalid UTF-8 in the same pass) and a visitor that deserializes every key and string (never `IgnoredAny`), erroring on a repeated key, a NUL or a number out of range. `serde_json` hands keys over unescaped and refuses unpaired surrogate escapes, but only for values it decodes | No second JSON parser |
-| D13 | Environment and event IDs are UUIDv7 | One opaque ID format for every resource |
-| D14 | The genesis record, not `read.db`, holds the directory's identity | A swapped or rebuilt read store cannot pass for another environment |
-| D15 | The writer is one serial thread: decide, append, fsync, publish, acknowledge, fold, then the next submission. 0.1 sets no performance target | `decide` reads the read store, with no overlay of unfolded records to keep right |
-| D16 | `segment-log-core` comes from crates.io at an exact version, pinned only in `crates/ironflowx-cell/Cargo.toml`; tag-pinned links to its docs match it (`ci/doc-pins.sh`) | A published crate cannot depend on a git revision |
-| D17 | A lint, not the type system, keeps `SequencedTime`'s constructor inside `ironflowx-cell`. One helper in `crates/ironflowx-events/tests/rules.rs` is exempt, by an `#[expect]` on that function alone: it stands in for the ledger to call `decide` | The type is in core so that pure event rules can take one, and Rust cannot open a constructor to one downstream crate only |
-| D18 | `Timestamp` has one integer encoding, `i64` milliseconds. The SQLite impl is in `ironflowx-cell` on a private wrapper, and the log record uses the same pair | Core stays free of `rusqlite` (LED-15), and the log stores event time too |
-| D19 | `open` does not refuse a sealed log | The library reports a seal only on append. A refusal at open waits for it to expose one |
-| D20 | The behaviors run under the `cucumber` crate, in an unpublished workspace crate | The feature files are the spec, run from this folder |
-| D21 | The public-API checks compare `cargo-public-api` output with a committed snapshot, on a pinned nightly toolchain in one CI job | The tool needs rustdoc JSON, which stable does not emit. Every other job stays on the pinned stable |
-| D22 | Event data and metadata are bytes by type and JSON by rule: `Vec<u8>` in `Operations` and event rules, which still require one JSON value for data and one JSON object for metadata under every rule in the table, and refuse invalid UTF-8. When a non-JSON payload is needed, the event gains an optional first-class content type: absent means JSON, non-JSON data is stored and returned as sent, and every feature that reads inside data skips it. 0.1 builds nothing for the content type | The engine reads inside data (`$redacted` now; filters, keys, schemas and redaction later), so data cannot be opaque. JSON-only can gain a content type later without touching a stored event; the reverse cannot be undone. Bytes by type puts the UTF-8 check in event rules, for every door |
+The decisions behind this design: [`decisions.md`](decisions.md).

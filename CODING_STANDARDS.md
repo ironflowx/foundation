@@ -2,8 +2,10 @@
 
 Judgement rules for review. Anything a tool can check belongs in CI instead (`ci/README.md`).
 
-- **Specs stay true.** A change that departs from a line in a spec, `architecture.md` or
-  `invariants.md` updates that line in the same PR.
+- **Docs stay true.** A change that departs from a line in `docs/` (`architecture.md`,
+  `decisions.md`, `invariants.md`, the behaviors) updates that line in the same PR. A new decision
+  gets the next D-number in `decisions.md`; an overturned one is marked superseded, not deleted.
+  The issue that planned the work is not updated after it closes.
 - **Checks prove themselves.** A new CI check lands with a fixture that triggers every pattern it
   claims to catch, and `must-reject.sh` asserts it fails for that reason, not any failure.
 - **Rules are probed at their edges.** For code that accepts or refuses input, the reviewer runs
