@@ -321,8 +321,12 @@ impl Writer {
                 let _ = job.reply.send(answer);
                 continue;
             };
+            #[cfg(feature = "__fault-points")]
+            point::reach(point::FaultPoint::AfterFsync);
             self.progress.send_modify(|p| p.committed = offset + 1);
             let _ = job.reply.send(answer);
+            #[cfg(feature = "__fault-points")]
+            point::reach(point::FaultPoint::AfterAck);
             self.fold(offset, &record);
         }
     }
@@ -580,6 +584,10 @@ pub mod point {
     pub enum FaultPoint {
         /// The writer has decided a record and not yet appended it.
         BeforeAppend,
+        /// The record is durable and its submitter not yet answered.
+        AfterFsync,
+        /// The submitter is answered and the record not yet folded into the read store.
+        AfterAck,
     }
 
     impl FaultPoint {
@@ -587,6 +595,8 @@ pub mod point {
         pub const fn name(self) -> &'static str {
             match self {
                 Self::BeforeAppend => "before-append",
+                Self::AfterFsync => "after-fsync",
+                Self::AfterAck => "after-ack",
             }
         }
     }
