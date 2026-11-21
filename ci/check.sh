@@ -24,6 +24,7 @@ step env -u CRASH_SEED CRASH_KILLS=100 cargo test --workspace --locked
 step cargo test -p ironflowx-events --locked --features serde_json/arbitrary_precision
 step cargo deny check
 step ci/purity.sh
+step sh -c 'cd examples/embed && cargo fmt --check && cargo clippy --locked -- -D warnings && cargo run --locked'
 step ci/public-api.sh
 step ci/doc-pins.sh
 step actionlint

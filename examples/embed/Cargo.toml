@@ -1,0 +1,10 @@
+# An embedder's crate, outside the workspace: only `ironflowx` and `tokio`, as from crates.io.
+# `.cargo/config.toml` patches `ironflowx` to this checkout; without it, this builds the release.
+[package]
+name = "embed"
+publish = false
+edition = "2024"
+
+[dependencies]
+ironflowx = "0.1.0"
+tokio = { version = "1", default-features = false, features = ["rt"] }

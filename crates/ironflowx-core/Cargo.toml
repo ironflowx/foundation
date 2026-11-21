@@ -4,6 +4,7 @@ description = "Ironflow X core types: validated opaque IDs, the environment refe
 keywords = ["ironflow", "workflow", "event-driven"]
 categories = ["data-structures"]
 readme = "../../README.md"
+documentation = "https://docs.rs/ironflowx-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

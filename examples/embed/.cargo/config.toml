@@ -1,0 +1,3 @@
+# Builds against this checkout's crates. The release check (#57) runs without this file.
+[patch.crates-io]
+ironflowx = { path = "../../crates/ironflowx" }
