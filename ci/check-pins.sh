@@ -21,5 +21,5 @@ while IFS= read -r hit; do
     echo "${hit%%:"$line"}: segment-log $(echo "$stale" | sort -u | tr '\n' ' ')is not the pinned $pin ($manifest)"
     status=1
   fi
-done < <(grep -rnE 'segment-log' --exclude=Cargo.lock "$@" || true)
+done < <(grep -rnHE 'segment-log' --exclude=Cargo.lock "$@" || true)
 exit $status
