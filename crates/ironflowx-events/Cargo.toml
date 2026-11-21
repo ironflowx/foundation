@@ -3,6 +3,7 @@ name = "ironflowx-events"
 description = "Ironflow X event rules: what an event is and when an emit is refused."
 keywords = ["ironflow", "workflow", "event-driven"]
 readme = "../../README.md"
+documentation = "https://docs.rs/ironflowx-events"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

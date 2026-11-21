@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "ironflowx"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ironflowx-cell",
  "ironflowx-core",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "ironflowx-behaviors"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "cucumber",
  "futures",
@@ -638,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "ironflowx-cell"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "getrandom",
  "ironflowx-core",
@@ -653,14 +653,14 @@ dependencies = [
 
 [[package]]
 name = "ironflowx-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "uuid",
 ]
 
 [[package]]
 name = "ironflowx-crash-test"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ironflowx-cell",
  "ironflowx-core",
@@ -672,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "ironflowx-events"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ironflowx-core",
  "serde_core",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "ironflowx-proto"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ironflowx-core",
 ]

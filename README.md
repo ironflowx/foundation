@@ -4,6 +4,16 @@ An experimental MIT-licensed rewrite of the Ironflow engine. Not the shipping pr
 
 Foundation crates are 0.x with no semver-stability promise.
 
+Depend on the facade, with `tokio` for the runtime the ledger runs on:
+
+```toml
+[dependencies]
+ironflowx = "0.1"
+tokio = { version = "1", default-features = false, features = ["rt"] }
+```
+
+[`examples/embed`](examples/embed/src/main.rs) opens a ledger, emits an event and reads it back.
+
 | Crate | Contents |
 | --- | --- |
 | ironflowx-core | IDs, the environment reference, stored and event-clock time, the clock trait, error kinds |

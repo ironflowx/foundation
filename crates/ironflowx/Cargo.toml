@@ -2,6 +2,7 @@
 name = "ironflowx"
 description = "Ironflow foundation crates in one dependency."
 readme = "../../README.md"
+documentation = "https://docs.rs/ironflowx"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

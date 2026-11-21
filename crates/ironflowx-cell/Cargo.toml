@@ -3,6 +3,7 @@ name = "ironflowx-cell"
 description = "The Ironflow X ledger: one environment's durable commit log and read store."
 keywords = ["ironflow", "workflow", "event-driven"]
 readme = "../../README.md"
+documentation = "https://docs.rs/ironflowx-cell"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
