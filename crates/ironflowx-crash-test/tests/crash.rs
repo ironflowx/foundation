@@ -2,20 +2,29 @@
 //! through the pipe, then checks the directory through a reopened ledger and, read-only, the
 //! read store, for the sequences and applied position no public interface exposes.
 
-use std::io::{BufRead, BufReader, Lines, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::num::NonZeroU32;
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use ironflowx_cell::{FaultPoint, Ledger, LocalOperations, ManualClock};
 use ironflowx_core::{EnvRef, Timestamp};
-use ironflowx_proto::{Call, GetEventRequest, ListEventsRequest, Operations};
+use ironflowx_proto::{Call, Event, GetEventRequest, ListEventsRequest, Operations};
 
-/// The child process, stopped at its `crossing`-th pass of `point`.
+/// How long the parent waits for one line from the child before failing, so a stalled child
+/// fails the test instead of hanging it.
+const ANSWER_DEADLINE: Duration = Duration::from_secs(30);
+
+/// The child process, stopped at its `crossing`-th pass of `point`. Dropping it kills the
+/// child, so a failed assertion leaves no process parked at a point.
 struct Driver {
     child: Child,
     stdin: ChildStdin,
-    stdout: Lines<BufReader<ChildStdout>>,
+    /// The child's stdout lines, read on their own thread so each read can time out.
+    lines: mpsc::Receiver<std::io::Result<String>>,
 }
 
 /// What the child answered to one request.
@@ -39,26 +48,39 @@ impl Driver {
             .spawn()
             .expect("the child starts");
         let stdin = child.stdin.take().expect("piped");
-        let stdout = BufReader::new(child.stdout.take().expect("piped")).lines();
-        let mut driver = Self {
+        let stdout = BufReader::new(child.stdout.take().expect("piped"));
+        let (send, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in stdout.lines() {
+                if send.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let driver = Self {
             child,
             stdin,
-            stdout,
+            lines,
         };
-        assert_eq!(driver.line(), "ready", "the child opens its ledger");
+        assert_eq!(driver.line("ready"), "ready", "the child opens its ledger");
         driver
     }
 
-    fn line(&mut self) -> String {
-        self.stdout
-            .next()
-            .expect("the child answers before exiting")
-            .expect("the pipe reads")
+    fn line(&self, expecting: &str) -> String {
+        match self.lines.recv_timeout(ANSWER_DEADLINE) {
+            Ok(line) => line.expect("the pipe reads"),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!("no answer from the child within {ANSWER_DEADLINE:?}, expecting {expecting}")
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("the child exited, expecting {expecting}")
+            }
+        }
     }
 
     fn emit(&mut self, name: &str) -> Answer {
         writeln!(self.stdin, "emit {name}").expect("the pipe writes");
-        let line = self.line();
+        let line = self.line(&format!("an answer to emit {name}"));
         match line.split_once(' ') {
             Some(("ack", id)) => Answer::Acked(id.to_owned()),
             Some(("err", kind)) => Answer::Failed(kind.to_owned()),
@@ -70,15 +92,30 @@ impl Driver {
     /// SIGKILL: no destructor, flush or close runs in the child.
     fn kill(mut self) {
         self.child.kill().expect("the child is killed");
-        self.child.wait().expect("the child is reaped");
+        let status = self.child.wait().expect("the child is reaped");
+        assert_eq!(
+            status.signal(),
+            Some(9),
+            "the child died of the parent's SIGKILL, not on its own: {status}"
+        );
+    }
+}
+
+impl Drop for Driver {
+    fn drop(&mut self) {
+        // Already reaped after `kill`, where this is a no-op.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
 /// What two reopens must agree on.
 #[derive(Debug, PartialEq, Eq)]
 struct Snapshot {
-    /// Each event's sequence, ID, name and time, in sequence order.
-    events: Vec<(u64, String, String, i64)>,
+    /// Every event a client lists, oldest first, with every field.
+    events: Vec<Event>,
+    /// Each event's sequence and ID in the read store, in sequence order.
+    sequences: Vec<(u64, String)>,
     applied: u64,
 }
 
@@ -92,7 +129,7 @@ fn reopen(dir: &Path, env: EnvRef, acked: &[(String, String)]) -> Snapshot {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("a runtime");
-    let names = runtime.block_on(async {
+    let events = runtime.block_on(async {
         let ledger = Ledger::open(dir, env, clock())
             .await
             .expect("the ledger reopens after the kill");
@@ -122,45 +159,47 @@ fn reopen(dir: &Path, env: EnvRef, acked: &[(String, String)]) -> Snapshot {
             .expect("events list");
         assert!(page.next.is_none(), "one page holds every event");
         ledger.close().await;
-        page.events
-            .into_iter()
-            .rev()
-            .map(|e| e.name)
-            .collect::<Vec<_>>()
+        page.events.into_iter().rev().collect::<Vec<_>>()
     });
     let expected: Vec<&String> = acked.iter().map(|(n, _)| n).collect();
     assert_eq!(
-        names.iter().collect::<Vec<_>>(),
+        events.iter().map(|e| &e.name).collect::<Vec<_>>(),
         expected,
         "every acknowledged emit, in order, and nothing of the unanswered one"
     );
-    read_store(dir)
+    let (sequences, applied) = read_store(dir);
+    Snapshot {
+        events,
+        sequences,
+        applied,
+    }
 }
 
-fn read_store(dir: &Path) -> Snapshot {
+/// Each event's sequence and ID, and the applied position, read-only.
+fn read_store(dir: &Path) -> (Vec<(u64, String)>, u64) {
     let conn = rusqlite::Connection::open_with_flags(
         dir.join("read.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .expect("the read store opens read-only");
     let mut q = conn
-        .prepare("SELECT sequence, id, name, time FROM events ORDER BY sequence")
+        .prepare("SELECT sequence, id FROM events ORDER BY sequence")
         .expect("the events query prepares");
     let events = q
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .expect("events read")
         .collect::<rusqlite::Result<Vec<_>>>()
         .expect("every row reads");
     let applied = conn
         .query_row("SELECT applied FROM meta", [], |r| r.get(0))
         .expect("the applied position reads");
-    let sequences: Vec<u64> = events.iter().map(|e: &(u64, _, _, _)| e.0).collect();
+    let sequences: Vec<u64> = events.iter().map(|e: &(u64, String)| e.0).collect();
     let expected: Vec<u64> = (1..=sequences.len() as u64).collect();
     assert_eq!(
         sequences, expected,
         "event sequences have no gap and no repeat"
     );
-    Snapshot { events, applied }
+    (events, applied)
 }
 
 #[test]
