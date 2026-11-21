@@ -191,6 +191,9 @@ struct Seen {
     unanswered: Vec<String>,
     /// The request the child stopped at the point on, answered or not.
     stopped: Option<String>,
+    /// Each new item's marker and the time its event takes if stored: the clock the parent
+    /// stepped, never behind the last record's (D7).
+    times: BTreeMap<String, Timestamp>,
 }
 
 impl Seen {
@@ -254,7 +257,7 @@ impl Seen {
 
 /// What a real client sends: keyed and unkeyed emits, a duplicate and a refused emit, mixed
 /// batches with new items, stored and in-batch duplicates and refusals, and a list between
-/// them. The last request is a mixed batch, the fifth to append.
+/// them, and clock steps both ways. The last request is a mixed batch, the fifth to append.
 fn workload() -> Vec<Request> {
     let mut n = 0;
     let mut item = |name, key| {
@@ -268,6 +271,7 @@ fn workload() -> Vec<Request> {
     vec![
         Request::Emit(item("crash.keyed", Some("k1"))),
         Request::Emit(item("crash.unkeyed", None)),
+        Request::Clock(-5_000),
         Request::Emit(item("crash.again", Some("k1"))),
         Request::Emit(item(REFUSED_NAME, None)),
         Request::Batch(vec![
@@ -278,6 +282,7 @@ fn workload() -> Vec<Request> {
             item("crash.again", Some("k2")),
         ]),
         Request::List(3),
+        Request::Clock(8_000),
         Request::Emit(item("crash.keyed", Some("k3"))),
         Request::Batch(vec![
             item("crash.keyed", Some("k4")),
@@ -322,6 +327,9 @@ fn run(dir: &Path, env: EnvRef, point: FaultPoint, append: u64, workload: Vec<Re
     let mut child = Driver::spawn(dir, env, point.name(), append);
     let mut seen = Seen::default();
     let mut appends = 0;
+    // The child's clock, as the parent stepped it, and the last record's time.
+    let mut now = clock().now().as_millis();
+    let mut last = None;
     for (i, request) in workload.into_iter().enumerate() {
         let label = format!("request {}", i + 1);
         let (line, items, batch) = match request {
@@ -350,6 +358,7 @@ fn run(dir: &Path, env: EnvRef, point: FaultPoint, append: u64, workload: Vec<Re
                 continue;
             }
             Request::Clock(step) => {
+                now += step;
                 child.send(&format!("clock {step}"));
                 assert_eq!(child.answer(&label), "ok", "{label}: the clock steps");
                 continue;
@@ -358,6 +367,18 @@ fn run(dir: &Path, env: EnvRef, point: FaultPoint, append: u64, workload: Vec<Re
         let expect = seen.expect(&items);
         appends += u64::from(expect.contains(&Expect::New));
         let stops = expect.contains(&Expect::New) && appends == append;
+        if expect.contains(&Expect::New) {
+            let time = last.map_or(now, |l: i64| l.max(now));
+            last = Some(time);
+            for (item, _) in items
+                .iter()
+                .zip(&expect)
+                .filter(|(_, e)| **e == Expect::New)
+            {
+                seen.times
+                    .insert(item.marker.clone(), Timestamp::from_millis(time));
+            }
+        }
         child.send(&line);
         let answer = if stops {
             seen.stopped = Some(label.clone());
@@ -470,12 +491,19 @@ async fn check(ops: &LocalOperations<'_>, seen: &Seen) -> Result<Vec<Event>, Str
     // Oldest first, an unmarked event as `None`, so a stray or doubled event shows.
     let listed: Vec<Option<&str>> = page.events.iter().rev().map(marker).collect();
     let stored: BTreeSet<&str> = listed.iter().flatten().copied().collect();
-    // D7: whichever way the clock stepped.
-    if let Some(w) = page.events.windows(2).find(|w| w[0].time < w[1].time) {
-        return Err(format!(
-            "event time goes back from {:?} to {:?}",
-            w[1].time, w[0].time
-        ));
+    // D7: whichever way the clock stepped, each event takes the stepped clock, never behind the
+    // event before it.
+    for event in &page.events {
+        let Some(want) = marker(event).and_then(|m| seen.times.get(m)) else {
+            continue;
+        };
+        if event.time != *want {
+            return Err(format!(
+                "{} takes time {:?}, not {want:?}",
+                marker(event).unwrap_or_default(),
+                event.time
+            ));
+        }
     }
     let sent: BTreeSet<&str> = seen.items.iter().map(|i| i.marker.as_str()).collect();
     if let Some(stray) = listed.iter().find(|m| m.is_none_or(|m| !sent.contains(m))) {
@@ -615,14 +643,14 @@ fn read_store(dir: &Path) -> (Vec<(u64, String)>, u64) {
 
 /// Kills the child at `point` on its `append`-th append of `workload`, then checks what the read
 /// store held before reopen, which of the stopped request's new events reopen shows, and that
-/// two reopens agree. Returns what they show.
+/// two reopens agree. Returns what the client saw and what the reopens show.
 fn kill_at(
     dir: &Path,
     env: EnvRef,
     point: FaultPoint,
     append: u64,
     workload: Vec<Request>,
-) -> Snapshot {
+) -> (Seen, Snapshot) {
     let seen = run(dir, env, point, append, workload);
     let stopped = seen.stopped.as_deref().expect("the child stopped");
     let name = point.name();
@@ -689,18 +717,23 @@ fn kill_at(
     );
     let second = reopen(dir, env, &seen).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(first, second, "killed at {name}, two reopens agree");
-    first
+    (seen, first)
 }
 
 /// `kill_at` with the fixed workload, in a fresh directory.
 fn kill_named(point: FaultPoint, append: u64) {
     let dir = tempfile::tempdir().expect("a temporary directory");
-    kill_at(
+    let (seen, _) = kill_at(
         dir.path(),
         ironflowx_cell::new_env_ref(),
         point,
         append,
         workload(),
+    );
+    // Four events precede its list of three, so the page has a cursor for `check` to page from.
+    assert!(
+        seen.cursor.is_some(),
+        "the fixed workload's list is not the last page"
     );
 }
 
@@ -816,8 +849,8 @@ fn random_workload(rng: &mut Rng) -> Vec<Request> {
 }
 
 /// Kills the child at the point and on the append the seed picks, checks it as `kill_at` does,
-/// then opens once more with the clock behind the last event and checks a new event's time does
-/// not go back.
+/// then opens once more with the clock behind the last event and checks a new event takes the
+/// last event's time.
 fn kill_seeded(seed: u64) {
     let mut rng = Rng(seed);
     let workload = random_workload(&mut rng);
@@ -826,7 +859,7 @@ fn kill_seeded(seed: u64) {
     let behind = 1 + rng.below(60_000);
     let dir = tempfile::tempdir().expect("a temporary directory");
     let env = ironflowx_cell::new_env_ref();
-    let shown = kill_at(dir.path(), env, point, append, workload);
+    let (_, shown) = kill_at(dir.path(), env, point, append, workload);
 
     let last = shown.events.last().map(|e| e.time);
     let at = last.map_or(clock().now(), |t| {
@@ -861,9 +894,11 @@ fn kill_seeded(seed: u64) {
         ledger.close().await;
         event.time
     });
-    assert!(
-        last.is_none_or(|last| time >= last),
-        "reopened {behind} ms behind the last event at {last:?}, a new event takes {time:?}"
+    // Behind the last event it takes that event's time; with none, the clock's.
+    assert_eq!(
+        time,
+        last.unwrap_or(at),
+        "reopened {behind} ms behind the last event at {last:?}"
     );
 }
 
@@ -896,6 +931,12 @@ fn seeded_random_kills() {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
         now.expect("after the epoch").as_nanos() as u64
     });
+    // Straight to stderr, past the harness' capture, so a run that hangs still shows its seed.
+    writeln!(
+        std::io::stderr(),
+        "seeded kills: CRASH_SEED={first} CRASH_KILLS={kills}"
+    )
+    .expect("stderr writes");
     for i in 0..kills {
         let seed = first.wrapping_add(i);
         let _hint = ReplayHint(seed);
