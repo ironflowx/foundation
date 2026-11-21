@@ -19,6 +19,10 @@ use ironflowx_proto::{Call, EmitRequest, Event, GetEventRequest, ListEventsReque
 /// fails the test instead of hanging it.
 const ANSWER_DEADLINE: Duration = Duration::from_secs(30);
 
+/// How long the parent listens, after the child stops before its acknowledgment, for an
+/// answer that must not come.
+const NO_ANSWER_GRACE: Duration = Duration::from_millis(200);
+
 /// The child process, stopped at its `crossing`-th pass of `point`. Dropping it kills the
 /// child, so a failed assertion leaves no process parked at a point.
 struct Driver {
@@ -100,6 +104,16 @@ impl Driver {
             }
         }
         assert!(stopped, "{request}: the child stopped at {}", point.name());
+        if answer.is_none() {
+            // shortcut: a timed wait can miss a late answer but never fails a correct point; a
+            // hook that knew whether the reply was sent would make it exact.
+            if let Ok(Ok(line)) = self.lines.recv_timeout(NO_ANSWER_GRACE) {
+                panic!(
+                    "{request}: answered {line:?} though stopped before the acknowledgment, at {}",
+                    point.name()
+                );
+            }
+        }
         answer
     }
 
@@ -274,8 +288,8 @@ fn workload() -> Vec<Request> {
 }
 
 /// The appends of `workload` to kill on: its fourth is a single emit, its fifth a batch.
-const SINGLE: u64 = 4;
-const BATCH: u64 = 5;
+const SINGLE_APPEND: u64 = 4;
+const BATCH_APPEND: u64 = 5;
 
 /// Runs the workload until the child stops at `point` on its `append`-th append, checking
 /// every answer, then kills the child.
@@ -435,8 +449,8 @@ async fn check(ops: &LocalOperations<'_>, seen: &Seen) -> Result<Vec<Event>, Str
             ));
         }
     }
-    // Before the append none are present and after fsync all are; a record torn mid-append
-    // would leave some, which this names.
+    // Before the append none are present and after fsync all are; a batch split across records
+    // would leave some, which this names (D9: a batch is one record).
     for request in &seen.unanswered {
         let new: Vec<_> = seen
             .items
@@ -610,27 +624,27 @@ fn kill_at(point: FaultPoint, append: u64) {
 
 #[test]
 fn killed_before_the_append() {
-    kill_at(FaultPoint::BeforeAppend, SINGLE);
-    kill_at(FaultPoint::BeforeAppend, BATCH);
+    kill_at(FaultPoint::BeforeAppend, SINGLE_APPEND);
+    kill_at(FaultPoint::BeforeAppend, BATCH_APPEND);
 }
 
 #[test]
 fn killed_after_fsync() {
-    kill_at(FaultPoint::AfterFsync, SINGLE);
-    kill_at(FaultPoint::AfterFsync, BATCH);
+    kill_at(FaultPoint::AfterFsync, SINGLE_APPEND);
+    kill_at(FaultPoint::AfterFsync, BATCH_APPEND);
 }
 
 #[test]
 fn killed_after_the_acknowledgment() {
-    kill_at(FaultPoint::AfterAck, SINGLE);
-    kill_at(FaultPoint::AfterAck, BATCH);
+    kill_at(FaultPoint::AfterAck, SINGLE_APPEND);
+    kill_at(FaultPoint::AfterAck, BATCH_APPEND);
 }
 
 #[test]
 fn a_broken_expectation_names_its_request() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let env = ironflowx_cell::new_env_ref();
-    let mut seen = run(dir.path(), env, FaultPoint::BeforeAppend, BATCH);
+    let mut seen = run(dir.path(), env, FaultPoint::BeforeAppend, BATCH_APPEND);
     // A key the client saw acknowledged that the ledger never stored.
     let (request, id) = seen.keys["k1"].clone();
     seen.keys.insert("k-missing".into(), (request.clone(), id));
