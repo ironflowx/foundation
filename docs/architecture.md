@@ -225,12 +225,12 @@ A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 
 | Crate | Version | Used | Relied on |
 |---|---|---|---|
 | `segment-log-core` | Pinned exactly (D16), from crates.io (MIT) | `SegmentLog::open`, `append` → `Pending::wait`, `read(from, max)`, `watermark`, `stream_head` | See below |
-| `rusqlite` | Pinned exactly, `bundled` | Read store | One transaction per folded record |
-| `serde_json` | Pinned exactly; the 127 depth limit is checked against it | Event rules | D12 |
+| `rusqlite` | A caret range (0.43.x), `bundled` (D26) | Read store | One transaction per folded record |
+| `serde_json` | Pinned exactly (D26); the 127 depth limit is checked against it | Event rules | D12 |
 | `serde_core` | A caret range | Event rules' JSON visitor | D12 |
 | `uuid` | A caret range; `v7` in `ironflowx-cell` only | Event and environment IDs | |
-| `getrandom` | Pinned exactly | `new_env_ref` | OS random source |
-| `tokio` | Pinned exactly | `spawn_blocking` for open, reads and close; the read gate; the answer to a submission | |
+| `getrandom` | A caret range (D26) | `new_env_ref` | OS random source |
+| `tokio` | A caret range (D26) | `spawn_blocking` for open, reads and close; the read gate; the answer to a submission | |
 
 How the ledger uses the log:
 
