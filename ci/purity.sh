@@ -10,7 +10,13 @@ ci/check-deps.sh crates/ironflowx-core/Cargo.toml ci/purity/ironflowx-core.allow
 ci/check-deps.sh crates/ironflowx-events/Cargo.toml ci/purity/ironflowx-events.allow
 ci/no-event-clock-outside-ledger.sh crates
 ci/no-fault-points.sh crates
-ci/no-fault-points.sh ci/fixtures/fault-points-forwarded
+# The allowed route passes, and was checked: a skipped crate would pass too.
+forwarded=$(ci/no-fault-points.sh ci/fixtures/fault-points-forwarded)
+grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$forwarded" || {
+  echo "$forwarded"
+  echo "purity: ci/fixtures/fault-points-forwarded/forwards was not checked"
+  exit 1
+}
 
 # The patterns quote clippy's messages, backticks included, so they stay in single quotes.
 # shellcheck disable=SC2016

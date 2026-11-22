@@ -23,6 +23,8 @@ for manifest in "$dir"/*/Cargo.toml; do
       | map(tostring) | join(" ")')
   read -r unpublished own features <<<"$meta"
   [ "$unpublished" = true ] && continue
+  # So a fixture that must pass can show it was checked, not skipped as unpublished.
+  echo "checked: $manifest"
   features=${features:1:${#features}-2}
 
   # Each package `cargo tree` builds with `__fault-points` on, under the given features.
