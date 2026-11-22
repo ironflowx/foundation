@@ -1,6 +1,6 @@
-<svg width="900" height="730" viewBox="0 0 900 730" role="img" aria-label="C3 for release 0.1: modules and seams inside the ledger. The ledger interface is open, submit, read and close. Inside: the writer decides with the event rules, extends a pending view, appends to the commit log with fsync, publishes the committed head to the read gate, and acknowledges; the fold applies committed records and the applied position to the SQLite read store in one transaction and tells the read gate; a read snapshots the committed head on arrival and waits at the gate until it is applied. Recovery replays the log tail through the fold on open. Recovery checks the genesis record first. Inside the segment log library is its own storage seam, which 0.1 does not reach. Core types in ironflowx-core are used by every crate." xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" fill="currentColor">
+<svg width="900" height="748" viewBox="0 0 900 748" role="img" aria-label="C3 for release 0.1: modules and seams inside the ledger. The ledger interface is open, submit, read and close. Inside: the writer decides with the event rules against the read store, appends to the commit log with fsync, publishes the committed head to the read gate, and acknowledges; then, before the next submission, the fold applies the record and the applied position to the SQLite read store in one transaction and tells the read gate; a read snapshots the committed head on arrival and waits at the gate until it is applied. Recovery replays the log tail through the fold on open. Recovery checks the genesis record first. Inside the segment log library is its own storage seam, which 0.1 does not reach. Core types in ironflowx-core are used by every crate." xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" fill="currentColor">
   <style>svg{color:#1b1b1b}.bg{fill:#ffffff}.band{fill:#f3f5f8}.pure{fill:#e8f1fb}.lib{fill:#f6efe6}.crate{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;fill:#b45309}@media (prefers-color-scheme:dark){svg{color:#e6e6e6}.bg{fill:#16181d}.band{fill:#1f232b}.pure{fill:#18283a}.lib{fill:#2b241b}.crate{fill:#f5a524}}</style>
-  <rect class="bg" width="900" height="730" rx="8"/>
+  <rect class="bg" width="900" height="748" rx="8"/>
   <defs><marker id="a-c3-modules" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="currentColor"/></marker></defs>
   <text x="20" y="28" font-size="14" font-weight="600" text-anchor="start">C3 · Modules and seams inside the ledger, release 0.1</text>
   <rect x="560" y="44" width="320" height="34" rx="5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3"/>
@@ -14,13 +14,10 @@
   <text x="190" y="520" font-size="11" font-weight="600" text-anchor="start">Ledger · <tspan class="crate">ironflowx-cell</tspan> · implementation: nobody outside sees these</text>
   <rect x="40" y="160" width="250" height="60" rx="5" fill="none" stroke="currentColor" stroke-width="2"/>
   <text x="165.0" y="188.0" text-anchor="middle" font-size="13" font-weight="600">Writer</text>
-  <text x="165.0" y="204.0" text-anchor="middle" font-size="11">one task: mint IDs, decide, append, ack</text>
+  <text x="165.0" y="204.0" text-anchor="middle" font-size="11">one thread: decide, append, ack, fold</text>
   <rect x="340" y="160" width="260" height="60" rx="5" fill="none" stroke="currentColor" stroke-width="1.5"/>
   <text x="470.0" y="188.0" text-anchor="middle" font-size="13" font-weight="600">Read gate</text>
   <text x="470.0" y="204.0" text-anchor="middle" font-size="11">waits until applied ≥ head at arrival</text>
-  <rect x="40" y="270" width="250" height="60" rx="5" fill="none" stroke="currentColor" stroke-width="1.5"/>
-  <text x="165.0" y="298.0" text-anchor="middle" font-size="13" font-weight="600">Pending view</text>
-  <text x="165.0" y="314.0" text-anchor="middle" font-size="11">keys and sequence not yet folded</text>
   <rect x="340" y="270" width="260" height="60" rx="5" fill="none" stroke="currentColor" stroke-width="1.5"/>
   <text x="470.0" y="298.0" text-anchor="middle" font-size="13" font-weight="600">Read store</text>
   <text x="470.0" y="314.0" text-anchor="middle" font-size="11">SQLite: events, keys, applied position</text>
@@ -37,8 +34,6 @@
   <text x="171" y="132" font-size="11" text-anchor="start">submit</text>
   <path d="M470 106 V158" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-c3-modules)"/>
   <text x="476" y="132" font-size="11" text-anchor="start">read</text>
-  <path d="M165 220 V268" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-c3-modules)"/>
-  <text x="171" y="248" font-size="11" text-anchor="start">reads, extends</text>
   <path d="M40 190 H30 V410 H38" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-c3-modules)"/>
   <path d="M290 410 H338" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-c3-modules)"/>
   <text x="296" y="402" font-size="11" text-anchor="start">fsynced</text>
@@ -49,16 +44,16 @@
   <path d="M470 456 V442" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-c3-modules)"/>
   <path d="M600 410 H612 V190 H602" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-c3-modules)"/>
   <text x="560" y="372" font-size="11" text-anchor="end">applied</text>
-  <path d="M340 300 H292" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-c3-modules)" stroke-dasharray="4 3"/>
-  <text x="298" y="292" font-size="11" text-anchor="start">view</text>
+  <path d="M340 300 H220 V222" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-c3-modules)" stroke-dasharray="4 3"/>
+  <text x="226" y="292" font-size="11" text-anchor="start">decide reads</text>
   <path d="M165 440 V548" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-c3-modules)"/>
   <rect class="pure" x="650" y="160" width="230" height="180" rx="5"/>
   <rect x="650" y="160" width="230" height="180" rx="5" fill="none" stroke="currentColor" stroke-width="1.5"/>
   <text x="765" y="182" font-size="13" font-weight="600" text-anchor="middle">Event rules</text>
   <text x="765" y="198" font-size="11" text-anchor="middle"><tspan class="crate">ironflowx-events</tspan> · pure</text>
   <path d="M660 210 H870" stroke="currentColor" stroke-width="1.2" fill="none"/>
-  <text x="664" y="230" font-size="11" text-anchor="start">decide(view, cmd, now, fresh)</text>
-  <text x="664" y="248" font-size="11" text-anchor="start">  → records | refusal</text>
+  <text x="664" y="230" font-size="11" text-anchor="start">decide(view, sub, now, fresh)</text>
+  <text x="664" y="248" font-size="11" text-anchor="start">  → outcome, record? | refusal</text>
   <text x="664" y="266" font-size="11" text-anchor="start">fold(record) → rows</text>
   <text x="664" y="284" font-size="11" text-anchor="start">queries: by ID, page</text>
   <text x="664" y="302" font-size="11" text-anchor="start">gates · idempotency ·</text>
@@ -85,6 +80,7 @@
   <text x="765" y="499" text-anchor="middle" font-size="11">SequencedTime · Clock trait · errors</text>
   <text x="765" y="514" text-anchor="middle" font-size="11">used by every crate above</text>
   <text x="20" y="680" font-size="11" text-anchor="start">Solid blue: the ledger's interface, the only way in. Dashed blue: the library's own seam. Shaded blue: pure, no I/O, no clock.</text>
-  <text x="20" y="698" font-size="11" text-anchor="start">Ack follows fsync and the head the writer publishes (green); the fold may lag, and a read waits for the head it saw on arrival.</text>
-  <text x="20" y="716" font-size="11" text-anchor="start">Orange monospace: the crate that holds the module.</text>
+  <text x="20" y="698" font-size="11" text-anchor="start">Ack follows fsync and the head the writer publishes (green); the fold runs after the ack, before the next submission,</text>
+  <text x="20" y="716" font-size="11" text-anchor="start">and a read waits for the head it saw on arrival.</text>
+  <text x="20" y="734" font-size="11" text-anchor="start">Orange monospace: the crate that holds the module.</text>
 </svg>

@@ -24,7 +24,7 @@
   <path d="M90 110 H254" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-flow-emit-read)"/>
   <text x="175.0" y="104" font-size="11" text-anchor="middle">submit(Emit { data JSON, key })</text>
   <path d="M260 145 H424" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-flow-emit-read)"/>
-  <text x="345.0" y="139" font-size="11" text-anchor="middle">decide(view, cmd, now, fresh)</text>
+  <text x="345.0" y="139" font-size="11" text-anchor="middle">decide(view, sub, now, fresh)</text>
   <path d="M430 180 H266" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-flow-emit-read)" stroke-dasharray="5 3"/>
   <text x="345.0" y="174" font-size="11" text-anchor="middle">record | refusal | duplicate(id)</text>
   <rect class="band" x="20" y="192" width="320" height="36" rx="4"/>
@@ -40,7 +40,7 @@
   <path d="M260 330 H96" stroke="#2e9e6b" stroke-width="1.3" fill="none" marker-end="url(#a-flow-emit-read)" stroke-dasharray="5 3"/>
   <text x="175.0" y="324" font-size="11" text-anchor="middle" fill="#2e9e6b">Committed { outcome }   ← ack</text>
   <path d="M260 364 H764" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-flow-emit-read)"/>
-  <text x="515.0" y="358" font-size="11" text-anchor="middle">record at p (async)</text>
+  <text x="515.0" y="358" font-size="11" text-anchor="middle">record at p, after the ack</text>
   <rect class="band" x="700" y="376" width="150" height="36" rx="4"/>
   <rect x="700" y="376" width="150" height="36" rx="4" fill="none" stroke="currentColor" stroke-width="1"/>
   <text x="708" y="391" font-size="11" text-anchor="start">one txn: rows +</text>

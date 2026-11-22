@@ -14,7 +14,7 @@ The properties release 0.1 must prove. A behavior shows one example; an invarian
 | LED-6 | Each incarnation of an environment has a random token, and the ledger's identity includes it | `IncarnationToken` has private fields; it is minted only by `new_env_ref`, from `getrandom`, and otherwise only parsed from its text form. The genesis record carries it | T, U | A public-API check that no other constructor exists; 10,000 minted tokens are distinct; a mismatched open refuses |
 | LED-7 | Every request names exactly one environment | A `Ledger` is opened with exactly one `EnvRef`; `submit`, `read` and `Operations` have no environment parameter | T | The type |
 | LED-8 | Every record carries its incarnation token; open and replay refuse a mismatch | Part of the record envelope; the genesis record is checked on every open | U | A log whose genesis names another token refuses; a log with one later record carrying another token refuses |
-| LED-9 | Work is never looked up by a bare environment ID | No public function in the 0.1 crates takes an `EnvironmentId` without its token | T, C | A public-API check over the four crates |
+| LED-9 | Work is never looked up by a bare environment ID | No public function in the 0.1 crates takes an `EnvironmentId` without its token | T, C | A public-API check over every workspace crate |
 | LED-10 | An environment ID is opaque | `EnvironmentId` is a validated UUIDv7 newtype in `ironflowx-core`; parsing refuses anything else. The parent-as-a-field half of this rule arrives with tenancy in 0.2 | T, U | Parse tests: a UUIDv4, a path-like string and the empty string are refused |
 | LED-11 | Everything an operation changes in the ledger commits in one submit or not at all, and nothing is visible before it is durable | One record per submission; reads see only applied positions, and the fold applies only fsynced records | B, S | EVT-020, EVT-024, EVT-061; crash test |
 | LED-12 | Replaying the log folds each record exactly once | The fold skips a record below the applied position, in the same transaction that advances it | U, S | The replay test below; crash test |
@@ -22,7 +22,7 @@ The properties release 0.1 must prove. A behavior shows one example; an invarian
 | LED-14 | A read sees every write acknowledged before it arrived, from any client | The writer publishes the committed head before it acknowledges; a read waits for the head it saw on arrival | U, B, S | Fold-delay test; EVT-060, EVT-062; crash test |
 | LED-15 | Pure crates do no I/O: no async runtime, no I/O crate, no ambient clock or randomness | For `ironflowx-events` and `ironflowx-core`: a dependency allowlist over `cargo tree` for that crate alone, and clippy `disallowed-methods` and `disallowed-types` for `SystemTime::now`, `Instant::now`, `std::fs`, `std::net`, `std::thread` and `getrandom` | C | Both checks, each with a fixture they must reject |
 
-A public-API check compares `cargo-public-api` output for the four crates with a committed snapshot; any difference fails (D21).
+A public-API check compares `cargo-public-api` output for every workspace crate (the list is in `ci/public-api.sh`) with a committed snapshot; any difference fails (D21).
 
 ## Deterministic tests
 
@@ -37,7 +37,7 @@ A public-API check compares `cargo-public-api` output for the four crates with a
 
 ## Crash test
 
-A parent process drives a child process that owns the ledger, over a pipe, with keyed and unkeyed emits and mixed batches. The child is built with the `__fault-points` cargo feature, which no published build can enable: `ci/no-fault-points.sh` checks each published crate's own dependency tree, so the crash-test crate enabling it does not leak into the check; the parent reads `read.db` directly, read-only, to see sequences and the applied position.
+A parent process drives a child process that owns the ledger, over a pipe, with keyed and unkeyed emits and mixed batches. The child is built with the `__fault-points` cargo feature, a hidden, unstable opt-in on `ironflowx-cell` with no API promise; enabling it can make a durable commit answer `Unknown`. `ci/no-fault-points.sh` checks that no published crate enables it, by default or in its dependency tree, so the crash-test crate enabling it does not leak into a published build; the parent reads `read.db` directly, read-only, to see sequences and the applied position.
 
 - **Named kill points**, each run deterministically, the child and parent meeting at a barrier: before the append, after fsync and before the acknowledgment, after the acknowledgment and before the fold, mid-fold, and during open. At a point before the acknowledgment the parent then sends a `probe`; the child polls the stopped request before answering `pending`, so a reply already sent shows, by the same barrier and not by a timed wait. **Seeded random kills**, a separate test the test runner may run alongside the named ones, try cases nobody named; the seed is printed and replays the run.
 - **The parent records** each acknowledged event ID and key, the cursor of its last list, and each request with no answer. Every new event carries a unique marker in its metadata, so the parent can find it without its ID; it also knows each item's expected outcome.
