@@ -279,7 +279,7 @@ A sealed log, after a lossy repair, opens and reads until the first emit that ap
 
 | Finds | Does | `Opened.minted` |
 |---|---|---|
-| No `control.db`, or one never bootstrapped | A bootstrapping open: `new_env_ref()`; `ensure_bootstrap`, one transaction creating the tenant, project and environment named `default`, with fresh UUIDv7s, and the minted bootstrap key holding all three scopes; build the ledger in `ledgers/.staging/`, close it and rename it to `ledgers/<environment-id>/` (D40); `mark_ledger_created` | The bootstrap key's secret, returned this once |
+| No `control.db`, or one never bootstrapped | A bootstrapping open: `new_env_ref()`; `ensure_bootstrap`, one transaction creating the tenant, project and environment named `default`, with fresh UUIDv7s, and the minted bootstrap key holding all three scopes; build the ledger in `ledgers/.staging/`, close it, rename it to `ledgers/<environment-id>/` (D40) and open it there; then `mark_ledger_created`, the last fallible step, so no failure after it can lose the secret | The bootstrap key's secret, returned this once |
 | A marked bootstrap | A later open: the environment's ledger, with 0.1's open | None |
 | An unmarked bootstrap: an earlier open died before its mark | Refused with an `Io` error naming the unfinished bootstrap, changing nothing; finishing it is not built yet | |
 

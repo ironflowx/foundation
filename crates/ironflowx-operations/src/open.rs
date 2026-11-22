@@ -98,12 +98,15 @@ impl Engine {
             let path = control_path.clone();
             Arc::new(blocking(move || Ok(ControlPlane::open(&path)?)).await?)
         };
-        let (env, minted) = match state {
+        let (env, ledger, minted) = match state {
             BootstrapState::NoFile | BootstrapState::Unbootstrapped => {
-                let (env, secret) = bootstrap(&root, &control, clock.clone()).await?;
-                (env, Some(secret))
+                let (env, ledger, secret) = bootstrap(&root, &control, clock).await?;
+                (env, ledger, Some(secret))
             }
-            BootstrapState::Marked { env } => (env, None),
+            BootstrapState::Marked { env } => {
+                let ledger = Ledger::open(&ledger_dir(&root, env), env, clock).await?;
+                (env, ledger, None)
+            }
             // Finishing an earlier open's bootstrap is not built yet: refuse, changing nothing.
             // shortcut: refuses until finishing opens exist; upgrade with them.
             BootstrapState::Unmarked { .. } => {
@@ -112,7 +115,6 @@ impl Engine {
                 )));
             }
         };
-        let ledger = Ledger::open(&ledger_dir(&root, env), env, clock).await?;
         Ok(Opened {
             engine: Engine {
                 ledger,
@@ -160,12 +162,15 @@ where
 }
 
 /// A bootstrapping open: mint the environment and its admin key, bootstrap the control plane
-/// in one transaction, build the ledger aside and rename it into place, then mark it (D40).
+/// in one transaction, build the ledger aside, rename it into place and open it, then mark it
+/// (D40). The mark is the last fallible step, so no failure after it can lose the secret.
+// shortcut: a failure before the mark leaves an unmarked bootstrap, which the next open refuses
+// rather than undoing or finishing; upgrade with finishing opens and the undo.
 async fn bootstrap(
     root: &Path,
     control: &Arc<ControlPlane>,
     clock: impl Clock + Clone + Send + Sync + 'static,
-) -> Result<(EnvRef, Secret), EngineError> {
+) -> Result<(EnvRef, Ledger, Secret), EngineError> {
     let env = new_env_ref();
     let key_id = uuid7();
     let mut bits = [0; 32];
@@ -188,13 +193,17 @@ async fn bootstrap(
         .await;
     let ledgers = root.join("ledgers");
     let target = ledger_dir(root, env);
-    blocking(move || {
-        std::fs::rename(&staging, &target)?;
-        File::open(&ledgers)?.sync_all()?;
-        Ok(())
-    })
-    .await?;
+    {
+        let target = target.clone();
+        blocking(move || {
+            std::fs::rename(&staging, &target)?;
+            File::open(&ledgers)?.sync_all()?;
+            Ok(())
+        })
+        .await?;
+    }
+    let ledger = Ledger::open(&target, env, clock.clone()).await?;
     let control = control.clone();
     blocking(move || Ok(control.mark_ledger_created(&env, &clock)?)).await?;
-    Ok((env, secret))
+    Ok((env, ledger, secret))
 }

@@ -757,6 +757,7 @@ dependencies = [
  "ironflowx-core",
  "ironflowx-proto",
  "ironflowx-store",
+ "rusqlite",
  "tempfile",
  "tokio",
  "uuid",

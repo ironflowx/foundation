@@ -1,10 +1,23 @@
 pub enum ironflowx_operations::EngineError
+impl core::error::Error for ironflowx_operations::EngineError
 pub ironflowx_operations::EngineError::MalformedSeed(ironflowx_core::secret::Secret)
+pub ironflowx_operations::EngineError::Leak(ironflowx_operations::Opened)
+pub ironflowx_operations::Opened::minted: core::option::Option<ironflowx_core::secret::Secret>
 pub struct ironflowx_authz::Refused(pub ironflowx_core::secret::Secret)
 pub ironflowx_store::StoreError::seed: ironflowx_core::secret::Secret
+impl core::error::Error for ironflowx_store::OpenFailure
+pub ironflowx_store::OpenFailure::Seed(ironflowx_core::secret::Secret)
 impl core::convert::From<ironflowx_core::tenancy::Address> for ironflowx_core::id::ProjectId
+impl core::convert::TryFrom<ironflowx_core::tenancy::Address> for ironflowx_core::id::ProjectId
+impl core::convert::From<&ironflowx_core::tenancy::Address> for ironflowx_core::id::TenantId
+impl core::convert::Into<ironflowx_core::id::ProjectId> for ironflowx_core::Address
 pub fn ironflowx_core::Address::project_id(&self) -> ironflowx_core::id::ProjectId
-pub fn ironflowx_store::ControlPlane::resolve(&self, &ironflowx_core::tenancy::Address) -> core::result::Result<ironflowx_core::id::EnvRef, ironflowx_store::StoreError>
+pub fn ironflowx_core::ProjectId::from_address(&ironflowx_core::tenancy::Address) -> Self
+pub fn ironflowx_store::ControlPlane::resolve(&self, &ironflowx_core::tenancy::Address) -> core::result::Result<ironflowx_store::Resolved, ironflowx_store::StoreError>
+pub struct ironflowx_authz::KeyDigest(pub [u8; 32])
+pub ironflowx_authz::KeyDigest::0: [u8; 32]
 pub fn ironflowx_authz::KeyDigest::as_bytes(&self) -> &[u8; 32]
 impl core::cmp::PartialEq for ironflowx_authz::KeyDigest
-impl core::convert::AsRef<[u8]> for ironflowx_authz::KeyDigest
+impl core::convert::From<ironflowx_authz::KeyDigest> for [u8; 32]
+impl core::convert::AsRef<[u8]> for &ironflowx_authz::KeyDigest
+pub fn ironflowx_authz::digest_bytes(&ironflowx_authz::KeyDigest) -> [u8; 32]
