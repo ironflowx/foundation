@@ -10,7 +10,8 @@ use std::num::NonZeroU32;
 use std::collections::BTreeSet;
 
 use ironflowx_core::{
-    Address, Emitter, EnvRef, ErrorKind, EventId, KeyId, ProjectId, Scope, Secret, Timestamp,
+    Address, Emitter, EnvRef, ErrorKind, EventId, KeyId, KeyOrigin, ProjectId, Scope, Secret,
+    Timestamp,
 };
 
 /// The four things a client can do in 0.1. Every caller, in process or remote, goes through
@@ -50,6 +51,20 @@ pub trait Operations: Send + Sync {
         cx: &Call,
         req: CreateKeyRequest,
     ) -> impl Future<Output = Result<CreatedKey, OpError>> + Send;
+
+    /// Lists a page of the calling key's environment's keys, newest first, never a secret.
+    fn list_keys(
+        &self,
+        cx: &Call,
+        req: ListKeysRequest,
+    ) -> impl Future<Output = Result<KeyPage, OpError>> + Send;
+
+    /// Revokes a key of the calling key's environment; revoking a revoked key succeeds.
+    fn revoke_key(
+        &self,
+        cx: &Call,
+        req: RevokeKeyRequest,
+    ) -> impl Future<Output = Result<(), OpError>> + Send;
 }
 
 /// Every operation, for [`required_scope`]. Each operation that lands joins it.
@@ -62,6 +77,8 @@ pub enum Operation {
     Whoami,
     ListEnvironments,
     CreateKey,
+    ListKeys,
+    RevokeKey,
 }
 
 /// The scope each operation requires; `None`: any valid key. An exhaustive match, so an
@@ -73,7 +90,7 @@ pub const fn required_scope(op: Operation) -> Option<Scope> {
             Some(Scope::Read)
         }
         Operation::Whoami => None,
-        Operation::CreateKey => Some(Scope::Admin),
+        Operation::CreateKey | Operation::ListKeys | Operation::RevokeKey => Some(Scope::Admin),
     }
 }
 
@@ -278,15 +295,36 @@ pub struct KeyInfo {
     pub status: KeyStatus,
 }
 
-/// How a key came to be. Minted, seed and recovered keys join when keys are listed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum KeyOrigin {
-    /// Created by another key.
-    Created,
-}
-
-/// Whether a key works. `Expired` and `Revoked` join when keys are listed.
+/// Whether a key works: `Revoked` once revoked, whatever its expiry; otherwise `Expired` from
+/// its expiry; otherwise `Active`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeyStatus {
     Active,
+    Expired,
+    Revoked,
+}
+
+/// Which page of keys to list.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListKeysRequest {
+    /// `None` takes the engine's default, 100; above 1,000 clamps to 1,000.
+    pub limit: Option<NonZeroU32>,
+    /// The `next` of the previous page; `None` starts at the newest key.
+    pub cursor: Option<String>,
+}
+
+/// A page of keys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyPage {
+    /// Newest first.
+    pub keys: Vec<KeyInfo>,
+    /// The cursor for the next page; `None` on the last page.
+    pub next: Option<String>,
+}
+
+/// Which key to revoke.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokeKeyRequest {
+    /// The key ID as text; one that does not parse is answered `NotFound`.
+    pub key_id: String,
 }

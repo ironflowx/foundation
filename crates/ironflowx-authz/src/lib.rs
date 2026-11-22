@@ -91,6 +91,8 @@ pub struct KeyRecord {
     pub digest: KeyDigest,
     /// `None`: the key never expires.
     pub expires_at: Option<Timestamp>,
+    /// `Some`: the key was revoked then, and is refused from then on.
+    pub revoked_at: Option<Timestamp>,
 }
 
 /// What a verified key may do. Never stored; only [`verify`] and [`recheck`] make one.
@@ -126,8 +128,8 @@ impl Grant {
     }
 }
 
-/// One answer for every key that is not valid: unknown, a wrong secret, expired, or another
-/// environment or incarnation, so no refusal tells which keys exist.
+/// One answer for every key that is not valid: unknown, a wrong secret, revoked, expired, or
+/// another environment or incarnation, so no refusal tells which keys exist.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refused;
 
@@ -158,9 +160,10 @@ pub fn verify(
 ///
 /// # Errors
 ///
-/// [`Refused`] for another environment or incarnation, or from `now >= expires_at`.
+/// [`Refused`] for another environment or incarnation, a revoked key, or from
+/// `now >= expires_at`.
 pub fn recheck(record: &KeyRecord, env: &EnvRef, now: Timestamp) -> Result<Grant, Refused> {
-    let live = record.expires_at.is_none_or(|t| now < t);
+    let live = record.revoked_at.is_none() && record.expires_at.is_none_or(|t| now < t);
     if record.env == *env && live {
         Ok(Grant {
             key_id: record.id,
@@ -264,6 +267,7 @@ mod tests {
             scopes: BTreeSet::new(),
             digest: mint(id, bytes).1,
             expires_at: None,
+            revoked_at: None,
         };
         for (case, record, granted) in [
             ("matching", record(id, [7; 32], env(1)), true),

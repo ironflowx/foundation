@@ -136,6 +136,7 @@ async fn a_key_row_of_another_environment_or_incarnation_is_refused_by_lookup_an
             scopes: BTreeSet::from([Scope::Admin]),
             digest: parts.digest.clone(),
             expires_at: None,
+            revoked_at: None,
         };
         let verified = verify(&parts, Some(&record), &engine_env, clock().now());
         if case == "its own" {

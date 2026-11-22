@@ -8,11 +8,12 @@ use std::task::{Context, Poll, Waker};
 
 use std::collections::BTreeSet;
 
-use ironflowx_core::{ErrorKind, Scope, Secret, Timestamp};
+use ironflowx_core::{ErrorKind, KeyOrigin, Scope, Secret, Timestamp};
 use ironflowx_proto::{
     Call, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
-    EmitResponse, Event, EventPage, GetEventRequest, KeyInfo, KeyOrigin, KeyStatus,
-    ListEventsRequest, OpError, Operation, Operations, required_scope,
+    EmitResponse, Event, EventPage, GetEventRequest, KeyInfo, KeyPage, KeyStatus,
+    ListEventsRequest, ListKeysRequest, OpError, Operation, Operations, RevokeKeyRequest,
+    required_scope,
 };
 
 const KEY: &str =
@@ -67,6 +68,17 @@ impl Operations for Fixed {
 
     async fn create_key(&self, _cx: &Call, req: CreateKeyRequest) -> Result<CreatedKey, OpError> {
         Ok(created(req))
+    }
+
+    async fn list_keys(&self, _cx: &Call, _req: ListKeysRequest) -> Result<KeyPage, OpError> {
+        Ok(KeyPage {
+            keys: vec![created(CreateKeyRequest::default()).info],
+            next: None,
+        })
+    }
+
+    async fn revoke_key(&self, _cx: &Call, _req: RevokeKeyRequest) -> Result<(), OpError> {
+        Ok(())
     }
 }
 
@@ -153,6 +165,23 @@ fn drive<O: Operations>(ops: &O) {
     )))
     .unwrap();
     assert_eq!(key.info.label.as_deref(), Some("agent-7"));
+
+    let listed = ready(assert_send(ops.list_keys(
+        &cx,
+        ListKeysRequest {
+            limit: NonZeroU32::new(100),
+            cursor: None,
+        },
+    )))
+    .unwrap();
+    assert_eq!(listed.keys.len(), 1);
+    let revoked = ops.revoke_key(
+        &cx,
+        RevokeKeyRequest {
+            key_id: listed.keys[0].key_id.to_string(),
+        },
+    );
+    ready(assert_send(revoked)).unwrap();
 }
 
 /// The scope table (architecture.md, "Keys"): `whoami` needs only a valid key.
@@ -166,6 +195,8 @@ fn each_operation_requires_its_scope() {
         (Operation::ListEnvironments, Some(Scope::Read)),
         (Operation::Whoami, None),
         (Operation::CreateKey, Some(Scope::Admin)),
+        (Operation::ListKeys, Some(Scope::Admin)),
+        (Operation::RevokeKey, Some(Scope::Admin)),
     ] {
         assert_eq!(required_scope(op), scope, "{op:?}");
     }

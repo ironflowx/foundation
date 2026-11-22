@@ -46,6 +46,7 @@ pub ironflowx_authz::KeyRecord::digest: ironflowx_authz::KeyDigest
 pub ironflowx_authz::KeyRecord::env: ironflowx_core::id::EnvRef
 pub ironflowx_authz::KeyRecord::expires_at: core::option::Option<ironflowx_core::time::Timestamp>
 pub ironflowx_authz::KeyRecord::id: ironflowx_core::id::KeyId
+pub ironflowx_authz::KeyRecord::revoked_at: core::option::Option<ironflowx_core::time::Timestamp>
 pub ironflowx_authz::KeyRecord::scopes: alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>
 impl core::clone::Clone for ironflowx_authz::KeyRecord
 pub fn ironflowx_authz::KeyRecord::clone(&self) -> Self

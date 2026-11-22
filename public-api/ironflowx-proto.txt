@@ -1,20 +1,8 @@
 pub mod ironflowx_proto
-pub enum ironflowx_proto::KeyOrigin
-pub ironflowx_proto::KeyOrigin::Created
-impl core::clone::Clone for ironflowx_proto::KeyOrigin
-pub fn ironflowx_proto::KeyOrigin::clone(&self) -> Self
-impl core::clone::TrivialClone for ironflowx_proto::KeyOrigin
-impl core::cmp::Eq for ironflowx_proto::KeyOrigin
-impl core::cmp::PartialEq for ironflowx_proto::KeyOrigin
-pub fn ironflowx_proto::KeyOrigin::eq(&self, &Self) -> bool
-impl core::fmt::Debug for ironflowx_proto::KeyOrigin
-pub fn ironflowx_proto::KeyOrigin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::hash::Hash for ironflowx_proto::KeyOrigin
-pub fn ironflowx_proto::KeyOrigin::hash<__H: core::hash::Hasher>(&self, &mut __H)
-impl core::marker::Copy for ironflowx_proto::KeyOrigin
-impl core::marker::StructuralPartialEq for ironflowx_proto::KeyOrigin
 pub enum ironflowx_proto::KeyStatus
 pub ironflowx_proto::KeyStatus::Active
+pub ironflowx_proto::KeyStatus::Expired
+pub ironflowx_proto::KeyStatus::Revoked
 impl core::clone::Clone for ironflowx_proto::KeyStatus
 pub fn ironflowx_proto::KeyStatus::clone(&self) -> Self
 impl core::clone::TrivialClone for ironflowx_proto::KeyStatus
@@ -34,6 +22,8 @@ pub ironflowx_proto::Operation::EmitBatch
 pub ironflowx_proto::Operation::GetEvent
 pub ironflowx_proto::Operation::ListEnvironments
 pub ironflowx_proto::Operation::ListEvents
+pub ironflowx_proto::Operation::ListKeys
+pub ironflowx_proto::Operation::RevokeKey
 pub ironflowx_proto::Operation::Whoami
 impl core::clone::Clone for ironflowx_proto::Operation
 pub fn ironflowx_proto::Operation::clone(&self) -> Self
@@ -185,7 +175,7 @@ pub ironflowx_proto::KeyInfo::created_by: core::option::Option<ironflowx_core::i
 pub ironflowx_proto::KeyInfo::expires_at: core::option::Option<ironflowx_core::time::Timestamp>
 pub ironflowx_proto::KeyInfo::key_id: ironflowx_core::id::KeyId
 pub ironflowx_proto::KeyInfo::label: core::option::Option<alloc::string::String>
-pub ironflowx_proto::KeyInfo::origin: ironflowx_proto::KeyOrigin
+pub ironflowx_proto::KeyInfo::origin: ironflowx_core::tenancy::KeyOrigin
 pub ironflowx_proto::KeyInfo::scopes: alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>
 pub ironflowx_proto::KeyInfo::status: ironflowx_proto::KeyStatus
 impl core::clone::Clone for ironflowx_proto::KeyInfo
@@ -197,6 +187,18 @@ pub fn ironflowx_proto::KeyInfo::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_proto::KeyInfo
 pub fn ironflowx_proto::KeyInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_proto::KeyInfo
+pub struct ironflowx_proto::KeyPage
+pub ironflowx_proto::KeyPage::keys: alloc::vec::Vec<ironflowx_proto::KeyInfo>
+pub ironflowx_proto::KeyPage::next: core::option::Option<alloc::string::String>
+impl core::clone::Clone for ironflowx_proto::KeyPage
+pub fn ironflowx_proto::KeyPage::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_proto::KeyPage
+pub fn ironflowx_proto::KeyPage::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_proto::KeyPage
+pub fn ironflowx_proto::KeyPage::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_proto::KeyPage
+pub fn ironflowx_proto::KeyPage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_proto::KeyPage
 pub struct ironflowx_proto::ListEnvironmentsRequest
 impl core::clone::Clone for ironflowx_proto::ListEnvironmentsRequest
 pub fn ironflowx_proto::ListEnvironmentsRequest::clone(&self) -> Self
@@ -220,6 +222,20 @@ pub fn ironflowx_proto::ListEventsRequest::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_proto::ListEventsRequest
 pub fn ironflowx_proto::ListEventsRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_proto::ListEventsRequest
+pub struct ironflowx_proto::ListKeysRequest
+pub ironflowx_proto::ListKeysRequest::cursor: core::option::Option<alloc::string::String>
+pub ironflowx_proto::ListKeysRequest::limit: core::option::Option<core::num::nonzero::NonZeroU32>
+impl core::clone::Clone for ironflowx_proto::ListKeysRequest
+pub fn ironflowx_proto::ListKeysRequest::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_proto::ListKeysRequest
+pub fn ironflowx_proto::ListKeysRequest::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_proto::ListKeysRequest
+pub fn ironflowx_proto::ListKeysRequest::eq(&self, &Self) -> bool
+impl core::default::Default for ironflowx_proto::ListKeysRequest
+pub fn ironflowx_proto::ListKeysRequest::default() -> Self
+impl core::fmt::Debug for ironflowx_proto::ListKeysRequest
+pub fn ironflowx_proto::ListKeysRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_proto::ListKeysRequest
 pub struct ironflowx_proto::OpError
 pub ironflowx_proto::OpError::hint: core::option::Option<alloc::string::String>
 pub ironflowx_proto::OpError::kind: ironflowx_core::error::ErrorKind
@@ -236,6 +252,17 @@ pub fn ironflowx_proto::OpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> co
 impl core::fmt::Display for ironflowx_proto::OpError
 pub fn ironflowx_proto::OpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_proto::OpError
+pub struct ironflowx_proto::RevokeKeyRequest
+pub ironflowx_proto::RevokeKeyRequest::key_id: alloc::string::String
+impl core::clone::Clone for ironflowx_proto::RevokeKeyRequest
+pub fn ironflowx_proto::RevokeKeyRequest::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_proto::RevokeKeyRequest
+pub fn ironflowx_proto::RevokeKeyRequest::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_proto::RevokeKeyRequest
+pub fn ironflowx_proto::RevokeKeyRequest::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_proto::RevokeKeyRequest
+pub fn ironflowx_proto::RevokeKeyRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_proto::RevokeKeyRequest
 pub struct ironflowx_proto::Whoami
 pub ironflowx_proto::Whoami::environment: ironflowx_core::tenancy::Address
 pub ironflowx_proto::Whoami::expires_at: core::option::Option<ironflowx_core::time::Timestamp>
@@ -267,4 +294,6 @@ pub fn ironflowx_proto::Operations::emit(&self, &ironflowx_proto::Call, ironflow
 pub fn ironflowx_proto::Operations::emit_batch(&self, &ironflowx_proto::Call, ironflowx_proto::EmitBatchRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::EmitBatchResponse, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::get_event(&self, &ironflowx_proto::Call, ironflowx_proto::GetEventRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::Event, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::list_events(&self, &ironflowx_proto::Call, ironflowx_proto::ListEventsRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::EventPage, ironflowx_proto::OpError>> + core::marker::Send
+pub fn ironflowx_proto::Operations::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>> + core::marker::Send
+pub fn ironflowx_proto::Operations::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> impl core::future::future::Future<Output = core::result::Result<(), ironflowx_proto::OpError>> + core::marker::Send
 pub const fn ironflowx_proto::required_scope(ironflowx_proto::Operation) -> core::option::Option<ironflowx_core::tenancy::Scope>

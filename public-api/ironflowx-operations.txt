@@ -27,6 +27,8 @@ pub async fn ironflowx_operations::Engine::emit_batch(&self, &ironflowx_proto::C
 pub async fn ironflowx_operations::Engine::get_event(&self, &ironflowx_proto::Call, ironflowx_proto::GetEventRequest) -> core::result::Result<ironflowx_proto::Event, ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::list_environments(&self, &ironflowx_proto::Call, ironflowx_proto::ListEnvironmentsRequest) -> core::result::Result<alloc::vec::Vec<ironflowx_proto::Environment>, ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::list_events(&self, &ironflowx_proto::Call, ironflowx_proto::ListEventsRequest) -> core::result::Result<ironflowx_proto::EventPage, ironflowx_proto::OpError>
+pub async fn ironflowx_operations::Engine::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>
+pub async fn ironflowx_operations::Engine::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> core::result::Result<(), ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::whoami(&self, &ironflowx_proto::Call, ironflowx_proto::WhoamiRequest) -> core::result::Result<ironflowx_proto::Whoami, ironflowx_proto::OpError>
 impl ironflowx_operations::Engine
 pub async fn ironflowx_operations::Engine::open(&std::path::Path, impl ironflowx_core::time::Clock + core::clone::Clone + core::marker::Send + core::marker::Sync + 'static) -> core::result::Result<ironflowx_operations::Opened, ironflowx_operations::EngineError>
