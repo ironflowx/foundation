@@ -166,17 +166,17 @@ pub(crate) fn applied(conn: &Connection) -> rusqlite::Result<u64> {
     conn.query_row("SELECT applied FROM meta", [], |r| r.get(0))
 }
 
-/// Folds the record at `offset` and advances the applied position past it, in one
+/// Folds the record at `position` and advances the applied position past it, in one
 /// transaction. A record below the applied position is skipped (LED-12). The genesis record
 /// has no events: `None`. `recovering` when open folds it, for the crash test's fault points.
 pub(crate) fn apply(
     conn: &mut Connection,
-    offset: u64,
+    position: u64,
     record: Option<&Record>,
     #[cfg_attr(not(feature = "__fault-points"), allow(unused_variables))] recovering: bool,
 ) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
-    if offset < applied(&tx)? {
+    if position < applied(&tx)? {
         return Ok(());
     }
     if let Some(record) = record {
@@ -188,7 +188,7 @@ pub(crate) fn apply(
             crate::ledger::point::FaultPoint::MidFold
         });
     }
-    tx.execute("UPDATE meta SET applied = ?1", [offset + 1])?;
+    tx.execute("UPDATE meta SET applied = ?1", [position + 1])?;
     tx.commit()
 }
 

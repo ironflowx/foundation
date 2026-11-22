@@ -47,7 +47,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    # The crash test's seeded kills, pinned so the budget docs/invariants.md states is the one CI runs; the named kill points always run.
+    # The crash test's seeded kills, pinned so the budget docs/invariants.md states is the one CI runs; the named fault points always run.
     env:
       CRASH_KILLS: 100
     steps:
