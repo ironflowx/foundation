@@ -2,9 +2,10 @@
 //! and "Open").
 
 use std::fmt;
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use ironflowx_core::{Clock, EnvRef, EventId, SequencedTime, Timestamp};
@@ -13,11 +14,12 @@ use rusqlite::Connection;
 use segment_log_core::{
     AppendError, CommitError, ExpectedRevision, NewRecord, Options, SegmentLog, Submit,
 };
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::record::{self, FORMAT, LogRecord};
 use crate::store::{self, ReadStore, StoreError};
 
+const QUEUE_CAPACITY: usize = 16;
 const STREAM: &[u8] = b"events";
 
 /// One environment's commit log, read store and the single writer between them.
@@ -32,6 +34,8 @@ pub struct Ledger {
     stopping: Arc<AtomicBool>,
     #[cfg(any(test, feature = "__fault-points"))]
     faults: Arc<faults::Faults>,
+    // Keep the lock until the writer has joined and the read store has closed.
+    _directory_lock: File,
 }
 
 /// What a submission committed: one outcome per item, in input order.
@@ -156,7 +160,7 @@ impl Ledger {
         let store = Arc::new(Mutex::new(recovered.conn));
         #[cfg(any(test, feature = "__fault-points"))]
         let faults = Arc::<faults::Faults>::default();
-        let (jobs, queue) = mpsc::channel();
+        let (jobs, queue) = mpsc::channel(QUEUE_CAPACITY);
         let stopping = Arc::<AtomicBool>::default();
         let writer = Writer {
             log: recovered.log,
@@ -172,9 +176,10 @@ impl Ledger {
         };
         let writer = thread::Builder::new()
             .name("ironflowx-ledger-writer".into())
-            .spawn(move || writer.run(&queue))?;
+            .spawn(move || writer.run(queue))?;
         Ok(Self {
             env,
+            _directory_lock: recovered.directory_lock,
             jobs: Some(jobs),
             writer: Some(writer),
             progress,
@@ -201,9 +206,10 @@ impl Ledger {
             .as_ref()
             .expect("set until drop")
             .send(Job { sub, reply })
+            .await
             .map_err(|_| SubmitError::Unavailable)?;
-        // Dropped unanswered: the writer stopped mid-submission.
-        answer.await.unwrap_or(Err(SubmitError::Unknown))
+        // Before append begins, losing the writer means this job did not commit.
+        answer.await.unwrap_or(Err(SubmitError::Unavailable))
     }
 
     /// Runs a query from event rules once the read store holds every write acknowledged
@@ -284,6 +290,23 @@ fn fail(progress: &watch::Sender<Progress>) {
     progress.send_modify(|p| p.failed = true);
 }
 
+/// Losing the reply during an append leaves its outcome uncertain.
+struct AppendReply(Option<oneshot::Sender<Result<Committed, SubmitError>>>);
+
+impl AppendReply {
+    fn send(mut self, result: Result<Committed, SubmitError>) {
+        let _ = self.0.take().expect("reply is pending").send(result);
+    }
+}
+
+impl Drop for AppendReply {
+    fn drop(&mut self) {
+        if let Some(reply) = self.0.take() {
+            let _ = reply.send(Err(SubmitError::Unknown));
+        }
+    }
+}
+
 struct Writer {
     log: SegmentLog,
     store: Arc<Mutex<Connection>>,
@@ -309,33 +332,49 @@ impl Drop for FailOnExit {
 
 impl Writer {
     /// One submission at a time: decide, append, fsync, publish, acknowledge, fold (D15).
-    fn run(mut self, queue: &mpsc::Receiver<Job>) {
+    fn run(mut self, mut queue: mpsc::Receiver<Job>) {
         let _exit = FailOnExit(self.progress.clone());
-        while let Ok(job) = queue.recv() {
+        while let Some(job) = queue.blocking_recv() {
             if self.stopping.load(Ordering::SeqCst) || self.progress.borrow().failed {
                 let _ = job.reply.send(Err(SubmitError::Unavailable));
                 continue;
             }
-            let (answer, record) = self.decide(&job.sub);
-            let Some((record, offset)) = record else {
+            let decision = match self.decide(&job.sub) {
+                Ok(decision) => decision,
+                Err(e) => {
+                    let _ = job.reply.send(Err(e));
+                    continue;
+                }
+            };
+            let answer = Ok(Committed {
+                outcome: decision.outcome,
+            });
+            let Some(record) = decision.record else {
                 let _ = job.reply.send(answer);
                 continue;
             };
+            let payload = record::events(self.env.token(), &record);
+            let reply = AppendReply(Some(job.reply));
+            let offset = match self.append(payload) {
+                Ok(offset) => offset,
+                Err(e) => {
+                    fail(&self.progress);
+                    reply.send(Err(e));
+                    continue;
+                }
+            };
+            self.last_time = Some(record.time);
             #[cfg(feature = "__fault-points")]
             point::reach(point::FaultPoint::AfterFsync);
             self.progress.send_modify(|p| p.committed = offset + 1);
-            let _ = job.reply.send(answer);
+            reply.send(answer);
             #[cfg(feature = "__fault-points")]
             point::reach(point::FaultPoint::AfterAck);
             self.fold(offset, &record);
         }
     }
 
-    /// The answer, and the record and its offset if one was appended.
-    fn decide(
-        &mut self,
-        sub: &Submission,
-    ) -> (Result<Committed, SubmitError>, Option<(Record, u64)>) {
+    fn decide(&self, sub: &Submission) -> Result<ironflowx_events::Decision, SubmitError> {
         // D7: the event clock never goes back.
         let now = self.clock.now();
         let now = self.last_time.map_or(now, |t| t.max(now));
@@ -349,33 +388,16 @@ impl Writer {
             // Poisoned: a query panicked holding it.
             Err(_) => {
                 fail(&self.progress);
-                return (Err(SubmitError::Unavailable), None);
+                return Err(SubmitError::Unavailable);
             }
         };
-        let decision = match decision {
-            Ok(d) => d,
-            Err(Error::Refused(r)) => return (Err(SubmitError::Refused(r)), None),
-            Err(Error::Store(_)) => {
+        decision.map_err(|e| match e {
+            Error::Refused(r) => SubmitError::Refused(r),
+            Error::Store(_) => {
                 fail(&self.progress);
-                return (Err(SubmitError::Unavailable), None);
+                SubmitError::Unavailable
             }
-        };
-        let committed = Committed {
-            outcome: decision.outcome,
-        };
-        let Some(record) = decision.record else {
-            return (Ok(committed), None);
-        };
-        match self.append(record::events(self.env.token(), &record)) {
-            Ok(offset) => {
-                self.last_time = Some(record.time);
-                (Ok(committed), Some((record, offset)))
-            }
-            Err(e) => {
-                fail(&self.progress);
-                (Err(e), None)
-            }
-        }
+        })
     }
 
     /// Appends one record and waits for its fsync. No retry (D11).
@@ -441,6 +463,7 @@ fn append(
 }
 
 struct Recovered {
+    directory_lock: File,
     log: SegmentLog,
     conn: Connection,
     watermark: u64,
@@ -448,9 +471,45 @@ struct Recovered {
     revision: u64,
 }
 
-/// The rows of the "Open" table: the log first, under its lock, then the read store.
+/// Create missing components from the top down, syncing each parent before
+/// creating anything inside its child. Existing directories need only traversal
+/// permissions, including when the embedder supplies a relative path.
+fn create_directory(dir: &Path) -> std::io::Result<()> {
+    let absolute = std::path::absolute(dir)?;
+    let mut missing = Vec::new();
+    for path in absolute.ancestors() {
+        if path.try_exists()? {
+            break;
+        }
+        missing.push(path);
+    }
+    for path in missing.into_iter().rev() {
+        let parent = File::open(path.parent().expect("root exists"))?;
+        match std::fs::create_dir(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && path.is_dir() => {}
+            Err(e) => return Err(e),
+        }
+        parent.sync_all()?;
+    }
+    Ok(())
+}
+
+/// Take the ledger lock before opening either store.
 fn recover(dir: &Path, env: EnvRef) -> Result<Recovered, OpenError> {
-    std::fs::create_dir_all(dir)?;
+    create_directory(dir)?;
+    // The segment log releases its own lock when sealed. Keep exclusive ownership
+    // of the read store through recovery, normal operation and close.
+    let directory_lock = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("ledger.lock"))?;
+    directory_lock.try_lock().map_err(|e| match e {
+        std::fs::TryLockError::WouldBlock => OpenError::Locked,
+        std::fs::TryLockError::Error(e) => OpenError::Io(e),
+    })?;
     let options = Options {
         linger: std::time::Duration::ZERO,
         group_byte_cap: 8 * 1024 * 1024,
@@ -473,7 +532,9 @@ fn recover(dir: &Path, env: EnvRef) -> Result<Recovered, OpenError> {
     })?;
     // The fold runs only after fsync, so a read store of this environment ahead of the log
     // proves the log lost durable records. Refuse, before a genesis could paper over it.
-    if store::recorded(dir, env).is_some_and(|applied| applied > log.watermark()) {
+    if store::recorded(dir, env, log.watermark() == 0)?
+        .is_some_and(|applied| applied > log.watermark())
+    {
         return Err(OpenError::Corrupt);
     }
     if log.watermark() == 0 {
@@ -489,21 +550,14 @@ fn recover(dir: &Path, env: EnvRef) -> Result<Recovered, OpenError> {
         LogRecord::Events { .. } => return Err(OpenError::Corrupt),
     }
     let watermark = log.watermark();
-    let conn = match replay(&log, store::open(dir, env, watermark, false)?, env)? {
-        Ok(conn) => conn,
+    let (conn, last_time) = match replay(&log, store::open(dir, env, watermark, false)?, env)? {
+        Ok(recovered) => recovered,
         // `meta` agreed but the tables did not: rebuild from the log, once.
-        Err(_) => replay(&log, store::open(dir, env, watermark, true)?, env)?
-            .map_err(std::io::Error::other)?,
-    };
-    let last_time = match watermark {
-        0 | 1 => None,
-        _ => match read_record(&log, watermark - 1)? {
-            LogRecord::Events { record, .. } => Some(record.time),
-            LogRecord::Genesis { .. } => return Err(OpenError::Corrupt),
-        },
+        Err(_) => replay(&log, store::open(dir, env, watermark, true)?, env)??,
     };
     let revision = log.stream_head(STREAM).ok_or(OpenError::Corrupt)?.revision;
     Ok(Recovered {
+        directory_lock,
         log,
         conn,
         watermark,
@@ -518,38 +572,51 @@ fn replay(
     log: &SegmentLog,
     mut conn: Connection,
     env: EnvRef,
-) -> Result<rusqlite::Result<Connection>, OpenError> {
+) -> Result<std::io::Result<(Connection, Option<Timestamp>)>, OpenError> {
     let mut from = match store::applied(&conn) {
         Ok(applied) => applied,
-        Err(e) => return Ok(Err(e)),
+        Err(e) => return Ok(Err(std::io::Error::other(e))),
     };
-    while from < log.watermark() {
-        let records = log.read(from, 64).map_err(log_read_error)?;
-        if records.is_empty() {
-            return Err(OpenError::Corrupt);
-        }
-        for r in records {
-            let record = match r.offset {
-                0 => None,
-                _ => Some(events_record(&r.payload, env)?),
-            };
-            if let Err(e) = store::apply(&mut conn, r.offset, record.as_ref(), true) {
-                return Ok(Err(e));
-            }
-            from = r.offset + 1;
-        }
+    // Every non-genesis record written by the ledger ends with a freshly minted
+    // event ID. It identifies this prefix even across forks of the same incarnation.
+    let mut last_time = None;
+    let expected = if from > 1 {
+        let record = read_events(log, from - 1, env)?;
+        last_time = Some(record.time);
+        let event = record.events.last().ok_or(OpenError::Corrupt)?;
+        Some((event.sequence, event.id))
+    } else {
+        None
+    };
+    match store::last_event(&conn) {
+        Ok(actual) if actual == expected => {}
+        Ok(_) => return Ok(Err(std::io::Error::other("read store diverges from log"))),
+        Err(e) => return Ok(Err(std::io::Error::other(e))),
     }
-    Ok(Ok(conn))
+    while from < log.watermark() {
+        let record = if from == 0 {
+            None
+        } else {
+            let record = read_events(log, from, env)?;
+            last_time = Some(record.time);
+            Some(record)
+        };
+        if let Err(e) = store::apply(&mut conn, from, record.as_ref(), true) {
+            return Ok(Err(std::io::Error::other(e)));
+        }
+        from += 1;
+    }
+    Ok(Ok((conn, last_time)))
 }
 
 /// A later record: it must carry this incarnation's token and format (LED-8).
-fn events_record(payload: &[u8], env: EnvRef) -> Result<Record, OpenError> {
-    match record::decode(payload) {
-        Some(LogRecord::Events {
+fn read_events(log: &SegmentLog, offset: u64, env: EnvRef) -> Result<Record, OpenError> {
+    match read_record(log, offset)? {
+        LogRecord::Events {
             format,
             token,
             record,
-        }) if format == FORMAT && token == env.token() => Ok(record),
+        } if format == FORMAT && token == env.token() => Ok(record),
         _ => Err(OpenError::Corrupt),
     }
 }
@@ -558,7 +625,8 @@ fn read_record(log: &SegmentLog, offset: u64) -> Result<LogRecord, OpenError> {
     let records = log.read(offset, 1).map_err(log_read_error)?;
     let payload = &records.first().ok_or(OpenError::Corrupt)?.payload;
     // A genesis in another format may not decode as this one: check the format first.
-    if let [0, lo, hi, ..] = payload[..]
+    if offset == 0
+        && let [0, lo, hi, ..] = payload[..]
         && u16::from_le_bytes([lo, hi]) != FORMAT
     {
         return Err(OpenError::Format);
