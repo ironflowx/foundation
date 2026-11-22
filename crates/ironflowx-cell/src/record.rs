@@ -1,4 +1,4 @@
-//! The log record: binary and length-prefixed. IDs and tokens go in their text forms.
+//! The record's encoding: binary and length-prefixed. IDs and tokens go in their text forms.
 
 use ironflowx_core::{EnvRef, IncarnationToken, Timestamp};
 use ironflowx_events::{NewEvent, Record};
@@ -12,7 +12,7 @@ const EVENTS: u8 = 1;
 /// A decoded record.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Decoded {
-    /// Offset 0: the directory's identity (D14).
+    /// Position 0: the directory's identity (D14).
     Genesis { format: u16, env: EnvRef },
     Events {
         format: u16,

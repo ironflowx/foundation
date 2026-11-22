@@ -10,11 +10,11 @@ The crates any Ironflow X product links. They commit one environment's events du
 The unit of isolation: one ledger, one directory, one stream of events.
 
 **Incarnation token**:
-A random value minted with an environment. An environment recreated under the same ID would get a new one, so its old records are refused; 0.1 has no call that recreates one.
+A random value minted with an environment. An environment recreated under the same ID would get a new one, so the old directory, its records and its cursors are refused; 0.1 has no call that recreates one.
 
 **Environment reference** (`EnvRef`):
 An environment's ID with its incarnation token. A ledger is opened with one, and work is never looked up by the ID alone.
-_Avoid_: Environment ID, where the token is meant
+_Avoid_: Environment ID, where the reference (ID and token) is meant
 
 ### Storage
 
@@ -22,7 +22,7 @@ _Avoid_: Environment ID, where the token is meant
 One environment's commit log, read store and the single writer between them.
 
 **Cell**:
-One fenceable volume, written by one node, holding many ledgers: the unit of ownership. Not built in 0.1: the `ironflowx-cell` crate is named for it and holds one ledger.
+One fenceable volume, written by one node, holding many ledgers: the unit of ownership. Not built in 0.1: the `ironflowx-cell` crate is named for it and implements the ledger.
 
 **Submission**:
 One call to the ledger's `submit`: a single emit or a batch. It commits at most one record, and none when every item is a duplicate or refused.
@@ -68,7 +68,7 @@ An event's place in commit order, counted from 1. Each event has one, so a recor
 The ledger's clock. It never goes back, and it stamps every record after the genesis record.
 
 **Idempotency key**:
-An optional client value on an emit. A second emit with a key already used in the environment returns the original event instead of storing another.
+An optional client value on an emit. A second emit with a key already used in the environment returns the original event's ID, marked a duplicate, instead of storing another.
 
 ### Packaging
 
@@ -84,5 +84,5 @@ A way in from outside the process, such as an HTTP server.
 ### Testing
 
 **Fault point**:
-A named place in the commit path, such as after fsync and before the acknowledgment, where the crash test stops the ledger (`__fault-points`).
+A named place in the commit or recovery path, such as after fsync and before the acknowledgment, where the crash test stops the ledger (`__fault-points`).
 _Avoid_: Kill point

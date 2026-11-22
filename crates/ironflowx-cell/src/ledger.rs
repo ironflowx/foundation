@@ -16,7 +16,7 @@ use segment_log_core::{
 };
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::record::{self, Decoded, FORMAT};
+use crate::record::{self, FORMAT};
 use crate::store::{self, ReadStore, StoreError};
 
 const QUEUE_CAPACITY: usize = 16;
@@ -99,7 +99,7 @@ impl From<std::io::Error> for OpenError {
     }
 }
 
-/// The read gate. Both positions are exclusive log offsets.
+/// The read gate. Both positions are exclusive: one past the last record.
 #[derive(Debug, Clone, Copy)]
 struct Progress {
     committed: u64,
@@ -542,12 +542,14 @@ fn recover(dir: &Path, env: EnvRef) -> Result<Recovered, OpenError> {
             .map_err(|e| OpenError::Io(std::io::Error::other(format!("genesis: {e:?}"))))?;
     }
     match read_record(&log, 0)? {
-        Decoded::Genesis { format, .. } if format != FORMAT => return Err(OpenError::Format),
-        Decoded::Genesis { env: genesis, .. } if genesis != env => {
+        record::Decoded::Genesis { format, .. } if format != FORMAT => {
+            return Err(OpenError::Format);
+        }
+        record::Decoded::Genesis { env: genesis, .. } if genesis != env => {
             return Err(OpenError::WrongIncarnation);
         }
-        Decoded::Genesis { .. } => {}
-        Decoded::Events { .. } => return Err(OpenError::Corrupt),
+        record::Decoded::Genesis { .. } => {}
+        record::Decoded::Events { .. } => return Err(OpenError::Corrupt),
     }
     let watermark = log.watermark();
     let (conn, last_time) = match replay(&log, store::open(dir, env, watermark, false)?, env)? {
@@ -612,7 +614,7 @@ fn replay(
 /// A later record: it must carry this incarnation's token and format (LED-8).
 fn read_events(log: &SegmentLog, offset: u64, env: EnvRef) -> Result<Record, OpenError> {
     match read_record(log, offset)? {
-        Decoded::Events {
+        record::Decoded::Events {
             format,
             token,
             record,
@@ -621,7 +623,7 @@ fn read_events(log: &SegmentLog, offset: u64, env: EnvRef) -> Result<Record, Ope
     }
 }
 
-fn read_record(log: &SegmentLog, offset: u64) -> Result<Decoded, OpenError> {
+fn read_record(log: &SegmentLog, offset: u64) -> Result<record::Decoded, OpenError> {
     let records = log.read(offset, 1).map_err(log_read_error)?;
     let payload = &records.first().ok_or(OpenError::Corrupt)?.payload;
     // A genesis in another format may not decode as this one: check the format first.
@@ -647,7 +649,7 @@ fn log_read_error(e: segment_log_core::ReadError) -> OpenError {
 pub mod point {
     use std::sync::OnceLock;
 
-    /// A place in the commit path where the crash test kills the process.
+    /// A place in the commit or recovery path where the crash test kills the process.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum FaultPoint {
         /// The writer has decided a record and not yet appended it.
