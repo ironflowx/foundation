@@ -157,7 +157,7 @@ The kind is contract. Four messages are contract too: `event name is required`, 
 
 If the writer panics, submissions still queued or being decided return `Unavailable`. A submission whose append began and lost its reply returns `Unknown`.
 
-The committed head and the applied position are exclusive log offsets: one past the last record, as the log's watermark is.
+The committed head and the applied position are exclusive positions: one past the last record, as the log's watermark is.
 
 ## Open
 
@@ -165,17 +165,17 @@ The committed head and the applied position are exclusive log offsets: one past 
 
 | Directory state | Result |
 |---|---|
-| Empty or missing | Creates the log and appends the genesis record (format version, environment ID, incarnation token) at offset 0, then creates `read.db` and folds it; ready |
-| Log, genesis matches the `EnvRef` and format | Checks that the newest stored event ID and sequence match the last applied log record, rebuilding on mismatch. Replays one record at a time from the applied position |
+| Empty or missing | Creates the log and appends the genesis record (format version, environment ID, incarnation token) at position 0, then creates `read.db` and folds it; ready |
+| Log, genesis matches the `EnvRef` and format | Checks that the newest stored event ID and sequence match the last applied record, rebuilding on mismatch. Replays one record at a time from the applied position |
 | Log, genesis differs in environment ID or token | `OpenError::WrongIncarnation` |
 | Log, genesis differs in format version, or the log's own format is unsupported | `OpenError::Format` |
-| `read.db` missing, without `meta`, unreadable, its tables damaged, or `meta` disagrees with the genesis record | Deletes `read.db` and its `-wal` and `-shm` files, rebuilds from offset 0 |
+| `read.db` missing, without `meta`, unreadable, its tables damaged, or `meta` disagrees with the genesis record | Deletes `read.db` and its `-wal` and `-shm` files, rebuilds from position 0 |
 | Empty log and an existing `read.db` whose applied position cannot be read | `OpenError::Io` preserves the store for inspection |
 | Empty log and a readable `read.db` with a positive applied position, for any incarnation | `OpenError::Corrupt` before writing genesis or replacing the store |
 | The log ends in a torn last frame, after a crash | The log truncates it; opens with the records before it |
 | `read.db` names this environment and its applied position is beyond the log's watermark | `OpenError::Corrupt`, before a genesis record is written: the fold follows fsync, so the log lost durable records: an older copy of the log restored, or, after a crash, a bad last frame the log truncated as a torn tail (a crash writes no close frame, so nothing after it shows it was acknowledged). Without `read.db`, that last record is lost unreported |
 | A replayed record carries another token or format, or does not decode | `OpenError::Corrupt` |
-| The record at offset 0 is not a genesis record | `OpenError::Corrupt` |
+| The record at position 0 is not a genesis record | `OpenError::Corrupt` |
 | The log reports corruption (including a bad frame in its newest segment with a later record or a close frame after it), a gap or a foreign segment | `OpenError::Corrupt` |
 | Another process or `Ledger` holds the directory | `OpenError::Locked`, including on sealed logs. The OS releases the ledger lock when the process exits |
 | Any other I/O failure | `OpenError::Io` |
@@ -190,7 +190,7 @@ Dropping a `Ledger` without `close` stops the writer after the submission in han
 
 - **The log refused.** The segment log found damage it will not truncate on its own.
 - **The ledger refused.** The log opened, but `read.db` names this environment and has folded records the log no longer holds, or the log is empty and any `read.db` records progress; then `read.db` is the last copy of those events. The fold runs only after fsync, so the log lost acknowledged events: after a crash, a bad last frame the log truncated as a torn tail (a clean close writes a close frame that proves the records before it; a crash writes none, so the log cannot tell damage from a torn write), an older copy of the log restored, a deleted segment, or a lossy repair (below).
-- **The ledger refused a record.** The log is sound, but a record in it is not one this ledger wrote: another incarnation's token or format, a record that does not decode, or no genesis record at offset 0.
+- **The ledger refused a record.** The log is sound, but a record in it is not one this ledger wrote: another incarnation's token or format, a record that does not decode, or no genesis record at position 0.
 
 Steps, with the embedder stopped:
 
@@ -215,7 +215,7 @@ A sealed log, after a lossy repair, opens and reads until the first emit that ap
 | Where | Holds |
 |---|---|
 | `<dir>/ledger.lock` | File used for exclusive ownership of the ledger directory, including during read-store rebuild |
-| `<dir>/log/` (segment log) | Offset 0: the genesis record, with the ledger's own format version, 1. Then one record per submit that appends: format version, incarnation token, event-clock time, and for each new event its sequence, ID, name, version, key, metadata and data. Binary and length-prefixed; data and metadata are the bytes as sent |
+| `<dir>/log/` (segment log) | Position 0: the genesis record, with the ledger's own format version, 1. Then one record per submit that appends: format version, incarnation token, event-clock time, and for each new event its sequence, ID, name, version, key, metadata and data. Binary and length-prefixed; data and metadata are the bytes as sent |
 | `<dir>/read.db` (SQLite) | `events` keyed by sequence, unique by ID · `idempotency` key → event ID · `meta`: applied position, environment ID, incarnation token, format version |
 
 A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 4 MiB of data and metadata, under 4.1 MiB.

@@ -16,7 +16,7 @@ use segment_log_core::{
 };
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::record::{self, FORMAT, LogRecord};
+use crate::record::{self, Decoded, FORMAT};
 use crate::store::{self, ReadStore, StoreError};
 
 const QUEUE_CAPACITY: usize = 16;
@@ -542,12 +542,12 @@ fn recover(dir: &Path, env: EnvRef) -> Result<Recovered, OpenError> {
             .map_err(|e| OpenError::Io(std::io::Error::other(format!("genesis: {e:?}"))))?;
     }
     match read_record(&log, 0)? {
-        LogRecord::Genesis { format, .. } if format != FORMAT => return Err(OpenError::Format),
-        LogRecord::Genesis { env: genesis, .. } if genesis != env => {
+        Decoded::Genesis { format, .. } if format != FORMAT => return Err(OpenError::Format),
+        Decoded::Genesis { env: genesis, .. } if genesis != env => {
             return Err(OpenError::WrongIncarnation);
         }
-        LogRecord::Genesis { .. } => {}
-        LogRecord::Events { .. } => return Err(OpenError::Corrupt),
+        Decoded::Genesis { .. } => {}
+        Decoded::Events { .. } => return Err(OpenError::Corrupt),
     }
     let watermark = log.watermark();
     let (conn, last_time) = match replay(&log, store::open(dir, env, watermark, false)?, env)? {
@@ -612,7 +612,7 @@ fn replay(
 /// A later record: it must carry this incarnation's token and format (LED-8).
 fn read_events(log: &SegmentLog, offset: u64, env: EnvRef) -> Result<Record, OpenError> {
     match read_record(log, offset)? {
-        LogRecord::Events {
+        Decoded::Events {
             format,
             token,
             record,
@@ -621,7 +621,7 @@ fn read_events(log: &SegmentLog, offset: u64, env: EnvRef) -> Result<Record, Ope
     }
 }
 
-fn read_record(log: &SegmentLog, offset: u64) -> Result<LogRecord, OpenError> {
+fn read_record(log: &SegmentLog, offset: u64) -> Result<Decoded, OpenError> {
     let records = log.read(offset, 1).map_err(log_read_error)?;
     let payload = &records.first().ok_or(OpenError::Corrupt)?.payload;
     // A genesis in another format may not decode as this one: check the format first.
@@ -641,7 +641,7 @@ fn log_read_error(e: segment_log_core::ReadError) -> OpenError {
     }
 }
 
-/// The crash test's named kill points (#6, D23). The hook is process-wide, so a point inside open
+/// The crash test's named fault points (#6, D23). The hook is process-wide, so a point inside open
 /// needs no `Ledger` to reach it.
 #[cfg(feature = "__fault-points")]
 pub mod point {

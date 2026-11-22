@@ -479,7 +479,7 @@ fn records_round_trip() {
     };
     assert_eq!(
         record::decode(&record::events(env.token(), &record)),
-        Some(record::LogRecord::Events {
+        Some(record::Decoded::Events {
             format: record::FORMAT,
             token: env.token(),
             record
@@ -487,7 +487,7 @@ fn records_round_trip() {
     );
     assert_eq!(
         record::decode(&record::genesis(env)),
-        Some(record::LogRecord::Genesis {
+        Some(record::Decoded::Genesis {
             format: record::FORMAT,
             env
         })

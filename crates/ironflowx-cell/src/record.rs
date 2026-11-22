@@ -9,9 +9,9 @@ pub(crate) const FORMAT: u16 = 1;
 const GENESIS: u8 = 0;
 const EVENTS: u8 = 1;
 
-/// A decoded log record.
+/// A decoded record.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum LogRecord {
+pub(crate) enum Decoded {
     /// Offset 0: the directory's identity (D14).
     Genesis { format: u16, env: EnvRef },
     Events {
@@ -67,12 +67,12 @@ fn put_opt(out: &mut Vec<u8>, bytes: Option<&[u8]>) {
 }
 
 /// `None` if the bytes are not a record this format writes.
-pub(crate) fn decode(bytes: &[u8]) -> Option<LogRecord> {
+pub(crate) fn decode(bytes: &[u8]) -> Option<Decoded> {
     let mut d = Dec(bytes);
     let kind = d.take::<1>()?[0];
     let format = u16::from_le_bytes(d.take()?);
     let record = match kind {
-        GENESIS => LogRecord::Genesis {
+        GENESIS => Decoded::Genesis {
             format,
             env: d.text()?.parse().ok()?,
         },
@@ -96,7 +96,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<LogRecord> {
                     data: d.bytes()?.to_vec(),
                 });
             }
-            LogRecord::Events {
+            Decoded::Events {
                 format,
                 token,
                 record: Record { time, events },
