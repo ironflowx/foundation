@@ -21,7 +21,9 @@ Judgement rules for review. Anything a tool can check belongs in CI instead (`ci
 - **Rules are probed at their edges.** For code or a CI check that accepts or refuses input, the
   reviewer runs each limit's boundary (max, max+1, escaped forms) and the dependency features a
   downstream build can switch on, rather than reading the tests. For a CI check, that means
-  throwaway fixtures that try to get past it, and legitimate cases it should still pass.
+  throwaway fixtures that try to get past it, and legitimate cases it should still pass. The
+  review lists every bypass tried and shows each one rejected. A bypass that gets through is a
+  defect to fix in this PR, whatever an older check shares the gap.
 - **Limits leave with proof.** A change that deletes a documented limit, caveat or failure cause
   includes a test showing it no longer happens. Without one, the line stays.
 - **Tables are tested by row.** For each table in `architecture.md` that maps an input or a state

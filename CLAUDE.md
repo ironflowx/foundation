@@ -22,4 +22,4 @@ Changing a crate's dependencies or public API, or adding a crate: read `ci/READM
 
 ## Review
 
-Reviewing a change: apply `CODING_STANDARDS.md`.
+Reviewing a change: apply `CODING_STANDARDS.md`. Diff against `origin/main` after `git fetch`; a local `main` may be stale.

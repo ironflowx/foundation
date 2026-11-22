@@ -18,6 +18,11 @@ step() {
   rm -f "$out"
 }
 step cargo fmt --all --check
+step sh -c 'ci/comment-width.sh crates examples ci/*.sh'
+step ci/must-reject.sh "ci/fixtures/comment-width/long.sh:3:" "ci/fixtures/comment-width/long.rs:3:" \
+  "ci/fixtures/comment-width/long.rs:4:" "ci/fixtures/comment-width/long.rs:5: 101 columns" -- \
+  ci/comment-width.sh ci/fixtures/comment-width
+step ci/comment-width.sh ci/fixtures/comment-width-ok
 step cargo clippy --workspace --all-targets --locked -- -D warnings
 # CI's crash-test budget, whatever a replay left in the shell.
 step env -u CRASH_SEED CRASH_KILLS=100 cargo test --workspace --locked
