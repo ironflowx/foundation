@@ -144,30 +144,34 @@ The kind is contract. Four messages are contract too: `event name is required`, 
 
 ## Commit and read
 
-1. The writer is one thread and takes one submission at a time (D15). For each it reads the event clock and calls `decide` against the read store, drawing IDs from a UUIDv7 generator.
+1. The writer processes one submission at a time (D15). Up to 16 more can wait in its queue. A submit waits asynchronously for a slot. Cancelling before admission leaves no job for the writer. For each it reads the event clock and calls `decide` against the read store, drawing IDs from a UUIDv7 generator.
 2. Nothing to append (all refused, or all duplicates): it answers at once.
 3. Otherwise it appends one record holding every new event and waits for the log's fsync, off the async threads. Each new event takes the next event sequence, from 1, in input order.
 4. It publishes the new committed head to the read gate, then acknowledges. Then it folds the record, before it takes the next submission, so the read store holds every earlier record when `decide` runs.
 5. A read snapshots the committed head when it arrives and waits until the applied position reaches it. So it sees every write acknowledged before it arrived, whoever made it.
 
+If the writer panics, submissions still queued or being decided return `Unavailable`. A submission whose append began and lost its reply returns `Unknown`.
+
 The committed head and the applied position are exclusive log offsets: one past the last record, as the log's watermark is.
 
 ## Open
 
-`open` opens the log first, under its directory lock, then the read store.
+`open` syncs the parent of each directory it creates. It takes the ledger lock before opening the log and then the read store.
 
 | Directory state | Result |
 |---|---|
 | Empty or missing | Creates the log and appends the genesis record (format version, environment ID, incarnation token) at offset 0, then creates `read.db` and folds it; ready |
-| Log, genesis matches the `EnvRef` and format | Replays every record from the read store's applied position; ready |
+| Log, genesis matches the `EnvRef` and format | Checks that the newest stored event ID and sequence match the last applied log record, rebuilding on mismatch. Replays one record at a time from the applied position |
 | Log, genesis differs in environment ID or token | `OpenError::WrongIncarnation` |
 | Log, genesis differs in format version, or the log's own format is unsupported | `OpenError::Format` |
 | `read.db` missing, without `meta`, unreadable, its tables damaged, or `meta` disagrees with the genesis record | Deletes `read.db` and its `-wal` and `-shm` files, rebuilds from offset 0 |
+| Empty log and an existing `read.db` whose applied position cannot be read | `OpenError::Io` preserves the store for inspection |
+| Empty log and a readable `read.db` with a positive applied position, for any incarnation | `OpenError::Corrupt` before writing genesis or replacing the store |
 | The log ends in a torn last frame, after a crash | The log truncates it; opens with the records before it |
 | `read.db` names this environment and its applied position is beyond the log's watermark | `OpenError::Corrupt`, before a genesis record is written: the fold follows fsync, so the log lost durable records: an older copy of the log restored, or, after a crash, a bad last frame the log truncated as a torn tail (a crash writes no close frame, so nothing after it shows it was acknowledged). Without `read.db`, that last record is lost unreported |
 | A replayed record carries another token or format | `OpenError::Corrupt` |
 | The log reports corruption (including a bad frame in its newest segment with a later record or a close frame after it), a gap or a foreign segment | `OpenError::Corrupt` |
-| Another process or `Ledger` holds the directory | `OpenError::Locked`, from the log's directory lock, which dies with the process |
+| Another process or `Ledger` holds the directory | `OpenError::Locked`, including on sealed logs. The OS releases the ledger lock when the process exits |
 | Any other I/O failure | `OpenError::Io` |
 
 The genesis record is the directory's identity; `read.db` is derived state and never trusted over it. The log binds every segment to one log ID, so a segment from another log does not open.
@@ -202,6 +206,7 @@ A sealed log, after a lossy repair, opens and reads, and refuses every emit with
 
 | Where | Holds |
 |---|---|
+| `<dir>/ledger.lock` | File used for exclusive ownership of the ledger directory, including during read-store rebuild |
 | `<dir>/log/` (segment log) | Offset 0: the genesis record. Then one record per submit that appends: format version, incarnation token, event-clock time, and for each new event its sequence, ID, name, version, key, metadata and data. Binary and length-prefixed; data and metadata are the bytes as sent |
 | `<dir>/read.db` (SQLite) | `events` keyed by sequence, unique by ID · `idempotency` key → event ID · `meta`: applied position, environment ID, incarnation token, format version |
 

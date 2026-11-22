@@ -712,6 +712,10 @@ async fn a_sealed_log_opens_and_reads_and_refuses_the_first_emit() {
         .unwrap();
     let ledger = open(dir.path(), env).await;
     assert_eq!(names(&ledger).await, ["b", "a"]);
+    assert!(matches!(
+        Ledger::open(dir.path(), env, clock()).await,
+        Err(OpenError::Locked)
+    ));
     let err = emit(&ledger, named("c")).await.unwrap_err();
     assert_eq!(err.kind, ErrorKind::Unavailable);
     assert_eq!(all(&ledger).await.unwrap_err().kind, ErrorKind::Unavailable);
@@ -760,4 +764,91 @@ async fn close_finishes_queued_submissions() {
     std::sync::Arc::into_inner(ledger).unwrap().close().await;
     let ledger = open(dir.path(), env).await;
     assert_eq!(get(&ledger, &id).await.unwrap().name, "queued");
+}
+
+#[tokio::test]
+async fn a_divergent_read_store_of_the_same_incarnation_is_rebuilt() {
+    let dir = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    for (path, name) in [(dir.path(), "mine"), (other.path(), "theirs")] {
+        let ledger = open(path, env).await;
+        emit(&ledger, keyed(name, "key")).await.unwrap();
+        ledger.close().await;
+    }
+    std::fs::copy(other.path().join("read.db"), dir.path().join("read.db")).unwrap();
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(names(&ledger).await, ["mine"]);
+}
+
+#[tokio::test]
+async fn a_missing_log_preserves_a_populated_foreign_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    two_events(dir.path(), env).await;
+    std::fs::rename(dir.path().join("log"), dir.path().join("backup")).unwrap();
+    assert!(matches!(
+        Ledger::open(dir.path(), new_env_ref(), clock()).await,
+        Err(OpenError::Corrupt)
+    ));
+    let conn = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
+    assert_eq!(crate::store::applied(&conn).unwrap(), 3);
+}
+
+#[tokio::test]
+async fn abandoned_waiters_do_not_fill_an_unbounded_writer_queue() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    ledger.hold_fold();
+    emit(&ledger, named("first")).await.unwrap();
+    // Poll each submit once and cancel before releasing the writer.
+    for _ in 0..17 {
+        tokio::select! {
+            biased;
+            result = emit(&ledger, named("queued")) => panic!("unexpected reply {result:?}"),
+            () = std::future::ready(()) => {}
+        }
+    }
+    ledger.close().await;
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(all(&ledger).await.unwrap().len(), 17); // first plus 16 admitted
+}
+
+#[tokio::test]
+async fn a_writer_panic_before_append_refuses_queued_work() {
+    struct Panics(std::sync::mpsc::Receiver<()>);
+    impl ironflowx_core::Clock for Panics {
+        fn now(&self) -> Timestamp {
+            self.0.recv().unwrap();
+            panic!("clock failed");
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (release, wait) = std::sync::mpsc::channel();
+    let ledger = Ledger::open(dir.path(), new_env_ref(), Panics(wait))
+        .await
+        .unwrap();
+    let first = emit(&ledger, named("first"));
+    let second = emit(&ledger, named("queued"));
+    tokio::pin!(first, second);
+    tokio::select! {
+        biased;
+        r = &mut first => panic!("{r:?}"),
+        r = &mut second => panic!("{r:?}"),
+        () = std::future::ready(()) => {}
+    }
+    release.send(()).unwrap();
+    assert_eq!(second.await.unwrap_err().kind, ErrorKind::Unavailable);
+    assert_eq!(first.await.unwrap_err().kind, ErrorKind::Unavailable);
+}
+
+#[tokio::test]
+async fn an_empty_log_preserves_a_store_with_unreadable_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("read.db");
+    std::fs::write(&db, b"damaged database").unwrap();
+    let result = Ledger::open(dir.path(), new_env_ref(), clock()).await;
+    assert!(matches!(result, Err(OpenError::Io(_))));
+    assert_eq!(std::fs::read(db).unwrap(), b"damaged database");
 }

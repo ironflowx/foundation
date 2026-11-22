@@ -109,13 +109,22 @@ fn create(path: &Path, env: EnvRef) -> rusqlite::Result<Connection> {
 }
 
 /// The applied position `read.db` records, if it is readable and its `meta` names this
-/// environment and format.
-pub(crate) fn recorded(dir: &Path, env: EnvRef) -> Option<u64> {
+/// environment and format. With an empty log, any recorded progress is evidence of loss.
+pub(crate) fn recorded(dir: &Path, env: EnvRef, empty_log: bool) -> std::io::Result<Option<u64>> {
     let path = dir.join("read.db");
-    path.exists()
-        .then(|| Connection::open(&path).ok())
-        .flatten()
-        .and_then(|conn| ours(&conn, env))
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    if empty_log {
+        // Without a genesis there is no authoritative log to rebuild from. Never
+        // interpret a failed metadata read as permission to replace this file.
+        let conn = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(std::io::Error::other)?;
+        return applied(&conn).map(Some).map_err(std::io::Error::other);
+    }
+    Ok(Connection::open(&path)
+        .ok()
+        .and_then(|conn| ours(&conn, env)))
 }
 
 fn ours(conn: &Connection, env: EnvRef) -> Option<u64> {
@@ -142,6 +151,15 @@ fn existing(path: &Path, env: EnvRef, watermark: u64) -> Option<Connection> {
         Ok(check == "ok")
     };
     (agrees && intact().unwrap_or(false)).then_some(conn)
+}
+
+pub(crate) fn last_event(conn: &Connection) -> rusqlite::Result<Option<(u64, EventId)>> {
+    conn.query_row(
+        "SELECT sequence, id FROM events ORDER BY sequence DESC LIMIT 1",
+        [],
+        |r| Ok((r.get(0)?, r.get::<_, Id>(1)?.0)),
+    )
+    .optional()
 }
 
 pub(crate) fn applied(conn: &Connection) -> rusqlite::Result<u64> {
