@@ -3,7 +3,9 @@
 use std::collections::BTreeSet;
 
 use ironflowx_authz::{KeyRecord, mint, parse, verify};
-use ironflowx_core::{EnvRef, KeyId, Scope, Secret};
+use ironflowx_core::{EnvRef, KeyId, Scope, Secret, Timestamp};
+
+const NOW: Timestamp = Timestamp::from_millis(1_800_000_000_000);
 
 const ID: &str = "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f";
 const ENV: &str = "019a9f3e-7c2b-7d41-8a3e-000000000001.00112233445566778899aabbccddeeff";
@@ -86,13 +88,20 @@ fn record(bytes: [u8; 32], env: EnvRef) -> KeyRecord {
         env,
         scopes: BTreeSet::from([Scope::Read, Scope::Admin]),
         digest: mint(id(), bytes).1,
+        expires_at: None,
     }
 }
 
 #[test]
 fn a_matching_key_is_granted_its_record() {
     let (key, _) = mint(id(), [7; 32]);
-    let grant = verify(&parse(&key).unwrap(), Some(&record([7; 32], env())), &env()).unwrap();
+    let grant = verify(
+        &parse(&key).unwrap(),
+        Some(&record([7; 32], env())),
+        &env(),
+        NOW,
+    )
+    .unwrap();
     assert_eq!(grant.key_id(), id());
     assert_eq!(grant.scopes(), &BTreeSet::from([Scope::Read, Scope::Admin]));
     assert_eq!(grant.env(), env());
@@ -114,7 +123,7 @@ fn unknown_wrong_secret_and_foreign_keys_are_refused_alike() {
         ("another environment", Some(record([7; 32], other_id))),
         ("another key's record", Some(renamed)),
     ] {
-        let refused = verify(&parts, record.as_ref(), &env());
+        let refused = verify(&parts, record.as_ref(), &env(), NOW);
         assert!(refused.is_err(), "{case}: granted");
     }
 }

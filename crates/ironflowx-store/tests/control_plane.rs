@@ -5,7 +5,7 @@ use std::path::Path;
 
 use ironflowx_authz::{KeyParts, mint};
 use ironflowx_core::{Clock, EnvRef, KeyId, ProjectId, Scope, TenantId, Timestamp};
-use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane};
+use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, InsertError, NewKey};
 
 const T: i64 = 1_800_000_000_000;
 
@@ -140,4 +140,99 @@ fn bootstrap_survives_reopen() {
     }
     let cp = ControlPlane::open(&path(dir.path())).unwrap();
     assert!(cp.lookup_key(key.id, &env(1)).unwrap().is_some());
+}
+
+const HOUR: i64 = 3_600_000;
+
+fn new_key(n: u8, scopes: &[Scope], expires_at: Option<i64>, label: Option<&str>) -> NewKey {
+    let id: KeyId = uuid(n).parse().unwrap();
+    NewKey {
+        id,
+        digest: mint(id, [n; 32]).1,
+        scopes: scopes.iter().copied().collect(),
+        label: label.map(str::to_owned),
+        expires_at: expires_at.map(Timestamp::from_millis),
+    }
+}
+
+#[test]
+fn a_created_key_is_stored_with_its_scopes_expiry_and_label() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    let (b, admin) = bootstrap(env(1), 0);
+    cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
+    let new = new_key(40, &[Scope::Read], Some(T + HOUR), Some("agent-7"));
+    let id = new.id;
+    let row = cp
+        .insert_key(&env(1), new, admin.id, &Fixed(T + 5))
+        .unwrap();
+    assert_eq!(row.label.as_deref(), Some("agent-7"));
+    assert_eq!(row.created_at, Timestamp::from_millis(T + 5));
+    assert_eq!(row.seq, 2, "after the bootstrap key");
+    let found = cp.lookup_key(id, &env(1)).unwrap().expect("the new key");
+    assert_eq!(found.scopes, BTreeSet::from([Scope::Read]));
+    assert_eq!(found.expires_at, Some(Timestamp::from_millis(T + HOUR)));
+    assert!(found.digest.ct_eq(&mint(id, [40; 32]).1));
+}
+
+/// The creator is read again, and each rule checked, inside the transaction at the clock's now:
+/// a creator expired by then, or a request beyond it, changes nothing (TEN-5).
+#[test]
+fn the_creator_is_checked_inside_the_transaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    let (b, admin) = bootstrap(env(1), 0);
+    cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
+    let creator = new_key(41, &[Scope::Read, Scope::Admin], Some(T + HOUR), None);
+    let creator_id = creator.id;
+    cp.insert_key(&env(1), creator, admin.id, &Fixed(T))
+        .unwrap();
+
+    let cases = [
+        (
+            "beyond its scopes",
+            new_key(42, &[Scope::Write], Some(T + 1), None),
+            T,
+        ),
+        ("outliving it", new_key(43, &[Scope::Read], None, None), T),
+        (
+            "a bad label",
+            new_key(44, &[Scope::Read], Some(T + 1), Some("a\nb")),
+            T,
+        ),
+        (
+            "by an expired creator",
+            new_key(45, &[Scope::Read], Some(T + 2 * HOUR), None),
+            T + HOUR,
+        ),
+        (
+            "by an unknown creator",
+            new_key(46, &[Scope::Read], None, None),
+            T,
+        ),
+    ];
+    for (case, new, now) in cases {
+        let id = new.id;
+        let by = if case == "by an unknown creator" {
+            uuid(47).parse().unwrap()
+        } else {
+            creator_id
+        };
+        let refused = cp.insert_key(&env(1), new, by, &Fixed(now));
+        let creator_refused = case.starts_with("by an");
+        assert!(
+            matches!(
+                (&refused, creator_refused),
+                (Err(InsertError::Creator), true) | (Err(InsertError::Refused(_)), false)
+            ),
+            "{case}: {refused:?}"
+        );
+        assert!(
+            cp.lookup_key(id, &env(1)).unwrap().is_none(),
+            "{case}: stored"
+        );
+    }
+    let fine = new_key(48, &[Scope::Read], Some(T + HOUR), None);
+    cp.insert_key(&env(1), fine, creator_id, &Fixed(T + HOUR - 1))
+        .expect("within the creator");
 }

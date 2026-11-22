@@ -956,3 +956,16 @@ async fn a_format_1_directory_is_refused_as_another_format() {
     let err = Ledger::open(dir.path(), env, clock()).await.err();
     assert!(matches!(err, Some(OpenError::Format)), "{err:?}");
 }
+
+#[tokio::test]
+async fn local_operations_create_no_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = open(dir.path(), new_env_ref()).await;
+    let req = ironflowx_proto::CreateKeyRequest::default();
+    let err = LocalOperations::new(&ledger)
+        .create_key(&Call::anonymous(), req)
+        .await
+        .expect_err("refused");
+    assert_eq!(err.kind, ErrorKind::Unauthenticated);
+    ledger.close().await;
+}

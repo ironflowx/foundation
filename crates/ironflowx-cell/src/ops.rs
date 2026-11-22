@@ -4,8 +4,8 @@
 use ironflowx_core::{ErrorKind, SubmitAs};
 use ironflowx_events::{Emit, ItemOutcome, Refusal, Submission};
 use ironflowx_proto::{
-    Call, EmitBatchRequest, EmitBatchResponse, EmitRequest, EmitResponse, Event, EventPage,
-    GetEventRequest, ListEventsRequest, OpError, Operations,
+    Call, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
+    EmitResponse, Event, EventPage, GetEventRequest, ListEventsRequest, OpError, Operations,
 };
 
 use crate::{Ledger, ReadError, SubmitError};
@@ -150,6 +150,16 @@ impl Operations for LocalOperations<'_> {
         Ok(EventPage {
             events: page.events.into_iter().map(event).collect(),
             next: page.next,
+        })
+    }
+
+    /// No keys exist without the engine: every call is refused until the engine replaces this
+    /// adapter.
+    async fn create_key(&self, _cx: &Call, _req: CreateKeyRequest) -> Result<CreatedKey, OpError> {
+        Err(OpError {
+            kind: ErrorKind::Unauthenticated,
+            message: "authentication required".into(),
+            hint: Some("open an engine to create keys".into()),
         })
     }
 }

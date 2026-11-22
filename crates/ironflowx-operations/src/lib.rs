@@ -10,17 +10,19 @@
 mod admission;
 mod open;
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::sync::Arc;
 
 use ironflowx_cell::{Ledger, LocalOperations};
-use ironflowx_core::{Address, EnvRef, ErrorKind, Secret};
+use ironflowx_core::{Address, Clock, EnvRef, ErrorKind, Scope, Secret};
 use ironflowx_proto::{
-    Call, EmitBatchRequest, EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event,
-    EventPage, GetEventRequest, ListEnvironmentsRequest, ListEventsRequest, OpError, Operations,
-    Whoami, WhoamiRequest,
+    Call, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
+    EmitResponse, Environment, Event, EventPage, GetEventRequest, KeyInfo, KeyOrigin, KeyStatus,
+    ListEnvironmentsRequest, ListEventsRequest, OpError, Operation, Operations, Whoami,
+    WhoamiRequest,
 };
-use ironflowx_store::{ControlPlane, EnvironmentRecord, StoreError};
+use ironflowx_store::{ControlPlane, EnvironmentRecord, InsertError, NewKey, StoreError};
 
 pub use admission::Authorized;
 pub use open::EngineError;
@@ -30,6 +32,8 @@ pub struct Engine {
     ledger: Ledger,
     control: Arc<ControlPlane>,
     env: EnvRef,
+    /// The ledger's clock, which also decides key expiry.
+    clock: Arc<dyn Clock + Send + Sync>,
     // Held until `close`, after the ledger closes.
     _lock: File,
 }
@@ -58,13 +62,13 @@ impl Engine {
     /// `Unauthenticated` for a missing or invalid key; `Unavailable` if the control plane
     /// fails.
     pub async fn whoami(&self, cx: &Call, _req: WhoamiRequest) -> Result<Whoami, OpError> {
-        let a = self.admit(cx).await?;
+        let a = self.admit(cx, Operation::Whoami).await?;
         let record = self.environment(&a).await?;
         Ok(Whoami {
             key_id: a.grant().key_id(),
             scopes: a.grant().scopes().clone(),
             environment: address(&record),
-            expires_at: None,
+            expires_at: a.grant().expires_at(),
         })
     }
 
@@ -78,7 +82,7 @@ impl Engine {
         cx: &Call,
         _req: ListEnvironmentsRequest,
     ) -> Result<Vec<Environment>, OpError> {
-        let a = self.admit(cx).await?;
+        let a = self.admit(cx, Operation::ListEnvironments).await?;
         let record = self.environment(&a).await?;
         Ok(vec![Environment {
             env: record.env,
@@ -95,7 +99,7 @@ impl Engine {
     ///
     /// As [`Engine::whoami`], or as the ledger refuses the event.
     pub async fn emit(&self, cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError> {
-        let a = self.admit(cx).await?;
+        let a = self.admit(cx, Operation::Emit).await?;
         self.ledger(&a).emit(cx, req).await
     }
 
@@ -110,7 +114,7 @@ impl Engine {
         cx: &Call,
         req: EmitBatchRequest,
     ) -> Result<EmitBatchResponse, OpError> {
-        let a = self.admit(cx).await?;
+        let a = self.admit(cx, Operation::EmitBatch).await?;
         self.ledger(&a).emit_batch(cx, req).await
     }
 
@@ -120,7 +124,7 @@ impl Engine {
     ///
     /// As [`Engine::whoami`]; `NotFound` for an unknown ID.
     pub async fn get_event(&self, cx: &Call, req: GetEventRequest) -> Result<Event, OpError> {
-        let a = self.admit(cx).await?;
+        let a = self.admit(cx, Operation::GetEvent).await?;
         self.ledger(&a).get_event(cx, req).await
     }
 
@@ -134,8 +138,68 @@ impl Engine {
         cx: &Call,
         req: ListEventsRequest,
     ) -> Result<EventPage, OpError> {
-        let a = self.admit(cx).await?;
+        let a = self.admit(cx, Operation::ListEvents).await?;
         self.ledger(&a).list_events(cx, req).await
+    }
+
+    /// Creates a key in the calling key's environment, holding no scope the caller lacks and
+    /// outliving it in no way; the answer holds the key's secret, returned only here.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::whoami`]; `PermissionDenied` without `admin`; `Invalid` for a request
+    /// beyond the caller, an expiry not after now, or a bad label; `Unauthenticated` if the
+    /// caller expired before the key was stored.
+    ///
+    /// # Panics
+    ///
+    /// If the OS random source fails.
+    pub async fn create_key(
+        &self,
+        cx: &Call,
+        req: CreateKeyRequest,
+    ) -> Result<CreatedKey, OpError> {
+        let a = self.admit(cx, Operation::CreateKey).await?;
+        let creator = a.grant().key_id();
+        let scopes = if req.scopes.is_empty() {
+            BTreeSet::from([Scope::Read])
+        } else {
+            req.scopes
+        };
+        let (id, key, digest) = open::new_key();
+        let new = NewKey {
+            id,
+            digest,
+            scopes,
+            label: req.label,
+            expires_at: req.expires_at,
+        };
+        let (keys, env, clock) = (self.keys(&a), self.env, self.clock.clone());
+        let row = tokio::task::spawn_blocking(move || keys.insert_key(&env, new, creator, &*clock))
+            .await
+            .map_err(|_| unavailable())?
+            .map_err(|e| match e {
+                InsertError::Creator => admission::unauthenticated("invalid API key", None),
+                InsertError::Refused(why) => OpError {
+                    kind: ErrorKind::Invalid,
+                    message: why.to_string(),
+                    hint: None,
+                },
+                InsertError::Store(_) => unavailable(),
+            })?;
+        Ok(CreatedKey {
+            key,
+            info: KeyInfo {
+                key_id: id,
+                label: row.label,
+                scopes: row.record.scopes,
+                origin: KeyOrigin::Created,
+                created_by: Some(creator),
+                created_at: row.created_at,
+                expires_at: row.record.expires_at,
+                status: KeyStatus::Active,
+            },
+        })
     }
 
     /// The ledger, reached only with a proof of admission, submitting as its grant (TEN-1,
@@ -166,10 +230,14 @@ async fn blocking<T: Send + 'static>(
 ) -> Result<T, OpError> {
     match tokio::task::spawn_blocking(f).await {
         Ok(Ok(value)) => Ok(value),
-        Ok(Err(_)) | Err(_) => Err(OpError {
-            kind: ErrorKind::Unavailable,
-            message: "the control plane is unavailable".into(),
-            hint: Some("retry at once".into()),
-        }),
+        Ok(Err(_)) | Err(_) => Err(unavailable()),
+    }
+}
+
+fn unavailable() -> OpError {
+    OpError {
+        kind: ErrorKind::Unavailable,
+        message: "the control plane is unavailable".into(),
+        hint: Some("retry at once".into()),
     }
 }

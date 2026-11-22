@@ -1,4 +1,52 @@
 pub mod ironflowx_proto
+pub enum ironflowx_proto::KeyOrigin
+pub ironflowx_proto::KeyOrigin::Created
+impl core::clone::Clone for ironflowx_proto::KeyOrigin
+pub fn ironflowx_proto::KeyOrigin::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_proto::KeyOrigin
+impl core::cmp::Eq for ironflowx_proto::KeyOrigin
+impl core::cmp::PartialEq for ironflowx_proto::KeyOrigin
+pub fn ironflowx_proto::KeyOrigin::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_proto::KeyOrigin
+pub fn ironflowx_proto::KeyOrigin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_proto::KeyOrigin
+pub fn ironflowx_proto::KeyOrigin::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for ironflowx_proto::KeyOrigin
+impl core::marker::StructuralPartialEq for ironflowx_proto::KeyOrigin
+pub enum ironflowx_proto::KeyStatus
+pub ironflowx_proto::KeyStatus::Active
+impl core::clone::Clone for ironflowx_proto::KeyStatus
+pub fn ironflowx_proto::KeyStatus::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_proto::KeyStatus
+impl core::cmp::Eq for ironflowx_proto::KeyStatus
+impl core::cmp::PartialEq for ironflowx_proto::KeyStatus
+pub fn ironflowx_proto::KeyStatus::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_proto::KeyStatus
+pub fn ironflowx_proto::KeyStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_proto::KeyStatus
+pub fn ironflowx_proto::KeyStatus::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for ironflowx_proto::KeyStatus
+impl core::marker::StructuralPartialEq for ironflowx_proto::KeyStatus
+pub enum ironflowx_proto::Operation
+pub ironflowx_proto::Operation::CreateKey
+pub ironflowx_proto::Operation::Emit
+pub ironflowx_proto::Operation::EmitBatch
+pub ironflowx_proto::Operation::GetEvent
+pub ironflowx_proto::Operation::ListEnvironments
+pub ironflowx_proto::Operation::ListEvents
+pub ironflowx_proto::Operation::Whoami
+impl core::clone::Clone for ironflowx_proto::Operation
+pub fn ironflowx_proto::Operation::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_proto::Operation
+impl core::cmp::Eq for ironflowx_proto::Operation
+impl core::cmp::PartialEq for ironflowx_proto::Operation
+pub fn ironflowx_proto::Operation::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_proto::Operation
+pub fn ironflowx_proto::Operation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_proto::Operation
+pub fn ironflowx_proto::Operation::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for ironflowx_proto::Operation
+impl core::marker::StructuralPartialEq for ironflowx_proto::Operation
 pub struct ironflowx_proto::Call
 impl ironflowx_proto::Call
 pub const fn ironflowx_proto::Call::anonymous() -> Self
@@ -6,6 +54,26 @@ pub const fn ironflowx_proto::Call::key(&self) -> core::option::Option<&ironflow
 pub const fn ironflowx_proto::Call::with_key(ironflowx_core::secret::Secret) -> Self
 impl core::fmt::Debug for ironflowx_proto::Call
 pub fn ironflowx_proto::Call::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct ironflowx_proto::CreateKeyRequest
+pub ironflowx_proto::CreateKeyRequest::expires_at: core::option::Option<ironflowx_core::time::Timestamp>
+pub ironflowx_proto::CreateKeyRequest::label: core::option::Option<alloc::string::String>
+pub ironflowx_proto::CreateKeyRequest::scopes: alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>
+impl core::clone::Clone for ironflowx_proto::CreateKeyRequest
+pub fn ironflowx_proto::CreateKeyRequest::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_proto::CreateKeyRequest
+pub fn ironflowx_proto::CreateKeyRequest::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_proto::CreateKeyRequest
+pub fn ironflowx_proto::CreateKeyRequest::eq(&self, &Self) -> bool
+impl core::default::Default for ironflowx_proto::CreateKeyRequest
+pub fn ironflowx_proto::CreateKeyRequest::default() -> Self
+impl core::fmt::Debug for ironflowx_proto::CreateKeyRequest
+pub fn ironflowx_proto::CreateKeyRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_proto::CreateKeyRequest
+pub struct ironflowx_proto::CreatedKey
+pub ironflowx_proto::CreatedKey::info: ironflowx_proto::KeyInfo
+pub ironflowx_proto::CreatedKey::key: ironflowx_core::secret::Secret
+impl core::fmt::Debug for ironflowx_proto::CreatedKey
+pub fn ironflowx_proto::CreatedKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct ironflowx_proto::EmitBatchRequest
 pub ironflowx_proto::EmitBatchRequest::items: alloc::vec::Vec<ironflowx_proto::EmitRequest>
 impl core::clone::Clone for ironflowx_proto::EmitBatchRequest
@@ -111,6 +179,24 @@ pub fn ironflowx_proto::GetEventRequest::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_proto::GetEventRequest
 pub fn ironflowx_proto::GetEventRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_proto::GetEventRequest
+pub struct ironflowx_proto::KeyInfo
+pub ironflowx_proto::KeyInfo::created_at: ironflowx_core::time::Timestamp
+pub ironflowx_proto::KeyInfo::created_by: core::option::Option<ironflowx_core::id::KeyId>
+pub ironflowx_proto::KeyInfo::expires_at: core::option::Option<ironflowx_core::time::Timestamp>
+pub ironflowx_proto::KeyInfo::key_id: ironflowx_core::id::KeyId
+pub ironflowx_proto::KeyInfo::label: core::option::Option<alloc::string::String>
+pub ironflowx_proto::KeyInfo::origin: ironflowx_proto::KeyOrigin
+pub ironflowx_proto::KeyInfo::scopes: alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>
+pub ironflowx_proto::KeyInfo::status: ironflowx_proto::KeyStatus
+impl core::clone::Clone for ironflowx_proto::KeyInfo
+pub fn ironflowx_proto::KeyInfo::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_proto::KeyInfo
+pub fn ironflowx_proto::KeyInfo::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_proto::KeyInfo
+pub fn ironflowx_proto::KeyInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_proto::KeyInfo
+pub fn ironflowx_proto::KeyInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_proto::KeyInfo
 pub struct ironflowx_proto::ListEnvironmentsRequest
 impl core::clone::Clone for ironflowx_proto::ListEnvironmentsRequest
 pub fn ironflowx_proto::ListEnvironmentsRequest::clone(&self) -> Self
@@ -176,7 +262,9 @@ impl core::fmt::Debug for ironflowx_proto::WhoamiRequest
 pub fn ironflowx_proto::WhoamiRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_proto::WhoamiRequest
 pub trait ironflowx_proto::Operations: core::marker::Send + core::marker::Sync
+pub fn ironflowx_proto::Operations::create_key(&self, &ironflowx_proto::Call, ironflowx_proto::CreateKeyRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::CreatedKey, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::emit(&self, &ironflowx_proto::Call, ironflowx_proto::EmitRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::EmitResponse, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::emit_batch(&self, &ironflowx_proto::Call, ironflowx_proto::EmitBatchRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::EmitBatchResponse, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::get_event(&self, &ironflowx_proto::Call, ironflowx_proto::GetEventRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::Event, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::list_events(&self, &ironflowx_proto::Call, ironflowx_proto::ListEventsRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::EventPage, ironflowx_proto::OpError>> + core::marker::Send
+pub const fn ironflowx_proto::required_scope(ironflowx_proto::Operation) -> core::option::Option<ironflowx_core::tenancy::Scope>

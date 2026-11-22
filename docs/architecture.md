@@ -37,13 +37,13 @@ The rows behind it: [Open](#open).
 | Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time | `open`, `submit`, `read`, `close`, `LocalOperations`, `HostClock`, `ManualClock` | `ironflowx-cell` |
 | Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types; 0.3 maps a wire format onto them | `Operations` trait and messages | `ironflowx-proto` |
-| Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified) before the handler reaches the ledger or the key records | `Engine::open`, `close`, `whoami`, `list_environments`, `emit`, `emit_batch`, `get_event`, `list_events` | `ironflowx-operations` |
-| Credentials | The key format and its digest, and whether a presented key is valid for an environment. Pure | `parse`, `mint`, `verify` | `ironflowx-authz` |
-| Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `mark_ledger_created`, `lookup_key`, `environment` | `ironflowx-store` |
+| Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records | `Engine::open`, `close`, `whoami`, `list_environments`, `emit`, `emit_batch`, `get_event`, `list_events`, `create_key` | `ironflowx-operations` |
+| Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `admit`, `may_create` | `ironflowx-authz` |
+| Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `mark_ledger_created`, `lookup_key`, `insert_key`, `environment` | `ironflowx-store` |
 | Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Scope`, `Address`, `Secret`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
 | Facade | Re-exports the crates above as modules; the one crate an embedder depends on | Re-exports | `ironflowx` |
 
-`LocalOperations` implements `Operations` over one `Ledger`. It maps each request to a submission and each outcome to an answer and holds no rule: every check, default and limit is in event rules. Tests and embedders use the same adapter. `LocalOperations::new` attributes every submission as `embedder:local-operations` until the engine replaces it (D36); the engine runs its event operations through `LocalOperations::submitting_as`, passing its verified grant's `submit_as()`, so an event emitted with a key records `key:<key-id>`.
+`LocalOperations` implements `Operations` over one `Ledger`. It maps each request to a submission and each outcome to an answer and holds no rule: every check, default and limit is in event rules. Tests and embedders use the same adapter. `LocalOperations::new` attributes every submission as `embedder:local-operations` until the engine replaces it (D36); the engine runs its event operations through `LocalOperations::submitting_as`, passing its verified grant's `submit_as()`, so an event emitted with a key records `key:<key-id>`. It answers `create_key` `Unauthenticated`: keys need the engine.
 
 | Type | Is |
 |---|---|
@@ -57,8 +57,8 @@ The rows behind it: [Open](#open).
 | `Address` | Where an environment is, by name: `project/environment` while the single tenant is hidden. Derived from names, never stored, and never parsed into an ID: no `FromStr` (TEN-8) |
 | `Secret` | A whole key's text. Implements none of `Debug`, `Display`, `Serialize` and `Clone`; `expose()` is its only read; zeroed on drop (TEN-3) |
 | `KeyDigest` | SHA-256 of a key's whole text, in `ironflowx-authz`. Private bytes, no `PartialEq`, `AsRef` or `Deref`; `ct_eq` is its only comparison; `to_stored` and `from_stored`, its storage codec, are confined to `ironflowx-store` by a lint (TEN-4) |
-| `KeyRecord` | What credentials need about a stored key: `{ id, env: EnvRef, scopes, digest }`, `env` being the environment ID and token current when the key was made |
-| `Grant` | What a verified key may do: its key ID, scopes and `EnvRef`, and `submit_as()`, the key's attribution, the only `SubmitAs::key` call, which clippy confines to the engine (D36). Only `verify` makes one; never stored |
+| `KeyRecord` | What credentials need about a stored key: `{ id, env: EnvRef, scopes, digest, expires_at }`, `env` being the environment ID and token current when the key was made |
+| `Grant` | What a verified key may do: its key ID, scopes, `EnvRef` and expiry, and `submit_as()`, the key's attribution, the only `SubmitAs::key` call, which clippy confines to the engine (D36). Only `verify` and `recheck` make one; never stored |
 | `Authorized` | Proof of admission, `{ grant }`, its field private to the engine's admission module: the engine's key operations take one (TEN-1) |
 
 ## Seams
@@ -83,7 +83,10 @@ trait Operations: Send + Sync {
     fn emit_batch(&self, cx: &Call, req: EmitBatchRequest) -> impl Future<Output = Result<EmitBatchResponse, OpError>> + Send;
     fn get_event(&self, cx: &Call, req: GetEventRequest) -> impl Future<Output = Result<Event, OpError>> + Send;
     fn list_events(&self, cx: &Call, req: ListEventsRequest) -> impl Future<Output = Result<EventPage, OpError>> + Send;
+    fn create_key(&self, cx: &Call, req: CreateKeyRequest) -> impl Future<Output = Result<CreatedKey, OpError>> + Send;
 }
+enum Operation { Emit, EmitBatch, GetEvent, ListEvents, Whoami, ListEnvironments, CreateKey }   // each new one joins
+const fn required_scope(op: Operation) -> Option<Scope>;   // an exhaustive match (D37); None: any valid key
 // EmitRequest      { name: String, data: Option<Vec<u8>> /* one JSON value (D22); None stores null */,
 //                    metadata: Option<Vec<u8>> /* one JSON object */, version: Option<i64> /* None stores 1 */,
 //                    idempotency_key: Option<String> /* None: no key */ }
@@ -100,6 +103,10 @@ trait Operations: Send + Sync {
 // Whoami           { key_id: KeyId, scopes: BTreeSet<Scope>, environment: Address, expires_at: Option<Timestamp> }
 // Environment      { env: EnvRef, name, address: Address, project_id: ProjectId, created_at: Timestamp }
 // WhoamiRequest {} · ListEnvironmentsRequest {}   // no request takes an environment (LED-7)
+// CreateKeyRequest { scopes: BTreeSet<Scope> /* empty: {read} */, expires_at: Option<Timestamp>, label: Option<String> }
+// CreatedKey       { key: Secret /* returned once */, info: KeyInfo }   // no Clone or PartialEq; Debug prints no key
+// KeyInfo          { key_id, label, scopes, origin: Created, created_by: Option<KeyId>, created_at,
+//                    expires_at, status: Active }   // other origins and statuses join when keys are listed
 
 // ironflowx-operations (tokio). These are the engine's own methods until the engine implements
 // the Operations trait. Each admits the call first, with no cache.
@@ -113,6 +120,7 @@ impl Engine {
     async fn emit_batch(&self, cx: &Call, req: EmitBatchRequest) -> Result<EmitBatchResponse, OpError>;
     async fn get_event(&self, cx: &Call, req: GetEventRequest) -> Result<Event, OpError>;
     async fn list_events(&self, cx: &Call, req: ListEventsRequest) -> Result<EventPage, OpError>;
+    async fn create_key(&self, cx: &Call, req: CreateKeyRequest) -> Result<CreatedKey, OpError>;
 }
 // Opened      { engine: Engine, minted: Option<Secret> }   // the bootstrap key, returned by the bootstrapping open only
 // EngineError Locked | Ledger(OpenError) | Store(StoreError) | Io(io::Error)
@@ -120,7 +128,11 @@ impl Engine {
 // ironflowx-authz: pure, depends only on core. The engine passes in the random secret.
 fn parse(raw: &Secret) -> Result<KeyParts, Malformed>;   // KeyParts { id: KeyId, digest: KeyDigest }
 fn mint(id: KeyId, secret: [u8; 32]) -> (Secret, KeyDigest);
-fn verify(parts: &KeyParts, record: Option<&KeyRecord>, env: &EnvRef) -> Result<Grant, Refused>;
+fn verify(parts: &KeyParts, record: Option<&KeyRecord>, env: &EnvRef, now: Timestamp) -> Result<Grant, Refused>;
+fn recheck(record: &KeyRecord, env: &EnvRef, now: Timestamp) -> Result<Grant, Refused>;   // verify, without the secret
+fn admit(grant: &Grant, required: Option<Scope>) -> Result<(), MissingScope>;   // MissingScope::scope() names it
+fn may_create(creator: &Grant, scopes: &BTreeSet<Scope>, expires_at: Option<Timestamp>, label: Option<&str>,
+              now: Timestamp) -> Result<(), CreateRefusal>;
 
 // ironflowx-store: blocking; the engine calls it under spawn_blocking. A write takes SQLite's
 // write lock (BEGIN IMMEDIATE) first, then reads now from the clock it is given.
@@ -132,6 +144,10 @@ impl ControlPlane {
     // Bootstrap { env: EnvRef, tenant: TenantId, project: ProjectId, key: KeyParts }   // the engine draws each
     fn mark_ledger_created(&self, env: &EnvRef, clock: &dyn Clock) -> Result<(), StoreError>;
     fn lookup_key(&self, id: KeyId, env: &EnvRef) -> Result<Option<KeyRecord>, StoreError>; // admission's one read
+    // One transaction: reads the creator's record again and checks it (recheck), then the request (may_create)
+    fn insert_key(&self, env: &EnvRef, new: NewKey, creator: KeyId, clock: &dyn Clock) -> Result<KeyRow, InsertError>;
+    // NewKey { id, digest, scopes, label, expires_at } · KeyRow { seq, record: KeyRecord, label, created_at }
+    // InsertError Creator | Refused(CreateRefusal) | Store(StoreError)
     fn environment(&self, env: &EnvRef) -> Result<EnvironmentRecord, StoreError>;
 }
 
@@ -193,10 +209,18 @@ A list query, not `decide`, checks the cursor: a token that does not decode, or 
 | Text | `ixk_` + the key ID's 36-character text form + `_` + 43 base64url characters without padding (256 random bits): always 84 characters, parsed by position, since the secret may hold `_` and `-` (D46). Anything else is malformed, including an uppercase or non-v7 key ID and a non-canonical last character |
 | Key ID | The key's UUIDv7. Not a secret |
 | Stored | The `KeyDigest` of the whole key text, and the environment ID and token current when the key was made. The secret is never stored, logged or returned after creation |
-| Valid | Parses; a record exists for the engine's environment ID and token; digests match, compared in constant time |
-| Scopes | A set of `read`, `write`, `admin`. The bootstrap key holds all three |
+| Valid | Parses; a record exists for the engine's environment ID and token; digests match, compared in constant time; not expired: `now < expires_at` when an expiry is set, by the ledger's clock |
+| Scopes | A non-empty set of `read`, `write`, `admin`, none implying another (D27). The bootstrap key holds all three |
+| Created | By a key holding `admin`. Scopes default to `{read}` when none are asked for, and must be a subset of the creator's. The expiry must be after now and no later than the creator's; no expiry only when the creator has none (D28). A label is 0–128 bytes of UTF-8 with no control character (Unicode Cc). All checked inside the transaction, with now read after the write lock, the creator's record read again there |
 
-**Admission.** Every call runs, in order: no key, or an empty one → `Unauthenticated`; `parse`; `lookup_key(id, env)`, a read-only lookup with no cache (D45); `verify`. Only then does the handler run, and it reaches the key records only through `keys(&Authorized)`. Admission writes nothing.
+**Admission.** Every call runs, in order: no key, or an empty one → `Unauthenticated`; `parse`; `lookup_key(id, env)`, a read-only lookup with no cache (D45); `verify` at the clock's now; `admit` against `required_scope(op)` (D37). Only then does the handler run, and it reaches the ledger only through `ledger(&Authorized)` and the key records only through `keys(&Authorized)`. Admission writes nothing.
+
+| Operation | Scope |
+|---|---|
+| `emit`, `emit_batch` | `write` |
+| `get_event`, `list_events`, `list_environments` | `read` |
+| `whoami` | any valid key |
+| `create_key` | `admin` |
 
 ## Errors
 
@@ -204,16 +228,17 @@ The kind is contract. Four messages are contract too: `event name is required`, 
 
 | Kind | When | Retry |
 |---|---|---|
-| `Invalid` | A rule refused the request, or one batch item | No: the same request is refused the same way |
+| `Invalid` | A rule refused the request, or one batch item; or `create_key` with more scopes than the creator, an expiry not after now or later than the creator's, or a bad label | No: the same request is refused the same way |
 | `NotFound` | No event has that ID, or the ID does not parse | No |
 | `Unknown` | The append's outcome is unknown; the ledger is now `Unavailable` | After reopen. With a key, the retry returns the original event if it landed. Without one it may store a second event |
 | `Unavailable` | The ledger failed (append, fold, read store, or a `read` query that panicked) and refuses every call until it is reopened. Reads waiting at the gate end with it | After reopen |
-| `Unavailable` | A control-plane read failed during admission or a handler. The call fails closed and changes nothing; the engine stays open | Yes, at once |
+| `Unavailable` | A control-plane read or write failed during admission or a handler. The call fails closed and changes nothing; the engine stays open (D44). A `create_key` whose answer was lost may have committed | Yes, at once |
 | `Unauthenticated` | No key, or an empty one: `authentication required` | No |
 | `Unauthenticated` | A malformed key: `invalid API key`, with the key format in `hint` | No |
-| `Unauthenticated` | An unknown key ID, a wrong secret, or a key of another environment or incarnation: `invalid API key`, the same answer for each, with no hint (D29, D30) | No |
+| `Unauthenticated` | An unknown key ID, a wrong secret, an expired key, or a key of another environment or incarnation: `invalid API key`, the same answer for each, with no hint (D29, D30). Also a `create_key` whose creator expired before its key was stored | No |
+| `PermissionDenied` | The key lacks the operation's scope: `missing scope: <scope>`, with `hint` saying to create or use a key with that scope (D31) | No |
 
-`ErrorKind::retryable()` is true when the same request, unchanged, may succeed later: `Unavailable` and `Unknown`. `OpError::hint` says when, or what to do. The three `Unauthenticated` messages are contract.
+`ErrorKind::retryable()` is true when the same request, unchanged, may succeed later: `Unavailable` and `Unknown`. `OpError::hint` says when, or what to do. The three `Unauthenticated` messages and the `PermissionDenied` message are contract.
 
 ## Commit and read
 
@@ -295,7 +320,7 @@ An engine's data directory, `<root>`:
 | Where | Holds |
 |---|---|
 | `<root>/engine.lock` | The engine's lock file; never deleted |
-| `<root>/control.db` (SQLite, WAL, `synchronous=FULL`, `fullfsync`) | `tenants` (id, name, created_at) · `projects` (id, tenant_id, name, created_at) · `environments` (id, project_id, name, token, created_at, ledger_created_at) · `keys` (seq, id, environment_id, environment_token, scopes, digest, origin, created_at) · `meta` (format version, 1). Times are `Timestamp`'s `i64` milliseconds (D18); the digest is `KeyDigest::to_stored()`; no last-used time (D38) |
+| `<root>/control.db` (SQLite, WAL, `synchronous=FULL`, `fullfsync`) | `tenants` (id, name, created_at) · `projects` (id, tenant_id, name, created_at) · `environments` (id, project_id, name, token, created_at, ledger_created_at) · `keys` (seq, id, environment_id, environment_token, scopes, digest, origin, created_by, label, expires_at, created_at) · `meta` (format version, 1). Times are `Timestamp`'s `i64` milliseconds (D18); the digest is `KeyDigest::to_stored()`; no last-used time (D38) |
 | `<root>/ledgers/<environment-id>/` | The environment's ledger, laid out as below |
 | `<root>/ledgers/.staging/` | A ledger being built; deleted by any open that finds it |
 

@@ -6,11 +6,17 @@ use std::num::NonZeroU32;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
-use ironflowx_core::{ErrorKind, Timestamp};
+use std::collections::BTreeSet;
+
+use ironflowx_core::{ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_proto::{
-    Call, EmitBatchRequest, EmitBatchResponse, EmitRequest, EmitResponse, Event, EventPage,
-    GetEventRequest, ListEventsRequest, OpError, Operations,
+    Call, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
+    EmitResponse, Event, EventPage, GetEventRequest, KeyInfo, KeyOrigin, KeyStatus,
+    ListEventsRequest, OpError, Operation, Operations, required_scope,
 };
+
+const KEY: &str =
+    "ixk_0190b5f0-0000-7000-8000-000000000001_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 const ID: &str = "0190b5f0-0000-7000-8000-000000000000";
 
@@ -57,6 +63,26 @@ impl Operations for Fixed {
             events: Vec::new(),
             next: None,
         })
+    }
+
+    async fn create_key(&self, _cx: &Call, req: CreateKeyRequest) -> Result<CreatedKey, OpError> {
+        Ok(created(req))
+    }
+}
+
+fn created(req: CreateKeyRequest) -> CreatedKey {
+    CreatedKey {
+        key: Secret::new(KEY.to_owned()),
+        info: KeyInfo {
+            key_id: KEY[4..40].parse().unwrap(),
+            label: req.label,
+            scopes: req.scopes,
+            origin: KeyOrigin::Created,
+            created_by: None,
+            created_at: Timestamp::from_millis(0),
+            expires_at: req.expires_at,
+            status: KeyStatus::Active,
+        },
     }
 }
 
@@ -116,6 +142,47 @@ fn drive<O: Operations>(ops: &O) {
     )))
     .unwrap();
     assert!(page.next.is_none());
+
+    let key = ready(assert_send(ops.create_key(
+        &cx,
+        CreateKeyRequest {
+            scopes: BTreeSet::new(),
+            expires_at: None,
+            label: Some("agent-7".into()),
+        },
+    )))
+    .unwrap();
+    assert_eq!(key.info.label.as_deref(), Some("agent-7"));
+}
+
+/// The scope table (architecture.md, "Keys"): `whoami` needs only a valid key.
+#[test]
+fn each_operation_requires_its_scope() {
+    for (op, scope) in [
+        (Operation::Emit, Some(Scope::Write)),
+        (Operation::EmitBatch, Some(Scope::Write)),
+        (Operation::GetEvent, Some(Scope::Read)),
+        (Operation::ListEvents, Some(Scope::Read)),
+        (Operation::ListEnvironments, Some(Scope::Read)),
+        (Operation::Whoami, None),
+        (Operation::CreateKey, Some(Scope::Admin)),
+    ] {
+        assert_eq!(required_scope(op), scope, "{op:?}");
+    }
+}
+
+#[test]
+fn a_created_key_prints_no_key() {
+    let shown = format!(
+        "{:?}",
+        created(CreateKeyRequest {
+            scopes: BTreeSet::new(),
+            expires_at: None,
+            label: None,
+        })
+    );
+    assert!(!shown.contains(&KEY[41..]), "{shown}");
+    assert!(shown.contains("CreatedKey"), "{shown}");
 }
 
 #[test]

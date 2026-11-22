@@ -21,6 +21,7 @@ pub const fn ironflowx_operations::Authorized::grant(&self) -> &ironflowx_authz:
 pub struct ironflowx_operations::Engine
 impl ironflowx_operations::Engine
 pub async fn ironflowx_operations::Engine::close(self)
+pub async fn ironflowx_operations::Engine::create_key(&self, &ironflowx_proto::Call, ironflowx_proto::CreateKeyRequest) -> core::result::Result<ironflowx_proto::CreatedKey, ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::emit(&self, &ironflowx_proto::Call, ironflowx_proto::EmitRequest) -> core::result::Result<ironflowx_proto::EmitResponse, ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::emit_batch(&self, &ironflowx_proto::Call, ironflowx_proto::EmitBatchRequest) -> core::result::Result<ironflowx_proto::EmitBatchResponse, ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::get_event(&self, &ironflowx_proto::Call, ironflowx_proto::GetEventRequest) -> core::result::Result<ironflowx_proto::Event, ironflowx_proto::OpError>

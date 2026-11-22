@@ -30,6 +30,7 @@ fn only_unavailable_and_unknown_are_retryable_so_far() {
         (ErrorKind::Invalid, false),
         (ErrorKind::NotFound, false),
         (ErrorKind::Unauthenticated, false),
+        (ErrorKind::PermissionDenied, false),
         (ErrorKind::Unavailable, true),
         (ErrorKind::Unknown, true),
     ] {

@@ -6,9 +6,9 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-use ironflowx_authz::{KeyParts, mint};
+use ironflowx_authz::{KeyDigest, KeyParts, mint};
 use ironflowx_cell::{Ledger, OpenError, new_env_ref};
-use ironflowx_core::{Clock, EnvRef, Secret};
+use ironflowx_core::{Clock, EnvRef, KeyId, Secret};
 use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, StoreError};
 
 use crate::{Engine, Opened};
@@ -98,6 +98,7 @@ impl Engine {
             let path = control_path.clone();
             Arc::new(blocking(move || Ok(ControlPlane::open(&path)?)).await?)
         };
+        let engine_clock = Arc::new(clock.clone());
         let (env, ledger, minted) = match state {
             BootstrapState::NoFile | BootstrapState::Unbootstrapped => {
                 let (env, ledger, secret) = bootstrap(&root, &control, clock).await?;
@@ -120,6 +121,7 @@ impl Engine {
                 ledger,
                 control,
                 env,
+                clock: engine_clock,
                 _lock: lock,
             },
             minted,
@@ -151,6 +153,15 @@ fn ledger_dir(root: &Path, env: EnvRef) -> std::path::PathBuf {
     root.join("ledgers").join(env.id().to_string())
 }
 
+/// A fresh key: a UUIDv7 ID and 256 bits from the OS random source.
+pub(crate) fn new_key() -> (KeyId, Secret, KeyDigest) {
+    let id = uuid7();
+    let mut bits = [0; 32];
+    getrandom::fill(&mut bits).expect("the OS random source works");
+    let (secret, digest) = mint(id, bits);
+    (id, secret, digest)
+}
+
 fn uuid7<T: std::str::FromStr>() -> T
 where
     T::Err: fmt::Debug,
@@ -172,10 +183,7 @@ async fn bootstrap(
     clock: impl Clock + Clone + Send + Sync + 'static,
 ) -> Result<(EnvRef, Ledger, Secret), EngineError> {
     let env = new_env_ref();
-    let key_id = uuid7();
-    let mut bits = [0; 32];
-    getrandom::fill(&mut bits).expect("the OS random source works");
-    let (secret, digest) = mint(key_id, bits);
+    let (key_id, secret, digest) = new_key();
     let plan = Bootstrap {
         env,
         tenant: uuid7(),

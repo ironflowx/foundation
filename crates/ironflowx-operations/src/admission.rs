@@ -1,9 +1,10 @@
 //! Admission: the one way to an [`Authorized`] (TEN-1). Every call runs, in order: no key →
-//! `Unauthenticated`; `parse`; `lookup_key`, with no cache (D45); `verify`.
+//! `Unauthenticated`; `parse`; `lookup_key`, with no cache (D45); `verify` at the clock's now;
+//! `admit` against the operation's `required_scope` (D37).
 
-use ironflowx_authz::{Grant, parse, verify};
+use ironflowx_authz::{Grant, admit, parse, verify};
 use ironflowx_core::ErrorKind;
-use ironflowx_proto::{Call, OpError};
+use ironflowx_proto::{Call, OpError, Operation, required_scope};
 
 use crate::{Engine, blocking};
 
@@ -25,7 +26,7 @@ impl Authorized {
     }
 }
 
-fn unauthenticated(message: &str, hint: Option<String>) -> OpError {
+pub(crate) fn unauthenticated(message: &str, hint: Option<String>) -> OpError {
     OpError {
         kind: ErrorKind::Unauthenticated,
         message: message.into(),
@@ -34,7 +35,7 @@ fn unauthenticated(message: &str, hint: Option<String>) -> OpError {
 }
 
 impl Engine {
-    pub(crate) async fn admit(&self, cx: &Call) -> Result<Authorized, OpError> {
+    pub(crate) async fn admit(&self, cx: &Call, op: Operation) -> Result<Authorized, OpError> {
         let key = match cx.key() {
             Some(key) if !key.expose().is_empty() => key,
             _ => return Err(unauthenticated("authentication required", None)),
@@ -45,8 +46,18 @@ impl Engine {
         let (id, env) = (parts.id, self.env);
         let record = blocking(move || control.lookup_key(id, &env)).await?;
         // One answer for every invalid key (D30).
-        let grant = verify(&parts, record.as_ref(), &self.env)
+        let grant = verify(&parts, record.as_ref(), &self.env, self.clock.now())
             .map_err(|_| unauthenticated("invalid API key", None))?;
+        admit(&grant, required_scope(op)).map_err(|missing| {
+            let scope = missing.scope();
+            OpError {
+                kind: ErrorKind::PermissionDenied,
+                message: format!("missing scope: {scope}"),
+                hint: Some(format!(
+                    "create a key with scope {scope}, or use one that has it"
+                )),
+            }
+        })?;
         Ok(Authorized { grant })
     }
 }

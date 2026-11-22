@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use ironflowx_authz::{KeyRecord, mint, parse, verify};
 use ironflowx_cell::ManualClock;
-use ironflowx_core::{EnvRef, ErrorKind, Scope, Secret, Timestamp};
+use ironflowx_core::{Clock, EnvRef, ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{Call, OpError, WhoamiRequest};
 
@@ -135,8 +135,9 @@ async fn a_key_row_of_another_environment_or_incarnation_is_refused_by_lookup_an
             env: format!("{row_id}.{row_token}").parse().unwrap(),
             scopes: BTreeSet::from([Scope::Admin]),
             digest: parts.digest.clone(),
+            expires_at: None,
         };
-        let verified = verify(&parts, Some(&record), &engine_env);
+        let verified = verify(&parts, Some(&record), &engine_env, clock().now());
         if case == "its own" {
             // Moved back, the key works: the refusals above came from the move alone.
             assert!(answer.is_ok() && verified.is_ok(), "{case}");

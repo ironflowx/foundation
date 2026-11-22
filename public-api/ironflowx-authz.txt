@@ -1,7 +1,23 @@
 pub mod ironflowx_authz
+pub struct ironflowx_authz::CreateRefusal(_)
+impl core::clone::Clone for ironflowx_authz::CreateRefusal
+pub fn ironflowx_authz::CreateRefusal::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_authz::CreateRefusal
+impl core::cmp::Eq for ironflowx_authz::CreateRefusal
+pub fn ironflowx_authz::CreateRefusal::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_authz::CreateRefusal
+pub fn ironflowx_authz::CreateRefusal::eq(&self, &Self) -> bool
+impl core::error::Error for ironflowx_authz::CreateRefusal
+impl core::fmt::Debug for ironflowx_authz::CreateRefusal
+pub fn ironflowx_authz::CreateRefusal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_authz::CreateRefusal
+pub fn ironflowx_authz::CreateRefusal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for ironflowx_authz::CreateRefusal
+impl core::marker::StructuralPartialEq for ironflowx_authz::CreateRefusal
 pub struct ironflowx_authz::Grant
 impl ironflowx_authz::Grant
 pub const fn ironflowx_authz::Grant::env(&self) -> ironflowx_core::id::EnvRef
+pub const fn ironflowx_authz::Grant::expires_at(&self) -> core::option::Option<ironflowx_core::time::Timestamp>
 pub const fn ironflowx_authz::Grant::key_id(&self) -> ironflowx_core::id::KeyId
 pub const fn ironflowx_authz::Grant::scopes(&self) -> &alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>
 pub const fn ironflowx_authz::Grant::submit_as(&self) -> ironflowx_core::who::SubmitAs
@@ -28,6 +44,7 @@ pub fn ironflowx_authz::KeyParts::fmt(&self, &mut core::fmt::Formatter<'_>) -> c
 pub struct ironflowx_authz::KeyRecord
 pub ironflowx_authz::KeyRecord::digest: ironflowx_authz::KeyDigest
 pub ironflowx_authz::KeyRecord::env: ironflowx_core::id::EnvRef
+pub ironflowx_authz::KeyRecord::expires_at: core::option::Option<ironflowx_core::time::Timestamp>
 pub ironflowx_authz::KeyRecord::id: ironflowx_core::id::KeyId
 pub ironflowx_authz::KeyRecord::scopes: alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>
 impl core::clone::Clone for ironflowx_authz::KeyRecord
@@ -46,6 +63,20 @@ pub fn ironflowx_authz::Malformed::fmt(&self, &mut core::fmt::Formatter<'_>) -> 
 impl core::fmt::Display for ironflowx_authz::Malformed
 pub fn ironflowx_authz::Malformed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_authz::Malformed
+pub struct ironflowx_authz::MissingScope(_)
+impl ironflowx_authz::MissingScope
+pub const fn ironflowx_authz::MissingScope::scope(self) -> ironflowx_core::tenancy::Scope
+impl core::clone::Clone for ironflowx_authz::MissingScope
+pub fn ironflowx_authz::MissingScope::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_authz::MissingScope
+impl core::cmp::Eq for ironflowx_authz::MissingScope
+pub fn ironflowx_authz::MissingScope::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_authz::MissingScope
+pub fn ironflowx_authz::MissingScope::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_authz::MissingScope
+pub fn ironflowx_authz::MissingScope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for ironflowx_authz::MissingScope
+impl core::marker::StructuralPartialEq for ironflowx_authz::MissingScope
 pub struct ironflowx_authz::Refused
 impl core::clone::Clone for ironflowx_authz::Refused
 pub fn ironflowx_authz::Refused::clone(&self) -> Self
@@ -55,6 +86,9 @@ pub fn ironflowx_authz::Refused::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_authz::Refused
 pub fn ironflowx_authz::Refused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_authz::Refused
+pub fn ironflowx_authz::admit(&ironflowx_authz::Grant, core::option::Option<ironflowx_core::tenancy::Scope>) -> core::result::Result<(), ironflowx_authz::MissingScope>
+pub fn ironflowx_authz::may_create(&ironflowx_authz::Grant, &alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>, core::option::Option<ironflowx_core::time::Timestamp>, core::option::Option<&str>, ironflowx_core::time::Timestamp) -> core::result::Result<(), ironflowx_authz::CreateRefusal>
 pub fn ironflowx_authz::mint(ironflowx_core::id::KeyId, [u8; 32]) -> (ironflowx_core::secret::Secret, ironflowx_authz::KeyDigest)
 pub fn ironflowx_authz::parse(&ironflowx_core::secret::Secret) -> core::result::Result<ironflowx_authz::KeyParts, ironflowx_authz::Malformed>
-pub fn ironflowx_authz::verify(&ironflowx_authz::KeyParts, core::option::Option<&ironflowx_authz::KeyRecord>, &ironflowx_core::id::EnvRef) -> core::result::Result<ironflowx_authz::Grant, ironflowx_authz::Refused>
+pub fn ironflowx_authz::recheck(&ironflowx_authz::KeyRecord, &ironflowx_core::id::EnvRef, ironflowx_core::time::Timestamp) -> core::result::Result<ironflowx_authz::Grant, ironflowx_authz::Refused>
+pub fn ironflowx_authz::verify(&ironflowx_authz::KeyParts, core::option::Option<&ironflowx_authz::KeyRecord>, &ironflowx_core::id::EnvRef, ironflowx_core::time::Timestamp) -> core::result::Result<ironflowx_authz::Grant, ironflowx_authz::Refused>
