@@ -11,7 +11,7 @@ const MAX_EMBEDDER_BYTES: usize = 128;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Who {
     Key(KeyId),
-    /// 1–128 bytes, no control character.
+    /// 1–128 bytes, no control, format or line or paragraph separator character.
     Embedder(String),
 }
 
@@ -35,7 +35,8 @@ impl SubmitAs {
     ///
     /// # Errors
     ///
-    /// If `name` is empty, over 128 bytes or holds a control character.
+    /// If `name` is empty, over 128 bytes or holds a control, format or line or paragraph
+    /// separator character.
     pub fn embedder(name: &str) -> Result<Self, ParseError> {
         embedder(name).map(Self)
     }
@@ -48,11 +49,43 @@ impl SubmitAs {
 }
 
 fn embedder(name: &str) -> Result<Who, ParseError> {
-    let valid =
-        (1..=MAX_EMBEDDER_BYTES).contains(&name.len()) && !name.chars().any(char::is_control);
+    let valid = (1..=MAX_EMBEDDER_BYTES).contains(&name.len()) && !name.chars().any(unreadable);
     valid
         .then(|| Who::Embedder(name.to_owned()))
         .ok_or(ParseError::new("embedder name"))
+}
+
+/// A character that hides or reorders what a reader of `emitted_by` sees: a control character
+/// (Cc), a format character (Cf: bidi overrides, zero-width characters) or a line or paragraph
+/// separator (Zl, Zp).
+// shortcut: the Cf set is Unicode 16's, by hand, as core takes no Unicode-data dependency;
+// recheck it when a Unicode release adds format characters.
+fn unreadable(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061C}'
+                | '\u{06DD}'
+                | '\u{070F}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08E2}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{110BD}'
+                | '\u{110CD}'
+                | '\u{13430}'..='\u{1343F}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                | '\u{E0001}'
+                | '\u{E0020}'..='\u{E007F}'
+        )
 }
 
 impl From<SubmitAs> for Emitter {

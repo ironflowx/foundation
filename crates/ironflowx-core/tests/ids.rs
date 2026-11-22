@@ -89,8 +89,14 @@ fn key_id_parses_only_a_uuidv7() {
 }
 
 #[test]
-fn an_embedder_name_is_1_to_128_bytes_with_no_control_character() {
-    for good in ["local-operations", "a", "批处理:app", &"x".repeat(128)] {
+fn an_embedder_name_is_1_to_128_bytes_of_readable_characters() {
+    for good in [
+        "local-operations",
+        "a",
+        "批处理:app",
+        "café au lait",
+        &"x".repeat(128),
+    ] {
         let emitter = Emitter::from(SubmitAs::embedder(good).unwrap());
         assert_eq!(emitter.to_string(), format!("embedder:{good}"));
     }
@@ -102,6 +108,12 @@ fn an_embedder_name_is_1_to_128_bytes_with_no_control_character() {
         "nul\0",
         "new\nline",
         "del\u{7f}",
+        "billing\u{202E}nimda", // right-to-left override (Cf)
+        "zero\u{200B}width",    // Cf
+        "soft\u{AD}hyphen",     // Cf
+        "tag\u{E0041}",         // Cf, outside the BMP
+        "line\u{2028}sep",      // Zl
+        "para\u{2029}sep",      // Zp
     ] {
         assert!(SubmitAs::embedder(bad).is_err(), "accepted {bad:?}");
     }

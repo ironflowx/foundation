@@ -169,7 +169,8 @@ pub(crate) fn applied(conn: &Connection) -> rusqlite::Result<u64> {
 
 /// Folds the record at `position` and advances the applied position past it, in one
 /// transaction. A record below the applied position is skipped (LED-12). The genesis record
-/// has no events: `None`; any other comes with its emitter. `recovering` when open folds it, for the crash test's fault points.
+/// has no events: `None`; any other comes with its emitter. `recovering` when open folds it,
+/// for the crash test's fault points.
 pub(crate) fn apply(
     conn: &mut Connection,
     position: u64,

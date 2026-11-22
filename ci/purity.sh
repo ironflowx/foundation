@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Usage: ci/purity.sh
 # LED-15, D17 and D36: the pure crates' dependency allowlists, the SequencedTime constructor
-# outside the ledger, SubmitAs::key outside the credentials crate; the crash test's fault points in no published build; and each check rejecting its
-# fixture. The clippy job enforces the call bans on the real crates.
+# outside the ledger, SubmitAs::key outside the credentials crate; the crash test's fault points
+# in no published build; and each check rejecting its fixture. The clippy job enforces the call
+# bans on the real crates.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -10,6 +11,8 @@ ci/check-deps.sh crates/ironflowx-core/Cargo.toml ci/purity/ironflowx-core.allow
 ci/check-deps.sh crates/ironflowx-events/Cargo.toml ci/purity/ironflowx-events.allow
 ci/no-event-clock-outside-ledger.sh crates
 ci/no-key-attribution.sh crates
+# Comments may name the constructor.
+ci/no-key-attribution.sh ci/fixtures/key-attribution-in-comment
 ci/no-fault-points.sh crates
 # The allowed route passes, and was checked: a skipped crate would pass too.
 forwarded=$(ci/no-fault-points.sh ci/fixtures/fault-points-forwarded)
@@ -42,7 +45,10 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     ci/no-event-clock-outside-ledger.sh ci/fixtures/sequenced-time-outside-ledger
   ci/must-reject.sh 'disallowed method `ironflowx_core::SubmitAs::key`' -- \
     cargo clippy --locked --manifest-path ci/fixtures/key-attribution-outside-authz/Cargo.toml -- -D warnings
-  ci/must-reject.sh "ci/fixtures/key-attribution-outside-authz/src/lib.rs" -- \
+  ci/must-reject.sh \
+    "ci/fixtures/key-attribution-outside-authz/src/lib.rs" \
+    "ci/fixtures/key-attribution-outside-authz/escaped/aliased.rs" \
+    "ci/fixtures/key-attribution-outside-authz/escaped/self_key.rs" -- \
     ci/no-key-attribution.sh ci/fixtures/key-attribution-outside-authz
   ci/must-reject.sh \
     "on-by-default/Cargo.toml: published crate can enable __fault-points on on-by-default" \
