@@ -14,6 +14,8 @@ pub enum ErrorKind {
     Unavailable,
     /// No key, or a key that is not valid for this environment.
     Unauthenticated,
+    /// A valid key that lacks the operation's scope; the hint names it.
+    PermissionDenied,
 }
 
 impl ErrorKind {

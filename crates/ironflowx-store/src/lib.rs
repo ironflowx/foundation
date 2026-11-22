@@ -11,7 +11,7 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Mutex;
 
-use ironflowx_authz::{KeyDigest, KeyParts, KeyRecord};
+use ironflowx_authz::{CreateRefusal, KeyDigest, KeyParts, KeyRecord, may_create, recheck};
 use ironflowx_core::{Clock, EnvRef, KeyId, ProjectId, Scope, TenantId, Timestamp};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
@@ -20,6 +20,7 @@ const FORMAT: u16 = 1;
 /// What bootstrap names the default tenant, project and environment.
 const DEFAULT: &str = "default";
 const MINTED: &str = "minted";
+const CREATED: &str = "created";
 
 const SCHEMA: &str = "
 CREATE TABLE meta (format INTEGER NOT NULL);
@@ -46,6 +47,9 @@ CREATE TABLE keys (
     scopes TEXT NOT NULL,
     digest BLOB NOT NULL,
     origin TEXT NOT NULL,
+    created_by TEXT,
+    label TEXT,
+    expires_at INTEGER,
     created_at INTEGER NOT NULL
 );
 ";
@@ -109,6 +113,50 @@ pub struct Bootstrap {
     pub project: ProjectId,
     pub key: KeyParts,
 }
+
+/// A key to create: the engine draws its ID and secret; its creation time, sequence number and
+/// environment token are set inside the transaction.
+#[derive(Debug, Clone)]
+pub struct NewKey {
+    pub id: KeyId,
+    pub digest: KeyDigest,
+    pub scopes: BTreeSet<Scope>,
+    pub label: Option<String>,
+    pub expires_at: Option<Timestamp>,
+}
+
+/// A stored key: what credentials need, and what is listed beside it.
+#[derive(Debug, Clone)]
+pub struct KeyRow {
+    /// Assigned under the write lock, so two keys never tie.
+    pub seq: u64,
+    pub record: KeyRecord,
+    pub label: Option<String>,
+    pub created_at: Timestamp,
+}
+
+/// Why a key was not created. Nothing was written.
+#[derive(Debug)]
+pub enum InsertError {
+    /// The creator is unknown, expired, or of another environment, read again inside the
+    /// transaction.
+    Creator,
+    /// The request breaks a creation rule.
+    Refused(CreateRefusal),
+    Store(StoreError),
+}
+
+impl fmt::Display for InsertError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Creator => f.write_str("the creator is no longer valid"),
+            Self::Refused(r) => r.fmt(f),
+            Self::Store(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for InsertError {}
 
 /// An environment with its parents' IDs and the names its address is derived from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,30 +325,69 @@ impl ControlPlane {
     ///
     /// If SQLite fails, or the stored row does not decode.
     pub fn lookup_key(&self, id: KeyId, env: &EnvRef) -> Result<Option<KeyRecord>, StoreError> {
+        run(|| lookup(&*self.lock()?, id, env))
+    }
+
+    /// Creates `new` in `env` for `creator`, in one transaction: with the write lock held and
+    /// now read from `clock`, the creator's record is read again and checked (`recheck`), then
+    /// the request (`may_create`), so no key outlives or outranks its creator (TEN-5).
+    ///
+    /// # Errors
+    ///
+    /// `Creator` or `Refused` as the checks find, `Store` if SQLite fails; nothing is written.
+    pub fn insert_key(
+        &self,
+        env: &EnvRef,
+        new: NewKey,
+        creator: KeyId,
+        clock: &dyn Clock,
+    ) -> Result<KeyRow, InsertError> {
+        // The outer error is SQLite's; the inner one, a check that refused.
         run(|| {
-            let conn = self.lock()?;
-            let row = conn
-                .query_row(
-                    "SELECT scopes, digest FROM keys \
-                 WHERE id = ?1 AND environment_id = ?2 AND environment_token = ?3",
-                    params![
-                        id.to_string(),
-                        env.id().to_string(),
-                        env.token().to_string()
-                    ],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)),
-                )
-                .optional()?;
-            row.map(|(scopes, digest)| {
-                Ok(KeyRecord {
-                    id,
+            let mut conn = self.lock()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let now = clock.now();
+            let grant = lookup(&tx, creator, env)?.and_then(|r| recheck(&r, env, now).ok());
+            let Some(grant) = grant else {
+                return Ok(Err(InsertError::Creator));
+            };
+            let label = new.label.as_deref();
+            if let Err(r) = may_create(&grant, &new.scopes, new.expires_at, label, now) {
+                return Ok(Err(InsertError::Refused(r)));
+            }
+            tx.execute(
+                "INSERT INTO keys (id, environment_id, environment_token, scopes, digest, origin, \
+                 created_by, label, expires_at, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    new.id.to_string(),
+                    env.id().to_string(),
+                    env.token().to_string(),
+                    scopes_text(&new.scopes),
+                    new.digest.to_stored(),
+                    CREATED,
+                    creator.to_string(),
+                    label,
+                    new.expires_at.map(Timestamp::as_millis),
+                    now.as_millis()
+                ],
+            )?;
+            let seq = u64::try_from(tx.last_insert_rowid()).map_err(|_| refused("bad seq"))?;
+            tx.commit()?;
+            Ok(Ok(KeyRow {
+                seq,
+                record: KeyRecord {
+                    id: new.id,
                     env: *env,
-                    scopes: parse_scopes(&scopes)?,
-                    digest: KeyDigest::from_stored(&digest).ok_or_else(|| refused("bad digest"))?,
-                })
-            })
-            .transpose()
+                    scopes: new.scopes,
+                    digest: new.digest,
+                    expires_at: new.expires_at,
+                },
+                label: new.label,
+                created_at: now,
+            }))
         })
+        .map_err(InsertError::Store)?
     }
 
     /// The environment `env` with its parents.
@@ -345,6 +432,38 @@ impl ControlPlane {
         // Poisoned: a call panicked holding it.
         self.conn.lock().map_err(|_| refused("poisoned"))
     }
+}
+
+/// The key `id`, if it was made for `env`'s ID and incarnation token.
+fn lookup(conn: &Connection, id: KeyId, env: &EnvRef) -> Result<Option<KeyRecord>, Error> {
+    let row = conn
+        .query_row(
+            "SELECT scopes, digest, expires_at FROM keys \
+             WHERE id = ?1 AND environment_id = ?2 AND environment_token = ?3",
+            params![
+                id.to_string(),
+                env.id().to_string(),
+                env.token().to_string()
+            ],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    row.map(|(scopes, digest, expires_at)| {
+        Ok(KeyRecord {
+            id,
+            env: *env,
+            scopes: parse_scopes(&scopes)?,
+            digest: KeyDigest::from_stored(&digest).ok_or_else(|| refused("bad digest"))?,
+            expires_at: expires_at.map(Timestamp::from_millis),
+        })
+    })
+    .transpose()
 }
 
 fn check_format(conn: &Connection) -> Result<(), Error> {

@@ -43,6 +43,38 @@ pub trait Operations: Send + Sync {
         cx: &Call,
         req: ListEventsRequest,
     ) -> impl Future<Output = Result<EventPage, OpError>> + Send;
+
+    /// Creates a key in the calling key's environment; the answer holds its secret, once.
+    fn create_key(
+        &self,
+        cx: &Call,
+        req: CreateKeyRequest,
+    ) -> impl Future<Output = Result<CreatedKey, OpError>> + Send;
+}
+
+/// Every operation, for [`required_scope`]. Each operation that lands joins it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Operation {
+    Emit,
+    EmitBatch,
+    GetEvent,
+    ListEvents,
+    Whoami,
+    ListEnvironments,
+    CreateKey,
+}
+
+/// The scope each operation requires; `None`: any valid key. An exhaustive match, so an
+/// operation without a scope does not compile (D37).
+pub const fn required_scope(op: Operation) -> Option<Scope> {
+    match op {
+        Operation::Emit | Operation::EmitBatch => Some(Scope::Write),
+        Operation::GetEvent | Operation::ListEvents | Operation::ListEnvironments => {
+            Some(Scope::Read)
+        }
+        Operation::Whoami => None,
+        Operation::CreateKey => Some(Scope::Admin),
+    }
 }
 
 /// Who is calling: the key as presented, or none (D2, D45). Not `Clone`, since the key is a
@@ -193,4 +225,68 @@ pub struct Environment {
     pub address: Address,
     pub project_id: ProjectId,
     pub created_at: Timestamp,
+}
+
+/// A key to create. No field names an environment: the calling key's is used (LED-7).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CreateKeyRequest {
+    /// Empty: `{read}` (D27).
+    pub scopes: BTreeSet<Scope>,
+    /// `None`: no expiry, allowed only when the creator has none.
+    pub expires_at: Option<Timestamp>,
+    /// 0–128 bytes of UTF-8, no control character.
+    pub label: Option<String>,
+}
+
+/// A created key: its secret, returned only here, and what is listed about it. Neither `Clone`
+/// nor `PartialEq`, so the secret is not copied or compared:
+///
+/// ```compile_fail,E0599
+/// # use ironflowx_proto::CreatedKey;
+/// fn copy(k: CreatedKey) -> (CreatedKey, CreatedKey) { (k.clone(), k) }
+/// ```
+///
+/// ```compile_fail,E0369
+/// # fn same(a: &ironflowx_proto::CreatedKey, b: &ironflowx_proto::CreatedKey) -> bool { a == b }
+/// ```
+pub struct CreatedKey {
+    pub key: Secret,
+    pub info: KeyInfo,
+}
+
+/// Prints the key's information, never the key.
+impl fmt::Debug for CreatedKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreatedKey")
+            .field("info", &self.info)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What is known about a key, without its secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyInfo {
+    pub key_id: KeyId,
+    pub label: Option<String>,
+    pub scopes: BTreeSet<Scope>,
+    pub origin: KeyOrigin,
+    /// The key that created it; `None` for a key no key created.
+    pub created_by: Option<KeyId>,
+    pub created_at: Timestamp,
+    /// `None`: it never expires.
+    pub expires_at: Option<Timestamp>,
+    pub status: KeyStatus,
+}
+
+/// How a key came to be. Minted, seed and recovered keys join when keys are listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyOrigin {
+    /// Created by another key.
+    Created,
+}
+
+/// Whether a key works. `Expired` and `Revoked` join when keys are listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyStatus {
+    Active,
 }

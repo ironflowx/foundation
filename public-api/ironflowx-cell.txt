@@ -73,6 +73,7 @@ impl<'a> ironflowx_cell::LocalOperations<'a>
 pub fn ironflowx_cell::LocalOperations<'a>::new(&'a ironflowx_cell::Ledger) -> Self
 pub const fn ironflowx_cell::LocalOperations<'a>::submitting_as(&'a ironflowx_cell::Ledger, ironflowx_core::who::SubmitAs) -> Self
 impl ironflowx_proto::Operations for ironflowx_cell::LocalOperations<'_>
+pub async fn ironflowx_cell::LocalOperations<'_>::create_key(&self, &ironflowx_proto::Call, ironflowx_proto::CreateKeyRequest) -> core::result::Result<ironflowx_proto::CreatedKey, ironflowx_proto::OpError>
 pub async fn ironflowx_cell::LocalOperations<'_>::emit(&self, &ironflowx_proto::Call, ironflowx_proto::EmitRequest) -> core::result::Result<ironflowx_proto::EmitResponse, ironflowx_proto::OpError>
 pub async fn ironflowx_cell::LocalOperations<'_>::emit_batch(&self, &ironflowx_proto::Call, ironflowx_proto::EmitBatchRequest) -> core::result::Result<ironflowx_proto::EmitBatchResponse, ironflowx_proto::OpError>
 pub async fn ironflowx_cell::LocalOperations<'_>::get_event(&self, &ironflowx_proto::Call, ironflowx_proto::GetEventRequest) -> core::result::Result<ironflowx_proto::Event, ironflowx_proto::OpError>

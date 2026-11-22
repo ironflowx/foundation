@@ -2,6 +2,7 @@ pub mod ironflowx_core
 pub enum ironflowx_core::ErrorKind
 pub ironflowx_core::ErrorKind::Invalid
 pub ironflowx_core::ErrorKind::NotFound
+pub ironflowx_core::ErrorKind::PermissionDenied
 pub ironflowx_core::ErrorKind::Unauthenticated
 pub ironflowx_core::ErrorKind::Unavailable
 pub ironflowx_core::ErrorKind::Unknown
