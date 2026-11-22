@@ -21,6 +21,8 @@ The properties release 0.1 must prove. A behavior shows one example; an invarian
 | LED-13 | A timestamp has one integer encoding | `Timestamp::from_millis` and `as_millis` (`i64`, whole milliseconds) are its only conversions; its fields are private. The read store and the record both go through them (D18) | T, U | Round-trip and ordering test over the extremes; a public-API check for other conversions |
 | LED-14 | A read sees every write acknowledged before it arrived, from any client | The writer publishes the committed head before it acknowledges; a read waits for the head it saw on arrival | U, B, S | Fold-delay test; EVT-060, EVT-062; crash test |
 | LED-15 | Pure crates do no I/O: no async runtime, no I/O crate, no ambient clock or randomness | For `ironflowx-events` and `ironflowx-core`: a dependency allowlist over `cargo tree` for that crate alone, and clippy `disallowed-methods` and `disallowed-types` for the ambient clock, file system, network, threads, environment, standard streams, processes, randomness and randomly seeded hash maps; the list is each crate's `clippy.toml` | C | Both checks, each with a fixture they must reject |
+| TEN-6 | `emitted_by` comes only from the submission's attribution | The ledger stores the `SubmitAs` passed beside each submission on every event of its record; a read returns an `Emitter`, which has no conversion to `SubmitAs`; clippy bans `SubmitAs::key` outside the credentials crate and `ci/no-key-attribution.sh` inside `ironflowx-core` (D36). A direct ledger caller is trusted and not covered | T, U, C | A compile-fail test converting an `Emitter` into a `SubmitAs`; the attribution test below; both lints, each with a fixture they must reject |
+| TEN-8 | A key ID is opaque | `KeyId` shares `EnvironmentId`'s parser and text form (D13) | T, U | Parse tests as LED-10's: uppercase, non-v7 and malformed IDs are refused |
 
 A public-API check compares `cargo-public-api` output for every workspace crate (the list is in `ci/public-api.sh`) with a committed snapshot; any difference fails (D21).
 
@@ -34,6 +36,7 @@ A public-API check compares `cargo-public-api` output for every workspace crate 
 | Open a directory with another `EnvRef`, with a genesis of another format, and after deleting an empty ledger's `read.db` | LED-6, LED-8, D14 |
 | Fold failure injected after an acknowledgment | Waiting reads end `Unavailable`; reopen applies the record |
 | An append that returns `Indeterminate`, through the fault hook: the call answers `Unknown`, the next call `Unavailable`; reopen; a keyed retry returns the original event if it landed, else stores it once | D11, the Errors table |
+| Submit a batch of three as one embedder and an emit through `LocalOperations`: `get_event` and `list_events` show each event's emitter, the batch's three the same. Close and reopen, then delete `read.db` and reopen: unchanged. Open a directory whose genesis is format 1 | TEN-6, D39 |
 
 ## Crash test
 

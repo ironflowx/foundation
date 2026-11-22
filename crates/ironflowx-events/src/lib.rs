@@ -15,7 +15,7 @@ mod json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 
-use ironflowx_core::{ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
+use ironflowx_core::{Emitter, ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
 
 // The limits of the rules table (architecture.md, "Event rules").
 const MAX_BATCH_ITEMS: usize = 100;
@@ -58,6 +58,8 @@ pub struct Event {
     pub version: i64,
     pub idempotency_key: Option<String>,
     pub time: Timestamp,
+    /// The record's attribution, which the ledger stores beside it.
+    pub emitted_by: Emitter,
 }
 
 /// One new event in a record. Its time is the record's.
@@ -323,8 +325,13 @@ fn check_name(name: &str) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Applies one appended record to the read store.
-pub fn fold<T: EventTables>(tables: &mut T, record: &Record) -> Result<(), T::Error> {
+/// Applies one appended record to the read store. Every event carries the record's one
+/// emitter.
+pub fn fold<T: EventTables>(
+    tables: &mut T,
+    record: &Record,
+    emitted_by: &Emitter,
+) -> Result<(), T::Error> {
     for e in &record.events {
         tables.insert(Event {
             sequence: e.sequence,
@@ -335,6 +342,7 @@ pub fn fold<T: EventTables>(tables: &mut T, record: &Record) -> Result<(), T::Er
             version: e.version,
             idempotency_key: e.idempotency_key.clone(),
             time: record.time,
+            emitted_by: emitted_by.clone(),
         })?;
     }
     Ok(())

@@ -1,7 +1,7 @@
 //! `LocalOperations`: the `Operations` interface over one ledger. It maps requests to
 //! submissions and queries and outcomes to answers, and holds no rule of its own.
 
-use ironflowx_core::ErrorKind;
+use ironflowx_core::{ErrorKind, SubmitAs};
 use ironflowx_events::{Emit, ItemOutcome, Refusal, Submission};
 use ironflowx_proto::{
     Call, EmitBatchRequest, EmitBatchResponse, EmitRequest, EmitResponse, Event, EventPage,
@@ -20,6 +20,11 @@ impl<'a> LocalOperations<'a> {
     pub const fn new(ledger: &'a Ledger) -> Self {
         Self { ledger }
     }
+}
+
+/// Until the engine replaces it, every submission is attributed to this embedder (D36).
+fn local() -> SubmitAs {
+    SubmitAs::embedder("local-operations").expect("a valid embedder name")
 }
 
 fn emit(req: EmitRequest) -> Emit {
@@ -87,6 +92,7 @@ fn event(e: ironflowx_events::Event) -> Event {
         version: e.version,
         idempotency_key: e.idempotency_key,
         time: e.time,
+        emitted_by: e.emitted_by,
     }
 }
 
@@ -94,7 +100,7 @@ impl Operations for LocalOperations<'_> {
     async fn emit(&self, _cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError> {
         let committed = self
             .ledger
-            .submit(Submission::Emit(emit(req)))
+            .submit(Submission::Emit(emit(req)), local())
             .await
             .map_err(submit_error)?;
         let [outcome] = <[_; 1]>::try_from(committed.outcome).expect("one outcome per emit");
@@ -109,7 +115,7 @@ impl Operations for LocalOperations<'_> {
         let items = req.items.into_iter().map(emit).collect();
         let committed = self
             .ledger
-            .submit(Submission::Batch(items))
+            .submit(Submission::Batch(items), local())
             .await
             .map_err(submit_error)?;
         Ok(EmitBatchResponse {

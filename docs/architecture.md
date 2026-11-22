@@ -37,17 +37,19 @@ The rows behind it: [Open](#open).
 | Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time | `open`, `submit`, `read`, `close`, `LocalOperations`, `HostClock`, `ManualClock` | `ironflowx-cell` |
 | Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types; 0.3 maps a wire format onto them | `Operations` trait and messages | `ironflowx-proto` |
-| Core types | Validated IDs, `EnvRef`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
+| Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
 | Facade | Re-exports the four crates above; the one crate an embedder depends on | Re-exports | `ironflowx` |
 
-`LocalOperations` implements `Operations` over one `Ledger`. It maps each request to a submission and each outcome to an answer and holds no rule: every check, default and limit is in event rules. Tests and embedders use the same adapter.
+`LocalOperations` implements `Operations` over one `Ledger`. It maps each request to a submission and each outcome to an answer and holds no rule: every check, default and limit is in event rules. Tests and embedders use the same adapter. It attributes every submission as `embedder:local-operations` until the engine replaces it (D36).
 
 | Type | Is |
 |---|---|
 | `Timestamp` | A UTC instant in whole milliseconds since the Unix epoch. Private fields; `from_millis` and `as_millis` (`i64`) are the only conversions (D18) |
 | `SequencedTime` | A reading of the event clock. Its one constructor is `#[doc(hidden)]`, and a lint allows it only in `ironflowx-cell` (D17); it compares with itself, never with `Timestamp` or `std::time` |
 | `Clock` | A trait in core: `fn now(&self) -> Timestamp`. Core declares it and never calls it |
-| `EnvRef` | `{ id: EnvironmentId, token: IncarnationToken }`. Text form `<uuid>.<32 hex digits>` via `Display` and `FromStr`, so an embedder can store it. Only the canonical spelling parses: a lowercase, hyphenated UUIDv7 and 32 lowercase hex digits; `EnvironmentId`, `EventId` and `IncarnationToken` parse the same way |
+| `EnvRef` | `{ id: EnvironmentId, token: IncarnationToken }`. Text form `<uuid>.<32 hex digits>` via `Display` and `FromStr`, so an embedder can store it. Only the canonical spelling parses: a lowercase, hyphenated UUIDv7 and 32 lowercase hex digits; `EnvironmentId`, `EventId`, `KeyId` and `IncarnationToken` parse the same way |
+| `Emitter` | Who emitted an event, as read back: text `key:<key-id>` or `embedder:<name>` via `Display` and `FromStr`. Read-only: nothing converts it into a `SubmitAs` (D36) |
+| `SubmitAs` | Who a submission is attributed to, as written: `SubmitAs::embedder(name)`, where the name is 1–128 bytes with no control character, or `SubmitAs::key(KeyId)`, which a lint confines to the credentials crate (D36). Every event of a submission carries its one emitter |
 
 ## Seams
 
@@ -79,7 +81,7 @@ trait Operations: Send + Sync {
 // EmitBatchResponse{ items: Vec<Result<EmitResponse, OpError>> }  // one per input, in input order
 // GetEventRequest  { event_id: String }                            // an ID that does not parse is NotFound
 // Event            { event_id, name, data: Vec<u8> /* the bytes as sent */, metadata: Option<Vec<u8>>, version: i64,
-//                    idempotency_key: Option<String>, time: Timestamp }
+//                    idempotency_key: Option<String>, time: Timestamp, emitted_by: Emitter }
 // ListEventsRequest{ limit: Option<NonZeroU32> /* None 20, above 200 clamps to 200 */, cursor: Option<String> }
 // EventPage        { events: Vec<Event> /* newest first */, next: Option<String> /* None on the last page */ }
 // Call             an opaque value with no fields in 0.1 (Call::anonymous()); 0.2 gives it the credential.
@@ -89,7 +91,7 @@ trait Operations: Send + Sync {
 impl Ledger {
     // open, read and close panic outside a tokio runtime
     async fn open(dir: &Path, env: EnvRef, clock: impl Clock + Send + 'static) -> Result<Ledger, OpenError>;
-    async fn submit(&self, sub: Submission) -> Result<Committed, SubmitError>;
+    async fn submit(&self, sub: Submission, by: SubmitAs) -> Result<Committed, SubmitError>;   // trusts `by` (D36)
     // q is a query from event rules (get_event, list_events) over the read store; a q that panics fails the ledger
     async fn read<R: Send + 'static>(&self, q: impl FnOnce(&ReadStore) -> Result<R, Error<StoreError>> + Send + 'static)
         -> Result<R, ReadError>;
@@ -105,7 +107,7 @@ fn new_env_ref() -> EnvRef;   // a fresh UUIDv7 ID and a 128-bit token from the 
 // ironflowx-events: pure. `fresh` yields one event ID per new event, minted by the writer.
 fn decide<V: EventsView>(view: &V, sub: &Submission, now: SequencedTime,
           fresh: &mut impl Iterator<Item = EventId>) -> Result<Decision, Error<V::Error>>;
-fn fold<T: EventTables>(tx: &mut T, record: &Record) -> Result<(), T::Error>;
+fn fold<T: EventTables>(tx: &mut T, record: &Record, emitted_by: &Emitter) -> Result<(), T::Error>;
 // Error<E> Refused(Refusal) | Store(E)   // E: the view's own read error
 ```
 
@@ -215,8 +217,8 @@ A sealed log, after a lossy repair, opens and reads until the first emit that ap
 | Where | Holds |
 |---|---|
 | `<dir>/ledger.lock` | File used for exclusive ownership of the ledger directory, including during read-store rebuild |
-| `<dir>/log/` (segment log) | Position 0: the genesis record, with the ledger's own format version, 1. Then one record per submit that appends: format version, incarnation token, event-clock time, and for each new event its sequence, ID, name, version, key, metadata and data. Binary and length-prefixed; data and metadata are the bytes as sent |
-| `<dir>/read.db` (SQLite) | `events` keyed by sequence, unique by ID · `idempotency` key → event ID · `meta`: applied position, environment ID, incarnation token, format version |
+| `<dir>/log/` (segment log) | Position 0: the genesis record, with the ledger's own format version, 2 (D39; a format-1 directory from 0.1 answers `Format`). Then one record per submit that appends: format version, incarnation token, emitter, event-clock time, and for each new event its sequence, ID, name, version, key, metadata and data. Binary and length-prefixed; data and metadata are the bytes as sent |
+| `<dir>/read.db` (SQLite) | `events` keyed by sequence, unique by ID, each with its `emitted_by` · `idempotency` key → event ID · `meta`: applied position, environment ID, incarnation token, format version |
 
 A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 4 MiB of data and metadata, under 4.1 MiB.
 

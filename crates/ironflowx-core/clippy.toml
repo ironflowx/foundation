@@ -1,5 +1,6 @@
 # Purity bans for the pure crates (LED-15), plus the SequencedTime constructor ban every crate
-# but ironflowx-cell carries (D17). ironflowx-events links this file.
+# but ironflowx-cell carries, and the SubmitAs::key ban every crate but the credentials crate
+# carries (D17, D36). ironflowx-events links this file.
 # Clippy cannot ban a whole module, so each function and type is listed.
 # shortcut: a list is never complete, and an #[allow] gets past it; the dependency allowlist is
 # the backstop. Upgrade when a tool can ban whole std modules.
@@ -8,6 +9,8 @@ disallowed-methods = [
   # Only the ledger stamps event time. Inside core the path does not resolve, so
   # ci/no-event-clock-outside-ledger.sh covers core.
   { path = "ironflowx_core::SequencedTime::from_event_clock", reason = "only ironflowx-cell produces event time (D17)", allow-invalid = true },
+  # Likewise for key attribution: ci/no-key-attribution.sh covers core.
+  { path = "ironflowx_core::SubmitAs::key", reason = "only the credentials crate attributes a submission to a key (D36)", allow-invalid = true },
 
   { path = "std::time::SystemTime::now", reason = "pure crates read no ambient clock; take a Timestamp or SequencedTime" },
   { path = "std::time::Instant::now", reason = "pure crates read no ambient clock" },

@@ -7,7 +7,7 @@ use std::fmt;
 use std::future::Future;
 use std::num::NonZeroU32;
 
-use ironflowx_core::{ErrorKind, EventId, Timestamp};
+use ironflowx_core::{Emitter, ErrorKind, EventId, Timestamp};
 
 /// The four things a client can do in 0.1. Every caller, in process or remote, goes through
 /// this trait. Adapters are generic over it; there is no `dyn` use in 0.1.
@@ -129,6 +129,8 @@ pub struct Event {
     pub version: i64,
     pub idempotency_key: Option<String>,
     pub time: Timestamp,
+    /// Who emitted it; every event of a batch carries the batch's one emitter.
+    pub emitted_by: Emitter,
 }
 
 /// Which page of events to list.

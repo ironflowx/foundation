@@ -7,7 +7,7 @@ use std::ops::Bound::{Excluded, Unbounded};
 
 use std::num::NonZeroU32;
 
-use ironflowx_core::{ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
+use ironflowx_core::{Emitter, ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
 use ironflowx_events::{
     Decision, Emit, Error, Event, EventPage, EventTables, EventsView, ItemOutcome, NewEvent,
     Record, Submission, decide, fold, get_event, list_events,
@@ -72,6 +72,11 @@ fn now() -> SequencedTime {
     SequencedTime::from_event_clock(NOW)
 }
 
+/// The emitter every test folds with.
+fn by() -> Emitter {
+    "embedder:rules".parse().expect("an emitter")
+}
+
 /// Distinct valid UUIDv7 event IDs, 1, 2, 3, ...
 fn ids() -> impl Iterator<Item = EventId> {
     (1u32..).map(|n| {
@@ -109,7 +114,7 @@ impl Env {
     fn submit(&mut self, sub: Submission) -> Result<Vec<ItemOutcome>, Error<Infallible>> {
         let Decision { outcome, record } = decide(&self.store, &sub, now(), &mut self.fresh)?;
         if let Some(record) = record {
-            fold(&mut self.store, &record).expect("in memory");
+            fold(&mut self.store, &record, &by()).expect("in memory");
         }
         Ok(outcome)
     }
@@ -164,6 +169,7 @@ fn an_event_with_a_valid_name_is_stored_and_reads_back() {
             version: 1,
             idempotency_key: None,
             time: NOW,
+            emitted_by: by(),
         }
     );
 }
@@ -733,12 +739,12 @@ fn replaying_the_same_records_into_fresh_tables_gives_the_same_rows() {
     ] {
         let decision = decide(&env.store, &sub, now(), &mut env.fresh).expect("accepted");
         let record = decision.record.expect("new events");
-        fold(&mut env.store, &record).expect("in memory");
+        fold(&mut env.store, &record, &by()).expect("in memory");
         records.push(record);
     }
     let mut rebuilt = Store::default();
     for record in &records {
-        fold(&mut rebuilt, record).expect("in memory");
+        fold(&mut rebuilt, record, &by()).expect("in memory");
     }
     assert_eq!(rebuilt, env.store);
 }
@@ -756,15 +762,29 @@ fn folding_the_same_record_twice_leaves_rows_unchanged_when_the_caller_skips_app
     let mut applied = 0;
     for _ in 0..2 {
         for record in &log[applied..] {
-            fold(&mut env.store, record).expect("not yet applied");
+            fold(&mut env.store, record, &by()).expect("not yet applied");
             applied += 1;
         }
     }
     assert_eq!(env.stored(), ["a", "b"]);
     // Unskipped, the unique-keyed read store refuses the record and keeps its rows.
     let once = env.store.events.clone();
-    assert_eq!(fold(&mut env.store, &log[0]), Err(DuplicateRow(1)));
+    assert_eq!(fold(&mut env.store, &log[0], &by()), Err(DuplicateRow(1)));
     assert_eq!(env.store.events, once);
+}
+
+#[test]
+fn every_event_of_a_record_carries_its_one_emitter() {
+    let mut env = Env::new();
+    let sub = Submission::Batch(vec![named("a"), named("b"), named("c")]);
+    let record = decide(&env.store, &sub, now(), &mut env.fresh)
+        .expect("accepted")
+        .record
+        .expect("new events");
+    let key: Emitter = "key:019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f".parse().unwrap();
+    fold(&mut env.store, &record, &key).expect("in memory");
+    assert!(env.store.events.values().all(|e| e.emitted_by == key));
+    assert_eq!(env.store.events.len(), 3);
 }
 
 // ---- Reading ----
@@ -856,7 +876,7 @@ fn at_last_sequence() -> Env {
             idempotency_key: None,
         }],
     };
-    fold(&mut env.store, &record).expect("in memory");
+    fold(&mut env.store, &record, &by()).expect("in memory");
     env
 }
 

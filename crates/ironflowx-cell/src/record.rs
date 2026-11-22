@@ -1,10 +1,10 @@
 //! The record's encoding: binary and length-prefixed. IDs and tokens go in their text forms.
 
-use ironflowx_core::{EnvRef, IncarnationToken, Timestamp};
+use ironflowx_core::{Emitter, EnvRef, IncarnationToken, Timestamp};
 use ironflowx_events::{NewEvent, Record};
 
 /// The directory format. A change refuses older directories at open (D8).
-pub(crate) const FORMAT: u16 = 1;
+pub(crate) const FORMAT: u16 = 2;
 
 const GENESIS: u8 = 0;
 const EVENTS: u8 = 1;
@@ -17,6 +17,7 @@ pub(crate) enum Decoded {
     Events {
         format: u16,
         token: IncarnationToken,
+        emitted_by: Emitter,
         record: Record,
     },
 }
@@ -28,10 +29,11 @@ pub(crate) fn genesis(env: EnvRef) -> Vec<u8> {
     out
 }
 
-pub(crate) fn events(token: IncarnationToken, record: &Record) -> Vec<u8> {
+pub(crate) fn events(token: IncarnationToken, emitted_by: &Emitter, record: &Record) -> Vec<u8> {
     let mut out = vec![EVENTS];
     out.extend_from_slice(&FORMAT.to_le_bytes());
     put(&mut out, token.to_string().as_bytes());
+    put(&mut out, emitted_by.to_string().as_bytes());
     out.extend_from_slice(&record.time.as_millis().to_le_bytes());
     out.extend_from_slice(&len(record.events.len()).to_le_bytes());
     for e in &record.events {
@@ -78,6 +80,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Decoded> {
         },
         EVENTS => {
             let token = d.text()?.parse().ok()?;
+            let emitted_by = d.text()?.parse().ok()?;
             let time = Timestamp::from_millis(i64::from_le_bytes(d.take()?));
             let count = u32::from_le_bytes(d.take()?);
             let mut events = Vec::new();
@@ -99,6 +102,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Decoded> {
             Decoded::Events {
                 format,
                 token,
+                emitted_by,
                 record: Record { time, events },
             }
         }
