@@ -63,7 +63,8 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
   ci/must-reject.sh \
     "crates/ironflowx-core/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
     "crates/ironflowx-cell/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
-    "crates/ironflowx-events/clippy.toml: missing the ironflowx_core::SequencedTime::from_event_clock ban" -- \
+    "crates/ironflowx-events/clippy.toml: missing the ironflowx_core::SequencedTime::from_event_clock ban" \
+    "crates/ironflowx-authz/clippy.toml: its bans differ" -- \
     ci/clippy-bans.sh ci/fixtures/missing-ban
   ci/must-reject.sh 'disallowed method `ironflowx_core::SubmitAs::key`' -- \
     cargo clippy --locked --manifest-path ci/fixtures/key-attribution-outside-authz/Cargo.toml -- -D warnings

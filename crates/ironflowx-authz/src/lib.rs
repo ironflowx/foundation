@@ -16,7 +16,7 @@ use std::fmt;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use ironflowx_core::{EnvRef, KeyId, Scope, Secret};
+use ironflowx_core::{EnvRef, KeyId, Scope, Secret, SubmitAs};
 
 pub use digest::KeyDigest;
 
@@ -107,6 +107,11 @@ impl Grant {
 
     pub const fn env(&self) -> EnvRef {
         self.env
+    }
+
+    /// What a submission made with this key is attributed to: the key itself (TEN-6).
+    pub const fn submit_as(&self) -> SubmitAs {
+        SubmitAs::key(self.key_id)
     }
 }
 

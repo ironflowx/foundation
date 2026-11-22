@@ -25,4 +25,11 @@ for config in "$root/clippy.toml" "$root"/crates/*/clippy.toml; do
     fi
   done
 done
+# authz copies core's file less the SubmitAs::key ban; every other line of the copy must match.
+bans_of() { grep -v '^ *#' "$1" | grep -vF 'ironflowx_core::SubmitAs::key'; }
+core=$root/crates/ironflowx-core/clippy.toml authz=$root/crates/ironflowx-authz/clippy.toml
+if [ -e "$core" ] && [ -e "$authz" ] && ! diff <(bans_of "$core") <(bans_of "$authz") >/dev/null; then
+  echo "$authz: its bans differ from $core's, beyond SubmitAs::key"
+  missing=1
+fi
 exit "$missing"

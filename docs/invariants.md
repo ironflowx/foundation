@@ -41,6 +41,7 @@ A public-API check compares `cargo-public-api` output for every workspace crate 
 | Fold failure injected after an acknowledgment | Waiting reads end `Unavailable`; reopen applies the record |
 | An append that returns `Indeterminate`, through the fault hook: the call answers `Unknown`, the next call `Unavailable`; reopen; a keyed retry returns the original event if it landed, else stores it once | D11, the Errors table |
 | Submit a batch of three as one embedder and an emit through `LocalOperations`: `get_event` and `list_events` show each event's emitter, the batch's three the same. Close and reopen, then delete `read.db` and reopen: unchanged. Open a directory whose genesis is format 1 | TEN-6, D39 |
+| Through the engine with the bootstrap key, emit one event and a batch of three: `get_event` and `list_events` show `key:<bootstrap-key-id>` on all four. Each of the four event operations refuses an anonymous call | TEN-1, TEN-6 |
 
 ## Crash test
 

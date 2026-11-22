@@ -33,7 +33,8 @@ skips what is already done. Rehearse it first with
 - `ci/purity/<crate>.allow`: every crate it may depend on, transitively. A new dependency of a
   pure crate goes here, with each crate it pulls in; `ci/check-deps.sh` prints what is missing.
 - `clippy.toml`: core's file bans the clock, filesystem, network, threads, OS randomness and
-  `HashMap`; events and authz link to it. A pure crate uses `BTreeMap`.
+  `HashMap`; events links to it, and authz copies it less the `SubmitAs::key` ban (`ci/clippy-bans.sh`
+  checks the copy). A pure crate uses `BTreeMap`.
 - The `#![forbid(...)]` header at the top of `src/lib.rs`, so an inner `#[allow]` cannot lift a ban.
 
 A new pure crate needs all three, plus a `ci/check-deps.sh` line in `ci/purity.sh`. A new crate of

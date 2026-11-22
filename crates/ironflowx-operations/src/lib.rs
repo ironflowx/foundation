@@ -13,9 +13,13 @@ mod open;
 use std::fs::File;
 use std::sync::Arc;
 
-use ironflowx_cell::Ledger;
+use ironflowx_cell::{Ledger, LocalOperations};
 use ironflowx_core::{Address, EnvRef, ErrorKind, Secret};
-use ironflowx_proto::{Call, Environment, ListEnvironmentsRequest, OpError, Whoami, WhoamiRequest};
+use ironflowx_proto::{
+    Call, EmitBatchRequest, EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event,
+    EventPage, GetEventRequest, ListEnvironmentsRequest, ListEventsRequest, OpError, Operations,
+    Whoami, WhoamiRequest,
+};
 use ironflowx_store::{ControlPlane, EnvironmentRecord, StoreError};
 
 pub use admission::Authorized;
@@ -83,6 +87,61 @@ impl Engine {
             project_id: record.project_id,
             created_at: record.created_at,
         }])
+    }
+
+    /// Emits one event, attributed to the calling key.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::whoami`], or as the ledger refuses the event.
+    pub async fn emit(&self, cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError> {
+        let a = self.admit(cx).await?;
+        self.ledger(&a).emit(cx, req).await
+    }
+
+    /// Emits a batch, every event attributed to the calling key; one result per item, in
+    /// order.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::emit`].
+    pub async fn emit_batch(
+        &self,
+        cx: &Call,
+        req: EmitBatchRequest,
+    ) -> Result<EmitBatchResponse, OpError> {
+        let a = self.admit(cx).await?;
+        self.ledger(&a).emit_batch(cx, req).await
+    }
+
+    /// Reads one event of the key's environment by ID.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::whoami`]; `NotFound` for an unknown ID.
+    pub async fn get_event(&self, cx: &Call, req: GetEventRequest) -> Result<Event, OpError> {
+        let a = self.admit(cx).await?;
+        self.ledger(&a).get_event(cx, req).await
+    }
+
+    /// Lists a page of the key's environment's events, newest first.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::whoami`], or for a bad cursor.
+    pub async fn list_events(
+        &self,
+        cx: &Call,
+        req: ListEventsRequest,
+    ) -> Result<EventPage, OpError> {
+        let a = self.admit(cx).await?;
+        self.ledger(&a).list_events(cx, req).await
+    }
+
+    /// The ledger, reached only with a proof of admission, submitting as its grant (TEN-1,
+    /// TEN-6).
+    fn ledger(&self, a: &Authorized) -> LocalOperations<'_> {
+        LocalOperations::submitting_as(&self.ledger, a.grant().submit_as())
     }
 
     /// The key records, reached only with a proof of admission (TEN-1).
