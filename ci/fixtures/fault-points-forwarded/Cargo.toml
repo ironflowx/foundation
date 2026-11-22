@@ -1,0 +1,9 @@
+# Crash-test fixture: crates ci/no-fault-points.sh must pass. `forwards` turns on a dependency's
+# `__fault-points` from its own, the one route allowed; `inherited-unpublished` is unpublished
+# through `[workspace.package]`.
+[workspace]
+resolver = "3"
+members = ["forwards", "inherited-unpublished"]
+
+[workspace.package]
+publish = false

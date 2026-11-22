@@ -19,7 +19,7 @@ mod tests;
 pub use clock::{HostClock, ManualClock};
 #[cfg(feature = "__fault-points")]
 #[doc(hidden)]
-pub use ledger::point::{FaultPoint, set_fault_hook};
+pub use ironflowx_core::{FaultPoint, set_fault_hook};
 pub use ledger::{Committed, Ledger, OpenError, ReadError, SubmitError, new_env_ref};
 pub use ops::LocalOperations;
 pub use store::{ReadStore, StoreError};

@@ -1,0 +1,9 @@
+[package]
+name = "inherited-unpublished"
+version = "0.0.0"
+edition = "2024"
+# Unpublished through the workspace, so it may enable the hook as the crash test does.
+publish.workspace = true
+
+[dependencies]
+ironflowx-cell = { path = "../../../../crates/ironflowx-cell", features = ["__fault-points"] }

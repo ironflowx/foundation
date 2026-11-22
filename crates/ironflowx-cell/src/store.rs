@@ -182,10 +182,10 @@ pub(crate) fn apply(
     if let Some(record) = record {
         ironflowx_events::fold(&mut Tables(&tx), record)?;
         #[cfg(feature = "__fault-points")]
-        crate::ledger::point::reach(if recovering {
-            crate::ledger::point::FaultPoint::DuringOpen
+        ironflowx_core::reach_fault_point(if recovering {
+            ironflowx_core::FaultPoint::DuringOpen
         } else {
-            crate::ledger::point::FaultPoint::MidFold
+            ironflowx_core::FaultPoint::MidFold
         });
     }
     tx.execute("UPDATE meta SET applied = ?1", [position + 1])?;

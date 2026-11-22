@@ -1,0 +1,8 @@
+[package]
+name = "target-only"
+version = "0.0.0"
+edition = "2024"
+
+# Only on a target CI does not run, so only `--target all` sees it.
+[target.'cfg(target_os = "redox")'.dependencies]
+ironflowx-cell = { path = "../../../../crates/ironflowx-cell", features = ["__fault-points"] }

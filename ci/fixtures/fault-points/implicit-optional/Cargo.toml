@@ -1,0 +1,8 @@
+[package]
+name = "implicit-optional"
+version = "0.0.0"
+edition = "2024"
+
+# No `dep:`, so the optional dependency is a feature of its own name, which turns on the hook.
+[dependencies]
+ironflowx-cell = { path = "../../../../crates/ironflowx-cell", optional = true, features = ["__fault-points"] }
