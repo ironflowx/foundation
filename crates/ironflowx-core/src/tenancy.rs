@@ -35,6 +35,19 @@ impl fmt::Display for Scope {
     }
 }
 
+/// How a key came to be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyOrigin {
+    /// The bootstrap key, minted by the engine.
+    Minted,
+    /// The bootstrap key, from a seed the host supplied.
+    Seed,
+    /// An admin key recovered from the data directory.
+    Recovered,
+    /// Created by another key, which it names.
+    Created,
+}
+
 /// Where an environment is, by name: `project/environment` while the single tenant is hidden.
 ///
 /// Derived from names, never stored, and never parsed into an ID: it has no `FromStr`.

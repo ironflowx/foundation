@@ -20,6 +20,23 @@ impl core::hash::Hash for ironflowx_core::ErrorKind
 pub fn ironflowx_core::ErrorKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::Copy for ironflowx_core::ErrorKind
 impl core::marker::StructuralPartialEq for ironflowx_core::ErrorKind
+pub enum ironflowx_core::KeyOrigin
+pub ironflowx_core::KeyOrigin::Created
+pub ironflowx_core::KeyOrigin::Minted
+pub ironflowx_core::KeyOrigin::Recovered
+pub ironflowx_core::KeyOrigin::Seed
+impl core::clone::Clone for ironflowx_core::KeyOrigin
+pub fn ironflowx_core::KeyOrigin::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_core::KeyOrigin
+impl core::cmp::Eq for ironflowx_core::KeyOrigin
+impl core::cmp::PartialEq for ironflowx_core::KeyOrigin
+pub fn ironflowx_core::KeyOrigin::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_core::KeyOrigin
+pub fn ironflowx_core::KeyOrigin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_core::KeyOrigin
+pub fn ironflowx_core::KeyOrigin::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for ironflowx_core::KeyOrigin
+impl core::marker::StructuralPartialEq for ironflowx_core::KeyOrigin
 pub enum ironflowx_core::Scope
 pub ironflowx_core::Scope::Admin
 pub ironflowx_core::Scope::Read

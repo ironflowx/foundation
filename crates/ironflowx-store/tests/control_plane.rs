@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use ironflowx_authz::{KeyParts, mint};
-use ironflowx_core::{Clock, EnvRef, KeyId, ProjectId, Scope, TenantId, Timestamp};
-use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, InsertError, NewKey};
+use ironflowx_core::{Clock, EnvRef, KeyId, KeyOrigin, ProjectId, Scope, TenantId, Timestamp};
+use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, KeyChangeError, NewKey};
 
 const T: i64 = 1_800_000_000_000;
 
@@ -223,7 +223,7 @@ fn the_creator_is_checked_inside_the_transaction() {
         assert!(
             matches!(
                 (&refused, creator_refused),
-                (Err(InsertError::Creator), true) | (Err(InsertError::Refused(_)), false)
+                (Err(KeyChangeError::Caller), true) | (Err(KeyChangeError::Refused(_)), false)
             ),
             "{case}: {refused:?}"
         );
@@ -235,4 +235,102 @@ fn the_creator_is_checked_inside_the_transaction() {
     let fine = new_key(48, &[Scope::Read], Some(T + HOUR), None);
     cp.insert_key(&env(1), fine, creator_id, &Fixed(T + HOUR - 1))
         .expect("within the creator");
+}
+
+/// Keys list newest first by `seq`, so keys made in the same millisecond keep their order;
+/// `before_seq` and `limit` page them (D35).
+#[test]
+fn keys_list_newest_first_even_within_one_millisecond() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    let (b, admin) = bootstrap(env(1), 0);
+    cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
+    let mut made = vec![admin.id];
+    for n in 50..53 {
+        let new = new_key(n, &[Scope::Read], None, Some("same ms"));
+        made.push(new.id);
+        cp.insert_key(&env(1), new, admin.id, &Fixed(T)).unwrap();
+    }
+    made.reverse();
+    let all = cp.list_keys(&env(1), None, 10).unwrap();
+    let ids: Vec<KeyId> = all.iter().map(|r| r.record.id).collect();
+    assert_eq!(ids, made);
+    let bootstrap = all.last().unwrap();
+    assert_eq!(
+        (bootstrap.origin, bootstrap.created_by),
+        (KeyOrigin::Minted, None)
+    );
+    assert_eq!(
+        (all[0].origin, all[0].created_by),
+        (KeyOrigin::Created, Some(admin.id))
+    );
+    assert_eq!(all[0].label.as_deref(), Some("same ms"));
+
+    let first = cp.list_keys(&env(1), None, 2).unwrap();
+    assert_eq!(
+        first.iter().map(|r| r.record.id).collect::<Vec<_>>(),
+        made[..2]
+    );
+    let rest = cp.list_keys(&env(1), Some(first[1].seq), 10).unwrap();
+    assert_eq!(
+        rest.iter().map(|r| r.record.id).collect::<Vec<_>>(),
+        made[2..]
+    );
+    assert!(
+        cp.list_keys(&env(2), None, 10).unwrap().is_empty(),
+        "another environment"
+    );
+}
+
+/// A revoke sets `revoked_at` once and keeps the row; the revoker is read again and checked
+/// inside the transaction; a key of another environment or incarnation is not found (D35, D43).
+#[test]
+fn a_revoke_keeps_the_row_and_checks_the_revoker_inside_the_transaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    let (b, admin) = bootstrap(env(1), 0);
+    cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
+    let target = new_key(60, &[Scope::Read], None, None);
+    let target_id = target.id;
+    cp.insert_key(&env(1), target, admin.id, &Fixed(T)).unwrap();
+    let revoker = new_key(61, &[Scope::Admin], Some(T + HOUR), None);
+    let revoker_id = revoker.id;
+    cp.insert_key(&env(1), revoker, admin.id, &Fixed(T))
+        .unwrap();
+
+    let revoked_at = |id| cp.lookup_key(id, &env(1)).unwrap().unwrap().revoked_at;
+    // An expired revoker changes nothing.
+    let late = cp.revoke_key(&env(1), target_id, revoker_id, &Fixed(T + HOUR));
+    assert!(matches!(late, Err(KeyChangeError::Caller)), "{late:?}");
+    assert_eq!(revoked_at(target_id), None);
+
+    cp.revoke_key(&env(1), target_id, revoker_id, &Fixed(T + 5))
+        .unwrap();
+    assert_eq!(revoked_at(target_id), Some(Timestamp::from_millis(T + 5)));
+    // Again: it succeeds and keeps the first time.
+    cp.revoke_key(&env(1), target_id, admin.id, &Fixed(T + 9))
+        .unwrap();
+    assert_eq!(revoked_at(target_id), Some(Timestamp::from_millis(T + 5)));
+
+    let unknown: KeyId = uuid(62).parse().unwrap();
+    let other_token: EnvRef = format!("{}.{:032x}", env(1).id(), 8).parse().unwrap();
+    let found = cp.revoke_key(&env(1), unknown, admin.id, &Fixed(T));
+    assert!(matches!(found, Err(KeyChangeError::NotFound)), "{found:?}");
+    // In another incarnation the revoker is unknown too, so it is refused before the lookup.
+    let found = cp.revoke_key(&other_token, target_id, admin.id, &Fixed(T));
+    assert!(matches!(found, Err(KeyChangeError::Caller)), "{found:?}");
+
+    // A revoked key changes no key: neither creates nor revokes.
+    cp.revoke_key(&env(1), revoker_id, revoker_id, &Fixed(T + 6))
+        .unwrap();
+    let create = cp.insert_key(
+        &env(1),
+        new_key(63, &[Scope::Admin], Some(T + 1), None),
+        revoker_id,
+        &Fixed(T + 7),
+    );
+    assert!(matches!(create, Err(KeyChangeError::Caller)), "{create:?}");
+    let revoke = cp.revoke_key(&env(1), admin.id, revoker_id, &Fixed(T + 7));
+    assert!(matches!(revoke, Err(KeyChangeError::Caller)), "{revoke:?}");
+    assert_eq!(revoked_at(admin.id), None);
 }

@@ -11,8 +11,8 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Mutex;
 
-use ironflowx_authz::{CreateRefusal, KeyDigest, KeyParts, KeyRecord, may_create, recheck};
-use ironflowx_core::{Clock, EnvRef, KeyId, ProjectId, Scope, TenantId, Timestamp};
+use ironflowx_authz::{CreateRefusal, Grant, KeyDigest, KeyParts, KeyRecord, may_create, recheck};
+use ironflowx_core::{Clock, EnvRef, KeyId, KeyOrigin, ProjectId, Scope, TenantId, Timestamp};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 /// The control plane's format. A change refuses older files at open.
@@ -20,6 +20,8 @@ const FORMAT: u16 = 1;
 /// What bootstrap names the default tenant, project and environment.
 const DEFAULT: &str = "default";
 const MINTED: &str = "minted";
+const SEED: &str = "seed";
+const RECOVERED: &str = "recovered";
 const CREATED: &str = "created";
 
 const SCHEMA: &str = "
@@ -50,6 +52,7 @@ CREATE TABLE keys (
     created_by TEXT,
     label TEXT,
     expires_at INTEGER,
+    revoked_at INTEGER,
     created_at INTEGER NOT NULL
 );
 ";
@@ -131,32 +134,38 @@ pub struct KeyRow {
     /// Assigned under the write lock, so two keys never tie.
     pub seq: u64,
     pub record: KeyRecord,
+    pub origin: KeyOrigin,
+    /// The key that created it; `None` unless its origin is `Created`.
+    pub created_by: Option<KeyId>,
     pub label: Option<String>,
     pub created_at: Timestamp,
 }
 
-/// Why a key was not created. Nothing was written.
+/// Why a key change did not happen. Nothing was written.
 #[derive(Debug)]
-pub enum InsertError {
-    /// The creator is unknown, expired, or of another environment, read again inside the
-    /// transaction.
-    Creator,
-    /// The request breaks a creation rule.
+pub enum KeyChangeError {
+    /// The calling key is unknown, revoked, expired, or of another environment, read again
+    /// inside the transaction (D43).
+    Caller,
+    /// A creation request breaks a creation rule.
     Refused(CreateRefusal),
+    /// No key has that ID in this environment.
+    NotFound,
     Store(StoreError),
 }
 
-impl fmt::Display for InsertError {
+impl fmt::Display for KeyChangeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Creator => f.write_str("the creator is no longer valid"),
+            Self::Caller => f.write_str("the calling key is no longer valid"),
             Self::Refused(r) => r.fmt(f),
+            Self::NotFound => f.write_str("key not found"),
             Self::Store(e) => e.fmt(f),
         }
     }
 }
 
-impl std::error::Error for InsertError {}
+impl std::error::Error for KeyChangeError {}
 
 /// An environment with its parents' IDs and the names its address is derived from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -334,26 +343,25 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// `Creator` or `Refused` as the checks find, `Store` if SQLite fails; nothing is written.
+    /// `Caller` or `Refused` as the checks find, `Store` if SQLite fails; nothing is written.
     pub fn insert_key(
         &self,
         env: &EnvRef,
         new: NewKey,
         creator: KeyId,
         clock: &dyn Clock,
-    ) -> Result<KeyRow, InsertError> {
+    ) -> Result<KeyRow, KeyChangeError> {
         // The outer error is SQLite's; the inner one, a check that refused.
         run(|| {
             let mut conn = self.lock()?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let now = clock.now();
-            let grant = lookup(&tx, creator, env)?.and_then(|r| recheck(&r, env, now).ok());
-            let Some(grant) = grant else {
-                return Ok(Err(InsertError::Creator));
+            let Some(grant) = caller(&tx, creator, env, now)? else {
+                return Ok(Err(KeyChangeError::Caller));
             };
             let label = new.label.as_deref();
             if let Err(r) = may_create(&grant, &new.scopes, new.expires_at, label, now) {
-                return Ok(Err(InsertError::Refused(r)));
+                return Ok(Err(KeyChangeError::Refused(r)));
             }
             tx.execute(
                 "INSERT INTO keys (id, environment_id, environment_token, scopes, digest, origin, \
@@ -382,12 +390,109 @@ impl ControlPlane {
                     scopes: new.scopes,
                     digest: new.digest,
                     expires_at: new.expires_at,
+                    revoked_at: None,
                 },
+                origin: KeyOrigin::Created,
+                created_by: Some(creator),
                 label: new.label,
                 created_at: now,
             }))
         })
-        .map_err(InsertError::Store)?
+        .map_err(KeyChangeError::Store)?
+    }
+
+    /// Revokes `id` in `env` for `by`, in one transaction: with the write lock held and now read
+    /// from `clock`, `by`'s record is read again and checked (`recheck`, D43), then `id`'s
+    /// `revoked_at` is set unless it already is. The row stays (D35).
+    ///
+    /// # Errors
+    ///
+    /// `Caller` if `by` is no longer valid, `NotFound` if `env` holds no key `id`, `Store` if
+    /// SQLite fails; nothing is written.
+    pub fn revoke_key(
+        &self,
+        env: &EnvRef,
+        id: KeyId,
+        by: KeyId,
+        clock: &dyn Clock,
+    ) -> Result<(), KeyChangeError> {
+        // The outer error is SQLite's; the inner one, a check that refused.
+        run(|| {
+            let mut conn = self.lock()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let now = clock.now();
+            if caller(&tx, by, env, now)?.is_none() {
+                return Ok(Err(KeyChangeError::Caller));
+            }
+            if lookup(&tx, id, env)?.is_none() {
+                return Ok(Err(KeyChangeError::NotFound));
+            }
+            tx.execute(
+                "UPDATE keys SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL",
+                params![now.as_millis(), id.to_string()],
+            )?;
+            tx.commit()?;
+            Ok(Ok(()))
+        })
+        .map_err(KeyChangeError::Store)?
+    }
+
+    /// Up to `limit` of `env`'s keys, newest first by `seq`, those before `before_seq` only
+    /// when it is given.
+    ///
+    /// # Errors
+    ///
+    /// If SQLite fails, or a stored row does not decode.
+    pub fn list_keys(
+        &self,
+        env: &EnvRef,
+        before_seq: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<KeyRow>, StoreError> {
+        run(|| {
+            let conn = self.lock()?;
+            let mut stmt = conn.prepare(
+                "SELECT seq, id, scopes, digest, expires_at, revoked_at, origin, created_by, \
+                 label, created_at FROM keys \
+                 WHERE environment_id = ?1 AND environment_token = ?2 AND seq < ?3 \
+                 ORDER BY seq DESC LIMIT ?4",
+            )?;
+            let before = before_seq.map_or(i64::MAX, |s| i64::try_from(s).unwrap_or(i64::MAX));
+            let rows = stmt.query_map(
+                params![env.id().to_string(), env.token().to_string(), before, limit],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        Stored {
+                            scopes: r.get(2)?,
+                            digest: r.get(3)?,
+                            expires_at: r.get(4)?,
+                            revoked_at: r.get(5)?,
+                        },
+                        r.get::<_, String>(6)?,
+                        r.get::<_, Option<String>>(7)?,
+                        r.get::<_, Option<String>>(8)?,
+                        r.get::<_, i64>(9)?,
+                    ))
+                },
+            )?;
+            rows.map(|row| {
+                let (seq, id, stored, origin, created_by, label, created_at) = row?;
+                let id = id.parse().map_err(|_| refused("bad key ID"))?;
+                Ok(KeyRow {
+                    seq: u64::try_from(seq).map_err(|_| refused("bad seq"))?,
+                    record: stored.record(id, env)?,
+                    origin: origin_from(&origin)?,
+                    created_by: created_by
+                        .map(|c| c.parse().map_err(|_| refused("bad creator ID")))
+                        .transpose()?,
+                    label,
+                    created_at: Timestamp::from_millis(created_at),
+                })
+            })
+            .collect()
+        })
     }
 
     /// The environment `env` with its parents.
@@ -438,7 +543,7 @@ impl ControlPlane {
 fn lookup(conn: &Connection, id: KeyId, env: &EnvRef) -> Result<Option<KeyRecord>, Error> {
     let row = conn
         .query_row(
-            "SELECT scopes, digest, expires_at FROM keys \
+            "SELECT scopes, digest, expires_at, revoked_at FROM keys \
              WHERE id = ?1 AND environment_id = ?2 AND environment_token = ?3",
             params![
                 id.to_string(),
@@ -446,24 +551,58 @@ fn lookup(conn: &Connection, id: KeyId, env: &EnvRef) -> Result<Option<KeyRecord
                 env.token().to_string()
             ],
             |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Vec<u8>>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
-                ))
+                Ok(Stored {
+                    scopes: r.get(0)?,
+                    digest: r.get(1)?,
+                    expires_at: r.get(2)?,
+                    revoked_at: r.get(3)?,
+                })
             },
         )
         .optional()?;
-    row.map(|(scopes, digest, expires_at)| {
+    row.map(|stored| stored.record(id, env)).transpose()
+}
+
+/// The calling key of a key change, read again inside its transaction and checked at the
+/// transaction's now: `None` if it is unknown, revoked or expired by then (D43).
+fn caller(
+    conn: &Connection,
+    id: KeyId,
+    env: &EnvRef,
+    now: Timestamp,
+) -> Result<Option<Grant>, Error> {
+    Ok(lookup(conn, id, env)?.and_then(|r| recheck(&r, env, now).ok()))
+}
+
+/// A key row's credential columns, as read.
+struct Stored {
+    scopes: String,
+    digest: Vec<u8>,
+    expires_at: Option<i64>,
+    revoked_at: Option<i64>,
+}
+
+impl Stored {
+    fn record(self, id: KeyId, env: &EnvRef) -> Result<KeyRecord, Error> {
         Ok(KeyRecord {
             id,
             env: *env,
-            scopes: parse_scopes(&scopes)?,
-            digest: KeyDigest::from_stored(&digest).ok_or_else(|| refused("bad digest"))?,
-            expires_at: expires_at.map(Timestamp::from_millis),
+            scopes: parse_scopes(&self.scopes)?,
+            digest: KeyDigest::from_stored(&self.digest).ok_or_else(|| refused("bad digest"))?,
+            expires_at: self.expires_at.map(Timestamp::from_millis),
+            revoked_at: self.revoked_at.map(Timestamp::from_millis),
         })
-    })
-    .transpose()
+    }
+}
+
+fn origin_from(text: &str) -> Result<KeyOrigin, Error> {
+    match text {
+        MINTED => Ok(KeyOrigin::Minted),
+        SEED => Ok(KeyOrigin::Seed),
+        RECOVERED => Ok(KeyOrigin::Recovered),
+        CREATED => Ok(KeyOrigin::Created),
+        _ => Err(refused("bad key origin")),
+    }
 }
 
 fn check_format(conn: &Connection) -> Result<(), Error> {

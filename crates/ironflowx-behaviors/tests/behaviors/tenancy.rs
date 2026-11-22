@@ -1,7 +1,7 @@
 //! `tenancy.feature` on the engine. Only the scenarios in [`REGISTERED`] run; each ticket that
 //! lands a scenario adds its ID, and every registered scenario must run and pass.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cucumber::writer::Stats as _;
@@ -10,8 +10,9 @@ use ironflowx_cell::ManualClock;
 use ironflowx_core::{EnvRef, ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_operations::{Engine, Opened};
 use ironflowx_proto::{
-    Call, CreateKeyRequest, EmitBatchRequest, EmitRequest, Environment, GetEventRequest,
-    ListEnvironmentsRequest, ListEventsRequest, OpError, Whoami, WhoamiRequest,
+    Call, CreateKeyRequest, EmitBatchRequest, EmitRequest, Environment, GetEventRequest, KeyInfo,
+    KeyPage, KeyStatus, ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError,
+    RevokeKeyRequest, Whoami, WhoamiRequest,
 };
 use tempfile::TempDir;
 
@@ -28,9 +29,19 @@ pub const REGISTERED: &[(&str, usize)] = &[
     ("ACC-022", 3),
     ("ACC-023", 1),
     ("ACC-024", 1),
+    ("ACC-030", 13),
     ("ACC-031", 1),
     ("ACC-032", 1),
+    ("ACC-040", 1),
+    ("ACC-041", 1),
+    ("ACC-042", 1),
+    ("ACC-043", 3),
     ("ACC-045", 4),
+    ("ACC-046", 1),
+    ("ACC-047", 1),
+    ("ACC-050", 1),
+    ("ACC-051", 1),
+    ("ACC-052", 1),
     ("ACC-053", 1),
     ("ACC-060", 1),
     ("ACC-061", 1),
@@ -72,6 +83,14 @@ pub struct Tenancy {
     /// The time a key expires at (ACC-053).
     t: Option<Timestamp>,
     listed: Option<Vec<Environment>>,
+    /// Keys a scenario names (A, B, C, K), by key ID.
+    named: BTreeMap<String, String>,
+    /// The key the client created last: its text and what was said about it.
+    created: Option<(String, KeyInfo)>,
+    /// Pages of keys, as listed.
+    pages: Vec<KeyPage>,
+    /// The number of keys before a refused creation.
+    keys_before: Option<usize>,
 }
 
 impl fmt::Debug for Tenancy {
@@ -121,6 +140,10 @@ impl Tenancy {
             emitted: Vec::new(),
             t: None,
             listed: None,
+            named: BTreeMap::new(),
+            created: None,
+            pages: Vec::new(),
+            keys_before: None,
         }
     }
 
@@ -221,6 +244,34 @@ impl Tenancy {
             .list_events(&self.bootstrap(), first_page())
             .await;
         page.expect("the bootstrap key lists events").events
+    }
+
+    /// Every key, as the bootstrap key lists them in one page.
+    async fn all_keys(&self) -> Vec<KeyInfo> {
+        let req = ListKeysRequest {
+            limit: std::num::NonZeroU32::new(1_000),
+            cursor: None,
+        };
+        let page = self.engine().list_keys(&self.bootstrap(), req).await;
+        page.expect("the bootstrap key lists keys").keys
+    }
+
+    /// The client creates a key, keeping the outcome and, on success, the key.
+    async fn client_creates_key(&mut self, req: CreateKeyRequest) {
+        self.keys_before = Some(self.all_keys().await.len());
+        let answer = self.engine().create_key(&self.key(), req).await;
+        if let Ok(created) = &answer {
+            self.created = Some((created.key.expose().to_owned(), created.info.clone()));
+        }
+        self.keep(answer);
+    }
+
+    async fn revoke(&mut self, cx: &Call, key_id: String) {
+        let answer = self
+            .engine()
+            .revoke_key(cx, RevokeKeyRequest { key_id })
+            .await;
+        self.keep(answer);
     }
 
     async fn environments(&self) -> Vec<Environment> {
@@ -451,12 +502,12 @@ fn named(name: &str) -> EmitRequest {
 }
 
 #[given(
-    regex = r#"^(a|another) client with an? ((?:"\w+"(?: and )?)+) key( K)?( expiring in one hour| created with label "[^"]+" and an expiry| expiring at time T)?$"#
+    regex = r#"^(a|another) client with an? ((?:"\w+"(?: and )?)+) key( K)?( expiring in one hour| created with label "[^"]+" and an expiry| expiring at time T| that has listed events)?$"#
 )]
-async fn client_with_key(w: &mut Tenancy, who: String, names: String, _k: String, rest: String) {
+async fn client_with_key(w: &mut Tenancy, who: String, names: String, k: String, rest: String) {
     let hour = Timestamp::from_millis(w.now().as_millis() + HOUR);
     let (expires_at, label) = match rest.as_str() {
-        "" => (None, None),
+        "" | " that has listed events" => (None, None),
         " expiring in one hour" => (Some(hour), None),
         " expiring at time T" => {
             w.t = Some(hour);
@@ -465,11 +516,18 @@ async fn client_with_key(w: &mut Tenancy, who: String, names: String, _k: String
         labelled => (Some(hour), labelled.split('"').nth(1).map(str::to_owned)),
     };
     let key = w.create(scopes(&names), expires_at, label).await;
+    if !k.is_empty() {
+        w.named.insert("K".into(), key[4..40].to_owned());
+    }
     if who == "another" {
         w.second = Some(key);
     } else {
         w.client = Some(key);
         w.client_expiry = expires_at;
+    }
+    if rest == " that has listed events" {
+        w.list_events(w.key()).await;
+        assert_eq!(w.outcome, Some(Ok(())));
     }
 }
 
@@ -639,6 +697,312 @@ async fn each_shows_emitter(w: &mut Tenancy, n: usize) {
         let event = w.engine().get_event(&w.key(), req).await.unwrap();
         assert_eq!(event.emitted_by.to_string(), by);
     }
+}
+
+#[given(regex = r#"^an event "([^"]+)" was emitted with the bootstrap key$"#)]
+async fn emitted_with_bootstrap(w: &mut Tenancy, name: String) {
+    w.open().await;
+    let answer = w.engine().emit(&w.bootstrap(), named(&name)).await;
+    w.emitted = vec![answer.expect("emitted").event_id.to_string()];
+}
+
+#[given(regex = r#"^a client with a key holding only "(\w+)"$"#)]
+async fn client_holding_only(w: &mut Tenancy, scope: String) {
+    let key = w.create(scopes(&scope), None, None).await;
+    w.client = Some(key);
+}
+
+#[when(regex = r"^the client calls (.+)$")]
+async fn client_calls(w: &mut Tenancy, operation: String) {
+    let (engine, cx) = (w.engine(), w.key());
+    let answer = match operation.as_str() {
+        "list events" => engine.list_events(&cx, first_page()).await.map(drop),
+        "get the event" => {
+            let req = GetEventRequest {
+                event_id: w.emitted[0].clone(),
+            };
+            engine.get_event(&cx, req).await.map(drop)
+        }
+        "list environments" => engine
+            .list_environments(&cx, ListEnvironmentsRequest {})
+            .await
+            .map(drop),
+        "emit" => engine.emit(&cx, named("order.shipped")).await.map(drop),
+        "emit a batch" => {
+            let items = vec![named("a.one"), named("a.two")];
+            engine
+                .emit_batch(&cx, EmitBatchRequest { items })
+                .await
+                .map(drop)
+        }
+        "create a key" => engine
+            .create_key(&cx, CreateKeyRequest::default())
+            .await
+            .map(drop),
+        "list keys" => engine
+            .list_keys(&cx, ListKeysRequest::default())
+            .await
+            .map(drop),
+        "revoke a key" => {
+            let req = RevokeKeyRequest { key_id: w.key_id() };
+            engine.revoke_key(&cx, req).await
+        }
+        other => panic!("no such operation: {other}"),
+    };
+    w.keep(answer);
+}
+
+#[then(regex = r#"^the call is refused as permission denied with "([^"]+)"$"#)]
+fn denied_with(w: &mut Tenancy, message: String) {
+    let err = w.refusal();
+    assert_eq!(
+        (err.kind, err.message.as_str()),
+        (ErrorKind::PermissionDenied, &*message)
+    );
+}
+
+#[when("the client creates a key without scopes")]
+async fn creates_without_scopes(w: &mut Tenancy) {
+    w.client_creates_key(CreateKeyRequest::default()).await;
+}
+
+#[then(regex = r#"^the answer holds the key and its scopes are (.+)$"#)]
+fn answer_holds_key(w: &mut Tenancy, names: String) {
+    let (key, info) = w.created.as_ref().expect("a created key");
+    assert!(key.starts_with("ixk_") && key.len() == 84, "{key}");
+    assert_eq!(info.scopes, scopes(&names));
+}
+
+#[then("listing keys shows the key without its secret")]
+async fn listed_without_secret(w: &mut Tenancy) {
+    let (key, info) = w.created.clone().unwrap();
+    let keys = w.all_keys().await;
+    let listed = keys
+        .iter()
+        .find(|k| k.key_id == info.key_id)
+        .expect("listed");
+    assert_eq!(listed, &info);
+    // `KeyInfo` has no field for it; nor does any text a listing prints.
+    assert!(!format!("{keys:?}").contains(&key[41..]));
+}
+
+#[when(
+    regex = r#"^the client creates a key with scopes (.+), label "([^"]+)" and an expiry in one hour$"#
+)]
+async fn creates_with_scopes_label_expiry(w: &mut Tenancy, names: String, label: String) {
+    let req = CreateKeyRequest {
+        scopes: scopes(&names),
+        expires_at: Some(Timestamp::from_millis(w.now().as_millis() + HOUR)),
+        label: Some(label),
+    };
+    w.client_creates_key(req).await;
+}
+
+#[then("a client with the new key can emit and list events")]
+async fn new_key_works(w: &mut Tenancy) {
+    let cx = call(&w.created.as_ref().unwrap().0);
+    w.engine()
+        .emit(&cx, named("order.placed"))
+        .await
+        .expect("emit");
+    let page = w
+        .engine()
+        .list_events(&cx, first_page())
+        .await
+        .expect("list");
+    assert_eq!(page.events.len(), 1);
+}
+
+#[then(
+    regex = r#"^listing keys shows it with label "([^"]+)", those scopes, the expiry, status "active", origin "created" and the bootstrap key as its creator$"#
+)]
+async fn listed_with(w: &mut Tenancy, label: String) {
+    let info = w.created.clone().unwrap().1;
+    let keys = w.all_keys().await;
+    let listed = keys
+        .iter()
+        .find(|k| k.key_id == info.key_id)
+        .expect("listed");
+    let bootstrap_id = w.bootstrap_key.as_deref().unwrap()[4..40].parse().unwrap();
+    assert_eq!(listed.label.as_deref(), Some(label.as_str()));
+    assert_eq!(listed.scopes, BTreeSet::from([Scope::Read, Scope::Write]));
+    assert_eq!(
+        listed.expires_at,
+        Some(Timestamp::from_millis(w.now().as_millis() + HOUR))
+    );
+    assert_eq!(
+        (listed.status, listed.origin, listed.created_by),
+        (
+            KeyStatus::Active,
+            ironflowx_core::KeyOrigin::Created,
+            Some(bootstrap_id)
+        )
+    );
+}
+
+#[when(regex = r#"^the client creates a key with scope "(\w+)"$"#)]
+async fn creates_with_scope(w: &mut Tenancy, scope: String) {
+    let req = CreateKeyRequest {
+        scopes: scopes(&scope),
+        ..CreateKeyRequest::default()
+    };
+    w.client_creates_key(req).await;
+}
+
+#[when(
+    regex = r"^the client creates a key with (an expiry an hour ago|a label of 129 bytes|a label holding a line break)$"
+)]
+async fn creates_bad(w: &mut Tenancy, request: String) {
+    let mut req = CreateKeyRequest::default();
+    match request.as_str() {
+        "an expiry an hour ago" => {
+            req.expires_at = Some(Timestamp::from_millis(w.now().as_millis() - HOUR));
+        }
+        "a label of 129 bytes" => req.label = Some("x".repeat(129)),
+        _ => req.label = Some("first\nsecond".into()),
+    }
+    w.client_creates_key(req).await;
+}
+
+#[then("no key is created")]
+async fn no_key_created(w: &mut Tenancy) {
+    assert_eq!(Some(w.all_keys().await.len()), w.keys_before);
+}
+
+#[given("a client with the bootstrap key and the clock reading T")]
+async fn bootstrap_at_t(w: &mut Tenancy) {
+    w.open().await;
+    w.t = Some(w.now());
+}
+
+#[when("the client creates a key expiring at T")]
+async fn creates_expiring_at_t(w: &mut Tenancy) {
+    let req = CreateKeyRequest {
+        expires_at: w.t,
+        ..CreateKeyRequest::default()
+    };
+    w.client_creates_key(req).await;
+}
+
+#[given("a client with the bootstrap key created keys A, B and C, in that order")]
+async fn created_abc(w: &mut Tenancy) {
+    w.open().await;
+    for name in ["A", "B", "C"] {
+        let req = CreateKeyRequest {
+            label: Some(name.into()),
+            ..CreateKeyRequest::default()
+        };
+        let created = w.engine().create_key(&w.bootstrap(), req).await.unwrap();
+        w.named.insert(name.into(), created.info.key_id.to_string());
+    }
+}
+
+#[when(regex = r"^the client lists keys (\d+) at a time$")]
+async fn lists_keys_by(w: &mut Tenancy, n: u32) {
+    let mut cursor = None;
+    loop {
+        let req = ListKeysRequest {
+            limit: std::num::NonZeroU32::new(n),
+            cursor,
+        };
+        let page = w.engine().list_keys(&w.key(), req).await.unwrap();
+        cursor = page.next.clone();
+        w.pages.push(page);
+        if cursor.is_none() {
+            break;
+        }
+    }
+}
+
+/// The names of a page's keys: a scenario's own, or "the bootstrap key".
+fn names(w: &Tenancy, page: &KeyPage) -> Vec<String> {
+    let bootstrap = &w.bootstrap_key.as_deref().unwrap()[4..40];
+    let name = |id: String| {
+        if id == bootstrap {
+            return "the bootstrap key".to_owned();
+        }
+        let named = w.named.iter().find(|(_, v)| **v == id);
+        named.expect("a key the scenario named").0.clone()
+    };
+    page.keys
+        .iter()
+        .map(|k| name(k.key_id.to_string()))
+        .collect()
+}
+
+#[then("the first page holds C and B and names a next page")]
+fn first_page_holds(w: &mut Tenancy) {
+    assert_eq!(names(w, &w.pages[0]), ["C", "B"]);
+    assert!(w.pages[0].next.is_some());
+}
+
+#[then("the next page holds A and the bootstrap key, and names none")]
+fn next_page_holds(w: &mut Tenancy) {
+    assert_eq!(w.pages.len(), 2);
+    assert_eq!(names(w, &w.pages[1]), ["A", "the bootstrap key"]);
+    assert_eq!(w.pages[1].next, None);
+}
+
+#[when("a client with the bootstrap key revokes K")]
+async fn bootstrap_revokes_k(w: &mut Tenancy) {
+    let k = w.named["K"].clone();
+    w.revoke(&w.bootstrap(), k).await;
+    assert_eq!(w.outcome, Some(Ok(())));
+}
+
+#[when("the client with K lists events again")]
+async fn k_lists_again(w: &mut Tenancy) {
+    w.list_events(w.key()).await;
+}
+
+#[given("a client with the bootstrap key revoked key K")]
+async fn bootstrap_revoked_k(w: &mut Tenancy) {
+    w.open().await;
+    let created = w
+        .engine()
+        .create_key(&w.bootstrap(), CreateKeyRequest::default())
+        .await;
+    let k = created.unwrap().info.key_id.to_string();
+    w.named.insert("K".into(), k.clone());
+    w.revoke(&w.bootstrap(), k).await;
+    assert_eq!(w.outcome, Some(Ok(())));
+}
+
+#[when("the client revokes K again")]
+async fn revokes_k_again(w: &mut Tenancy) {
+    let k = w.named["K"].clone();
+    w.revoke(&w.key(), k).await;
+}
+
+#[when("the client revokes a key ID no key has")]
+async fn revokes_unknown(w: &mut Tenancy) {
+    w.revoke(&w.key(), "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f".into())
+        .await;
+}
+
+#[then(regex = r#"^the call is refused as not found with "([^"]+)"$"#)]
+fn not_found_with(w: &mut Tenancy, message: String) {
+    let err = w.refusal();
+    assert_eq!(
+        (err.kind, err.message.as_str()),
+        (ErrorKind::NotFound, &*message)
+    );
+}
+
+#[when("the client revokes the bootstrap key")]
+async fn revokes_bootstrap(w: &mut Tenancy) {
+    let id = w.bootstrap_key.as_deref().unwrap()[4..40].to_owned();
+    w.revoke(&w.key(), id).await;
+}
+
+#[then("the client's next call is refused as unauthenticated")]
+async fn next_call_refused(w: &mut Tenancy) {
+    let err = w
+        .engine()
+        .whoami(&w.key(), WhoamiRequest {})
+        .await
+        .expect_err("refused");
+    assert_eq!(err.kind, ErrorKind::Unauthenticated);
 }
 
 /// Runs the registered tenancy scenarios. True if any failed or one did not run.

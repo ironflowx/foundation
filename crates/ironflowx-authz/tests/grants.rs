@@ -30,6 +30,7 @@ fn record(scopes: &BTreeSet<Scope>, expires_at: Option<Timestamp>) -> KeyRecord 
         scopes: scopes.clone(),
         digest: mint(id(), [7; 32]).1,
         expires_at,
+        revoked_at: None,
     }
 }
 
@@ -67,6 +68,23 @@ fn a_key_works_until_its_expiry_and_not_from_it() {
         .parse()
         .unwrap();
     assert!(recheck(&rec, &other, at(T - 1)).is_err());
+}
+
+/// A revoked key is refused whatever its expiry, by verify and by recheck (TEN-2).
+#[test]
+fn a_revoked_key_is_refused() {
+    let parts = parse(&mint(id(), [7; 32]).0).unwrap();
+    for expires_at in [None, Some(at(T + HOUR))] {
+        let rec = KeyRecord {
+            revoked_at: Some(at(T - 1)),
+            ..record(&BTreeSet::from([Scope::Admin]), expires_at)
+        };
+        assert!(
+            verify(&parts, Some(&rec), &env(), at(T)).is_err(),
+            "{expires_at:?}"
+        );
+        assert!(recheck(&rec, &env(), at(T)).is_err(), "{expires_at:?}");
+    }
 }
 
 #[test]

@@ -78,6 +78,8 @@ pub async fn ironflowx_cell::LocalOperations<'_>::emit(&self, &ironflowx_proto::
 pub async fn ironflowx_cell::LocalOperations<'_>::emit_batch(&self, &ironflowx_proto::Call, ironflowx_proto::EmitBatchRequest) -> core::result::Result<ironflowx_proto::EmitBatchResponse, ironflowx_proto::OpError>
 pub async fn ironflowx_cell::LocalOperations<'_>::get_event(&self, &ironflowx_proto::Call, ironflowx_proto::GetEventRequest) -> core::result::Result<ironflowx_proto::Event, ironflowx_proto::OpError>
 pub async fn ironflowx_cell::LocalOperations<'_>::list_events(&self, &ironflowx_proto::Call, ironflowx_proto::ListEventsRequest) -> core::result::Result<ironflowx_proto::EventPage, ironflowx_proto::OpError>
+pub async fn ironflowx_cell::LocalOperations<'_>::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>
+pub async fn ironflowx_cell::LocalOperations<'_>::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> core::result::Result<(), ironflowx_proto::OpError>
 impl<'a> core::clone::Clone for ironflowx_cell::LocalOperations<'a>
 pub fn ironflowx_cell::LocalOperations<'a>::clone(&self) -> Self
 pub struct ironflowx_cell::ManualClock(_)

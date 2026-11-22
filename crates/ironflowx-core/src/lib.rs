@@ -23,6 +23,6 @@ pub use error::{ErrorKind, ParseError};
 pub use fault::{FaultPoint, reach_fault_point, set_fault_hook};
 pub use id::{EnvRef, EnvironmentId, EventId, IncarnationToken, KeyId, ProjectId, TenantId};
 pub use secret::Secret;
-pub use tenancy::{Address, Scope};
+pub use tenancy::{Address, KeyOrigin, Scope};
 pub use time::{Clock, SequencedTime, Timestamp};
 pub use who::{Emitter, SubmitAs};

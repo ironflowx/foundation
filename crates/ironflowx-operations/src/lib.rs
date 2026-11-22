@@ -15,14 +15,23 @@ use std::fs::File;
 use std::sync::Arc;
 
 use ironflowx_cell::{Ledger, LocalOperations};
-use ironflowx_core::{Address, Clock, EnvRef, ErrorKind, Scope, Secret};
+use ironflowx_core::{
+    Address, Clock, EnvRef, ErrorKind, IncarnationToken, Scope, Secret, Timestamp,
+};
 use ironflowx_proto::{
     Call, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
-    EmitResponse, Environment, Event, EventPage, GetEventRequest, KeyInfo, KeyOrigin, KeyStatus,
-    ListEnvironmentsRequest, ListEventsRequest, OpError, Operation, Operations, Whoami,
-    WhoamiRequest,
+    EmitResponse, Environment, Event, EventPage, GetEventRequest, KeyInfo, KeyPage, KeyStatus,
+    ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation, Operations,
+    RevokeKeyRequest, Whoami, WhoamiRequest,
 };
-use ironflowx_store::{ControlPlane, EnvironmentRecord, InsertError, NewKey, StoreError};
+use ironflowx_store::{
+    ControlPlane, EnvironmentRecord, KeyChangeError, KeyRow, NewKey, StoreError,
+};
+
+/// A page of keys when none is asked for, and the most one page holds: one page can show
+/// every key the cap allows.
+const KEY_PAGE: u32 = 100;
+const MAX_KEY_PAGE: u32 = 1_000;
 
 pub use admission::Authorized;
 pub use open::EngineError;
@@ -175,31 +184,60 @@ impl Engine {
             expires_at: req.expires_at,
         };
         let (keys, env, clock) = (self.keys(&a), self.env, self.clock.clone());
-        let row = tokio::task::spawn_blocking(move || keys.insert_key(&env, new, creator, &*clock))
-            .await
-            .map_err(|_| unavailable())?
-            .map_err(|e| match e {
-                InsertError::Creator => admission::unauthenticated("invalid API key", None),
-                InsertError::Refused(why) => OpError {
+        let row = key_change(move || keys.insert_key(&env, new, creator, &*clock)).await?;
+        let info = key_info(row, self.clock.now());
+        Ok(CreatedKey { key, info })
+    }
+
+    /// A page of the calling key's environment's keys, newest first, never a secret.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::whoami`]; `PermissionDenied` without `admin`; `Invalid` for a cursor that
+    /// does not decode or names another incarnation.
+    pub async fn list_keys(&self, cx: &Call, req: ListKeysRequest) -> Result<KeyPage, OpError> {
+        let a = self.admit(cx, Operation::ListKeys).await?;
+        let token = self.env.token();
+        let before = req
+            .cursor
+            .map(|c| {
+                decode_cursor(&c, token).ok_or_else(|| OpError {
                     kind: ErrorKind::Invalid,
-                    message: why.to_string(),
+                    message: "invalid cursor".into(),
                     hint: None,
-                },
-                InsertError::Store(_) => unavailable(),
-            })?;
-        Ok(CreatedKey {
-            key,
-            info: KeyInfo {
-                key_id: id,
-                label: row.label,
-                scopes: row.record.scopes,
-                origin: KeyOrigin::Created,
-                created_by: Some(creator),
-                created_at: row.created_at,
-                expires_at: row.record.expires_at,
-                status: KeyStatus::Active,
-            },
+                })
+            })
+            .transpose()?;
+        let limit = req.limit.map_or(KEY_PAGE, |l| l.get().min(MAX_KEY_PAGE));
+        let (keys, env) = (self.keys(&a), self.env);
+        // One more than the page, so a full last page carries no cursor.
+        let mut rows = blocking(move || keys.list_keys(&env, before, limit + 1)).await?;
+        let limit = limit as usize;
+        let next = (rows.len() > limit).then(|| {
+            rows.truncate(limit);
+            format!("{token}.{}", rows[limit - 1].seq)
+        });
+        let now = self.clock.now();
+        Ok(KeyPage {
+            keys: rows.into_iter().map(|row| key_info(row, now)).collect(),
+            next,
         })
+    }
+
+    /// Revokes a key of the calling key's environment; the row stays (D35). Revoking a revoked
+    /// key succeeds.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::whoami`]; `PermissionDenied` without `admin`; `NotFound` "key not found"
+    /// for an ID that does not parse or names no key here; `Unauthenticated` if the calling key
+    /// was revoked or expired before the revoke's transaction.
+    pub async fn revoke_key(&self, cx: &Call, req: RevokeKeyRequest) -> Result<(), OpError> {
+        let a = self.admit(cx, Operation::RevokeKey).await?;
+        let id = req.key_id.parse().map_err(|_| key_not_found())?;
+        let by = a.grant().key_id();
+        let (keys, env, clock) = (self.keys(&a), self.env, self.clock.clone());
+        key_change(move || keys.revoke_key(&env, id, by, &*clock)).await
     }
 
     /// The ledger, reached only with a proof of admission, submitting as its grant (TEN-1,
@@ -218,6 +256,63 @@ impl Engine {
         let env = a.grant().env();
         blocking(move || keys.environment(&env)).await
     }
+}
+
+/// What is listed about a key, its status by the clock (architecture.md, "Keys").
+fn key_info(row: KeyRow, now: Timestamp) -> KeyInfo {
+    let r = row.record;
+    let status = if r.revoked_at.is_some() {
+        KeyStatus::Revoked
+    } else if r.expires_at.is_some_and(|t| now >= t) {
+        KeyStatus::Expired
+    } else {
+        KeyStatus::Active
+    };
+    KeyInfo {
+        key_id: r.id,
+        label: row.label,
+        scopes: r.scopes,
+        origin: row.origin,
+        created_by: row.created_by,
+        created_at: row.created_at,
+        expires_at: r.expires_at,
+        status,
+    }
+}
+
+/// A key cursor is `<incarnation token>.<last seq returned>`, as event cursors are: an
+/// encoding, not a signature. Only the form this module writes decodes.
+fn decode_cursor(cursor: &str, token: IncarnationToken) -> Option<u64> {
+    let seq: u64 = cursor.rsplit_once('.')?.1.parse().ok()?;
+    // Checks the token, and that there is no sign and no leading zero; a seq is an SQLite rowid.
+    (cursor == format!("{token}.{seq}") && i64::try_from(seq).is_ok()).then_some(seq)
+}
+
+fn key_not_found() -> OpError {
+    OpError {
+        kind: ErrorKind::NotFound,
+        message: "key not found".into(),
+        hint: None,
+    }
+}
+
+/// Runs a key change off the runtime and answers its refusal.
+async fn key_change<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, KeyChangeError> + Send + 'static,
+) -> Result<T, OpError> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|_| unavailable())?
+        .map_err(|e| match e {
+            KeyChangeError::Caller => admission::unauthenticated("invalid API key", None),
+            KeyChangeError::Refused(why) => OpError {
+                kind: ErrorKind::Invalid,
+                message: why.to_string(),
+                hint: None,
+            },
+            KeyChangeError::NotFound => key_not_found(),
+            KeyChangeError::Store(_) => unavailable(),
+        })
 }
 
 fn address(record: &EnvironmentRecord) -> Address {

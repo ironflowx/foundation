@@ -5,7 +5,8 @@ use ironflowx_core::{ErrorKind, SubmitAs};
 use ironflowx_events::{Emit, ItemOutcome, Refusal, Submission};
 use ironflowx_proto::{
     Call, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
-    EmitResponse, Event, EventPage, GetEventRequest, ListEventsRequest, OpError, Operations,
+    EmitResponse, Event, EventPage, GetEventRequest, KeyPage, ListEventsRequest, ListKeysRequest,
+    OpError, Operations, RevokeKeyRequest,
 };
 
 use crate::{Ledger, ReadError, SubmitError};
@@ -65,6 +66,15 @@ fn read_error(e: ReadError) -> OpError {
     match e {
         ReadError::Refused(r) => refused(r),
         ReadError::Unavailable => unavailable(),
+    }
+}
+
+/// No keys exist without the engine.
+fn no_keys() -> OpError {
+    OpError {
+        kind: ErrorKind::Unauthenticated,
+        message: "authentication required".into(),
+        hint: Some("open an engine to manage keys".into()),
     }
 }
 
@@ -153,13 +163,17 @@ impl Operations for LocalOperations<'_> {
         })
     }
 
-    /// No keys exist without the engine: every call is refused until the engine replaces this
-    /// adapter.
+    // No keys exist without the engine: every key call is refused until the engine replaces this
+    // adapter.
     async fn create_key(&self, _cx: &Call, _req: CreateKeyRequest) -> Result<CreatedKey, OpError> {
-        Err(OpError {
-            kind: ErrorKind::Unauthenticated,
-            message: "authentication required".into(),
-            hint: Some("open an engine to create keys".into()),
-        })
+        Err(no_keys())
+    }
+
+    async fn list_keys(&self, _cx: &Call, _req: ListKeysRequest) -> Result<KeyPage, OpError> {
+        Err(no_keys())
+    }
+
+    async fn revoke_key(&self, _cx: &Call, _req: RevokeKeyRequest) -> Result<(), OpError> {
+        Err(no_keys())
     }
 }

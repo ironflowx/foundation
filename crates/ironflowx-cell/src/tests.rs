@@ -958,14 +958,24 @@ async fn a_format_1_directory_is_refused_as_another_format() {
 }
 
 #[tokio::test]
-async fn local_operations_create_no_key() {
+async fn local_operations_manage_no_keys() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = open(dir.path(), new_env_ref()).await;
-    let req = ironflowx_proto::CreateKeyRequest::default();
-    let err = LocalOperations::new(&ledger)
-        .create_key(&Call::anonymous(), req)
-        .await
-        .expect_err("refused");
-    assert_eq!(err.kind, ErrorKind::Unauthenticated);
+    let (ops, cx) = (LocalOperations::new(&ledger), Call::anonymous());
+    let revoke = ironflowx_proto::RevokeKeyRequest {
+        key_id: String::new(),
+    };
+    let refusals = [
+        ops.create_key(&cx, ironflowx_proto::CreateKeyRequest::default())
+            .await
+            .map(drop),
+        ops.list_keys(&cx, ironflowx_proto::ListKeysRequest::default())
+            .await
+            .map(drop),
+        ops.revoke_key(&cx, revoke).await,
+    ];
+    for refused in refusals {
+        assert_eq!(refused.map_err(|e| e.kind), Err(ErrorKind::Unauthenticated));
+    }
     ledger.close().await;
 }
