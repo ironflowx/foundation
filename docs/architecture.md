@@ -131,7 +131,6 @@ fn fold<T: EventTables>(tx: &mut T, record: &Record) -> Result<(), T::Error>;
 | Version | Absent stores 1; otherwise 1 to 2,147,483,647 | EVT-002, EVT-008, EVT-009 |
 | Idempotency key | Absent means no key; otherwise 1–256 bytes, no NUL. One key per environment, across names, for as long as its event exists | EVT-030–037 |
 | Batch | An empty batch answers with no results | EVT-023 |
-| Sequence | A new event whose sequence would pass `u64::MAX` is refused: `event sequences are used up` | |
 
 If a build turns on `serde_json`'s `arbitrary_precision` feature, which Cargo's feature unification can do from any crate in the embedder's graph, an object whose first key is `$serde_json::private::Number` is read as a number and so may be refused. A default build reads that key like any other. CI runs the event-rule tests in both builds.
 
@@ -150,7 +149,7 @@ The kind is contract. Four messages are contract too: `event name is required`, 
 
 ## Commit and read
 
-1. The writer processes one submission at a time (D15). Up to 16 more can wait in its queue. A submit waits asynchronously for a slot. Cancelling before admission leaves no job for the writer. Cancelling after admission, or timing out, only drops the answer: the write can still commit, so treat it like `Unknown` and retry with the same idempotency key. For each it reads the event clock and calls `decide` against the read store, drawing IDs from a UUIDv7 generator.
+1. The writer processes one submission at a time (D15). Up to 16 more can wait in its queue. A submit waits asynchronously for a slot. Cancelling before admission leaves no job for the writer. Cancelling after admission, or timing out, only drops the answer: the write can still commit. Its outcome is unknown to the caller, so retry with the same idempotency key; no reopen is needed. For each submission it reads the event clock and calls `decide` against the read store, drawing IDs from a UUIDv7 generator.
 2. Nothing to append (all refused, or all duplicates): it answers at once.
 3. Otherwise it appends one record holding every new event and waits for the log's fsync, off the async threads. Each new event takes the next event sequence, from 1, in input order.
 4. It publishes the new committed head to the read gate, then acknowledges. Then it folds the record, before it takes the next submission, so the read store holds every earlier record when `decide` runs.
