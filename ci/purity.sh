@@ -37,6 +37,8 @@ ci/no-fault-points.sh ci/fixtures/fault-points-forwarded
     "on-by-default/Cargo.toml: published crate can enable __fault-points on on-by-default" \
     "through-dependency/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" \
     "opt-in/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" \
-    "default-forwards/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" -- \
+    "default-forwards/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" \
+    "own-feature/Cargo.toml: published crate can enable __fault-points on own-feature" \
+    "implicit-optional/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" -- \
     ci/no-fault-points.sh ci/fixtures/fault-points
 }

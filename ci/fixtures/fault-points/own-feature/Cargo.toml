@@ -1,0 +1,8 @@
+[package]
+name = "own-feature"
+edition = "2024"
+
+# Its own ordinary feature turns on its own hook.
+[features]
+debug = ["__fault-points"]
+__fault-points = []

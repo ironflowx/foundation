@@ -13,10 +13,13 @@ status=0
 for manifest in "$dir"/*/Cargo.toml; do
   # shortcut: only `publish = false` marks a crate unpublished; a registry list would read as published.
   grep -qE '^publish *= *false' "$manifest" && continue
-  path="$(cd "$(dirname "$manifest")" && pwd -P)/Cargo.toml"
-  # Every feature but `__fault-points`, implicit optional-dependency ones included.
+  # By name, not path: cargo reports a symlinked path unresolved.
+  name=$(cargo tree --locked --manifest-path "$manifest" --depth 0 --prefix none --format '{p}' |
+    awk '{ print $1 }')
+  # Every feature but `__fault-points`, implicit optional-dependency ones included. `keys` fails
+  # on a crate it cannot find, so a failed lookup stops the check instead of skipping features.
   features=$(cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest" |
-    jq -r --arg path "$path" '.packages[] | select(.manifest_path == $path)
+    jq -er --arg name "$name" '[.packages[] | select(.name == $name)][0]
       | .features | keys | map(select(. != "__fault-points")) | join(",")')
   # Default features, then every other feature: any package with `__fault-points` on, the crate
   # itself included, got it some other way than from the crate's own `__fault-points`.
