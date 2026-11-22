@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # Usage: ci/purity.sh
 # LED-15, D17 and D36: the pure crates' dependency allowlists, the SequencedTime constructor
-# outside the ledger, SubmitAs::key outside the credentials crate, both bans in every
-# clippy.toml; the crash test's fault points in no published build; ci/red.sh, which records test
-# checks landing red; and each check rejecting its fixture. The clippy job enforces the call bans
-# on the real crates.
+# outside the ledger, SubmitAs::key outside the credentials crate, the key digest codec outside
+# the control plane (TEN-4), every crate-wide ban in every clippy.toml; the crash test's fault
+# points in no published build; ci/red.sh, which records test checks landing red; and each check
+# rejecting its fixture. The clippy job enforces the call bans on the real crates.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ci/check-deps.sh crates/ironflowx-core/Cargo.toml ci/purity/ironflowx-core.allow
 ci/check-deps.sh crates/ironflowx-events/Cargo.toml ci/purity/ironflowx-events.allow
+ci/check-deps.sh crates/ironflowx-authz/Cargo.toml ci/purity/ironflowx-authz.allow
 ci/no-event-clock-outside-ledger.sh crates
 ci/no-key-attribution.sh crates
 ci/clippy-bans.sh .
+ci/no-digest-codec.sh crates
 # Comments may name the constructor.
 ci/no-key-attribution.sh ci/fixtures/key-attribution-in-comment
 ci/no-fault-points.sh crates
@@ -29,6 +31,16 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
 {
   ci/must-reject.sh "dependency not allowed: getrandom" -- \
     ci/check-deps.sh ci/fixtures/forbidden-dep/Cargo.toml ci/purity/ironflowx-core.allow
+  ci/must-reject.sh "dependency not allowed: getrandom" -- \
+    ci/check-deps.sh ci/fixtures/forbidden-dep/Cargo.toml ci/purity/ironflowx-authz.allow
+  ci/must-reject.sh \
+    'disallowed method `ironflowx_authz::KeyDigest::to_stored`' \
+    'disallowed method `ironflowx_authz::KeyDigest::from_stored`' -- \
+    cargo clippy --locked --manifest-path ci/fixtures/digest-codec-outside-store/Cargo.toml -- -D warnings
+  ci/must-reject.sh \
+    "ci/fixtures/digest-codec-outside-store/src/lib.rs:7:" \
+    "ci/fixtures/digest-codec-outside-store/src/lib.rs:11:" -- \
+    ci/no-digest-codec.sh ci/fixtures/digest-codec-outside-store
   ci/must-reject.sh \
     'disallowed method `std::time::SystemTime::now`' \
     'disallowed method `std::fs::read`' \
@@ -73,9 +85,17 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     ci/no-fault-points.sh ci/fixtures/fault-points
 }
 
-# ci/red.sh passes only on a failure that names its pattern, and restores the file every time.
+# ci/red.sh passes only on a failure that names its pattern, and restores the file every time,
+# with a new mtime: one it kept would leave cargo using the build that had the defect in.
 red=ci/fixtures/red
+before=$(mktemp)
+sleep 1
 ci/red.sh "$red/value.txt" 's/ok/no/' "'value_is_ok' panicked" -- "$red/check.sh" >/dev/null
+[ "$red/value.txt" -nt "$before" ] || {
+  echo "purity: ci/red.sh restored $red/value.txt with its old mtime"
+  exit 1
+}
+rm -f "$before"
 ci/must-reject.sh "changed nothing" -- ci/red.sh "$red/value.txt" 's/absent/no/' x -- "$red/check.sh"
 ci/must-reject.sh "still passes" -- ci/red.sh "$red/value.txt" 's/ok/OK/' x -- true
 ci/must-reject.sh "failed without 'other_test'" -- \

@@ -1,0 +1,59 @@
+pub mod ironflowx_authz
+pub struct ironflowx_authz::Grant
+impl ironflowx_authz::Grant
+pub const fn ironflowx_authz::Grant::env(&self) -> ironflowx_core::id::EnvRef
+pub const fn ironflowx_authz::Grant::key_id(&self) -> ironflowx_core::id::KeyId
+pub const fn ironflowx_authz::Grant::scopes(&self) -> &alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>
+impl core::clone::Clone for ironflowx_authz::Grant
+pub fn ironflowx_authz::Grant::clone(&self) -> Self
+impl core::fmt::Debug for ironflowx_authz::Grant
+pub fn ironflowx_authz::Grant::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct ironflowx_authz::KeyDigest(_)
+impl ironflowx_authz::KeyDigest
+pub fn ironflowx_authz::KeyDigest::ct_eq(&self, &Self) -> bool
+pub fn ironflowx_authz::KeyDigest::from_stored(&[u8]) -> core::option::Option<Self>
+pub const fn ironflowx_authz::KeyDigest::to_stored(&self) -> [u8; 32]
+impl core::clone::Clone for ironflowx_authz::KeyDigest
+pub fn ironflowx_authz::KeyDigest::clone(&self) -> Self
+impl core::fmt::Debug for ironflowx_authz::KeyDigest
+pub fn ironflowx_authz::KeyDigest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct ironflowx_authz::KeyParts
+pub ironflowx_authz::KeyParts::digest: ironflowx_authz::KeyDigest
+pub ironflowx_authz::KeyParts::id: ironflowx_core::id::KeyId
+impl core::clone::Clone for ironflowx_authz::KeyParts
+pub fn ironflowx_authz::KeyParts::clone(&self) -> Self
+impl core::fmt::Debug for ironflowx_authz::KeyParts
+pub fn ironflowx_authz::KeyParts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct ironflowx_authz::KeyRecord
+pub ironflowx_authz::KeyRecord::digest: ironflowx_authz::KeyDigest
+pub ironflowx_authz::KeyRecord::env: ironflowx_core::id::EnvRef
+pub ironflowx_authz::KeyRecord::id: ironflowx_core::id::KeyId
+pub ironflowx_authz::KeyRecord::scopes: alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>
+impl core::clone::Clone for ironflowx_authz::KeyRecord
+pub fn ironflowx_authz::KeyRecord::clone(&self) -> Self
+impl core::fmt::Debug for ironflowx_authz::KeyRecord
+pub fn ironflowx_authz::KeyRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct ironflowx_authz::Malformed
+impl core::clone::Clone for ironflowx_authz::Malformed
+pub fn ironflowx_authz::Malformed::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_authz::Malformed
+impl core::cmp::PartialEq for ironflowx_authz::Malformed
+pub fn ironflowx_authz::Malformed::eq(&self, &Self) -> bool
+impl core::error::Error for ironflowx_authz::Malformed
+impl core::fmt::Debug for ironflowx_authz::Malformed
+pub fn ironflowx_authz::Malformed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_authz::Malformed
+pub fn ironflowx_authz::Malformed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_authz::Malformed
+pub struct ironflowx_authz::Refused
+impl core::clone::Clone for ironflowx_authz::Refused
+pub fn ironflowx_authz::Refused::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_authz::Refused
+impl core::cmp::PartialEq for ironflowx_authz::Refused
+pub fn ironflowx_authz::Refused::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_authz::Refused
+pub fn ironflowx_authz::Refused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_authz::Refused
+pub fn ironflowx_authz::mint(ironflowx_core::id::KeyId, [u8; 32]) -> (ironflowx_core::secret::Secret, ironflowx_authz::KeyDigest)
+pub fn ironflowx_authz::parse(&ironflowx_core::secret::Secret) -> core::result::Result<ironflowx_authz::KeyParts, ironflowx_authz::Malformed>
+pub fn ironflowx_authz::verify(&ironflowx_authz::KeyParts, core::option::Option<&ironflowx_authz::KeyRecord>, &ironflowx_core::id::EnvRef) -> core::result::Result<ironflowx_authz::Grant, ironflowx_authz::Refused>

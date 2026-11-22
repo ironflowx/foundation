@@ -13,6 +13,14 @@ pub struct EnvironmentId(Uuid7);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EventId(Uuid7);
 
+/// The identity of a tenant: an opaque UUIDv7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TenantId(Uuid7);
+
+/// The identity of a project: an opaque UUIDv7. A project stores its tenant's ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProjectId(Uuid7);
+
 /// The identity of a key: an opaque UUIDv7. Not a secret.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyId(Uuid7);
@@ -91,6 +99,32 @@ impl FromStr for EventId {
 }
 
 impl fmt::Display for EventId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for TenantId {
+    type Err = ParseError;
+    fn from_str(s: &str) -> Result<Self, ParseError> {
+        Uuid7::parse(s, "tenant ID").map(Self)
+    }
+}
+
+impl fmt::Display for TenantId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for ProjectId {
+    type Err = ParseError;
+    fn from_str(s: &str) -> Result<Self, ParseError> {
+        Uuid7::parse(s, "project ID").map(Self)
+    }
+}
+
+impl fmt::Display for ProjectId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }

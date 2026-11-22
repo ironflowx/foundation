@@ -21,3 +21,7 @@ __fault-points = []
 
 [dependencies]
 uuid.workspace = true
+zeroize = { version = "1.9.2", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+serde_core.workspace = true

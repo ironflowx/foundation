@@ -1,7 +1,10 @@
 # Every crate without its own clippy.toml. ironflowx-cell has its own: it alone may stamp event
-# time. The pure crates carry crates/ironflowx-core/clippy.toml, and both repeat these bans:
-# clippy configs cannot include one another.
+# time; so has ironflowx-store: it alone may use the key digest's storage codec. The pure crates
+# carry crates/ironflowx-core/clippy.toml. Each repeats these bans, since clippy configs cannot
+# include one another.
 disallowed-methods = [
   { path = "ironflowx_core::SequencedTime::from_event_clock", reason = "only ironflowx-cell produces event time (D17)" },
   { path = "ironflowx_core::SubmitAs::key", reason = "only the credentials crate attributes a submission to a key (D36)" },
+  { path = "ironflowx_authz::KeyDigest::to_stored", reason = "only the control plane stores a key digest (TEN-4)" },
+  { path = "ironflowx_authz::KeyDigest::from_stored", reason = "only the control plane stores a key digest (TEN-4)" },
 ]

@@ -7,7 +7,11 @@ use std::fmt;
 use std::future::Future;
 use std::num::NonZeroU32;
 
-use ironflowx_core::{Emitter, ErrorKind, EventId, Timestamp};
+use std::collections::BTreeSet;
+
+use ironflowx_core::{
+    Address, Emitter, EnvRef, ErrorKind, EventId, KeyId, ProjectId, Scope, Secret, Timestamp,
+};
 
 /// The four things a client can do in 0.1. Every caller, in process or remote, goes through
 /// this trait. Adapters are generic over it; there is no `dyn` use in 0.1.
@@ -41,13 +45,13 @@ pub trait Operations: Send + Sync {
     ) -> impl Future<Output = Result<EventPage, OpError>> + Send;
 }
 
-/// Who is calling. Opaque and empty in 0.1; 0.2 gives it the credential (D2).
-#[derive(Clone)]
+/// Who is calling: the key as presented, or none (D2, D45). Not `Clone`, since the key is a
+/// [`Secret`].
 pub struct Call {
-    _private: (),
+    key: Option<Secret>,
 }
 
-/// Prints no field, so the credential 0.2 adds cannot reach a log through `{:?}`.
+/// Prints no field, so the key cannot reach a log through `{:?}`.
 impl fmt::Debug for Call {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Call").finish_non_exhaustive()
@@ -57,15 +61,27 @@ impl fmt::Debug for Call {
 impl Call {
     /// A call that carries no credential.
     pub const fn anonymous() -> Self {
-        Self { _private: () }
+        Self { key: None }
+    }
+
+    /// A call that presents `key`, the whole key text.
+    pub const fn with_key(key: Secret) -> Self {
+        Self { key: Some(key) }
+    }
+
+    /// The key as presented, if any.
+    pub const fn key(&self) -> Option<&Secret> {
+        self.key.as_ref()
     }
 }
 
-/// A failed call: the kind decides whether to retry, the message explains.
+/// A failed call: the kind decides whether to retry (`kind.retryable()`), the message explains,
+/// and the hint, when there is one, says what to do or when to retry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpError {
     pub kind: ErrorKind,
     pub message: String,
+    pub hint: Option<String>,
 }
 
 impl fmt::Display for OpError {
@@ -149,4 +165,32 @@ pub struct EventPage {
     pub events: Vec<Event>,
     /// The cursor for the next page; `None` on the last page.
     pub next: Option<String>,
+}
+
+/// Asks which key is calling. Takes nothing: a call reaches only its key's environment (LED-7).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WhoamiRequest {}
+
+/// The calling key, as it sees itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Whoami {
+    pub key_id: KeyId,
+    pub scopes: BTreeSet<Scope>,
+    pub environment: Address,
+    /// `None`: the key never expires.
+    pub expires_at: Option<Timestamp>,
+}
+
+/// Asks which environments the calling key reaches: only its own (LED-7).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListEnvironmentsRequest {}
+
+/// An environment a key reaches. It carries its `EnvRef`, never a bare ID (LED-9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Environment {
+    pub env: EnvRef,
+    pub name: String,
+    pub address: Address,
+    pub project_id: ProjectId,
+    pub created_at: Timestamp,
 }

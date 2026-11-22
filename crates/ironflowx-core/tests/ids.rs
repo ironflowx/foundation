@@ -1,4 +1,6 @@
-use ironflowx_core::{Emitter, EnvRef, EnvironmentId, EventId, IncarnationToken, KeyId, SubmitAs};
+use ironflowx_core::{
+    Emitter, EnvRef, EnvironmentId, EventId, IncarnationToken, KeyId, ProjectId, SubmitAs, TenantId,
+};
 
 const V7: &str = "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f";
 const V4: &str = "3f2b8c1e-4d5a-4b6c-9d7e-8f9a0b1c2d3e";
@@ -135,5 +137,25 @@ fn an_emitter_round_trips_through_its_text_form() {
         format!("tenant:{V7}"),
     ] {
         assert!(bad.parse::<Emitter>().is_err(), "accepted {bad:?}");
+    }
+}
+
+#[test]
+fn tenant_and_project_ids_parse_only_a_uuidv7() {
+    assert_eq!(V7.parse::<TenantId>().unwrap().to_string(), V7);
+    assert_eq!(V7.parse::<ProjectId>().unwrap().to_string(), V7);
+    for bad in [
+        "",
+        V4,
+        "default",
+        "019A9F3E-7C2B-7D41-8A3E-5F6B7C8D9E0F",
+        "019a9f3e7c2b7d418a3e5f6b7c8d9e0f",
+        "019a9f3e-7c2b-7d41-0a3e-5f6b7c8d9e0f",
+    ] {
+        assert!(bad.parse::<TenantId>().is_err(), "tenant accepted {bad:?}");
+        assert!(
+            bad.parse::<ProjectId>().is_err(),
+            "project accepted {bad:?}"
+        );
     }
 }

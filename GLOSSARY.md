@@ -16,8 +16,42 @@ A random value minted with an environment. An environment recreated under the sa
 An environment's ID with its incarnation token. A ledger is opened with one, and work is never looked up by the ID alone.
 _Avoid_: Environment ID, where the reference (ID and token) is meant
 
+**Tenant**:
+The top isolation and quota boundary. One default tenant on a single node, hidden from keys and addresses.
+
+**Project**:
+A group of environments inside a tenant.
+
+**Address**:
+A path derived for people and agents: `project/environment` on a single node, `tenant/project/environment` once tenants show.
+
+**Key**:
+A credential bound to one environment, holding a set of scopes.
+
+**Admin key**:
+Any key holding the `admin` scope.
+
+**Bootstrap key**:
+The admin key bootstrap makes, holding all three scopes: the seed if one is given, else a minted key.
+
+**Scope**:
+What a key may do: `read`, `write`, `admin`. A set, not a ladder.
+
 **Emitter**:
 Who made a change, as stored on every event: `key:<key-id>`, or `embedder:<name>` for an embedder that calls the ledger without keys.
+
+**Grant**:
+What a verified key may do: its ID, scopes, environment and expiry. Never stored.
+
+**Engine**:
+What a host opens on a data directory: it owns the control plane and the environment's ledger, and admits every call.
+_Avoid_: operation layer
+
+**Control plane**:
+The record of which tenants, projects, environments and keys exist, in `control.db`.
+
+**Bootstrap**:
+Creating the default tenant, project, environment and first admin key, once.
 
 ### Storage
 

@@ -1,11 +1,17 @@
-//! The 0.1 behavior scenarios, run from the milestone folder through `LocalOperations` on a
-//! temporary directory with a `ManualClock` (D20). Steps call `Operations`, never a URL.
+//! The behavior scenarios in `docs/behaviors/`, each file on its own World, on a temporary
+//! directory with a `ManualClock` (D20). Steps call `Operations` or the engine, never a URL.
+//! `events.feature` runs through `LocalOperations` until the engine replaces it; tenancy
+//! scenarios run on the engine as each lands (`tenancy::REGISTERED`).
+
+#[path = "behaviors/tenancy.rs"]
+mod tenancy;
 
 use std::collections::BTreeSet;
 use std::fmt;
 
 use cucumber::feature::Ext as _;
 use cucumber::gherkin::{Feature, GherkinEnv};
+use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
 use ironflowx_cell::{Ledger, LocalOperations, ManualClock, new_env_ref};
 use ironflowx_core::{EnvRef, ErrorKind, EventId, Timestamp};
@@ -662,9 +668,17 @@ impl cucumber::Parser<&'static str> for Unescaped {
         let mut feature =
             Feature::parse(text, GherkinEnv::default()).unwrap_or_else(|e| panic!("{path}: {e}"));
         feature.path = Some(path.into());
-        // Spec 4: all 41 run, so a scenario cannot drop out unnoticed. Cucumber counts each
-        // outline example, so it reports more.
-        assert_eq!(feature.scenarios.len(), 41, "the 0.1 scenarios");
+        // Each file's scenario declarations, before outline expansion, so a scenario cannot be
+        // added or dropped unnoticed.
+        let expected = SCENARIOS
+            .iter()
+            .find(|(name, _)| path.ends_with(name))
+            .map(|(_, count)| *count);
+        assert_eq!(
+            Some(feature.scenarios.len()),
+            expected,
+            "{path}: scenario count"
+        );
         let feature = feature.expand_examples().expect("examples expand");
         futures::stream::iter(vec![Ok(feature)])
     }
@@ -692,9 +706,31 @@ fn cells(line: &str) -> String {
     out
 }
 
+/// Every feature file in `docs/behaviors/` and its scenario declarations.
+const SCENARIOS: &[(&str, usize)] = &[("events.feature", 41), ("tenancy.feature", 40)];
+
+const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/behaviors");
+
+/// The feature files on disk must be exactly the ones `SCENARIOS` names.
+fn discover() {
+    let mut found: Vec<String> = std::fs::read_dir(DIR)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".feature"))
+        .collect();
+    found.sort();
+    let mut known: Vec<String> = SCENARIOS.iter().map(|(n, _)| (*n).to_owned()).collect();
+    known.sort();
+    assert_eq!(
+        found, known,
+        "feature files in docs/behaviors/ vs SCENARIOS"
+    );
+}
+
 #[tokio::main]
 async fn main() {
-    Env::cucumber::<&str>()
+    discover();
+    let events = Env::cucumber::<&str>()
         .with_parser(Unescaped)
         // `close`, not a drop: dropping joins the writer thread on the runtime.
         .after(|_, _, _, _, world| {
@@ -705,9 +741,12 @@ async fn main() {
             })
         })
         .fail_on_skipped()
-        .run_and_exit(concat!(
+        .run(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../docs/behaviors/events.feature"
         ))
         .await;
+    let tenancy = tenancy::run(Unescaped).await;
+    assert!(!events.execution_has_failed(), "events.feature failed");
+    assert!(!tenancy, "tenancy.feature failed");
 }

@@ -1,0 +1,6 @@
+# The control plane alone may use the key digest's storage codec (TEN-4), so only the root
+# file's other bans are repeated here.
+disallowed-methods = [
+  { path = "ironflowx_core::SequencedTime::from_event_clock", reason = "only ironflowx-cell produces event time (D17)" },
+  { path = "ironflowx_core::SubmitAs::key", reason = "only the credentials crate attributes a submission to a key (D36)" },
+]

@@ -1,0 +1,18 @@
+# Every crate ironflowx-authz may depend on, directly or not (LED-15).
+ironflowx-core
+uuid
+zeroize
+# The digest, constant-time comparison and the key text.
+sha2
+subtle
+base64
+# What sha2 pulls in.
+digest
+block-buffer
+crypto-common
+hybrid-array
+typenum
+cfg-if
+cpufeatures
+# Only cpufeatures' CPU feature detection on AArch64 uses libc; nothing here does I/O with it.
+libc

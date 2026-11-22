@@ -1,6 +1,6 @@
 [package]
 name = "ironflowx-behaviors"
-description = "Runs the milestone behavior scenarios against LocalOperations (D20). Unpublished."
+description = "Runs the behavior scenarios in docs/behaviors/ against LocalOperations and the engine (D20). Unpublished."
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -10,6 +10,7 @@ license.workspace = true
 [dev-dependencies]
 ironflowx-core.workspace = true
 ironflowx-cell.workspace = true
+ironflowx-operations.workspace = true
 ironflowx-proto.workspace = true
 serde_json.workspace = true
 cucumber = "0.23.0"

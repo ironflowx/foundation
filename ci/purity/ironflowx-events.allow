@@ -6,3 +6,4 @@ serde_json
 itoa
 memchr
 zmij
+zeroize

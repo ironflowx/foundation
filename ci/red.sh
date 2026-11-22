@@ -14,7 +14,8 @@ file=$1 expr=$2 pattern=$3
 shift 4
 backup=$(mktemp)
 cp -p "$file" "$backup" || exit 2
-trap 'cp -p "$backup" "$file"; rm -f "$backup"' EXIT
+# Restored without -p: a fresh mtime, so cargo rebuilds instead of keeping the mutated build.
+trap 'cp "$backup" "$file"; rm -f "$backup"' EXIT
 sed "$expr" "$backup" >"$file" || exit 2
 if cmp -s "$file" "$backup"; then
   echo "red: '$expr' changed nothing in $file"
