@@ -2,7 +2,7 @@
 
 Every architecture decision, numbered across all milestones. Numbers are never reused. A decision a later one overturns stays, marked "Superseded by Dnn" in its Why cell.
 
-From 0.2 on, a milestone's PRD issue assigns its decision numbers up front and each lands with the PR that builds it, so the table can skip numbers still to land: 0.2's are D27–D44 ([#64](https://github.com/ironflowx/foundation/issues/64)).
+From 0.2 on, a milestone's PRD issue assigns its decision numbers up front and each lands with the PR that builds it, so the table can skip numbers still to land: 0.2's are D27–D46 ([#64](https://github.com/ironflowx/foundation/issues/64), which renumbered its D25 and D26, taken on `main` first, as D45 and D46).
 
 **Since** is the milestone that made the decision. From D23 on, the issue or PR that made it is in that row's git history. D1–D22 moved here from the [0.1 architecture doc](https://github.com/ironflowx/foundation/blob/93f0bb261276d7522180d7307464256239a44030/docs/milestones/0.1-ledger/architecture.md#decisions); their history is in that file's log.
 
