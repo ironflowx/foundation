@@ -47,6 +47,7 @@ impl Operations for Fixed {
             version: 1,
             idempotency_key: None,
             time: Timestamp::from_millis(0),
+            emitted_by: "embedder:test".parse().unwrap(),
         })
     }
 

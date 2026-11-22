@@ -2,6 +2,8 @@
 
 Every architecture decision, numbered across all milestones. Numbers are never reused. A decision a later one overturns stays, marked "Superseded by Dnn" in its Why cell.
 
+From 0.2 on, a milestone's PRD issue assigns its decision numbers up front and each lands with the PR that builds it, so the table can skip numbers still to land: 0.2's are D27–D44 ([#64](https://github.com/ironflowx/foundation/issues/64)).
+
 **Since** is the milestone that made the decision. From D23 on, the issue or PR that made it is in that row's git history. D1–D22 moved here from the [0.1 architecture doc](https://github.com/ironflowx/foundation/blob/93f0bb261276d7522180d7307464256239a44030/docs/milestones/0.1-ledger/architecture.md#decisions); their history is in that file's log.
 
 | # | Since | Decision | Why |
@@ -32,3 +34,5 @@ Every architecture decision, numbered across all milestones. Numbers are never r
 | D24 | 0.1 | The writer admits up to 16 waiting submissions. Additional callers await a queue slot | Caps queued work retained after callers cancel while a commit or fold is in progress |
 | D25 | 0.1 | The ledger holds its own lock file, `<dir>/ledger.lock`, from before it opens the log until close | The segment log releases its own lock when it is sealed, so without one a second opener could rebuild the read store under a running ledger |
 | D26 | 0.1 | Published crates take dependencies as caret ranges. Two are exact: `segment-log-core` (D16) and `serde_json`, whose internal recursion limit the 127-depth rule relies on; those two keep the cost, so an embedder must resolve to the same versions. `Cargo.lock` holds CI to exact versions, so a later version is first built in a `cargo update` PR, and a lower bound rises when code starts using a newer API | An exact pin in a library conflicts with any embedder graph that needs another patch of that crate. Caret ranges on 0.x crates still stay within one minor version |
+| D36 | 0.2 | A submission is attributed by a `SubmitAs`, passed beside it: `Ledger::submit(Submission, SubmitAs)`, so `Submission` and `decide` do not change. A read returns an `Emitter`, which nothing converts into a `SubmitAs`. `SubmitAs::key` is confined to the credentials crate by a lint, as D17 (clippy outside `ironflowx-core`, `ci/no-key-attribution.sh` inside it); `SubmitAs::embedder` is open to any caller. A direct ledger caller is trusted. Until the engine replaces it, `LocalOperations` attributes every submission as `embedder:local-operations` | Credentials sit above the ledger, so the ledger trusts its caller; a read value that cannot be resubmitted keeps one caller from replaying another's attribution |
+| D39 | 0.2 | The ledger's format version moves to 2 | Records carry attribution; D8 then refuses a 0.1 directory instead of misreading it |

@@ -67,6 +67,7 @@ pub fn ironflowx_events::Emit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core
 impl core::marker::StructuralPartialEq for ironflowx_events::Emit
 pub struct ironflowx_events::Event
 pub ironflowx_events::Event::data: alloc::vec::Vec<u8>
+pub ironflowx_events::Event::emitted_by: ironflowx_core::who::Emitter
 pub ironflowx_events::Event::id: ironflowx_core::id::EventId
 pub ironflowx_events::Event::idempotency_key: core::option::Option<alloc::string::String>
 pub ironflowx_events::Event::metadata: core::option::Option<alloc::vec::Vec<u8>>
@@ -147,6 +148,6 @@ pub fn ironflowx_events::EventsView::event_by_key(&self, &str) -> core::result::
 pub fn ironflowx_events::EventsView::events_before(&self, core::option::Option<u64>, usize) -> core::result::Result<alloc::vec::Vec<ironflowx_events::Event>, Self::Error>
 pub fn ironflowx_events::EventsView::last_sequence(&self) -> core::result::Result<u64, Self::Error>
 pub fn ironflowx_events::decide<V: ironflowx_events::EventsView>(&V, &ironflowx_events::Submission, ironflowx_core::time::SequencedTime, &mut impl core::iter::traits::iterator::Iterator<Item = ironflowx_core::id::EventId>) -> core::result::Result<ironflowx_events::Decision, ironflowx_events::Error<<V as ironflowx_events::EventsView>::Error>>
-pub fn ironflowx_events::fold<T: ironflowx_events::EventTables>(&mut T, &ironflowx_events::Record) -> core::result::Result<(), <T as ironflowx_events::EventTables>::Error>
+pub fn ironflowx_events::fold<T: ironflowx_events::EventTables>(&mut T, &ironflowx_events::Record, &ironflowx_core::who::Emitter) -> core::result::Result<(), <T as ironflowx_events::EventTables>::Error>
 pub fn ironflowx_events::get_event<V: ironflowx_events::EventsView>(&V, &str) -> core::result::Result<ironflowx_events::Event, ironflowx_events::Error<<V as ironflowx_events::EventsView>::Error>>
 pub fn ironflowx_events::list_events<V: ironflowx_events::EventsView>(&V, ironflowx_core::id::IncarnationToken, core::option::Option<core::num::nonzero::NonZeroU32>, core::option::Option<&str>) -> core::result::Result<ironflowx_events::EventPage, ironflowx_events::Error<<V as ironflowx_events::EventsView>::Error>>

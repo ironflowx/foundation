@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
 
-use ironflowx_core::{EnvRef, ErrorKind, Timestamp};
+use ironflowx_core::{Emitter, EnvRef, ErrorKind, SubmitAs, Timestamp};
 use ironflowx_proto::{
     Call, EmitRequest, Event, GetEventRequest, ListEventsRequest, OpError, Operations,
 };
@@ -17,6 +17,11 @@ const HOUR: i64 = 3_600_000;
 
 fn clock() -> ManualClock {
     ManualClock::new(Timestamp::from_millis(T))
+}
+
+/// What `LocalOperations` attributes every submission to.
+fn local() -> Emitter {
+    "embedder:local-operations".parse().unwrap()
 }
 
 async fn open(dir: &Path, env: EnvRef) -> Ledger {
@@ -169,7 +174,7 @@ async fn replaying_folds_each_record_exactly_once() {
             events: vec![],
         };
         for offset in 0..applied {
-            crate::store::apply(&mut conn, offset, Some(&record), false).unwrap();
+            crate::store::apply(&mut conn, offset, Some((&record, &local())), false).unwrap();
         }
         assert_eq!(crate::store::applied(&conn).unwrap(), applied);
     }
@@ -236,7 +241,7 @@ async fn a_later_record_with_another_token_is_refused() {
             time: Timestamp::from_millis(T),
             events: vec![],
         };
-        let foreign = record::events(new_env_ref().token(), &record);
+        let foreign = record::events(new_env_ref().token(), &local(), &record);
         append(&log, ExpectedRevision::At(revision), foreign);
     }
     std::fs::remove_file(dir.path().join("read.db")).unwrap();
@@ -272,7 +277,7 @@ async fn a_log_without_a_genesis_record_is_refused() {
         append(
             &log,
             ExpectedRevision::Empty,
-            record::events(env.token(), &record),
+            record::events(env.token(), &local(), &record),
         );
     }
     let err = Ledger::open(dir.path(), env, clock()).await.err();
@@ -477,14 +482,18 @@ fn records_round_trip() {
             idempotency_key: Some("k".into()),
         }],
     };
-    assert_eq!(
-        record::decode(&record::events(env.token(), &record)),
-        Some(record::Decoded::Events {
-            format: record::FORMAT,
-            token: env.token(),
-            record
-        })
-    );
+    let key: Emitter = "key:019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f".parse().unwrap();
+    for emitted_by in [local(), key] {
+        assert_eq!(
+            record::decode(&record::events(env.token(), &emitted_by, &record)),
+            Some(record::Decoded::Events {
+                format: record::FORMAT,
+                token: env.token(),
+                emitted_by,
+                record: record.clone(),
+            })
+        );
+    }
     assert_eq!(
         record::decode(&record::genesis(env)),
         Some(record::Decoded::Genesis {
@@ -886,4 +895,64 @@ async fn an_empty_log_preserves_a_store_with_unreadable_progress() {
     let result = Ledger::open(dir.path(), new_env_ref(), clock()).await;
     assert!(matches!(result, Err(OpenError::Io(_))));
     assert_eq!(std::fs::read(db).unwrap(), b"damaged database");
+}
+
+#[tokio::test]
+async fn every_event_records_who_emitted_it_across_reopen_and_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    let batch = ironflowx_events::Submission::Batch(
+        ["a", "b", "c"]
+            .map(|name| ironflowx_events::Emit {
+                name: name.into(),
+                ..Default::default()
+            })
+            .into(),
+    );
+    let app = SubmitAs::embedder("billing app").unwrap();
+    let committed = ledger.submit(batch, app.clone()).await.unwrap();
+    let solo = emit(&ledger, named("d")).await.unwrap();
+    let expected = [
+        local(),
+        Emitter::from(app.clone()),
+        Emitter::from(app.clone()),
+        Emitter::from(app),
+    ];
+    let emitters = async |ledger: &Ledger| -> Vec<Emitter> {
+        all(ledger)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.emitted_by)
+            .collect()
+    };
+    assert_eq!(emitters(&ledger).await, expected);
+    let ironflowx_events::ItemOutcome::New(first) = committed.outcome[0] else {
+        panic!("a new event");
+    };
+    let read = get(&ledger, &first.to_string()).await.unwrap();
+    assert_eq!(read.emitted_by.to_string(), "embedder:billing app");
+    assert_eq!(get(&ledger, &solo).await.unwrap().emitted_by, local());
+    ledger.close().await;
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(emitters(&ledger).await, expected);
+    ledger.close().await;
+    std::fs::remove_file(dir.path().join("read.db")).unwrap();
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(emitters(&ledger).await, expected);
+}
+
+#[tokio::test]
+async fn a_format_1_directory_is_refused_as_another_format() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    {
+        let log = SegmentLog::open(dir.path().join("log"), Options::default()).unwrap();
+        let mut genesis = record::genesis(env);
+        genesis[1..3].copy_from_slice(&1u16.to_le_bytes());
+        append(&log, ExpectedRevision::Empty, genesis);
+    }
+    let err = Ledger::open(dir.path(), env, clock()).await.err();
+    assert!(matches!(err, Some(OpenError::Format)), "{err:?}");
 }

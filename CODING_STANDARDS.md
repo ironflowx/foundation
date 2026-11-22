@@ -4,7 +4,8 @@ Judgement rules for review. Anything a tool can check belongs in CI instead (`ci
 
 - **Docs stay true.** A change that departs from a line in `docs/` (`architecture.md`,
   `decisions.md`, `invariants.md`, the behaviors) updates that line in the same PR. A new decision
-  gets the next D-number in `decisions.md`; an overturned one is marked superseded, not deleted.
+  gets the next D-number in `decisions.md`, or the one its milestone's PRD issue assigned; an
+  overturned one is marked superseded, not deleted.
   The issue that planned the work is not updated after it closes.
 - **Assertions can fail.** For each new or changed assertion, the reviewer names the defect it
   catches and the nearest defect it lets through. One that no defect can fail is deleted; one

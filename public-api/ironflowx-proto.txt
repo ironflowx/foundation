@@ -57,6 +57,7 @@ pub fn ironflowx_proto::EmitResponse::fmt(&self, &mut core::fmt::Formatter<'_>) 
 impl core::marker::StructuralPartialEq for ironflowx_proto::EmitResponse
 pub struct ironflowx_proto::Event
 pub ironflowx_proto::Event::data: alloc::vec::Vec<u8>
+pub ironflowx_proto::Event::emitted_by: ironflowx_core::who::Emitter
 pub ironflowx_proto::Event::event_id: ironflowx_core::id::EventId
 pub ironflowx_proto::Event::idempotency_key: core::option::Option<alloc::string::String>
 pub ironflowx_proto::Event::metadata: core::option::Option<alloc::vec::Vec<u8>>

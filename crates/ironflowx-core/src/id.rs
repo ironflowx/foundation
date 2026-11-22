@@ -13,6 +13,10 @@ pub struct EnvironmentId(Uuid7);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EventId(Uuid7);
 
+/// The identity of a key: an opaque UUIDv7. Not a secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyId(Uuid7);
+
 /// A random 128-bit value minted when an environment is created. Text form: 32 lowercase hex
 /// digits. Parsing that form is its only constructor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -87,6 +91,19 @@ impl FromStr for EventId {
 }
 
 impl fmt::Display for EventId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for KeyId {
+    type Err = ParseError;
+    fn from_str(s: &str) -> Result<Self, ParseError> {
+        Uuid7::parse(s, "key ID").map(Self)
+    }
+}
+
+impl fmt::Display for KeyId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }

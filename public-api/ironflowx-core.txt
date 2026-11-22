@@ -16,6 +16,25 @@ impl core::hash::Hash for ironflowx_core::ErrorKind
 pub fn ironflowx_core::ErrorKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::Copy for ironflowx_core::ErrorKind
 impl core::marker::StructuralPartialEq for ironflowx_core::ErrorKind
+pub struct ironflowx_core::Emitter(_)
+impl core::clone::Clone for ironflowx_core::Emitter
+pub fn ironflowx_core::Emitter::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_core::Emitter
+pub fn ironflowx_core::Emitter::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_core::Emitter
+pub fn ironflowx_core::Emitter::eq(&self, &Self) -> bool
+impl core::convert::From<ironflowx_core::SubmitAs> for ironflowx_core::Emitter
+pub fn ironflowx_core::Emitter::from(ironflowx_core::SubmitAs) -> Self
+impl core::fmt::Debug for ironflowx_core::Emitter
+pub fn ironflowx_core::Emitter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_core::Emitter
+pub fn ironflowx_core::Emitter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_core::Emitter
+pub fn ironflowx_core::Emitter::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for ironflowx_core::Emitter
+impl core::str::traits::FromStr for ironflowx_core::Emitter
+pub type ironflowx_core::Emitter::Err = ironflowx_core::ParseError
+pub fn ironflowx_core::Emitter::from_str(&str) -> core::result::Result<Self, ironflowx_core::ParseError>
 pub struct ironflowx_core::EnvRef
 impl ironflowx_core::EnvRef
 pub const fn ironflowx_core::EnvRef::id(&self) -> ironflowx_core::EnvironmentId
@@ -95,6 +114,25 @@ impl core::marker::StructuralPartialEq for ironflowx_core::IncarnationToken
 impl core::str::traits::FromStr for ironflowx_core::IncarnationToken
 pub type ironflowx_core::IncarnationToken::Err = ironflowx_core::ParseError
 pub fn ironflowx_core::IncarnationToken::from_str(&str) -> core::result::Result<Self, ironflowx_core::ParseError>
+pub struct ironflowx_core::KeyId(_)
+impl core::clone::Clone for ironflowx_core::KeyId
+pub fn ironflowx_core::KeyId::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_core::KeyId
+impl core::cmp::Eq for ironflowx_core::KeyId
+pub fn ironflowx_core::KeyId::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_core::KeyId
+pub fn ironflowx_core::KeyId::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_core::KeyId
+pub fn ironflowx_core::KeyId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_core::KeyId
+pub fn ironflowx_core::KeyId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_core::KeyId
+pub fn ironflowx_core::KeyId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for ironflowx_core::KeyId
+impl core::marker::StructuralPartialEq for ironflowx_core::KeyId
+impl core::str::traits::FromStr for ironflowx_core::KeyId
+pub type ironflowx_core::KeyId::Err = ironflowx_core::ParseError
+pub fn ironflowx_core::KeyId::from_str(&str) -> core::result::Result<Self, ironflowx_core::ParseError>
 pub struct ironflowx_core::ParseError
 impl core::clone::Clone for ironflowx_core::ParseError
 pub fn ironflowx_core::ParseError::clone(&self) -> Self
@@ -129,6 +167,23 @@ impl core::hash::Hash for ironflowx_core::SequencedTime
 pub fn ironflowx_core::SequencedTime::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::Copy for ironflowx_core::SequencedTime
 impl core::marker::StructuralPartialEq for ironflowx_core::SequencedTime
+pub struct ironflowx_core::SubmitAs(_)
+impl ironflowx_core::SubmitAs
+pub fn ironflowx_core::SubmitAs::embedder(&str) -> core::result::Result<Self, ironflowx_core::ParseError>
+pub const fn ironflowx_core::SubmitAs::key(ironflowx_core::KeyId) -> Self
+impl core::clone::Clone for ironflowx_core::SubmitAs
+pub fn ironflowx_core::SubmitAs::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_core::SubmitAs
+pub fn ironflowx_core::SubmitAs::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_core::SubmitAs
+pub fn ironflowx_core::SubmitAs::eq(&self, &Self) -> bool
+impl core::convert::From<ironflowx_core::SubmitAs> for ironflowx_core::Emitter
+pub fn ironflowx_core::Emitter::from(ironflowx_core::SubmitAs) -> Self
+impl core::fmt::Debug for ironflowx_core::SubmitAs
+pub fn ironflowx_core::SubmitAs::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_core::SubmitAs
+pub fn ironflowx_core::SubmitAs::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for ironflowx_core::SubmitAs
 pub struct ironflowx_core::Timestamp
 impl ironflowx_core::Timestamp
 pub const fn ironflowx_core::Timestamp::as_millis(self) -> i64

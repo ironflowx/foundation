@@ -1,4 +1,4 @@
-use ironflowx_core::{EnvRef, EnvironmentId, EventId, IncarnationToken};
+use ironflowx_core::{Emitter, EnvRef, EnvironmentId, EventId, IncarnationToken, KeyId, SubmitAs};
 
 const V7: &str = "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f";
 const V4: &str = "3f2b8c1e-4d5a-4b6c-9d7e-8f9a0b1c2d3e";
@@ -69,5 +69,71 @@ fn malformed_env_ref_is_refused() {
         format!("{V7}.{}", &TOKEN[1..]),
     ] {
         assert!(bad.parse::<EnvRef>().is_err(), "accepted {bad:?}");
+    }
+}
+
+#[test]
+fn key_id_parses_only_a_uuidv7() {
+    assert_eq!(V7.parse::<KeyId>().unwrap().to_string(), V7);
+    for bad in [
+        "",
+        V4,
+        "019A9F3E-7C2B-7D41-8A3E-5F6B7C8D9E0F", // uppercase is another form
+        "019a9f3e7c2b7d418a3e5f6b7c8d9e0f",
+        "{019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f}",
+        "019a9f3e-7c2b-7d41-0a3e-5f6b7c8d9e0f", // version 7, wrong variant
+        "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0",  // malformed
+    ] {
+        assert!(bad.parse::<KeyId>().is_err(), "accepted {bad:?}");
+    }
+}
+
+#[test]
+fn an_embedder_name_is_1_to_128_bytes_of_readable_characters() {
+    for good in [
+        "local-operations",
+        "a",
+        "批处理:app",
+        "café au lait",
+        &"x".repeat(128),
+    ] {
+        let emitter = Emitter::from(SubmitAs::embedder(good).unwrap());
+        assert_eq!(emitter.to_string(), format!("embedder:{good}"));
+    }
+    for bad in [
+        "",
+        &"x".repeat(129),
+        &format!("{}é", "x".repeat(127)), // 128 characters, 129 bytes
+        "tab\there",
+        "nul\0",
+        "new\nline",
+        "del\u{7f}",
+        "billing\u{202E}nimda", // right-to-left override (Cf)
+        "zero\u{200B}width",    // Cf
+        "soft\u{AD}hyphen",     // Cf
+        "tag\u{E0041}",         // Cf, outside the BMP
+        "line\u{2028}sep",      // Zl
+        "para\u{2029}sep",      // Zp
+    ] {
+        assert!(SubmitAs::embedder(bad).is_err(), "accepted {bad:?}");
+    }
+}
+
+#[test]
+fn an_emitter_round_trips_through_its_text_form() {
+    for text in [format!("key:{V7}"), "embedder:app:main".to_owned()] {
+        assert_eq!(text.parse::<Emitter>().unwrap().to_string(), text);
+    }
+    for bad in [
+        String::new(),
+        "key:".to_owned(),
+        format!("key:{V4}"),
+        "embedder:".to_owned(),
+        "embedder:a\nb".to_owned(),
+        format!("Key:{V7}"),
+        "local-operations".to_owned(),
+        format!("tenant:{V7}"),
+    ] {
+        assert!(bad.parse::<Emitter>().is_err(), "accepted {bad:?}");
     }
 }

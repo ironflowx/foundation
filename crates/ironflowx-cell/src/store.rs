@@ -3,7 +3,7 @@
 use std::fmt;
 use std::path::Path;
 
-use ironflowx_core::{EnvRef, EventId, Timestamp};
+use ironflowx_core::{Emitter, EnvRef, EventId, Timestamp};
 use ironflowx_events::{Event, EventTables, EventsView, Record};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -45,10 +45,10 @@ impl FromSql for Millis {
     }
 }
 
-/// An ID stored as its text form.
-struct Id(EventId);
+/// A value stored as its text form: an event ID or an emitter.
+struct Text<T>(T);
 
-impl FromSql for Id {
+impl<T: std::str::FromStr<Err = ironflowx_core::ParseError>> FromSql for Text<T> {
     fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
         value
             .as_str()?
@@ -67,7 +67,8 @@ CREATE TABLE events (
     metadata BLOB,
     version INTEGER NOT NULL,
     idempotency_key TEXT,
-    time INTEGER NOT NULL
+    time INTEGER NOT NULL,
+    emitted_by TEXT NOT NULL
 );
 CREATE TABLE idempotency (key TEXT PRIMARY KEY, event_id TEXT NOT NULL);
 CREATE TABLE meta (applied INTEGER NOT NULL, env_id TEXT NOT NULL, token TEXT NOT NULL, format INTEGER NOT NULL);
@@ -157,7 +158,7 @@ pub(crate) fn last_event(conn: &Connection) -> rusqlite::Result<Option<(u64, Eve
     conn.query_row(
         "SELECT sequence, id FROM events ORDER BY sequence DESC LIMIT 1",
         [],
-        |r| Ok((r.get(0)?, r.get::<_, Id>(1)?.0)),
+        |r| Ok((r.get(0)?, r.get::<_, Text<EventId>>(1)?.0)),
     )
     .optional()
 }
@@ -168,19 +169,20 @@ pub(crate) fn applied(conn: &Connection) -> rusqlite::Result<u64> {
 
 /// Folds the record at `position` and advances the applied position past it, in one
 /// transaction. A record below the applied position is skipped (LED-12). The genesis record
-/// has no events: `None`. `recovering` when open folds it, for the crash test's fault points.
+/// has no events: `None`; any other comes with its emitter. `recovering` when open folds it,
+/// for the crash test's fault points.
 pub(crate) fn apply(
     conn: &mut Connection,
     position: u64,
-    record: Option<&Record>,
+    record: Option<(&Record, &Emitter)>,
     #[cfg_attr(not(feature = "__fault-points"), allow(unused_variables))] recovering: bool,
 ) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     if position < applied(&tx)? {
         return Ok(());
     }
-    if let Some(record) = record {
-        ironflowx_events::fold(&mut Tables(&tx), record)?;
+    if let Some((record, emitted_by)) = record {
+        ironflowx_events::fold(&mut Tables(&tx), record, emitted_by)?;
         #[cfg(feature = "__fault-points")]
         ironflowx_core::reach_fault_point(if recovering {
             ironflowx_core::FaultPoint::DuringOpen
@@ -200,7 +202,7 @@ impl EventTables for Tables<'_> {
     fn insert(&mut self, e: Event) -> rusqlite::Result<()> {
         let id = e.id.to_string();
         self.0.execute(
-            "INSERT INTO events VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO events VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 e.sequence,
                 id,
@@ -209,7 +211,8 @@ impl EventTables for Tables<'_> {
                 e.metadata,
                 e.version,
                 e.idempotency_key,
-                Millis(e.time)
+                Millis(e.time),
+                e.emitted_by.to_string()
             ],
         )?;
         if let Some(key) = &e.idempotency_key {
@@ -221,18 +224,19 @@ impl EventTables for Tables<'_> {
 }
 
 const EVENT_COLUMNS: &str =
-    "sequence, id, name, data, metadata, version, idempotency_key, time FROM events";
+    "sequence, id, name, data, metadata, version, idempotency_key, time, emitted_by FROM events";
 
 fn row_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
     Ok(Event {
         sequence: r.get(0)?,
-        id: r.get::<_, Id>(1)?.0,
+        id: r.get::<_, Text<EventId>>(1)?.0,
         name: r.get(2)?,
         data: r.get(3)?,
         metadata: r.get(4)?,
         version: r.get(5)?,
         idempotency_key: r.get(6)?,
         time: r.get::<_, Millis>(7)?.0,
+        emitted_by: r.get::<_, Text<Emitter>>(8)?.0,
     })
 }
 
@@ -243,7 +247,7 @@ impl EventsView for ReadStore<'_> {
         let sql = "SELECT event_id FROM idempotency WHERE key = ?1";
         let id = self
             .0
-            .query_row(sql, [key], |r| r.get::<_, Id>(0))
+            .query_row(sql, [key], |r| r.get::<_, Text<EventId>>(0))
             .optional();
         store_err(id).map(|id| id.map(|id| id.0))
     }

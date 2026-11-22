@@ -1,5 +1,5 @@
-//! Ironflow X core types: validated opaque IDs, the environment reference, stored and
-//! event-clock time, the clock trait and the error kinds.
+//! Ironflow X core types: validated opaque IDs, the environment reference, attribution, stored
+//! and event-clock time, the clock trait and the error kinds.
 //!
 //! This crate is pure: no I/O, no async runtime, no ambient clock, no randomness.
 
@@ -13,10 +13,12 @@ mod error;
 mod fault;
 mod id;
 mod time;
+mod who;
 
 pub use error::{ErrorKind, ParseError};
 #[cfg(feature = "__fault-points")]
 #[doc(hidden)]
 pub use fault::{FaultPoint, reach_fault_point, set_fault_hook};
-pub use id::{EnvRef, EnvironmentId, EventId, IncarnationToken};
+pub use id::{EnvRef, EnvironmentId, EventId, IncarnationToken, KeyId};
 pub use time::{Clock, SequencedTime, Timestamp};
+pub use who::{Emitter, SubmitAs};

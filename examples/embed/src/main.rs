@@ -55,6 +55,7 @@ fn main() {
                 version: 1,
                 idempotency_key: Some("order-1".to_owned()),
                 time: event.time,
+                emitted_by: "embedder:local-operations".parse().expect("an emitter"),
             }
         );
         ledger.close().await;

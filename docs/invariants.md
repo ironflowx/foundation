@@ -1,10 +1,10 @@
 # Invariants
 
-The properties release 0.1 must prove. A behavior shows one example; an invariant holds for every input. The **S** properties are proven by the crash test below in 0.1, and by a seeded fault simulator in a later release.
+The properties the system proves: LED from 0.1, TEN from 0.2. A behavior shows one example; an invariant holds for every input. The **S** properties are proven by the crash test below in 0.1, and by a seeded fault simulator in a later release.
 
 **Form:** **T** a type or API makes the violation unrepresentable · **U** a unit or integration test · **S** a property checked under faults · **B** a behavior scenario · **C** a CI check, which must reject a violating fixture.
 
-| ID | Property | Rust form | Form | Proven in 0.1 by |
+| ID | Property | Rust form | Form | Proven by |
 |---|---|---|---|---|
 | LED-1 | Every time compared with event time comes from the event clock | `SequencedTime` implements no comparison with `Timestamp` or `std::time`. Its one constructor is `#[doc(hidden)]`, and clippy `disallowed-methods` bans it in every crate but `ironflowx-cell` (D17) | T, C | Compile-fail tests: compared with a `Timestamp`; compared with `SystemTime`. The lint, with a fixture it must reject |
 | LED-2 | Event time never comes from an ambient clock and never goes back, across restarts too | Event rules read no clock; each record's time is the later of the clock and the last committed time | C, U, S | LED-15's checks; the clock test below; crash test |
@@ -21,6 +21,8 @@ The properties release 0.1 must prove. A behavior shows one example; an invarian
 | LED-13 | A timestamp has one integer encoding | `Timestamp::from_millis` and `as_millis` (`i64`, whole milliseconds) are its only conversions; its fields are private. The read store and the record both go through them (D18) | T, U | Round-trip and ordering test over the extremes; a public-API check for other conversions |
 | LED-14 | A read sees every write acknowledged before it arrived, from any client | The writer publishes the committed head before it acknowledges; a read waits for the head it saw on arrival | U, B, S | Fold-delay test; EVT-060, EVT-062; crash test |
 | LED-15 | Pure crates do no I/O: no async runtime, no I/O crate, no ambient clock or randomness | For `ironflowx-events` and `ironflowx-core`: a dependency allowlist over `cargo tree` for that crate alone, and clippy `disallowed-methods` and `disallowed-types` for the ambient clock, file system, network, threads, environment, standard streams, processes, randomness and randomly seeded hash maps; the list is each crate's `clippy.toml` | C | Both checks, each with a fixture they must reject |
+| TEN-6 | `emitted_by` comes only from the submission's attribution | The ledger stores the `SubmitAs` passed beside each submission on every event of its record; a read returns an `Emitter`, which has no conversion to `SubmitAs`; clippy bans `SubmitAs::key` outside the credentials crate and `ci/no-key-attribution.sh` inside `ironflowx-core` (D36). A direct ledger caller is trusted and not covered | T, U, C | A compile-fail test converting an `Emitter` into a `SubmitAs`; the attribution test below; both lints, each with a fixture they must reject |
+| TEN-8 | A key ID is opaque. The rest of TEN-8 (parent IDs as fields, derived addresses) arrives with the control plane | `KeyId` shares `EnvironmentId`'s parser and text form (D13) | T, U | Parse tests as LED-10's: uppercase, non-v7 and malformed IDs are refused |
 
 A public-API check compares `cargo-public-api` output for every workspace crate (the list is in `ci/public-api.sh`) with a committed snapshot; any difference fails (D21).
 
@@ -34,6 +36,7 @@ A public-API check compares `cargo-public-api` output for every workspace crate 
 | Open a directory with another `EnvRef`, with a genesis of another format, and after deleting an empty ledger's `read.db` | LED-6, LED-8, D14 |
 | Fold failure injected after an acknowledgment | Waiting reads end `Unavailable`; reopen applies the record |
 | An append that returns `Indeterminate`, through the fault hook: the call answers `Unknown`, the next call `Unavailable`; reopen; a keyed retry returns the original event if it landed, else stores it once | D11, the Errors table |
+| Submit a batch of three as one embedder and an emit through `LocalOperations`: `get_event` and `list_events` show each event's emitter, the batch's three the same. Close and reopen, then delete `read.db` and reopen: unchanged. Open a directory whose genesis is format 1 | TEN-6, D39 |
 
 ## Crash test
 

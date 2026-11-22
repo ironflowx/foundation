@@ -16,6 +16,9 @@ A random value minted with an environment. An environment recreated under the sa
 An environment's ID with its incarnation token. A ledger is opened with one, and work is never looked up by the ID alone.
 _Avoid_: Environment ID, where the reference (ID and token) is meant
 
+**Emitter**:
+Who made a change, as stored on every event: `key:<key-id>`, or `embedder:<name>` for an embedder that calls the ledger without keys.
+
 ### Storage
 
 **Ledger**:
@@ -80,6 +83,9 @@ The `ironflowx` crate, which re-exports the foundation crates.
 
 **Door**:
 A way in from outside the process, such as an HTTP server.
+
+**Embedder**:
+An app that links foundation and calls the ledger directly, without keys; the ledger trusts it.
 
 ### Testing
 

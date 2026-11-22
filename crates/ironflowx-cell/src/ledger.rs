@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use ironflowx_core::{Clock, EnvRef, EventId, SequencedTime, Timestamp};
+use ironflowx_core::{Clock, Emitter, EnvRef, EventId, SequencedTime, SubmitAs, Timestamp};
 use ironflowx_events::{Error, ItemOutcome, Record, Refusal, Submission};
 use rusqlite::Connection;
 use segment_log_core::{
@@ -109,6 +109,7 @@ struct Progress {
 
 struct Job {
     sub: Submission,
+    by: SubmitAs,
     reply: oneshot::Sender<Result<Committed, SubmitError>>,
 }
 
@@ -195,9 +196,9 @@ impl Ledger {
         self.env
     }
 
-    /// Commits a submission. Answers once its record is durable, or at once when nothing is
-    /// new.
-    pub async fn submit(&self, sub: Submission) -> Result<Committed, SubmitError> {
+    /// Commits a submission attributed to `by`. Answers once its record is durable, or at once
+    /// when nothing is new. The ledger trusts its caller's attribution (D36).
+    pub async fn submit(&self, sub: Submission, by: SubmitAs) -> Result<Committed, SubmitError> {
         if self.progress.borrow().failed {
             return Err(SubmitError::Unavailable);
         }
@@ -205,7 +206,7 @@ impl Ledger {
         self.jobs
             .as_ref()
             .expect("set until drop")
-            .send(Job { sub, reply })
+            .send(Job { sub, by, reply })
             .await
             .map_err(|_| SubmitError::Unavailable)?;
         // Before append begins, losing the writer means this job did not commit.
@@ -353,7 +354,8 @@ impl Writer {
                 let _ = job.reply.send(answer);
                 continue;
             };
-            let payload = record::events(self.env.token(), &record);
+            let emitted_by = Emitter::from(job.by);
+            let payload = record::events(self.env.token(), &emitted_by, &record);
             let reply = AppendReply(Some(job.reply));
             let offset = match self.append(payload) {
                 Ok(offset) => offset,
@@ -370,7 +372,7 @@ impl Writer {
             reply.send(answer);
             #[cfg(feature = "__fault-points")]
             ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterAck);
-            self.fold(offset, &record);
+            self.fold(offset, &record, &emitted_by);
         }
     }
 
@@ -419,7 +421,7 @@ impl Writer {
         Ok(position.offset)
     }
 
-    fn fold(&self, offset: u64, record: &Record) {
+    fn fold(&self, offset: u64, record: &Record, emitted_by: &Emitter) {
         #[cfg(any(test, feature = "__fault-points"))]
         {
             self.faults.wait_while_held();
@@ -432,7 +434,7 @@ impl Writer {
             fail(&self.progress);
             return;
         };
-        match store::apply(&mut conn, offset, Some(record), false) {
+        match store::apply(&mut conn, offset, Some((record, emitted_by)), false) {
             Ok(()) => self.progress.send_modify(|p| p.applied = offset + 1),
             Err(_) => fail(&self.progress),
         }
@@ -583,7 +585,7 @@ fn replay(
     // event ID. It identifies this prefix even across forks of the same incarnation.
     let mut last_time = None;
     let expected = if from > 1 {
-        let record = read_events(log, from - 1, env)?;
+        let (record, _) = read_events(log, from - 1, env)?;
         last_time = Some(record.time);
         let event = record.events.last().ok_or(OpenError::Corrupt)?;
         Some((event.sequence, event.id))
@@ -599,11 +601,16 @@ fn replay(
         let record = if from == 0 {
             None
         } else {
-            let record = read_events(log, from, env)?;
-            last_time = Some(record.time);
-            Some(record)
+            let read = read_events(log, from, env)?;
+            last_time = Some(read.0.time);
+            Some(read)
         };
-        if let Err(e) = store::apply(&mut conn, from, record.as_ref(), true) {
+        if let Err(e) = store::apply(
+            &mut conn,
+            from,
+            record.as_ref().map(|(r, by)| (r, by)),
+            true,
+        ) {
             return Ok(Err(std::io::Error::other(e)));
         }
         from += 1;
@@ -612,13 +619,14 @@ fn replay(
 }
 
 /// A later record: it must carry this incarnation's token and format (LED-8).
-fn read_events(log: &SegmentLog, offset: u64, env: EnvRef) -> Result<Record, OpenError> {
+fn read_events(log: &SegmentLog, offset: u64, env: EnvRef) -> Result<(Record, Emitter), OpenError> {
     match read_record(log, offset)? {
         record::Decoded::Events {
             format,
             token,
+            emitted_by,
             record,
-        } if format == FORMAT && token == env.token() => Ok(record),
+        } if format == FORMAT && token == env.token() => Ok((record, emitted_by)),
         _ => Err(OpenError::Corrupt),
     }
 }
