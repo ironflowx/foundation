@@ -12,6 +12,15 @@ pub enum ErrorKind {
     Unknown,
     /// The ledger failed and refuses every call until it is reopened.
     Unavailable,
+    /// No key, or a key that is not valid for this environment.
+    Unauthenticated,
+}
+
+impl ErrorKind {
+    /// True when the same request, unchanged, may succeed later; the error's hint says when.
+    pub const fn retryable(self) -> bool {
+        matches!(self, Self::Unavailable | Self::Unknown)
+    }
 }
 
 /// A text form that does not parse as the type it was parsed into.

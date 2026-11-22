@@ -16,3 +16,6 @@ ironflowx-core.workspace = true
 ironflowx-events.workspace = true
 ironflowx-proto.workspace = true
 ironflowx-cell.workspace = true
+ironflowx-authz.workspace = true
+ironflowx-store.workspace = true
+ironflowx-operations.workspace = true

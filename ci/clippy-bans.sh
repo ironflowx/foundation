@@ -2,13 +2,15 @@
 # Usage: ci/clippy-bans.sh <repo-root>
 # Fails if a clippy.toml under <repo-root> lacks a crate-wide ban it must carry. Clippy configs
 # cannot include one another, so each ban is copied into the root file and every crate's own
-# file, and the must-reject fixtures exercise only the root one (D17, D36).
+# file, and the must-reject fixtures exercise only the root one (D17, D36, TEN-4).
 set -euo pipefail
 root=$1
 # <path>|<crate exempt from it>
 bans=(
   "ironflowx_core::SequencedTime::from_event_clock|ironflowx-cell"
   "ironflowx_core::SubmitAs::key|ironflowx-authz"
+  "ironflowx_authz::KeyDigest::to_stored|ironflowx-store"
+  "ironflowx_authz::KeyDigest::from_stored|ironflowx-store"
 )
 missing=0
 for config in "$root/clippy.toml" "$root"/crates/*/clippy.toml; do

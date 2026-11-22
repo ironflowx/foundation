@@ -1,0 +1,21 @@
+[package]
+name = "ironflowx-store"
+description = "The Ironflow X control plane: which tenants, projects, environments and keys exist."
+keywords = ["ironflow", "workflow", "event-driven"]
+readme = "../../README.md"
+documentation = "https://docs.rs/ironflowx-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+ironflowx-authz.workspace = true
+ironflowx-core.workspace = true
+rusqlite = { version = "0.43.0", default-features = false, features = ["bundled", "fallible_uint"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

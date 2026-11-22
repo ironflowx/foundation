@@ -12,7 +12,7 @@ The ledger is linked, not run: an embedder opens it in a directory.
 
 ![C2 crates](img/c2-crates.svg)
 
-Event rules and core are pure. Only the ledger touches disk, the clock and randomness.
+Event rules, credentials and core are pure. Only the ledger, the control plane and the engine touch disk, the clock and randomness.
 
 ## C3: Modules and seams
 
@@ -37,8 +37,11 @@ The rows behind it: [Open](#open).
 | Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time | `open`, `submit`, `read`, `close`, `LocalOperations`, `HostClock`, `ManualClock` | `ironflowx-cell` |
 | Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types; 0.3 maps a wire format onto them | `Operations` trait and messages | `ironflowx-proto` |
-| Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
-| Facade | Re-exports the four crates above; the one crate an embedder depends on | Re-exports | `ironflowx` |
+| Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified) before the handler reaches the ledger or the key records | `Engine::open`, `close`, `whoami`, `list_environments` | `ironflowx-operations` |
+| Credentials | The key format and its digest, and whether a presented key is valid for an environment. Pure | `parse`, `mint`, `verify` | `ironflowx-authz` |
+| Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `mark_ledger_created`, `lookup_key`, `environment` | `ironflowx-store` |
+| Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Scope`, `Address`, `Secret`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
+| Facade | Re-exports the crates above as modules; the one crate an embedder depends on | Re-exports | `ironflowx` |
 
 `LocalOperations` implements `Operations` over one `Ledger`. It maps each request to a submission and each outcome to an answer and holds no rule: every check, default and limit is in event rules. Tests and embedders use the same adapter. It attributes every submission as `embedder:local-operations` until the engine replaces it (D36).
 
@@ -47,9 +50,16 @@ The rows behind it: [Open](#open).
 | `Timestamp` | A UTC instant in whole milliseconds since the Unix epoch. Private fields; `from_millis` and `as_millis` (`i64`) are the only conversions (D18) |
 | `SequencedTime` | A reading of the event clock. Its one constructor is `#[doc(hidden)]`, and a lint allows it only in `ironflowx-cell` (D17); it compares with itself, never with `Timestamp` or `std::time` |
 | `Clock` | A trait in core: `fn now(&self) -> Timestamp`. Core declares it and never calls it |
-| `EnvRef` | `{ id: EnvironmentId, token: IncarnationToken }`. Text form `<uuid>.<32 hex digits>` via `Display` and `FromStr`, so an embedder can store it. Only the canonical spelling parses: a lowercase, hyphenated UUIDv7 and 32 lowercase hex digits; `EnvironmentId`, `EventId`, `KeyId` and `IncarnationToken` parse the same way |
+| `EnvRef` | `{ id: EnvironmentId, token: IncarnationToken }`. Text form `<uuid>.<32 hex digits>` via `Display` and `FromStr`, so an embedder can store it. Only the canonical spelling parses: a lowercase, hyphenated UUIDv7 and 32 lowercase hex digits; `EnvironmentId`, `EventId`, `TenantId`, `ProjectId`, `KeyId` and `IncarnationToken` parse the same way |
 | `Emitter` | Who emitted an event, as read back: text `key:<key-id>` or `embedder:<name>` via `Display` and `FromStr`. Read-only: nothing converts it into a `SubmitAs` (D36) |
 | `SubmitAs` | Who a submission is attributed to, as written: `SubmitAs::embedder(name)`, where the name is 1–128 bytes with no control (Cc), format (Cf) or line or paragraph separator (Zl, Zp) character, so what a reader sees is what was stored, or `SubmitAs::key(KeyId)`, which a lint confines to the credentials crate (D36). Every event of a submission carries its one emitter |
+| `Scope` | What a key may do: `read`, `write`, `admin`, text forms of the same names. A key holds a set; none implies another |
+| `Address` | Where an environment is, by name: `project/environment` while the single tenant is hidden. Derived from names, never stored, and never parsed into an ID: no `FromStr` (TEN-8) |
+| `Secret` | A whole key's text. Implements none of `Debug`, `Display`, `Serialize` and `Clone`; `expose()` is its only read; zeroed on drop (TEN-3) |
+| `KeyDigest` | SHA-256 of a key's whole text, in `ironflowx-authz`. Private bytes, no `PartialEq`, `AsRef` or `Deref`; `ct_eq` is its only comparison; `to_stored` and `from_stored`, its storage codec, are confined to `ironflowx-store` by a lint (TEN-4) |
+| `KeyRecord` | What credentials need about a stored key: `{ id, env: EnvRef, scopes, digest }`, `env` being the environment ID and token current when the key was made |
+| `Grant` | What a verified key may do: its key ID, scopes and `EnvRef`. Only `verify` makes one; never stored |
+| `Authorized` | Proof of admission, `{ grant }`, its field private to the engine's admission module: the engine's key operations take one (TEN-1) |
 
 ## Seams
 
@@ -57,7 +67,8 @@ The rows behind it: [Open](#open).
 |---|---|---|
 | `Operations` | `LocalOperations` over one ledger · a remote client over the network | `LocalOperations`; the remote client arrives with the server in 0.3 |
 | `Clock` | `HostClock` · `ManualClock`, which a test sets and steps, backwards too | Both, in `ironflowx-cell`. The behaviors and the crash test use `ManualClock` |
-| Ledger, event rules | One adapter each | Module interfaces, not seams |
+| Control plane | SQLite · a shared database for clusters | SQLite only: hypothetical, so no trait |
+| Ledger, event rules, credentials | One adapter each | Module interfaces, not seams |
 
 The segment log has a storage seam of its own, private to `segment-log-core`; 0.1 does not reach it.
 
@@ -84,8 +95,40 @@ trait Operations: Send + Sync {
 //                    idempotency_key: Option<String>, time: Timestamp, emitted_by: Emitter }
 // ListEventsRequest{ limit: Option<NonZeroU32> /* None 20, above 200 clamps to 200 */, cursor: Option<String> }
 // EventPage        { events: Vec<Event> /* newest first */, next: Option<String> /* None on the last page */ }
-// Call             an opaque value with no fields in 0.1 (Call::anonymous()); 0.2 gives it the credential.
-// OpError          { kind: ErrorKind, message: String }   // see Errors
+// Call             Call::anonymous() | Call::with_key(Secret)   // the key as presented (D45); not Clone
+// OpError          { kind: ErrorKind, message: String, hint: Option<String> }   // see Errors
+// Whoami           { key_id: KeyId, scopes: BTreeSet<Scope>, environment: Address, expires_at: Option<Timestamp> }
+// Environment      { env: EnvRef, name, address: Address, project_id: ProjectId, created_at: Timestamp }
+// WhoamiRequest {} · ListEnvironmentsRequest {}   // no request takes an environment (LED-7)
+
+// ironflowx-operations (tokio). whoami and list_environments are the engine's own methods
+// until they join the Operations trait.
+impl Engine {
+    async fn open(root: &Path, clock: impl Clock + Clone + Send + Sync + 'static) -> Result<Opened, EngineError>;
+    async fn close(self);
+    async fn whoami(&self, cx: &Call, req: WhoamiRequest) -> Result<Whoami, OpError>;
+    async fn list_environments(&self, cx: &Call, req: ListEnvironmentsRequest) -> Result<Vec<Environment>, OpError>;
+}
+// Opened      { engine: Engine, minted: Option<Secret> }   // the bootstrap key, returned by the bootstrapping open only
+// EngineError Locked | Ledger(OpenError) | Store(StoreError) | Io(io::Error)
+
+// ironflowx-authz: pure, depends only on core. The engine passes in the random secret.
+fn parse(raw: &Secret) -> Result<KeyParts, Malformed>;   // KeyParts { id: KeyId, digest: KeyDigest }
+fn mint(id: KeyId, secret: [u8; 32]) -> (Secret, KeyDigest);
+fn verify(parts: &KeyParts, record: Option<&KeyRecord>, env: &EnvRef) -> Result<Grant, Refused>;
+
+// ironflowx-store: blocking; the engine calls it under spawn_blocking. A write takes SQLite's
+// write lock (BEGIN IMMEDIATE) first, then reads now from the clock it is given.
+impl ControlPlane {
+    fn open(path: &Path) -> Result<ControlPlane, StoreError>;               // creates the schema; refuses another format
+    fn bootstrap_state(path: &Path) -> Result<BootstrapState, StoreError>;  // read-only; creates nothing
+    // BootstrapState: NoFile | Unbootstrapped | Unmarked { env: EnvRef } | Marked { env: EnvRef }
+    fn ensure_bootstrap(&self, b: &Bootstrap, clock: &dyn Clock) -> Result<(), StoreError>; // one transaction
+    // Bootstrap { env: EnvRef, tenant: TenantId, project: ProjectId, key: KeyParts }   // the engine draws each
+    fn mark_ledger_created(&self, env: &EnvRef, clock: &dyn Clock) -> Result<(), StoreError>;
+    fn lookup_key(&self, id: KeyId, env: &EnvRef) -> Result<Option<KeyRecord>, StoreError>; // admission's one read
+    fn environment(&self, env: &EnvRef) -> Result<EnvironmentRecord, StoreError>;
+}
 
 // ironflowx-cell (tokio)
 impl Ledger {
@@ -138,6 +181,18 @@ If a build turns on `serde_json`'s `arbitrary_precision` feature, which Cargo's 
 
 A list query, not `decide`, checks the cursor: a token that does not decode, or names another incarnation, is `Invalid` (EVT-045, EVT-055). A cursor encodes the incarnation token and the last event sequence returned, and stays valid across reopen. A page lists the events older than the cursor's sequence, whether or not an event has that sequence, so a cursor past every sequence lists from the newest. It is an encoding, not a signature: 0.1 does not detect a forged one.
 
+## Keys
+
+| Part | Rule |
+|---|---|
+| Text | `ixk_` + the key ID's 36-character text form + `_` + 43 base64url characters without padding (256 random bits): always 84 characters, parsed by position, since the secret may hold `_` and `-` (D46). Anything else is malformed, including an uppercase or non-v7 key ID and a non-canonical last character |
+| Key ID | The key's UUIDv7. Not a secret |
+| Stored | The `KeyDigest` of the whole key text, and the environment ID and token current when the key was made. The secret is never stored, logged or returned after creation |
+| Valid | Parses; a record exists for the engine's environment ID and token; digests match, compared in constant time |
+| Scopes | A set of `read`, `write`, `admin`. The bootstrap key holds all three |
+
+**Admission.** Every call runs, in order: no key, or an empty one → `Unauthenticated`; `parse`; `lookup_key(id, env)`, a read-only lookup with no cache (D45); `verify`. Only then does the handler run, and it reaches the key records only through `keys(&Authorized)`. Admission writes nothing.
+
 ## Errors
 
 The kind is contract. Four messages are contract too: `event name is required`, `event data exceeds maximum size`, `batch size {n} exceeds maximum of 100` and `event not found`. Other messages are not.
@@ -148,6 +203,12 @@ The kind is contract. Four messages are contract too: `event name is required`, 
 | `NotFound` | No event has that ID, or the ID does not parse | No |
 | `Unknown` | The append's outcome is unknown; the ledger is now `Unavailable` | After reopen. With a key, the retry returns the original event if it landed. Without one it may store a second event |
 | `Unavailable` | The ledger failed (append, fold, read store, or a `read` query that panicked) and refuses every call until it is reopened. Reads waiting at the gate end with it | After reopen |
+| `Unavailable` | A control-plane read failed during admission or a handler. The call fails closed and changes nothing; the engine stays open | Yes, at once |
+| `Unauthenticated` | No key, or an empty one: `authentication required` | No |
+| `Unauthenticated` | A malformed key: `invalid API key`, with the key format in `hint` | No |
+| `Unauthenticated` | An unknown key ID, a wrong secret, or a key of another environment or incarnation: `invalid API key`, the same answer for each (D30) | No |
+
+`ErrorKind::retryable()` is true when the same request, unchanged, may succeed later: `Unavailable` and `Unknown`. `OpError::hint` says when, or what to do. The three `Unauthenticated` messages are contract.
 
 ## Commit and read
 
@@ -212,7 +273,28 @@ A sealed log, after a lossy repair, opens and reads until the first emit that ap
 
 `WrongIncarnation` and `Format` are not damage: the `EnvRef` or the build does not match the directory. Open it with the `EnvRef` it was created with, or with a build that reads its format.
 
+## Engine open
+
+`Engine::open(root, clock)` creates `root` if missing, takes the OS lock on `<root>/engine.lock` (another holder: `Locked`; the file is never deleted, so every contender locks the same one), reads the bootstrap state of `control.db` without creating it, and deletes a leftover `ledgers/.staging/`, which never holds anything acknowledged. Then:
+
+| Finds | Does | `Opened.minted` |
+|---|---|---|
+| No `control.db`, or one never bootstrapped | A bootstrapping open: `new_env_ref()`; `ensure_bootstrap`, one transaction creating the tenant, project and environment named `default`, with fresh UUIDv7s, and the minted bootstrap key holding all three scopes; build the ledger in `ledgers/.staging/`, close it and rename it to `ledgers/<environment-id>/` (D40); `mark_ledger_created` | The bootstrap key's secret, returned this once |
+| A marked bootstrap | A later open: the environment's ledger, with 0.1's open | None |
+| An unmarked bootstrap: an earlier open died before its mark | Refused with an `Io` error naming the unfinished bootstrap, changing nothing; finishing it is not built yet | |
+
 ## What is stored
+
+An engine's data directory, `<root>`:
+
+| Where | Holds |
+|---|---|
+| `<root>/engine.lock` | The engine's lock file; never deleted |
+| `<root>/control.db` (SQLite, WAL, `synchronous=FULL`, `fullfsync`) | `tenants` (id, name, created_at) · `projects` (id, tenant_id, name, created_at) · `environments` (id, project_id, name, token, created_at, ledger_created_at) · `keys` (seq, id, environment_id, environment_token, scopes, digest, origin, created_at) · `meta` (format version, 1). Times are `Timestamp`'s `i64` milliseconds (D18); the digest is `KeyDigest::to_stored()`; no last-used time (D38) |
+| `<root>/ledgers/<environment-id>/` | The environment's ledger, laid out as below |
+| `<root>/ledgers/.staging/` | A ledger being built; deleted by any open that finds it |
+
+A ledger's directory, `<dir>`:
 
 | Where | Holds |
 |---|---|
@@ -227,11 +309,13 @@ A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 
 | Crate | Version | Used | Relied on |
 |---|---|---|---|
 | `segment-log-core` | Pinned exactly (D16), from crates.io (MIT) | `SegmentLog::open`, `append` → `Pending::wait`, `read(from, max)`, `watermark`, `stream_head` | See below |
-| `rusqlite` | A caret range (0.43.x), `bundled` (D26) | Read store | One transaction per folded record |
+| `rusqlite` | A caret range (0.43.x), `bundled` (D26) | Read store; the control plane | One transaction per folded record; one per control-plane change |
 | `serde_json` | Pinned exactly (D26); the 127 depth limit is checked against it | Event rules | D12 |
 | `serde_core` | A caret range | Event rules' JSON visitor | D12 |
-| `uuid` | A caret range; `v7` in `ironflowx-cell` only | Event and environment IDs | |
-| `getrandom` | A caret range (D26) | `new_env_ref` | OS random source |
+| `uuid` | A caret range; `v7` in `ironflowx-cell` and `ironflowx-operations` only | Event, environment, tenant, project and key IDs | |
+| `getrandom` | A caret range (D26) | `new_env_ref`; a key's secret | OS random source |
+| `sha2`, `subtle`, `base64` | Caret ranges | Credentials: the key digest, its constant-time comparison, the key text | Pure: `ci/purity/ironflowx-authz.allow` names everything they pull in, `libc` included (only `cpufeatures`' CPU detection on AArch64 uses it) |
+| `zeroize` | A caret range | `Secret` is zeroed on drop | In `ironflowx-core.allow` |
 | `tokio` | A caret range (D26) | `spawn_blocking` for open, reads and close; the read gate; the answer to a submission | |
 
 How the ledger uses the log:

@@ -1,0 +1,27 @@
+[package]
+name = "ironflowx-operations"
+description = "The Ironflow X engine: admits every call against the control plane, then runs it on the environment's ledger or its keys."
+keywords = ["ironflow", "workflow", "event-driven"]
+readme = "../../README.md"
+documentation = "https://docs.rs/ironflowx-operations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+ironflowx-authz.workspace = true
+ironflowx-cell.workspace = true
+ironflowx-core.workspace = true
+ironflowx-proto.workspace = true
+ironflowx-store.workspace = true
+getrandom = { version = "0.4.3", default-features = false }
+tokio = { version = "1.54.1", default-features = false, features = ["rt"] }
+uuid = { workspace = true, features = ["v7"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "macros"] }

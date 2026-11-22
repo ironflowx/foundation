@@ -41,6 +41,7 @@ fn refused(r: Refusal) -> OpError {
     OpError {
         kind: r.kind(),
         message: r.message().to_owned(),
+        hint: None,
     }
 }
 
@@ -50,6 +51,7 @@ fn submit_error(e: SubmitError) -> OpError {
         SubmitError::Unknown => OpError {
             kind: ErrorKind::Unknown,
             message: "the outcome is unknown; retry with the idempotency key after reopen".into(),
+            hint: Some("reopen the ledger, then retry with the same idempotency key".into()),
         },
         SubmitError::Unavailable => unavailable(),
     }
@@ -66,6 +68,7 @@ fn unavailable() -> OpError {
     OpError {
         kind: ErrorKind::Unavailable,
         message: "the ledger is unavailable until it is reopened".into(),
+        hint: Some("reopen the ledger, then retry".into()),
     }
 }
 

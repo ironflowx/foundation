@@ -8,4 +8,6 @@ allow = [
   # unicode-ident's Unicode data tables; reached only by the proc macros of dev-dependencies
   # (tokio's test macros, cucumber).
   "Unicode-3.0",
+  # subtle: the key digest's constant-time comparison (TEN-4), in ironflowx-authz.
+  "BSD-3-Clause",
 ]

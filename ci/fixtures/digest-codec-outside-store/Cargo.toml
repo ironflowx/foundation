@@ -1,0 +1,9 @@
+[package]
+name = "digest-codec-outside-store"
+edition = "2024"
+publish = false
+
+[dependencies]
+ironflowx-authz = { path = "../../../crates/ironflowx-authz" }
+
+[workspace]

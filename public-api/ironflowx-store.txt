@@ -1,0 +1,58 @@
+pub mod ironflowx_store
+pub enum ironflowx_store::BootstrapState
+pub ironflowx_store::BootstrapState::Marked
+pub ironflowx_store::BootstrapState::Marked::env: ironflowx_core::id::EnvRef
+pub ironflowx_store::BootstrapState::NoFile
+pub ironflowx_store::BootstrapState::Unbootstrapped
+pub ironflowx_store::BootstrapState::Unmarked
+pub ironflowx_store::BootstrapState::Unmarked::env: ironflowx_core::id::EnvRef
+impl core::clone::Clone for ironflowx_store::BootstrapState
+pub fn ironflowx_store::BootstrapState::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_store::BootstrapState
+impl core::cmp::Eq for ironflowx_store::BootstrapState
+pub fn ironflowx_store::BootstrapState::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_store::BootstrapState
+pub fn ironflowx_store::BootstrapState::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_store::BootstrapState
+pub fn ironflowx_store::BootstrapState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for ironflowx_store::BootstrapState
+impl core::marker::StructuralPartialEq for ironflowx_store::BootstrapState
+pub struct ironflowx_store::Bootstrap
+pub ironflowx_store::Bootstrap::env: ironflowx_core::id::EnvRef
+pub ironflowx_store::Bootstrap::key: ironflowx_authz::KeyParts
+pub ironflowx_store::Bootstrap::project: ironflowx_core::id::ProjectId
+pub ironflowx_store::Bootstrap::tenant: ironflowx_core::id::TenantId
+impl core::clone::Clone for ironflowx_store::Bootstrap
+pub fn ironflowx_store::Bootstrap::clone(&self) -> Self
+impl core::fmt::Debug for ironflowx_store::Bootstrap
+pub fn ironflowx_store::Bootstrap::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct ironflowx_store::ControlPlane
+impl ironflowx_store::ControlPlane
+pub fn ironflowx_store::ControlPlane::bootstrap_state(&std::path::Path) -> core::result::Result<ironflowx_store::BootstrapState, ironflowx_store::StoreError>
+pub fn ironflowx_store::ControlPlane::ensure_bootstrap(&self, &ironflowx_store::Bootstrap, &dyn ironflowx_core::time::Clock) -> core::result::Result<(), ironflowx_store::StoreError>
+pub fn ironflowx_store::ControlPlane::environment(&self, &ironflowx_core::id::EnvRef) -> core::result::Result<ironflowx_store::EnvironmentRecord, ironflowx_store::StoreError>
+pub fn ironflowx_store::ControlPlane::lookup_key(&self, ironflowx_core::id::KeyId, &ironflowx_core::id::EnvRef) -> core::result::Result<core::option::Option<ironflowx_authz::KeyRecord>, ironflowx_store::StoreError>
+pub fn ironflowx_store::ControlPlane::mark_ledger_created(&self, &ironflowx_core::id::EnvRef, &dyn ironflowx_core::time::Clock) -> core::result::Result<(), ironflowx_store::StoreError>
+pub fn ironflowx_store::ControlPlane::open(&std::path::Path) -> core::result::Result<Self, ironflowx_store::StoreError>
+pub struct ironflowx_store::EnvironmentRecord
+pub ironflowx_store::EnvironmentRecord::created_at: ironflowx_core::time::Timestamp
+pub ironflowx_store::EnvironmentRecord::env: ironflowx_core::id::EnvRef
+pub ironflowx_store::EnvironmentRecord::name: alloc::string::String
+pub ironflowx_store::EnvironmentRecord::project_id: ironflowx_core::id::ProjectId
+pub ironflowx_store::EnvironmentRecord::project_name: alloc::string::String
+pub ironflowx_store::EnvironmentRecord::tenant_id: ironflowx_core::id::TenantId
+impl core::clone::Clone for ironflowx_store::EnvironmentRecord
+pub fn ironflowx_store::EnvironmentRecord::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_store::EnvironmentRecord
+pub fn ironflowx_store::EnvironmentRecord::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_store::EnvironmentRecord
+pub fn ironflowx_store::EnvironmentRecord::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_store::EnvironmentRecord
+pub fn ironflowx_store::EnvironmentRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_store::EnvironmentRecord
+pub struct ironflowx_store::StoreError(_)
+impl core::error::Error for ironflowx_store::StoreError
+impl core::fmt::Debug for ironflowx_store::StoreError
+pub fn ironflowx_store::StoreError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_store::StoreError
+pub fn ironflowx_store::StoreError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result

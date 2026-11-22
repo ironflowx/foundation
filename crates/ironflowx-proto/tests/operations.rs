@@ -34,6 +34,7 @@ impl Operations for Fixed {
             items: vec![Err(OpError {
                 kind: ErrorKind::Invalid,
                 message: "refused".into(),
+                hint: None,
             })],
         })
     }
@@ -122,6 +123,7 @@ fn an_op_error_is_a_std_error_and_a_call_prints_no_field() {
     let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(OpError {
         kind: ErrorKind::NotFound,
         message: "event not found".into(),
+        hint: None,
     });
     assert_eq!(boxed.to_string(), "NotFound: event not found");
     assert_eq!(format!("{:?}", Call::anonymous()), "Call { .. }");
