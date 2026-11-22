@@ -1,0 +1,2 @@
+# Exempt from the event-clock ban, but lacks the SubmitAs::key ban.
+disallowed-methods = []

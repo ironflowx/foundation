@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Usage: ci/purity.sh
 # LED-15, D17 and D36: the pure crates' dependency allowlists, the SequencedTime constructor
-# outside the ledger, SubmitAs::key outside the credentials crate; the crash test's fault points
-# in no published build; and each check rejecting its fixture. The clippy job enforces the call
-# bans on the real crates.
+# outside the ledger, SubmitAs::key outside the credentials crate, both bans in every
+# clippy.toml; the crash test's fault points in no published build; ci/red.sh, which records test
+# checks landing red; and each check rejecting its fixture. The clippy job enforces the call bans
+# on the real crates.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -11,6 +12,7 @@ ci/check-deps.sh crates/ironflowx-core/Cargo.toml ci/purity/ironflowx-core.allow
 ci/check-deps.sh crates/ironflowx-events/Cargo.toml ci/purity/ironflowx-events.allow
 ci/no-event-clock-outside-ledger.sh crates
 ci/no-key-attribution.sh crates
+ci/clippy-bans.sh .
 # Comments may name the constructor.
 ci/no-key-attribution.sh ci/fixtures/key-attribution-in-comment
 ci/no-fault-points.sh crates
@@ -41,8 +43,16 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     cargo clippy --locked --manifest-path ci/fixtures/allow-past-ban/Cargo.toml -- -D warnings
   ci/must-reject.sh 'disallowed method `ironflowx_core::SequencedTime::from_event_clock`' -- \
     cargo clippy --locked --manifest-path ci/fixtures/sequenced-time-outside-ledger/Cargo.toml -- -D warnings
-  ci/must-reject.sh "ci/fixtures/sequenced-time-outside-ledger/src/lib.rs" -- \
+  ci/must-reject.sh \
+    "ci/fixtures/sequenced-time-outside-ledger/src/lib.rs" \
+    "ci/fixtures/sequenced-time-outside-ledger/escaped/aliased.rs:6:" \
+    "ci/fixtures/sequenced-time-outside-ledger/escaped/aliased.rs:11:" -- \
     ci/no-event-clock-outside-ledger.sh ci/fixtures/sequenced-time-outside-ledger
+  ci/must-reject.sh \
+    "crates/ironflowx-core/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
+    "crates/ironflowx-cell/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
+    "crates/ironflowx-events/clippy.toml: missing the ironflowx_core::SequencedTime::from_event_clock ban" -- \
+    ci/clippy-bans.sh ci/fixtures/missing-ban
   ci/must-reject.sh 'disallowed method `ironflowx_core::SubmitAs::key`' -- \
     cargo clippy --locked --manifest-path ci/fixtures/key-attribution-outside-authz/Cargo.toml -- -D warnings
   ci/must-reject.sh \
@@ -61,4 +71,16 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "weak-debug/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" \
     "target-only/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" -- \
     ci/no-fault-points.sh ci/fixtures/fault-points
+}
+
+# ci/red.sh passes only on a failure that names its pattern, and restores the file every time.
+red=ci/fixtures/red
+ci/red.sh "$red/value.txt" 's/ok/no/' "'value_is_ok' panicked" -- "$red/check.sh" >/dev/null
+ci/must-reject.sh "changed nothing" -- ci/red.sh "$red/value.txt" 's/absent/no/' x -- "$red/check.sh"
+ci/must-reject.sh "still passes" -- ci/red.sh "$red/value.txt" 's/ok/OK/' x -- true
+ci/must-reject.sh "failed without 'other_test'" -- \
+  ci/red.sh "$red/value.txt" 's/ok/no/' other_test -- "$red/check.sh"
+grep -qx ok "$red/value.txt" || {
+  echo "purity: ci/red.sh did not restore $red/value.txt"
+  exit 1
 }

@@ -1,0 +1,5 @@
+# Fixture for ci/clippy-bans.sh: the root carries both bans.
+disallowed-methods = [
+  { path = "ironflowx_core::SequencedTime::from_event_clock", reason = "fixture" },
+  { path = "ironflowx_core::SubmitAs::key", reason = "fixture" },
+]
