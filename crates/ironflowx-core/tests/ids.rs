@@ -97,6 +97,7 @@ fn an_embedder_name_is_1_to_128_bytes_with_no_control_character() {
     for bad in [
         "",
         &"x".repeat(129),
+        &format!("{}é", "x".repeat(127)), // 128 characters, 129 bytes
         "tab\there",
         "nul\0",
         "new\nline",
