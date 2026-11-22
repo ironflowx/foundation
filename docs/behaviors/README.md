@@ -10,7 +10,7 @@ What a client observes in 0.1. Invariants that no single example can show are in
 
 IDs missing from these ranges are unassigned, except 005, which is retired.
 
-Each scenario is mapped to the spec stories that own it in [Spec 4, "Behavior coverage"](https://github.com/ironflowx/foundation/blob/93f0bb261276d7522180d7307464256239a44030/docs/milestones/0.1-ledger/specs/04-ledger.md#behavior-coverage).
+Each scenario is mapped to the spec stories that own it in [Spec 4, "Behavior coverage"](https://github.com/ironflowx/foundation/blob/93f0bb261276d7522180d7307464256239a44030/docs/milestones/0.1-ledger/specs/04-ledger.md#behavior-coverage). The 0.1 [coverage sweep](https://github.com/ironflowx/foundation/blob/a192bdb8f63e08ef85cf4549ffeac8c3f3dc7907/docs/behaviors/coverage.md), a dated planning record, lists the items deferred to later releases for when they are drafted.
 
 ## How they run
 
@@ -21,7 +21,7 @@ The steps call `Operations`, never a URL or a status code. One set of steps, two
 | `LocalOperations` | A ledger in the test's process, on a temporary directory, with a `ManualClock` | Every PR |
 | Remote client | The server binary at `IRONFLOWX_URL` | From 0.3 |
 
-The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It runs these files from this folder; they are not copied.
+The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It runs `events.feature` from this folder; it is not copied. The runner names that file and asserts its 41 scenarios (`crates/ironflowx-behaviors/tests/behaviors.rs`), so a new scenario updates that count and a new file is added there. Run them alone with `cargo test -p ironflowx-behaviors --test behaviors`.
 
 ## Conventions
 

@@ -245,6 +245,41 @@ async fn a_later_record_with_another_token_is_refused() {
 }
 
 #[tokio::test]
+async fn a_later_record_that_does_not_decode_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    open(dir.path(), env).await.close().await;
+    {
+        let log = SegmentLog::open(dir.path().join("log"), Options::default()).unwrap();
+        let revision = log.stream_head(b"events").unwrap().revision;
+        append(&log, ExpectedRevision::At(revision), vec![0xFF]);
+    }
+    std::fs::remove_file(dir.path().join("read.db")).unwrap();
+    let err = Ledger::open(dir.path(), env, clock()).await.err();
+    assert!(matches!(err, Some(OpenError::Corrupt)), "{err:?}");
+}
+
+#[tokio::test]
+async fn a_log_without_a_genesis_record_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    {
+        let log = SegmentLog::open(dir.path().join("log"), Options::default()).unwrap();
+        let record = ironflowx_events::Record {
+            time: Timestamp::from_millis(T),
+            events: vec![],
+        };
+        append(
+            &log,
+            ExpectedRevision::Empty,
+            record::events(env.token(), &record),
+        );
+    }
+    let err = Ledger::open(dir.path(), env, clock()).await.err();
+    assert!(matches!(err, Some(OpenError::Corrupt)), "{err:?}");
+}
+
+#[tokio::test]
 async fn an_empty_ledger_reopens_after_its_read_store_is_deleted() {
     let dir = tempfile::tempdir().unwrap();
     let env = new_env_ref();
