@@ -1,9 +1,11 @@
-//! Admission through the engine: each refusal, until the tenancy scenarios that list events
-//! (ACC-020–024) can run.
+//! Admission through the engine: each refusal, byte for byte (TEN-7), and a key row of another
+//! environment or incarnation (TEN-10). ACC-020–024 cover the same refusals as a caller sees them.
 
-use ironflowx_authz::mint;
+use std::collections::BTreeSet;
+
+use ironflowx_authz::{KeyRecord, mint, parse, verify};
 use ironflowx_cell::ManualClock;
-use ironflowx_core::{ErrorKind, Secret, Timestamp};
+use ironflowx_core::{EnvRef, ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{Call, OpError, WhoamiRequest};
 
@@ -54,26 +56,94 @@ async fn every_bad_key_is_refused_and_only_a_malformed_one_hints() {
     .0;
     let id = &bootstrap[4..40];
     let wrong_secret = mint(id.parse().unwrap(), [2; 32]).0;
+    let first = refusal(engine, &key(unknown.expose())).await;
+    assert_eq!(
+        (first.message.as_str(), &first.hint),
+        ("invalid API key", &None)
+    );
+    // One answer, so no refusal tells which keys exist (D30).
     for (case, text) in [
-        ("unknown", unknown.expose()),
         ("wrong secret", wrong_secret.expose()),
         ("another engine's", foreign.as_str()),
     ] {
-        let err = refusal(engine, &key(text)).await;
-        assert_eq!(
-            (err.message.as_str(), err.hint),
-            ("invalid API key", None),
-            "{case}"
-        );
+        assert_eq!(refusal(engine, &key(text)).await, first, "{case}");
     }
 
     for text in ["bad-key".to_owned(), format!("Bearer {bootstrap}")] {
         let err = refusal(engine, &key(&text)).await;
         assert_eq!(err.message, "invalid API key");
-        let hint = err.hint.expect("a malformed key's hint names the format");
+        let hint = err
+            .hint
+            .as_deref()
+            .expect("a malformed key's hint names the format");
         assert!(hint.contains("ixk_<key-id>_<secret>"), "{hint}");
-        assert!(!hint.contains(&text) && !err.message.contains(&text));
+        let shown = format!("{err:?}");
+        for part in [text.as_str(), &bootstrap, &bootstrap[41..]] {
+            assert!(!shown.contains(part), "{shown}");
+        }
     }
     opened.engine.close().await;
     other.engine.close().await;
+}
+
+#[tokio::test]
+async fn a_key_row_of_another_environment_or_incarnation_is_refused_by_lookup_and_verify() {
+    let dir = tempfile::tempdir().unwrap();
+    let opened = Engine::open(dir.path(), clock()).await.unwrap();
+    let bootstrap = opened.minted.as_ref().unwrap().expose().to_owned();
+    let unknown = mint(
+        "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f".parse().unwrap(),
+        [1; 32],
+    )
+    .0;
+    let unknown = refusal(&opened.engine, &key(unknown.expose())).await;
+    opened.engine.close().await;
+
+    let db = rusqlite::Connection::open(dir.path().join("control.db")).unwrap();
+    // The planted row names an environment this file does not hold.
+    db.pragma_update(None, "foreign_keys", false).unwrap();
+    let (env_id, token): (String, String) = db
+        .query_row(
+            "SELECT environment_id, environment_token FROM keys",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let engine_env: EnvRef = format!("{env_id}.{token}").parse().unwrap();
+    let other_token = if token == format!("{:032x}", 1) { 2 } else { 1 };
+    let (other_id, other_token) = (
+        "019a9f3e-7c2b-7d41-8a3e-000000000002".to_owned(),
+        format!("{other_token:032x}"),
+    );
+    let parts = parse(&Secret::new(bootstrap.clone())).unwrap();
+
+    // The row keeps its matching digest; only its environment or its incarnation moves.
+    for (case, row_id, row_token) in [
+        ("another environment", &other_id, &token),
+        ("another incarnation", &env_id, &other_token),
+        ("its own", &env_id, &token),
+    ] {
+        db.execute(
+            "UPDATE keys SET environment_id = ?1, environment_token = ?2",
+            [row_id, row_token],
+        )
+        .unwrap();
+        let engine = Engine::open(dir.path(), clock()).await.unwrap().engine;
+        let answer = engine.whoami(&key(&bootstrap), WhoamiRequest {}).await;
+        let record = KeyRecord {
+            id: parts.id,
+            env: format!("{row_id}.{row_token}").parse().unwrap(),
+            scopes: BTreeSet::from([Scope::Admin]),
+            digest: parts.digest.clone(),
+        };
+        let verified = verify(&parts, Some(&record), &engine_env);
+        if case == "its own" {
+            // Moved back, the key works: the refusals above came from the move alone.
+            assert!(answer.is_ok() && verified.is_ok(), "{case}");
+        } else {
+            assert_eq!(answer.err(), Some(unknown.clone()), "{case}: lookup");
+            assert!(verified.is_err(), "{case}: verify");
+        }
+        engine.close().await;
+    }
 }

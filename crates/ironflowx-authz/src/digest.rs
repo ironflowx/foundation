@@ -16,6 +16,12 @@ use subtle::ConstantTimeEq as _;
 #[derive(Clone)]
 pub struct KeyDigest([u8; 32]);
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread called `ct_eq`, so a test can show `verify` reaches it.
+    pub(crate) static CT_EQ_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl KeyDigest {
     pub(crate) fn of(text: &str) -> Self {
         Self(Sha256::digest(text.as_bytes()).into())
@@ -23,6 +29,8 @@ impl KeyDigest {
 
     /// Compares in constant time.
     pub fn ct_eq(&self, other: &Self) -> bool {
+        #[cfg(test)]
+        CT_EQ_CALLS.set(CT_EQ_CALLS.get() + 1);
         self.0.ct_eq(&other.0).into()
     }
 
