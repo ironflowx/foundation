@@ -9,9 +9,14 @@
 #![forbid(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]
 
 mod error;
+#[cfg(feature = "__fault-points")]
+mod fault;
 mod id;
 mod time;
 
 pub use error::{ErrorKind, ParseError};
+#[cfg(feature = "__fault-points")]
+#[doc(hidden)]
+pub use fault::{FaultPoint, reach_fault_point, set_fault_hook};
 pub use id::{EnvRef, EnvironmentId, EventId, IncarnationToken};
 pub use time::{Clock, SequencedTime, Timestamp};

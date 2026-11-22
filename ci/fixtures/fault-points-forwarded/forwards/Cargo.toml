@@ -1,0 +1,10 @@
+[package]
+name = "forwards"
+edition = "2024"
+
+[features]
+__fault-points = ["ironflowx-cell/__fault-points"]
+other = []
+
+[dependencies]
+ironflowx-cell = { path = "../../../../crates/ironflowx-cell" }

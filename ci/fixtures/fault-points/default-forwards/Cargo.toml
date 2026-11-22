@@ -1,0 +1,11 @@
+[package]
+name = "default-forwards"
+edition = "2024"
+
+# The allowed route, forwarding from its own `__fault-points`, but on by default.
+[features]
+default = ["__fault-points"]
+__fault-points = ["ironflowx-cell/__fault-points"]
+
+[dependencies]
+ironflowx-cell = { path = "../../../../crates/ironflowx-cell" }

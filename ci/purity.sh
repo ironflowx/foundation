@@ -10,6 +10,7 @@ ci/check-deps.sh crates/ironflowx-core/Cargo.toml ci/purity/ironflowx-core.allow
 ci/check-deps.sh crates/ironflowx-events/Cargo.toml ci/purity/ironflowx-events.allow
 ci/no-event-clock-outside-ledger.sh crates
 ci/no-fault-points.sh crates
+ci/no-fault-points.sh ci/fixtures/fault-points-forwarded
 
 # The patterns quote clippy's messages, backticks included, so they stay in single quotes.
 # shellcheck disable=SC2016
@@ -35,6 +36,7 @@ ci/no-fault-points.sh crates
   ci/must-reject.sh \
     "on-by-default/Cargo.toml: published crate can enable __fault-points on on-by-default" \
     "through-dependency/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" \
-    "opt-in/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" -- \
+    "opt-in/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" \
+    "default-forwards/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" -- \
     ci/no-fault-points.sh ci/fixtures/fault-points
 }

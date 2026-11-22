@@ -1,0 +1,5 @@
+# Crash-test fixture: a published crate whose own `__fault-points` forwards to a dependency's,
+# the one route ci/no-fault-points.sh allows.
+[workspace]
+resolver = "3"
+members = ["forwards"]
