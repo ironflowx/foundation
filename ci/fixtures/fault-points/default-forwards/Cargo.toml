@@ -1,5 +1,6 @@
 [package]
 name = "default-forwards"
+version = "0.0.0"
 edition = "2024"
 
 # The allowed route, forwarding from its own `__fault-points`, but on by default.

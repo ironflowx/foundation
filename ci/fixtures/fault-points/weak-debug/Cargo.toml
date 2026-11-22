@@ -1,0 +1,12 @@
+[package]
+name = "weak-debug"
+version = "0.0.0"
+edition = "2024"
+
+# Its own `__fault-points` only pulls the dependency in; an ordinary feature turns its hook on.
+[features]
+__fault-points = ["dep:ironflowx-cell"]
+debug = ["ironflowx-cell?/__fault-points"]
+
+[dependencies]
+ironflowx-cell = { path = "../../../../crates/ironflowx-cell", optional = true }

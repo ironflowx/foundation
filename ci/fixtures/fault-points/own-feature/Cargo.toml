@@ -1,5 +1,6 @@
 [package]
 name = "own-feature"
+version = "0.0.0"
 edition = "2024"
 
 # Its own ordinary feature turns on its own hook.

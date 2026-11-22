@@ -1,0 +1,11 @@
+[package]
+name = "metadata-publish"
+version = "0.0.0"
+edition = "2024"
+
+# cargo-release's key, not Cargo's: the crate still publishes.
+[package.metadata.release]
+publish = false
+
+[dependencies]
+ironflowx-cell = { path = "../../../../crates/ironflowx-cell", features = ["__fault-points"] }
