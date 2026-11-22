@@ -38,15 +38,16 @@ The rows behind it: [Open](#open).
 | Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types; 0.3 maps a wire format onto them | `Operations` trait and messages | `ironflowx-proto` |
 | Core types | Validated IDs, `EnvRef`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
+| Facade | Re-exports the four crates above; the one crate an embedder depends on | Re-exports | `ironflowx` |
 
 `LocalOperations` implements `Operations` over one `Ledger`. It maps each request to a submission and each outcome to an answer and holds no rule: every check, default and limit is in event rules. Tests and embedders use the same adapter.
 
 | Type | Is |
 |---|---|
-| `Timestamp` | A UTC instant in whole milliseconds. Private fields; `from_millis` and `as_millis` (`i64`) are the only conversions (D18) |
+| `Timestamp` | A UTC instant in whole milliseconds since the Unix epoch. Private fields; `from_millis` and `as_millis` (`i64`) are the only conversions (D18) |
 | `SequencedTime` | A reading of the event clock. Its one constructor is `#[doc(hidden)]`, and a lint allows it only in `ironflowx-cell` (D17); it compares with itself, never with `Timestamp` or `std::time` |
 | `Clock` | A trait in core: `fn now(&self) -> Timestamp`. Core declares it and never calls it |
-| `EnvRef` | `{ id: EnvironmentId, token: IncarnationToken }`. Text form `<uuid>.<32 hex digits>` via `Display` and `FromStr`, so an embedder can store it |
+| `EnvRef` | `{ id: EnvironmentId, token: IncarnationToken }`. Text form `<uuid>.<32 hex digits>` via `Display` and `FromStr`, so an embedder can store it. Only the canonical spelling parses: a lowercase, hyphenated UUIDv7 and 32 lowercase hex digits; `EnvironmentId`, `EventId` and `IncarnationToken` parse the same way |
 
 ## Seams
 
@@ -60,7 +61,7 @@ The segment log has a storage seam of its own, private to `segment-log-core`; 0.
 
 ## Interfaces
 
-Shapes; names may change in the first PRs, behavior may not.
+Shapes, abridged. Each crate's full public API is its snapshot in [`public-api/`](../public-api/), which CI checks (D21).
 
 ```rust
 // ironflowx-proto: the 0.1 subset. No dyn use in 0.1; adapters are generic.
@@ -86,10 +87,12 @@ trait Operations: Send + Sync {
 
 // ironflowx-cell (tokio)
 impl Ledger {
-    async fn open(dir: &Path, env: EnvRef, clock: impl Clock) -> Result<Ledger, OpenError>;
+    // open, read and close panic outside a tokio runtime
+    async fn open(dir: &Path, env: EnvRef, clock: impl Clock + Send + 'static) -> Result<Ledger, OpenError>;
     async fn submit(&self, sub: Submission) -> Result<Committed, SubmitError>;
-    // q is a query from event rules (get_event, list_events) over the read store
-    async fn read<R>(&self, q: impl FnOnce(&ReadStore) -> Result<R, Error<StoreError>>) -> Result<R, ReadError>;
+    // q is a query from event rules (get_event, list_events) over the read store; a q that panics fails the ledger
+    async fn read<R: Send + 'static>(&self, q: impl FnOnce(&ReadStore) -> Result<R, Error<StoreError>> + Send + 'static)
+        -> Result<R, ReadError>;
     fn env(&self) -> EnvRef;
     async fn close(self);   // drains in-flight submits and the fold, then releases the directory lock
 }
@@ -128,8 +131,11 @@ fn fold<T: EventTables>(tx: &mut T, record: &Record) -> Result<(), T::Error>;
 | Version | Absent stores 1; otherwise 1 to 2,147,483,647 | EVT-002, EVT-008, EVT-009 |
 | Idempotency key | Absent means no key; otherwise 1–256 bytes, no NUL. One key per environment, across names, for as long as its event exists | EVT-030–037 |
 | Batch | An empty batch answers with no results | EVT-023 |
+| Sequence | A new event whose sequence would pass `u64::MAX` is refused: `event sequences are used up` | |
 
-A list query, not `decide`, checks the cursor: a token that does not decode, or names another incarnation, is `Invalid` (EVT-045, EVT-055). A cursor encodes the incarnation token and the last event sequence returned, and stays valid across reopen. It is an encoding, not a signature: 0.1 does not detect a forged one.
+If a build turns on `serde_json`'s `arbitrary_precision` feature, which Cargo's feature unification can do from any crate in the embedder's graph, an object whose first key is `$serde_json::private::Number` is read as a number and so may be refused. A default build reads that key like any other. CI runs the event-rule tests in both builds.
+
+A list query, not `decide`, checks the cursor: a token that does not decode, or names another incarnation, is `Invalid` (EVT-045, EVT-055). A cursor encodes the incarnation token and the last event sequence returned, and stays valid across reopen. A page lists the events older than the cursor's sequence, whether or not an event has that sequence, so a cursor past every sequence lists from the newest. It is an encoding, not a signature: 0.1 does not detect a forged one.
 
 ## Errors
 
@@ -140,11 +146,11 @@ The kind is contract. Four messages are contract too: `event name is required`, 
 | `Invalid` | A rule refused the request, or one batch item | No: the same request is refused the same way |
 | `NotFound` | No event has that ID, or the ID does not parse | No |
 | `Unknown` | The append's outcome is unknown; the ledger is now `Unavailable` | After reopen. With a key, the retry returns the original event if it landed. Without one it may store a second event |
-| `Unavailable` | The ledger failed (append, fold or read store) and refuses every call until it is reopened. Reads waiting at the gate end with it | After reopen |
+| `Unavailable` | The ledger failed (append, fold, read store, or a `read` query that panicked) and refuses every call until it is reopened. Reads waiting at the gate end with it | After reopen |
 
 ## Commit and read
 
-1. The writer processes one submission at a time (D15). Up to 16 more can wait in its queue. A submit waits asynchronously for a slot. Cancelling before admission leaves no job for the writer. For each it reads the event clock and calls `decide` against the read store, drawing IDs from a UUIDv7 generator.
+1. The writer processes one submission at a time (D15). Up to 16 more can wait in its queue. A submit waits asynchronously for a slot. Cancelling before admission leaves no job for the writer. Cancelling after admission, or timing out, only drops the answer: the write can still commit, so treat it like `Unknown` and retry with the same idempotency key. For each it reads the event clock and calls `decide` against the read store, drawing IDs from a UUIDv7 generator.
 2. Nothing to append (all refused, or all duplicates): it answers at once.
 3. Otherwise it appends one record holding every new event and waits for the log's fsync, off the async threads. Each new event takes the next event sequence, from 1, in input order.
 4. It publishes the new committed head to the read gate, then acknowledges. Then it folds the record, before it takes the next submission, so the read store holds every earlier record when `decide` runs.
@@ -169,7 +175,8 @@ The committed head and the applied position are exclusive log offsets: one past 
 | Empty log and a readable `read.db` with a positive applied position, for any incarnation | `OpenError::Corrupt` before writing genesis or replacing the store |
 | The log ends in a torn last frame, after a crash | The log truncates it; opens with the records before it |
 | `read.db` names this environment and its applied position is beyond the log's watermark | `OpenError::Corrupt`, before a genesis record is written: the fold follows fsync, so the log lost durable records: an older copy of the log restored, or, after a crash, a bad last frame the log truncated as a torn tail (a crash writes no close frame, so nothing after it shows it was acknowledged). Without `read.db`, that last record is lost unreported |
-| A replayed record carries another token or format | `OpenError::Corrupt` |
+| A replayed record carries another token or format, or does not decode | `OpenError::Corrupt` |
+| The record at offset 0 is not a genesis record | `OpenError::Corrupt` |
 | The log reports corruption (including a bad frame in its newest segment with a later record or a close frame after it), a gap or a foreign segment | `OpenError::Corrupt` |
 | Another process or `Ledger` holds the directory | `OpenError::Locked`, including on sealed logs. The OS releases the ledger lock when the process exits |
 | Any other I/O failure | `OpenError::Io` |
@@ -209,7 +216,7 @@ A sealed log, after a lossy repair, opens and reads until the first emit that ap
 | Where | Holds |
 |---|---|
 | `<dir>/ledger.lock` | File used for exclusive ownership of the ledger directory, including during read-store rebuild |
-| `<dir>/log/` (segment log) | Offset 0: the genesis record. Then one record per submit that appends: format version, incarnation token, event-clock time, and for each new event its sequence, ID, name, version, key, metadata and data. Binary and length-prefixed; data and metadata are the bytes as sent |
+| `<dir>/log/` (segment log) | Offset 0: the genesis record, with the ledger's own format version, 1. Then one record per submit that appends: format version, incarnation token, event-clock time, and for each new event its sequence, ID, name, version, key, metadata and data. Binary and length-prefixed; data and metadata are the bytes as sent |
 | `<dir>/read.db` (SQLite) | `events` keyed by sequence, unique by ID · `idempotency` key → event ID · `meta`: applied position, environment ID, incarnation token, format version |
 
 A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 4 MiB of data and metadata, under 4.1 MiB.
@@ -218,12 +225,13 @@ A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 
 
 | Crate | Version | Used | Relied on |
 |---|---|---|---|
-| `segment-log-core` | Pinned exactly (D16), from crates.io (MIT) | `SegmentLog::open`, `append` → `Pending::wait`, `read(from, max)`, `watermark` | See below |
-| `rusqlite` | Pinned in the first PR, `bundled` | Read store | One transaction per folded record |
-| `serde_json` | Pinned in the first PR; the 127 depth limit is checked against it | Event rules | D12 |
-| `uuid` | Pinned, `v7` | Event and environment IDs | |
-| `getrandom` | Pinned | `new_env_ref` | OS random source |
-| `tokio` | Pinned | `spawn_blocking` for open, reads and close; the read gate; the answer to a submission | |
+| `segment-log-core` | Pinned exactly (D16), from crates.io (MIT) | `SegmentLog::open`, `append` → `Pending::wait`, `read(from, max)`, `watermark`, `stream_head` | See below |
+| `rusqlite` | Pinned exactly, `bundled` | Read store | One transaction per folded record |
+| `serde_json` | Pinned exactly; the 127 depth limit is checked against it | Event rules | D12 |
+| `serde_core` | A caret range | Event rules' JSON visitor | D12 |
+| `uuid` | A caret range; `v7` in `ironflowx-cell` only | Event and environment IDs | |
+| `getrandom` | Pinned exactly | `new_env_ref` | OS random source |
+| `tokio` | Pinned exactly | `spawn_blocking` for open, reads and close; the read gate; the answer to a submission | |
 
 How the ledger uses the log:
 
