@@ -37,13 +37,13 @@ The rows behind it: [Open](#open).
 | Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time | `open`, `submit`, `read`, `close`, `LocalOperations`, `HostClock`, `ManualClock` | `ironflowx-cell` |
 | Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types; 0.3 maps a wire format onto them | `Operations` trait and messages | `ironflowx-proto` |
-| Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified) before the handler reaches the ledger or the key records | `Engine::open`, `close`, `whoami`, `list_environments` | `ironflowx-operations` |
+| Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified) before the handler reaches the ledger or the key records | `Engine::open`, `close`, `whoami`, `list_environments`, `emit`, `emit_batch`, `get_event`, `list_events` | `ironflowx-operations` |
 | Credentials | The key format and its digest, and whether a presented key is valid for an environment. Pure | `parse`, `mint`, `verify` | `ironflowx-authz` |
 | Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `mark_ledger_created`, `lookup_key`, `environment` | `ironflowx-store` |
 | Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Scope`, `Address`, `Secret`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
 | Facade | Re-exports the crates above as modules; the one crate an embedder depends on | Re-exports | `ironflowx` |
 
-`LocalOperations` implements `Operations` over one `Ledger`. It maps each request to a submission and each outcome to an answer and holds no rule: every check, default and limit is in event rules. Tests and embedders use the same adapter. It attributes every submission as `embedder:local-operations` until the engine replaces it (D36).
+`LocalOperations` implements `Operations` over one `Ledger`. It maps each request to a submission and each outcome to an answer and holds no rule: every check, default and limit is in event rules. Tests and embedders use the same adapter. `LocalOperations::new` attributes every submission as `embedder:local-operations` until the engine replaces it (D36); the engine runs its event operations through `LocalOperations::submitting_as`, passing its verified grant's `submit_as()`, so an event emitted with a key records `key:<key-id>`.
 
 | Type | Is |
 |---|---|
@@ -58,7 +58,7 @@ The rows behind it: [Open](#open).
 | `Secret` | A whole key's text. Implements none of `Debug`, `Display`, `Serialize` and `Clone`; `expose()` is its only read; zeroed on drop (TEN-3) |
 | `KeyDigest` | SHA-256 of a key's whole text, in `ironflowx-authz`. Private bytes, no `PartialEq`, `AsRef` or `Deref`; `ct_eq` is its only comparison; `to_stored` and `from_stored`, its storage codec, are confined to `ironflowx-store` by a lint (TEN-4) |
 | `KeyRecord` | What credentials need about a stored key: `{ id, env: EnvRef, scopes, digest }`, `env` being the environment ID and token current when the key was made |
-| `Grant` | What a verified key may do: its key ID, scopes and `EnvRef`. Only `verify` makes one; never stored |
+| `Grant` | What a verified key may do: its key ID, scopes and `EnvRef`, and `submit_as()`, the key's attribution, the only `SubmitAs::key` call, which clippy confines to the engine (D36). Only `verify` makes one; never stored |
 | `Authorized` | Proof of admission, `{ grant }`, its field private to the engine's admission module: the engine's key operations take one (TEN-1) |
 
 ## Seams
@@ -101,13 +101,18 @@ trait Operations: Send + Sync {
 // Environment      { env: EnvRef, name, address: Address, project_id: ProjectId, created_at: Timestamp }
 // WhoamiRequest {} · ListEnvironmentsRequest {}   // no request takes an environment (LED-7)
 
-// ironflowx-operations (tokio). whoami and list_environments are the engine's own methods
-// until they join the Operations trait.
+// ironflowx-operations (tokio). These are the engine's own methods until the engine implements
+// the Operations trait. Each admits the call first, with no cache.
 impl Engine {
     async fn open(root: &Path, clock: impl Clock + Clone + Send + Sync + 'static) -> Result<Opened, EngineError>;
     async fn close(self);
     async fn whoami(&self, cx: &Call, req: WhoamiRequest) -> Result<Whoami, OpError>;
     async fn list_environments(&self, cx: &Call, req: ListEnvironmentsRequest) -> Result<Vec<Environment>, OpError>;
+    // As Operations; each submission is attributed to the calling key, from its grant (TEN-6).
+    async fn emit(&self, cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError>;
+    async fn emit_batch(&self, cx: &Call, req: EmitBatchRequest) -> Result<EmitBatchResponse, OpError>;
+    async fn get_event(&self, cx: &Call, req: GetEventRequest) -> Result<Event, OpError>;
+    async fn list_events(&self, cx: &Call, req: ListEventsRequest) -> Result<EventPage, OpError>;
 }
 // Opened      { engine: Engine, minted: Option<Secret> }   // the bootstrap key, returned by the bootstrapping open only
 // EngineError Locked | Ledger(OpenError) | Store(StoreError) | Io(io::Error)

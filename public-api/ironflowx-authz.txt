@@ -4,6 +4,7 @@ impl ironflowx_authz::Grant
 pub const fn ironflowx_authz::Grant::env(&self) -> ironflowx_core::id::EnvRef
 pub const fn ironflowx_authz::Grant::key_id(&self) -> ironflowx_core::id::KeyId
 pub const fn ironflowx_authz::Grant::scopes(&self) -> &alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>
+pub const fn ironflowx_authz::Grant::submit_as(&self) -> ironflowx_core::who::SubmitAs
 impl core::clone::Clone for ironflowx_authz::Grant
 pub fn ironflowx_authz::Grant::clone(&self) -> Self
 impl core::fmt::Debug for ironflowx_authz::Grant

@@ -1,0 +1,6 @@
+# Carries every ban it must, but has drifted from core's file.
+disallowed-methods = [
+  { path = "ironflowx_core::SequencedTime::from_event_clock", reason = "fixture" },
+  { path = "ironflowx_authz::KeyDigest::to_stored", reason = "fixture" },
+  { path = "ironflowx_authz::KeyDigest::from_stored", reason = "fixture" },
+]

@@ -11,20 +11,24 @@ use ironflowx_proto::{
 use crate::{Ledger, ReadError, SubmitError};
 
 /// An in-process client of one ledger. Several can share it.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct LocalOperations<'a> {
     ledger: &'a Ledger,
+    by: SubmitAs,
 }
 
 impl<'a> LocalOperations<'a> {
-    pub const fn new(ledger: &'a Ledger) -> Self {
-        Self { ledger }
+    /// Attributes every submission as `embedder:local-operations` until the engine replaces it
+    /// (D36).
+    pub fn new(ledger: &'a Ledger) -> Self {
+        let by = SubmitAs::embedder("local-operations").expect("a valid embedder name");
+        Self::submitting_as(ledger, by)
     }
-}
 
-/// Until the engine replaces it, every submission is attributed to this embedder (D36).
-fn local() -> SubmitAs {
-    SubmitAs::embedder("local-operations").expect("a valid embedder name")
+    /// Attributes every submission to `by`; the engine passes its verified grant's.
+    pub const fn submitting_as(ledger: &'a Ledger, by: SubmitAs) -> Self {
+        Self { ledger, by }
+    }
 }
 
 fn emit(req: EmitRequest) -> Emit {
@@ -103,7 +107,7 @@ impl Operations for LocalOperations<'_> {
     async fn emit(&self, _cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError> {
         let committed = self
             .ledger
-            .submit(Submission::Emit(emit(req)), local())
+            .submit(Submission::Emit(emit(req)), self.by.clone())
             .await
             .map_err(submit_error)?;
         let [outcome] = <[_; 1]>::try_from(committed.outcome).expect("one outcome per emit");
@@ -118,7 +122,7 @@ impl Operations for LocalOperations<'_> {
         let items = req.items.into_iter().map(emit).collect();
         let committed = self
             .ledger
-            .submit(Submission::Batch(items), local())
+            .submit(Submission::Batch(items), self.by.clone())
             .await
             .map_err(submit_error)?;
         Ok(EmitBatchResponse {

@@ -70,7 +70,8 @@ impl core::ops::drop::Drop for ironflowx_cell::Ledger
 pub fn ironflowx_cell::Ledger::drop(&mut self)
 pub struct ironflowx_cell::LocalOperations<'a>
 impl<'a> ironflowx_cell::LocalOperations<'a>
-pub const fn ironflowx_cell::LocalOperations<'a>::new(&'a ironflowx_cell::Ledger) -> Self
+pub fn ironflowx_cell::LocalOperations<'a>::new(&'a ironflowx_cell::Ledger) -> Self
+pub const fn ironflowx_cell::LocalOperations<'a>::submitting_as(&'a ironflowx_cell::Ledger, ironflowx_core::who::SubmitAs) -> Self
 impl ironflowx_proto::Operations for ironflowx_cell::LocalOperations<'_>
 pub async fn ironflowx_cell::LocalOperations<'_>::emit(&self, &ironflowx_proto::Call, ironflowx_proto::EmitRequest) -> core::result::Result<ironflowx_proto::EmitResponse, ironflowx_proto::OpError>
 pub async fn ironflowx_cell::LocalOperations<'_>::emit_batch(&self, &ironflowx_proto::Call, ironflowx_proto::EmitBatchRequest) -> core::result::Result<ironflowx_proto::EmitBatchResponse, ironflowx_proto::OpError>
@@ -78,8 +79,6 @@ pub async fn ironflowx_cell::LocalOperations<'_>::get_event(&self, &ironflowx_pr
 pub async fn ironflowx_cell::LocalOperations<'_>::list_events(&self, &ironflowx_proto::Call, ironflowx_proto::ListEventsRequest) -> core::result::Result<ironflowx_proto::EventPage, ironflowx_proto::OpError>
 impl<'a> core::clone::Clone for ironflowx_cell::LocalOperations<'a>
 pub fn ironflowx_cell::LocalOperations<'a>::clone(&self) -> Self
-impl<'a> core::clone::TrivialClone for ironflowx_cell::LocalOperations<'a>
-impl<'a> core::marker::Copy for ironflowx_cell::LocalOperations<'a>
 pub struct ironflowx_cell::ManualClock(_)
 impl ironflowx_cell::ManualClock
 pub fn ironflowx_cell::ManualClock::new(ironflowx_core::time::Timestamp) -> Self
