@@ -1,0 +1,4 @@
+# Lacks the SubmitAs::key ban.
+disallowed-methods = [
+  { path = "ironflowx_core::SequencedTime::from_event_clock", reason = "fixture" },
+]

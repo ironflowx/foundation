@@ -1,0 +1,4 @@
+# Lacks the event-clock ban.
+disallowed-methods = [
+  { path = "ironflowx_core::SubmitAs::key", reason = "fixture" },
+]

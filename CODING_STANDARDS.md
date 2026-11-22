@@ -14,7 +14,8 @@ Judgement rules for review. Anything a tool can check belongs in CI instead (`ci
   helper keeps each existing caller's assertions as strict as before.
 - **Test checks land red.** A new check in a test is shown failing against the defect named for
   it (a one-line change to the code under test, then reverted), and the PR says which change
-  turned it red.
+  turned it red. `ci/red.sh` applies the change, requires the failure to name the check, restores
+  the file and prints the PR's table row.
 - **Checks prove themselves.** A new CI check lands with a fixture that triggers every pattern it
   claims to catch, and `must-reject.sh` asserts it fails for that reason, not any failure.
 - **Rules are probed at their edges.** For code or a CI check that accepts or refuses input, the
