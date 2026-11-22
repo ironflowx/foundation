@@ -9,6 +9,7 @@ root=$1
 bans=(
   "ironflowx_core::SequencedTime::from_event_clock|ironflowx-cell"
   "ironflowx_core::SubmitAs::key|ironflowx-authz"
+  "ironflowx_authz::Grant::submit_as|ironflowx-operations"
   "ironflowx_authz::KeyDigest::to_stored|ironflowx-store"
   "ironflowx_authz::KeyDigest::from_stored|ironflowx-store"
 )

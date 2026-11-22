@@ -6,6 +6,9 @@ disallowed-methods = [
   # Only the ledger stamps event time. Inside core the path does not resolve, so
   # ci/no-event-clock-outside-ledger.sh covers core.
   { path = "ironflowx_core::SequencedTime::from_event_clock", reason = "only ironflowx-cell produces event time (D17)", allow-invalid = true },
+  # A grant's attribution: core does not depend on authz, hence allow-invalid; a forged grant
+  # (verify's inputs are public) must not reach a ledger submission.
+  { path = "ironflowx_authz::Grant::submit_as", reason = "only the engine attributes a submission to a verified key (D36)", allow-invalid = true },
   # The key digest's storage codec: even authz's own code cannot call it;
   # ci/no-digest-codec.sh backs this up by name.
   { path = "ironflowx_authz::KeyDigest::to_stored", reason = "only the control plane stores a key digest (TEN-4)", allow-invalid = true },

@@ -58,7 +58,7 @@ The rows behind it: [Open](#open).
 | `Secret` | A whole key's text. Implements none of `Debug`, `Display`, `Serialize` and `Clone`; `expose()` is its only read; zeroed on drop (TEN-3) |
 | `KeyDigest` | SHA-256 of a key's whole text, in `ironflowx-authz`. Private bytes, no `PartialEq`, `AsRef` or `Deref`; `ct_eq` is its only comparison; `to_stored` and `from_stored`, its storage codec, are confined to `ironflowx-store` by a lint (TEN-4) |
 | `KeyRecord` | What credentials need about a stored key: `{ id, env: EnvRef, scopes, digest }`, `env` being the environment ID and token current when the key was made |
-| `Grant` | What a verified key may do: its key ID, scopes and `EnvRef`, and `submit_as()`, the key's attribution, the only `SubmitAs::key` call (D36). Only `verify` makes one; never stored |
+| `Grant` | What a verified key may do: its key ID, scopes and `EnvRef`, and `submit_as()`, the key's attribution, the only `SubmitAs::key` call, which clippy confines to the engine (D36). Only `verify` makes one; never stored |
 | `Authorized` | Proof of admission, `{ grant }`, its field private to the engine's admission module: the engine's key operations take one (TEN-1) |
 
 ## Seams

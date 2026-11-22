@@ -1,0 +1,10 @@
+[package]
+name = "grant-attribution-outside-engine"
+edition = "2024"
+publish = false
+
+[dependencies]
+ironflowx-authz = { path = "../../../crates/ironflowx-authz" }
+ironflowx-core = { path = "../../../crates/ironflowx-core" }
+
+[workspace]
