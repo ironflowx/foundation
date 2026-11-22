@@ -34,7 +34,7 @@
   <path d="M270 300 H804" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-flow-restart)"/>
   <text x="540.0" y="294" font-size="11" text-anchor="middle">r.token and r.format match, else refuse · fold(r)</text>
   <path d="M270 340 H444" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-flow-restart)"/>
-  <text x="360.0" y="334" font-size="11" text-anchor="middle">rows + applied = r.position + 1, one txn</text>
+  <text x="360.0" y="334" font-size="11" text-anchor="middle">rows + applied = r.pos + 1, one txn</text>
   <rect class="band" x="190" y="368" width="330" height="36" rx="4"/>
   <rect x="190" y="368" width="330" height="36" rx="4" fill="none" stroke="currentColor" stroke-width="1"/>
   <text x="198" y="383" font-size="11" text-anchor="start">next sequence = last event + 1</text>
@@ -49,7 +49,7 @@
   <text x="450.0" y="524" font-size="11" text-anchor="middle" fill="#c8553d">Indeterminate | poisoned</text>
   <rect class="band" x="190" y="540" width="520" height="22" rx="4"/>
   <rect x="190" y="540" width="520" height="22" rx="4" fill="none" stroke="#c8553d" stroke-width="1"/>
-  <text x="198" y="555" font-size="11" text-anchor="start" fill="#c8553d">answer Unknown | Unavailable; refuse all until reopened; record may be durable</text>
+  <text x="198" y="555" font-size="11" text-anchor="start" fill="#c8553d">answer Unknown | Unavailable; refuse all until reopened; Unknown may have landed</text>
   <text x="20" y="592" font-size="11" text-anchor="start">Reopening runs the flow above. Nothing acknowledged is lost: an ack follows fsync, and recovery folds every record from the applied position.</text>
   <text x="20" y="610" font-size="11" text-anchor="start">An Unknown emit may have landed: retry it with the same idempotency key.</text>
 </svg>
