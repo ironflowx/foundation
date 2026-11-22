@@ -6,13 +6,25 @@ use std::fmt;
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
 use ironflowx_cell::ManualClock;
-use ironflowx_core::{EnvRef, Scope, Secret, Timestamp};
+use ironflowx_core::{EnvRef, ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_operations::{Engine, Opened};
-use ironflowx_proto::{Call, Environment, ListEnvironmentsRequest, OpError, Whoami, WhoamiRequest};
+use ironflowx_proto::{
+    Call, Environment, ListEnvironmentsRequest, ListEventsRequest, OpError, Whoami, WhoamiRequest,
+};
 use tempfile::TempDir;
 
-/// The tenancy scenarios that run, by tag.
-pub const REGISTERED: &[&str] = &["ACC-001", "ACC-002", "ACC-003", "ACC-009"];
+/// The tenancy scenarios that run, by tag, each with how many times it runs: an outline once per
+/// example.
+pub const REGISTERED: &[(&str, usize)] = &[
+    ("ACC-001", 1),
+    ("ACC-002", 1),
+    ("ACC-003", 1),
+    ("ACC-009", 1),
+    ("ACC-020", 2),
+    ("ACC-021", 2),
+    ("ACC-022", 3),
+    ("ACC-024", 1),
+];
 
 #[derive(World)]
 #[world(init = Self::new)]
@@ -32,6 +44,11 @@ pub struct Tenancy {
     env_before: Option<EnvRef>,
     /// The second engine's environment, as its own key lists it (ACC-009).
     other_env: Option<Environment>,
+    /// The second engine's bootstrap key's text (ACC-024).
+    other_key: Option<String>,
+    /// The key text the last refused call presented, if any.
+    presented: Option<String>,
+    refusal: Option<OpError>,
 }
 
 impl fmt::Debug for Tenancy {
@@ -39,6 +56,7 @@ impl fmt::Debug for Tenancy {
         f.debug_struct("Tenancy")
             .field("returned", &self.returned)
             .field("whoami", &self.whoami)
+            .field("refusal", &self.refusal)
             .finish_non_exhaustive()
     }
 }
@@ -71,6 +89,9 @@ impl Tenancy {
             whoami: None,
             env_before: None,
             other_env: None,
+            other_key: None,
+            presented: None,
+            refusal: None,
         }
     }
 
@@ -95,6 +116,27 @@ impl Tenancy {
 
     async fn whoami(&self) -> Result<Whoami, OpError> {
         self.engine().whoami(&self.key(), WhoamiRequest {}).await
+    }
+
+    /// Lists events on the first engine, opening it if no step has, and keeps the refusal.
+    async fn list_events(&mut self, cx: Call) {
+        if self.engine.is_none() {
+            self.open().await;
+        }
+        let req = ListEventsRequest {
+            limit: None,
+            cursor: None,
+        };
+        let err = self
+            .engine()
+            .list_events(&cx, req)
+            .await
+            .expect_err("refused");
+        self.refusal = Some(err);
+    }
+
+    fn refusal(&self) -> &OpError {
+        self.refusal.as_ref().expect("a refused call")
     }
 
     async fn environments(&self) -> Vec<Environment> {
@@ -221,6 +263,92 @@ async fn both_addresses(w: &mut Tenancy, address: String) {
     assert_eq!(w.other_env.as_ref().unwrap().address.to_string(), address);
 }
 
+#[when(regex = r"^a client with (no key|an empty key) lists events$")]
+async fn lists_without_a_key(w: &mut Tenancy, key: String) {
+    let cx = if key == "no key" {
+        Call::anonymous()
+    } else {
+        call("")
+    };
+    w.list_events(cx).await;
+}
+
+#[when(regex = r"^a client presenting (.+) lists events$")]
+async fn lists_presenting(w: &mut Tenancy, key: String) {
+    w.open().await;
+    let bootstrap = w.bootstrap_key.clone().unwrap();
+    let text = match key.as_str() {
+        // Well formed: the prefix, a UUIDv7 key ID and 43 base64url characters.
+        "a well-formed key no engine minted" => {
+            format!(
+                "ixk_019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f_{}",
+                "A".repeat(43)
+            )
+        }
+        "the bootstrap key's ID with another secret" => {
+            // The secret's first character: every bit of it is data, unlike the last one's.
+            let other = if &bootstrap[41..42] == "A" { "B" } else { "A" };
+            format!("{}{other}{}", &bootstrap[..41], &bootstrap[42..])
+        }
+        r#""bad-key""# => "bad-key".to_owned(),
+        r#"the bootstrap key with a "Bearer " prefix"# => format!("Bearer {bootstrap}"),
+        "the bootstrap key with one character removed" => bootstrap[..83].to_owned(),
+        other => panic!("no such key: {other}"),
+    };
+    w.presented = Some(text.clone());
+    w.list_events(call(&text)).await;
+}
+
+#[given("a second engine opened in another fresh directory, and its bootstrap key")]
+async fn second_engine(w: &mut Tenancy) {
+    w.open().await;
+    let dir = tempfile::tempdir().unwrap();
+    let Opened { engine, minted } = Engine::open(dir.path(), clock()).await.unwrap();
+    w.other_key = Some(minted.unwrap().expose().to_owned());
+    w.other = Some((engine, dir));
+}
+
+#[when("a client presenting that key lists events on the first engine")]
+async fn lists_with_the_other_key(w: &mut Tenancy) {
+    let key = w.other_key.clone().unwrap();
+    w.list_events(call(&key)).await;
+}
+
+#[then(regex = r#"^the call is refused as unauthenticated with "([^"]+)"$"#)]
+fn refused_as(w: &mut Tenancy, message: String) {
+    let err = w.refusal();
+    assert_eq!(
+        (err.kind, err.message.as_str()),
+        (ErrorKind::Unauthenticated, message.as_str())
+    );
+}
+
+#[then("the error is not retryable")]
+fn not_retryable(w: &mut Tenancy) {
+    assert!(!w.refusal().kind.retryable());
+}
+
+#[then("the error has no hint")]
+fn no_hint(w: &mut Tenancy) {
+    assert_eq!(w.refusal().hint, None);
+}
+
+#[then("the hint names the key format")]
+fn hint_names_format(w: &mut Tenancy) {
+    let hint = w.refusal().hint.as_deref().expect("a hint");
+    assert!(hint.contains("ixk_<key-id>_<secret>"), "{hint}");
+}
+
+#[then("the error does not contain the presented key")]
+fn no_echo(w: &mut Tenancy) {
+    let bootstrap = w.bootstrap_key.as_deref().unwrap();
+    let shown = format!("{:?}", w.refusal());
+    // Neither the text presented, nor the key inside it, nor its secret alone.
+    for part in [w.presented.as_deref().unwrap(), bootstrap, &bootstrap[41..]] {
+        assert!(!shown.contains(part), "{shown}");
+    }
+}
+
 /// Runs the registered tenancy scenarios. True if any failed or one did not run.
 pub async fn run(parser: super::Unescaped) -> bool {
     let writer = Tenancy::cucumber::<&str>()
@@ -247,10 +375,11 @@ pub async fn run(parser: super::Unescaped) -> bool {
                 scenario
                     .tags
                     .iter()
-                    .any(|t| REGISTERED.contains(&t.as_str()))
+                    .any(|t| REGISTERED.iter().any(|(tag, _)| tag == t))
             },
         )
         .await;
     let passed = writer.scenarios_stats().passed;
-    writer.execution_has_failed() || passed != REGISTERED.len()
+    let runs: usize = REGISTERED.iter().map(|(_, runs)| runs).sum();
+    writer.execution_has_failed() || passed != runs
 }

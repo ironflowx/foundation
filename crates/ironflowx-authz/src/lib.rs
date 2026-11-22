@@ -143,3 +143,50 @@ pub fn verify(
         Err(Refused)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env(n: u8) -> EnvRef {
+        format!("019a9f3e-7c2b-7d41-8a3e-0000000000{n:02x}.{:032x}", 7)
+            .parse()
+            .unwrap()
+    }
+
+    /// `verify` compares digests through `ct_eq` once on every record it is given, whether or
+    /// not the ID and environment match (TEN-4).
+    #[test]
+    fn verify_reaches_ct_eq_for_every_record() {
+        let id: KeyId = "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f".parse().unwrap();
+        let other: KeyId = "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e10".parse().unwrap();
+        let parts = parse(&mint(id, [7; 32]).0).unwrap();
+        let record = |id, bytes, env| KeyRecord {
+            id,
+            env,
+            scopes: BTreeSet::new(),
+            digest: mint(id, bytes).1,
+        };
+        for (case, record, granted) in [
+            ("matching", record(id, [7; 32], env(1)), true),
+            ("wrong secret", record(id, [8; 32], env(1)), false),
+            ("another environment", record(id, [7; 32], env(2)), false),
+            (
+                "another key's record, same digest",
+                KeyRecord {
+                    id: other,
+                    ..record(id, [7; 32], env(1))
+                },
+                false,
+            ),
+        ] {
+            let before = digest::CT_EQ_CALLS.get();
+            assert_eq!(
+                verify(&parts, Some(&record), &env(1)).is_ok(),
+                granted,
+                "{case}"
+            );
+            assert_eq!(digest::CT_EQ_CALLS.get() - before, 1, "{case}");
+        }
+    }
+}

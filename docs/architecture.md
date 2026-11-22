@@ -211,7 +211,7 @@ The kind is contract. Four messages are contract too: `event name is required`, 
 | `Unavailable` | A control-plane read failed during admission or a handler. The call fails closed and changes nothing; the engine stays open | Yes, at once |
 | `Unauthenticated` | No key, or an empty one: `authentication required` | No |
 | `Unauthenticated` | A malformed key: `invalid API key`, with the key format in `hint` | No |
-| `Unauthenticated` | An unknown key ID, a wrong secret, or a key of another environment or incarnation: `invalid API key`, the same answer for each (D30) | No |
+| `Unauthenticated` | An unknown key ID, a wrong secret, or a key of another environment or incarnation: `invalid API key`, the same answer for each, with no hint (D29, D30) | No |
 
 `ErrorKind::retryable()` is true when the same request, unchanged, may succeed later: `Unavailable` and `Unknown`. `OpError::hint` says when, or what to do. The three `Unauthenticated` messages are contract.
 
