@@ -16,9 +16,10 @@ Judgement rules for review. Anything a tool can check belongs in CI instead (`ci
   turned it red.
 - **Checks prove themselves.** A new CI check lands with a fixture that triggers every pattern it
   claims to catch, and `must-reject.sh` asserts it fails for that reason, not any failure.
-- **Rules are probed at their edges.** For code that accepts or refuses input, the reviewer runs
-  each limit's boundary (max, max+1, escaped forms) and the dependency features a downstream
-  build can switch on, rather than reading the tests.
+- **Rules are probed at their edges.** For code or a CI check that accepts or refuses input, the
+  reviewer runs each limit's boundary (max, max+1, escaped forms) and the dependency features a
+  downstream build can switch on, rather than reading the tests. For a CI check, that means
+  throwaway fixtures that try to get past it, and legitimate cases it should still pass.
 - **Limits leave with proof.** A change that deletes a documented limit, caveat or failure cause
   includes a test showing it no longer happens. Without one, the line stays.
 - **Tables are tested by row.** For each table in `architecture.md` that maps an input or a state

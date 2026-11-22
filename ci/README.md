@@ -41,5 +41,6 @@ any kind needs its name in the loop in `ci/public-api.sh` and a blessed snapshot
 
 ## Tools
 
-`tools.env` pins every tool version; CI reads it, and `ci/install-tools.sh` installs the nightly,
-cargo-public-api and cargo-deny locally at those pins.
+`ci/tools.env` pins every tool version; CI reads it, and `ci/install-tools.sh` installs the nightly,
+cargo-public-api and cargo-deny locally at those pins. `jq`, which `ci/no-fault-points.sh` needs, is
+not pinned: it comes with the GitHub runners and macOS.
