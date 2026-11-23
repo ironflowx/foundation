@@ -195,7 +195,7 @@ async fn a_creator_that_expires_before_its_key_is_stored_is_refused() {
         "CREATE TRIGGER fail BEFORE UPDATE ON keys BEGIN SELECT RAISE(ABORT, 'injected'); END;",
     )
     .unwrap();
-    for recording in ["fails", "works"] {
+    for recording in ["fails", "fails at commit", "works"] {
         clock.now.store(T, Ordering::SeqCst);
         clock.step.store(HOUR, Ordering::SeqCst);
         let req = CreateKeyRequest {
@@ -212,8 +212,25 @@ async fn a_creator_that_expires_before_its_key_is_stored_is_refused() {
         clock.now.store(T, Ordering::SeqCst);
         clock.step.store(0, Ordering::SeqCst);
         let back = engine.whoami(&creator, WhoamiRequest {}).await;
-        assert_eq!(back.is_ok(), recording == "fails", "recording {recording}");
+        if recording == "works" {
+            let err = back.expect_err("its expiry was recorded");
+            assert_eq!(
+                (err.kind, err.message.as_str(), err.hint),
+                (ErrorKind::Unauthenticated, "invalid API key", None)
+            );
+        } else {
+            back.expect(recording);
+        }
         db.execute_batch("DROP TRIGGER IF EXISTS fail").unwrap();
+        if recording == "fails" {
+            // The update works, and breaks a constraint SQLite checks at the commit.
+            db.execute_batch(
+                "CREATE TABLE late (t REFERENCES tenants(id) DEFERRABLE INITIALLY DEFERRED);
+                 CREATE TRIGGER fail AFTER UPDATE ON keys
+                 BEGIN INSERT INTO late VALUES ('none'); END;",
+            )
+            .unwrap();
+        }
     }
     opened.engine.close().await;
 }

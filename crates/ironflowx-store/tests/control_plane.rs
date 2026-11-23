@@ -190,9 +190,10 @@ fn the_creator_is_checked_inside_the_transaction() {
     cp.insert_key(&env(1), creator, admin.id, &Fixed(T), CAP)
         .unwrap();
 
-    let fine = new_key(48, &[Scope::Read], Some(T + HOUR), None);
-    cp.insert_key(&env(1), fine, creator_id, &Fixed(T + HOUR - 1), CAP)
-        .expect("within the creator");
+    let expiring = new_key(49, &[Scope::Read, Scope::Admin], Some(T + HOUR), None);
+    let expiring_id = expiring.id;
+    cp.insert_key(&env(1), expiring, admin.id, &Fixed(T), CAP)
+        .unwrap();
 
     let cases = [
         (
@@ -219,10 +220,10 @@ fn the_creator_is_checked_inside_the_transaction() {
     ];
     for (case, new, now) in cases {
         let id = new.id;
-        let by = if case == "by an unknown creator" {
-            uuid(47).parse().unwrap()
-        } else {
-            creator_id
+        let by = match case {
+            "by an unknown creator" => uuid(47).parse().unwrap(),
+            "by an expired creator" => expiring_id,
+            _ => creator_id,
         };
         let refused = cp.insert_key(&env(1), new, by, &Fixed(now), CAP);
         let creator_refused = case.starts_with("by an");
@@ -238,6 +239,9 @@ fn the_creator_is_checked_inside_the_transaction() {
             "{case}: stored"
         );
     }
+    let fine = new_key(48, &[Scope::Read], Some(T + HOUR), None);
+    cp.insert_key(&env(1), fine, creator_id, &Fixed(T + HOUR - 1), CAP)
+        .expect("within the creator");
 }
 
 /// Keys list newest first by `seq`, so keys made in the same millisecond keep their order;
@@ -485,6 +489,18 @@ fn a_slot_is_held_until_a_revoke_or_a_recorded_expiry() {
         set("origin", "created");
         full(create(T), "a created key again");
     }
-    set("environment_token", &format!("{:032x}", 8));
-    create(T).expect("another incarnation's key holds no slot here");
+    // A key of another environment, which this file does not hold, or of another incarnation.
+    db.pragma_update(None, "foreign_keys", false).unwrap();
+    let (id, token) = (env(1).id().to_string(), env(1).token().to_string());
+    for (column, own, other) in [
+        ("environment_token", token, format!("{:032x}", 8)),
+        ("environment_id", id, env(2).id().to_string()),
+    ] {
+        set(column, &other);
+        let made = create(T).expect(column);
+        full(create(T), column);
+        cp.revoke_key(&env(1), made, admin.id, &Fixed(T)).unwrap();
+        set(column, &own);
+        full(create(T), "a key of this environment again");
+    }
 }

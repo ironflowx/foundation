@@ -138,7 +138,7 @@ fn parse(raw: &Secret) -> Result<KeyParts, Malformed>;   // KeyParts { id: KeyId
 fn mint(id: KeyId, secret: [u8; 32]) -> (Secret, KeyDigest);
 fn verify(parts: &KeyParts, record: Option<&KeyRecord>, env: &EnvRef, now: Timestamp) -> Result<Grant, Refused>;
 fn recheck(record: &KeyRecord, env: &EnvRef, now: Timestamp) -> Result<Grant, Refused>;   // verify, without the secret
-// Refused: one value for every bad key; newly_expired() says to record the expiry (D42), never shapes the answer
+// Refused: one answer for every bad key; newly_expired() says to record the expiry (D42), never shapes the answer
 fn admit(grant: &Grant, required: Option<Scope>) -> Result<(), MissingScope>;   // MissingScope::scope() names it
 fn may_create(creator: &Grant, scopes: &BTreeSet<Scope>, expires_at: Option<Timestamp>, label: Option<&str>,
               now: Timestamp) -> Result<(), CreateRefusal>;
@@ -163,7 +163,7 @@ impl ControlPlane {
     fn list_keys(&self, env: &EnvRef, before_seq: Option<u64>, limit: u32) -> Result<Vec<KeyRow>, StoreError>; // newest first
     // NewKey { id, digest, scopes, label, expires_at }
     // KeyRow { seq, record: KeyRecord, origin: KeyOrigin, created_by: Option<KeyId>, label, created_at }
-    // KeyChangeError Creator | Refused(CreateRefusal) | NotFound | Store(StoreError)
+    // KeyChangeError Caller | Refused(CreateRefusal) | Full | NotFound | Store(StoreError)
     fn environment(&self, env: &EnvRef) -> Result<EnvironmentRecord, StoreError>;
 }
 

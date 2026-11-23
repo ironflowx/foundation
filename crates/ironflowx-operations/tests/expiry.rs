@@ -109,7 +109,7 @@ async fn a_key_refused_as_expired_stays_refused_when_the_clock_steps_back_and_af
 }
 
 /// The clock runs a year ahead, past two keys' expiry, and is corrected: only the key refused
-/// meanwhile stays expired. Listing records nothing, for the key that lists or those listed.
+/// meanwhile stays expired. Listing a key as expired records nothing.
 #[tokio::test]
 async fn a_clock_ahead_expires_only_the_keys_refused_meanwhile() {
     let dir = tempfile::tempdir().unwrap();

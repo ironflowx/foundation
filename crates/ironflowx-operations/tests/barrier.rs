@@ -91,13 +91,18 @@ const EVERY: [Meanwhile; 3] = [
     Meanwhile::RevokedAndExpired,
 ];
 
-/// Every key's ID, revoke time and recorded expiry, in order.
-fn rows(dir: &Path) -> Vec<(String, Option<i64>, bool)> {
+/// Every key's ID, revoke time, recorded expiry, and other columns as one text, in order.
+fn rows(dir: &Path) -> Vec<(String, Option<i64>, bool, String)> {
     let db = rusqlite::Connection::open(dir.join("control.db")).unwrap();
     let mut stmt = db
-        .prepare("SELECT id, revoked_at, expiry_recorded FROM keys ORDER BY seq")
+        .prepare(
+            "SELECT id, revoked_at, expiry_recorded, concat_ws('|', seq, environment_id,
+                environment_token, scopes, hex(digest), origin, created_by, label, expires_at,
+                created_at)
+             FROM keys ORDER BY seq",
+        )
         .unwrap();
-    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)));
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)));
     rows.unwrap().map(Result::unwrap).collect()
 }
 
