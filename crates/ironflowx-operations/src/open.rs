@@ -321,8 +321,8 @@ where
         .expect("a UUIDv7 parses")
 }
 
-/// The key an open without a seed mints, and its secret.
-fn minted_key() -> (KeyParts, Secret) {
+/// A fresh key as the control plane stores an admin key, and its secret.
+pub(crate) fn minted_key() -> (KeyParts, Secret) {
     let (id, secret, digest) = new_key();
     (KeyParts { id, digest }, secret)
 }

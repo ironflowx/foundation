@@ -37,9 +37,9 @@ The rows behind it: [Open](#open).
 | Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time | `open`, `open_blocking`, `open_existing_blocking`, `submit`, `read`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
 | Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types; 0.3 maps a wire format onto them | `Operations` trait and messages | `ironflowx-proto` |
-| Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records | `Engine::open`, `close`, `Operations` | `ironflowx-operations` |
+| Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records | `Engine::open`, `close`, `Operations`, `recover_admin_key` | `ironflowx-operations` |
 | Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create` | `ironflowx-authz` |
-| Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `undo_bootstrap`, `mark_ledger_created`, `finish_bootstrap`, `check_seed`, `apply_seed`, `lookup_key`, `record_expiry`, `insert_key`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
+| Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `undo_bootstrap`, `mark_ledger_created`, `finish_bootstrap`, `check_seed`, `apply_seed`, `lookup_key`, `record_expiry`, `insert_key`, `insert_recovered`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
 | Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Scope`, `KeyOrigin`, `Address`, `Secret`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
 | Facade | Re-exports the crates above as modules; the one crate an embedder depends on | Re-exports | `ironflowx` |
 
@@ -131,6 +131,7 @@ impl Operations for Engine { .. }
 //               seed: Option<SeedState> }    // Current | Revoked; None when no seed was given
 // EngineError MalformedSeed | NotAnEngineRoot | Locked | Format | Orphaned | LedgerMissing | SeedConflict
 //             | Ledger(OpenError) | Store(StoreError) | Io(io::Error)
+fn recover_admin_key(root: &Path, clock: impl Clock) -> Result<Secret, RecoverError>; // host-only, blocking; not an operation
 
 // ironflowx-authz: pure, depends only on core. The engine passes in the random secret.
 fn parse(raw: &Secret) -> Result<KeyParts, Malformed>;   // KeyParts { id: KeyId, digest: KeyDigest }
@@ -168,6 +169,9 @@ impl ControlPlane {
     // that fewer than `cap` created keys hold a slot
     fn insert_key(&self, env: &EnvRef, new: NewKey, creator: KeyId, clock: &dyn Clock, cap: u32)
         -> Result<KeyRow, KeyChangeError>;
+    // One transaction: refuses unless the bootstrap is marked, then inserts an admin key of origin `Recovered`
+    fn insert_recovered(&self, key: &KeyParts, clock: &dyn Clock) -> Result<(), RecoverError>;
+    // RecoverError NotReady | Store(StoreError), re-exported by ironflowx-operations
     // One transaction: reads `by`'s record again and checks it (recheck), then sets revoked_at once; the row stays
     fn revoke_key(&self, env: &EnvRef, id: KeyId, by: KeyId, clock: &dyn Clock) -> Result<(), KeyChangeError>;
     fn list_keys(&self, env: &EnvRef, before_seq: Option<u64>, limit: u32) -> Result<Vec<KeyRow>, StoreError>; // newest first
@@ -242,7 +246,7 @@ A list query, not `decide`, checks the cursor: a token that does not decode, or 
 | Valid | Parses; a record exists for the engine's environment ID and token; digests match, compared in constant time; not revoked; not expired: `now < expires_at` when an expiry is set, by the ledger's clock, and `expiry_recorded` unset |
 | Scopes | A non-empty set of `read`, `write`, `admin`, none implying another (D27). The bootstrap key holds all three |
 | Created | By a key holding `admin`. Scopes default to `{read}` when none are asked for, and must be a subset of the creator's. The expiry must be after now and no later than the creator's; no expiry only when the creator has none (D28). A label is 0–128 bytes of UTF-8 with no control character (Unicode Cc). At most 1,000 created keys per environment hold a slot: a key holds one until it is revoked or its expiry is recorded, whatever the clock reads. All checked inside the transaction, with now read after the write lock, the creator's record read again there |
-| Origin | `Minted` for a bootstrap key the engine minted; `Seed` for a key the host supplied; neither has a creator or holds a slot. `Created` keys name their creator in `created_by` (D35). `Recovered`, which holds no slot either, arrives with recovery |
+| Origin | `Minted` for a bootstrap key the engine minted; `Seed` for a key the host supplied; `Recovered` for one recovered from the data directory, which is labelled `recovered`; none of these has a creator or holds a slot. `Created` keys name their creator in `created_by` (D35) |
 | Status | `Revoked` when `revoked_at` is set, whatever the expiry; otherwise `Expired` from `now ≥ expires_at`, by the clock, or once its expiry is recorded; otherwise `Active` |
 | Revoked | `revoked_at` is set; the row stays, so every `key:` emitter names a row (D35). Revoking a revoked key succeeds and keeps the first time |
 | Order | Keys list newest first by `seq`, a counter assigned under the write lock, so keys made in the same millisecond never tie. A page holds 100 keys unless asked otherwise, 1,000 at most; its cursor is `<incarnation token>.<seq>`, as event cursors are |
@@ -379,7 +383,11 @@ An open is one of three kinds (D41):
 
 **A cancelled open** may still finish the step it was in. Each step, the ledger's own open and the staging build included, holds the root's lock until it ends and what it made is closed, so no later open runs beside it. It undoes nothing: cancelled before the mark, it leaves an unmarked bootstrap.
 
-**The first secret is returned at most once.** If a bootstrapping open dies before the mark, the next open finishes the bootstrap, reports `lost_secret` and, without a seed, returns a replacement; a seeded bootstrap has no minted key, so its seed stays the bootstrap key. If it dies after the mark and before `open` returns, the secret is lost and nothing can tell: the key stays listed with origin `Minted`.
+**The first secret is returned at most once.** If a bootstrapping open dies before the mark, the next open finishes the bootstrap, reports `lost_secret` and, without a seed, returns a replacement; a seeded bootstrap has no minted key, so its seed stays the bootstrap key. If it dies after the mark and before `open` returns, the secret is lost and nothing can tell: the key stays listed with origin `Minted`. The host, which knows whether it saved a secret, then recovers an admin key, and revokes that one with it.
+
+**Recovery.** `recover_admin_key(root, clock)` stores a fresh admin key, with all three scopes and no expiry, of origin `Recovered` and labelled `recovered`, and returns its secret, once (D34). Reaching the data directory is the authority. It is a host's function, not an operation: it takes no engine lock and works with or without a running engine, whose next call accepts the key, since every call reads keys from the control plane. With it, revoking the last admin key, your own included, needs no guard.
+
+It is refused, `RecoverError::NotReady`, unless the bootstrap is marked. `insert_recovered` checks that in the transaction that inserts, and an undo checks "unmarked" in its own, so a recovered key is never undone (TEN-14). With no bootstrap at all it creates and changes nothing; on an unmarked one it waits for a mark under way, which it then follows, and stores no row otherwise. `control.db` in another format is `Store(Format)`. A recovery and an engine's writes wait for each other's write lock, up to 5 seconds; the one that gives up fails and changes nothing.
 
 The current seed is the one unrevoked key of origin `Seed`; there is at most one. A seed must parse as a key; nothing else about it is judged, and it is dropped once parsed, its digest alone going on. `apply_seed` runs in its own transaction, on a finishing or later open, after the ledger opens, so a failed open changes no seed (D33, TEN-9):
 

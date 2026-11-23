@@ -37,6 +37,9 @@ The admin key bootstrap makes, holding all three scopes: the seed if one is give
 **Seed**:
 A key the host supplies: bootstrap uses it instead of minting one, and an open after it can rotate to it.
 
+**Recovered key**:
+The admin key a host makes from the data directory alone, when no admin key's secret is left.
+
 **Scope**:
 What a key may do: `read`, `write`, `admin`. A set, not a ladder.
 

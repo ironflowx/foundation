@@ -8,7 +8,8 @@ use ironflowx_core::{Clock, EnvRef, KeyId, KeyOrigin, ProjectId, Scope, TenantId
 use rusqlite::types::Value;
 
 use ironflowx_store::{
-    Bootstrap, BootstrapState, ControlPlane, KeyChangeError, NewKey, SeedError, StoreError,
+    Bootstrap, BootstrapState, ControlPlane, KeyChangeError, NewKey, RecoverError, SeedError,
+    StoreError,
 };
 
 const T: i64 = 1_800_000_000_000;
@@ -496,7 +497,7 @@ fn a_slot_is_held_until_a_revoke_or_a_recorded_expiry() {
     cp.revoke_key(&env(1), b, admin.id, &Fixed(T)).unwrap();
     full(create(T), "a recorded expiry's slot is freed once");
 
-    // The other origins, through the table: nothing inserts them yet.
+    // The other origins, through the table.
     let db = rusqlite::Connection::open(path(dir.path())).unwrap();
     let set = |column: &str, value: &str| {
         let sql = format!("UPDATE keys SET {column} = ?1 WHERE id = ?2");
@@ -1071,6 +1072,140 @@ fn a_mark_is_made_at_a_now_read_after_the_write_lock() {
             told.recv().expect("read once the lock is free");
         });
     }
+}
+
+/// A recovered key is an admin key of the file's environment, of that origin and label, every
+/// column compared, and no other row changes (D34).
+#[test]
+fn a_recovered_key_is_a_labelled_admin_key_and_changes_no_other_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    cp.mark_ledger_created(&env(1), &Fixed(T)).unwrap();
+    let before = whole_rows(dir.path());
+    for (seq, n) in [(2, 180), (3, 181)] {
+        let key = seed(n, 1);
+        cp.insert_recovered(&key, &Fixed(T + seq)).unwrap();
+        let mut expected = seed_row(&key, seq, T + seq);
+        for column in ["origin", "label"] {
+            expected.insert(column.into(), Value::Text("recovered".into()));
+        }
+        let rows = whole_rows(dir.path());
+        assert_eq!(rows[&key.id.to_string()], expected);
+        assert_eq!(rows.len(), before.len() + usize::from(n == 181) + 1);
+        for (id, row) in &before {
+            assert_eq!(&rows[id], row);
+        }
+    }
+}
+
+/// Until the bootstrap is marked, whether never made, unmarked or undone, nothing is recovered,
+/// so an undo never meets a recovered key (TEN-14).
+#[test]
+fn nothing_is_recovered_until_the_bootstrap_is_marked() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    let key = seed(182, 1);
+    let refused = |case: &str| {
+        let before = everything(dir.path());
+        let got = cp.insert_recovered(&key, &Fixed(T));
+        assert!(matches!(got, Err(RecoverError::NotReady)), "{case}");
+        assert_eq!(everything(dir.path()), before, "{case}");
+    };
+    refused("never bootstrapped");
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    refused("unmarked");
+    cp.undo_bootstrap(&env(1)).unwrap();
+    refused("undone");
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    cp.mark_ledger_created(&env(1), &Fixed(T)).unwrap();
+    cp.insert_recovered(&key, &Fixed(T)).expect("marked");
+}
+
+/// A recovery that fails leaves no row: at its insert, or at its commit, the row inserted by then
+/// (TEN-11). Failed, the same key is recovered by a later call.
+#[test]
+fn a_recovery_that_fails_leaves_no_row() {
+    // The second one's row breaks a constraint that is checked only at the commit.
+    let insert = "CREATE TRIGGER fail BEFORE INSERT ON keys \
+                  BEGIN SELECT RAISE(ABORT, 'injected'); END;";
+    let commit = "CREATE TABLE late (t TEXT REFERENCES tenants(id) DEFERRABLE INITIALLY DEFERRED);
+                  CREATE TRIGGER fail AFTER INSERT ON keys BEGIN \
+                  INSERT INTO late VALUES ('no such tenant'); END;";
+    for (point, sql) in [("insert", insert), ("commit", commit)] {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = ControlPlane::open(&path(dir.path())).unwrap();
+        cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+            .unwrap();
+        cp.mark_ledger_created(&env(1), &Fixed(T)).unwrap();
+        let before = everything(dir.path());
+        let db = rusqlite::Connection::open(path(dir.path())).unwrap();
+        db.execute_batch(sql).unwrap();
+        let key = seed(183, 1);
+        let got = cp.insert_recovered(&key, &Fixed(T));
+        assert!(
+            matches!(got, Err(RecoverError::Store(StoreError::Failed(_)))),
+            "{point}: {got:?}"
+        );
+        assert_eq!(everything(dir.path()), before, "{point}");
+        db.execute_batch("DROP TRIGGER fail").unwrap();
+        cp.insert_recovered(&key, &Fixed(T)).expect(point);
+    }
+}
+
+/// A recovery takes the write lock before it reads the clock (TEN-11).
+#[test]
+fn a_key_is_recovered_at_a_now_read_after_the_write_lock() {
+    struct Told(std::sync::mpsc::Sender<()>);
+    impl Clock for Told {
+        fn now(&self) -> Timestamp {
+            let _ = self.0.send(());
+            Timestamp::from_millis(T)
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    cp.mark_ledger_created(&env(1), &Fixed(T)).unwrap();
+    let db = rusqlite::Connection::open(path(dir.path())).unwrap();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let (tell, told) = std::sync::mpsc::channel();
+    std::thread::scope(|s| {
+        let recovered = s.spawn(move || cp.insert_recovered(&seed(184, 1), &Told(tell)));
+        // One-sided: with the lock held, a reading can only come from the defect.
+        let early = told.recv_timeout(std::time::Duration::from_millis(200));
+        db.execute_batch("COMMIT").unwrap();
+        assert!(early.is_err(), "the clock was read before the lock");
+        recovered.join().unwrap().unwrap();
+        told.recv().expect("read once the lock is free");
+    });
+}
+
+/// Recovered keys hold no slot: at a full cap one is recovered and a seed then applies, and
+/// neither takes nor frees a slot (TEN-15).
+#[test]
+fn a_recovered_key_holds_no_slot() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    let (b, admin) = bootstrap(env(1), 0);
+    cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
+    cp.mark_ledger_created(&env(1), &Fixed(T)).unwrap();
+    let create = |n: u8| {
+        let new = new_key(n, &[Scope::Read], None, None);
+        cp.insert_key(&env(1), new, admin.id, &Fixed(T), 2)
+    };
+    cp.insert_recovered(&seed(190, 1), &Fixed(T)).unwrap();
+    create(191).expect("the first slot");
+    create(192).expect("the cap itself");
+    cp.insert_recovered(&seed(193, 1), &Fixed(T)).unwrap();
+    let applied = cp.apply_seed(&env(1), &seed(194, 1), &Fixed(T)).unwrap();
+    assert_eq!(applied, SeedState::Current);
+    let full = create(195);
+    assert!(matches!(full, Err(KeyChangeError::Full)), "{full:?}");
 }
 
 /// A file in another format is refused as that; one that is not a control plane is refused and

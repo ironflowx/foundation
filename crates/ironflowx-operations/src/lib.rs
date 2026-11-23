@@ -10,6 +10,7 @@
 mod admission;
 mod events;
 mod open;
+mod recover;
 
 use std::collections::BTreeSet;
 use std::fs::File;
@@ -39,7 +40,9 @@ const KEY_CAP: u32 = 1_000;
 
 pub use admission::Authorized;
 pub use ironflowx_authz::SeedState;
+pub use ironflowx_store::RecoverError;
 pub use open::EngineError;
+pub use recover::recover_admin_key;
 
 /// An open data directory: its control plane, its environment's ledger and the root's lock.
 pub struct Engine {
