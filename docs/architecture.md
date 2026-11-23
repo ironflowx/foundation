@@ -34,12 +34,12 @@ The rows behind it: [Open](#open).
 
 | Module | Does | Interface | Crate |
 |---|---|---|---|
-| Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time | `open`, `submit`, `read`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
+| Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time | `open`, `open_blocking`, `open_existing_blocking`, `submit`, `read`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
 | Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types; 0.3 maps a wire format onto them | `Operations` trait and messages | `ironflowx-proto` |
 | Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records | `Engine::open`, `close`, `Operations` | `ironflowx-operations` |
 | Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create` | `ironflowx-authz` |
-| Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `mark_ledger_created`, `apply_seed`, `lookup_key`, `record_expiry`, `insert_key`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
+| Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `undo_bootstrap`, `mark_ledger_created`, `finish_bootstrap`, `check_seed`, `apply_seed`, `lookup_key`, `record_expiry`, `insert_key`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
 | Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Scope`, `KeyOrigin`, `Address`, `Secret`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
 | Facade | Re-exports the crates above as modules; the one crate an embedder depends on | Re-exports | `ironflowx` |
 
@@ -126,9 +126,11 @@ impl Engine {
 // from its grant (TEN-6).
 impl Operations for Engine { .. }
 // Opened      { engine: Engine,
-//               minted: Option<Secret>,      // the bootstrap key, returned by a bootstrapping open without a seed only
+//               minted: Option<Secret>,      // a bootstrapping open without a seed, or a finishing open that replaced a lost minted key
+//               lost_secret: bool,           // a finishing open revoked a minted key whose secret no open returned
 //               seed: Option<SeedState> }    // Current | Revoked; None when no seed was given
-// EngineError MalformedSeed | Locked | SeedConflict | Ledger(OpenError) | Store(StoreError) | Io(io::Error)
+// EngineError MalformedSeed | NotAnEngineRoot | Locked | Format | Orphaned | LedgerMissing | SeedConflict
+//             | Ledger(OpenError) | Store(StoreError) | Io(io::Error)
 
 // ironflowx-authz: pure, depends only on core. The engine passes in the random secret.
 fn parse(raw: &Secret) -> Result<KeyParts, Malformed>;   // KeyParts { id: KeyId, digest: KeyDigest }
@@ -146,11 +148,17 @@ fn may_create(creator: &Grant, scopes: &BTreeSet<Scope>, expires_at: Option<Time
 // write lock (BEGIN IMMEDIATE) first, then reads now from the clock it is given.
 impl ControlPlane {
     fn open(path: &Path) -> Result<ControlPlane, StoreError>;               // creates the schema; refuses another format
-    fn bootstrap_state(path: &Path) -> Result<BootstrapState, StoreError>;  // read-only; creates nothing
+    fn bootstrap_state(path: &Path) -> Result<BootstrapState, StoreError>;  // writes no row, leaves no file; refuses another format
+    // StoreError Format | Failed(String)
     // BootstrapState: NoFile | Unbootstrapped | Unmarked { env: EnvRef } | Marked { env: EnvRef }
     fn ensure_bootstrap(&self, b: &Bootstrap, clock: &dyn Clock) -> Result<(), StoreError>; // one transaction
     // Bootstrap { env: EnvRef, tenant: TenantId, project: ProjectId, key: KeyParts, by_seed: bool }
-    fn mark_ledger_created(&self, env: &EnvRef, clock: &dyn Clock) -> Result<(), StoreError>;
+    fn undo_bootstrap(&self, env: &EnvRef) -> Result<(), StoreError>;       // one transaction; refuses once marked
+    fn mark_ledger_created(&self, env: &EnvRef, clock: &dyn Clock) -> Result<(), StoreError>; // refuses once marked
+    // One transaction: marks, refusing once marked; revokes the minted key, if any, and then stores `replacement` in its
+    // place. Whether it revoked one
+    fn finish_bootstrap(&self, env: &EnvRef, replacement: Option<&KeyParts>, clock: &dyn Clock) -> Result<bool, StoreError>;
+    fn check_seed(path: &Path, env: &EnvRef, seed: &KeyParts) -> Result<(), SeedError>; // apply_seed's conflict rule, as bootstrap_state reads
     fn apply_seed(&self, env: &EnvRef, seed: &KeyParts, clock: &dyn Clock) -> Result<SeedState, SeedError>; // one transaction
     // SeedError Conflict | Store(StoreError)
     // Admission's one read: the key's record, then now, as one step no recorded expiry falls between
@@ -173,6 +181,10 @@ impl ControlPlane {
 impl Ledger {
     // open, read and close panic outside a tokio runtime
     async fn open(dir: &Path, env: EnvRef, clock: impl Clock + Send + 'static) -> Result<Ledger, OpenError>;
+    // As open, on the calling thread, outside a runtime too
+    fn open_blocking(dir: &Path, env: EnvRef, clock: impl Clock + Send + 'static) -> Result<Ledger, OpenError>;
+    // As open_blocking, but Missing for a directory that is missing or holds no genesis record; creates neither
+    fn open_existing_blocking(dir: &Path, env: EnvRef, clock: impl Clock + Send + 'static) -> Result<Ledger, OpenError>;
     async fn submit(&self, sub: Submission, by: SubmitAs) -> Result<Committed, SubmitError>;   // trusts `by` (D36)
     // q is a query from event rules (get_event, list_events) over the read store; a q that panics fails the ledger
     async fn read<R: Send + 'static>(&self, q: impl FnOnce(&ReadStore) -> Result<R, Error<StoreError>> + Send + 'static)
@@ -301,6 +313,8 @@ The committed head and the applied position are exclusive positions: one past th
 | Another process or `Ledger` holds the directory | `OpenError::Locked`, including on sealed logs. The OS releases the ledger lock when the process exits |
 | Any other I/O failure | `OpenError::Io` |
 
+`open_existing_blocking` answers `OpenError::Missing` for a directory that is missing, or whose log is missing, has no segment, holds no record or does not begin with a genesis record, whatever `read.db` beside it holds; it creates neither the directory nor a genesis record. For any other directory the table above applies.
+
 The genesis record is the directory's identity; `read.db` is derived state and never trusted over it. The log binds every segment to one log ID, so a segment from another log does not open.
 
 Dropping a `Ledger` without `close` stops the writer after the submission in hand; queued submits, never decided, end `Unavailable`. The drop joins the writer, so it blocks, and the lock is released before it returns; async code calls `close`.
@@ -333,15 +347,41 @@ A sealed log, after a lossy repair, opens and reads until the first emit that ap
 
 ## Engine open
 
-`Engine::open(root, clock, seed)` first parses the seed, if it is given one: a malformed seed is `MalformedSeed`, which names the key format and never echoes the seed, and nothing is read. It then creates `root` if missing, takes the OS lock on `<root>/engine.lock` (another holder: `Locked`; the file is never deleted, so every contender locks the same one), reads the bootstrap state of `control.db` without creating it, and deletes a leftover `ledgers/.staging/`, which never holds anything acknowledged. Each control-plane write below holds the root's lock until it ends, so an open cancelled inside one may still finish it, but no later open runs beside it. Then:
+`Engine::open(root, clock, seed)` runs these steps in order (D32):
 
-| Finds | Does | `Opened` |
+1. Parse the seed, if it is given one: a malformed seed is `MalformedSeed`, which names the key format and never echoes the seed. Nothing is read.
+2. If `root` holds a directory `log/`, it is a ledger, not an engine root: `NotAnEngineRoot`. Nothing is created.
+3. Create `root` if missing, open or create `<root>/engine.lock` and take its OS lock, held until `close`. Another holder: `Locked`. The file is never deleted, so every contender locks the same one.
+4. Read the bootstrap state of `control.db` without creating it, refusing another format first; delete a leftover `ledgers/.staging/`, which never holds anything acknowledged; classify the root by the table below.
+5. Run the open of that kind.
+
+| `control.db` | `ledgers/` | Result |
 |---|---|---|
-| No `control.db`, or one never bootstrapped | A bootstrapping open: `new_env_ref()`; `ensure_bootstrap`, one transaction creating the tenant, project and environment named `default`, with fresh UUIDv7s, and the bootstrap key holding all three scopes: the seed if one is given, else a minted key; build the ledger in `ledgers/.staging/`, close it, rename it to `ledgers/<environment-id>/` (D40) and open it there; then `mark_ledger_created`, the last fallible step, so no failure after it can lose the secret | Without a seed, `minted`: the bootstrap key's secret, returned this once. With one, `seed: Current` |
-| A marked bootstrap | A later open: the environment's ledger, with 0.1's open; then `apply_seed`, if a seed is given | `seed` from `apply_seed` |
-| An unmarked bootstrap: an earlier open died before its mark | Refused with an `Io` error naming the unfinished bootstrap, changing nothing; finishing it is not built yet | |
+| Another format version | | `Format` |
+| Not a control plane | | `Store` |
+| Missing, with nothing in it, or never bootstrapped | Missing, or empty but for staging and plain files | A bootstrapping open |
+| Missing, with nothing in it, or never bootstrapped | Holds anything else: a ledger directory, or a symbolic link | `Orphaned`: the control plane was lost |
+| An unmarked bootstrap | Anything | A finishing open |
+| A marked bootstrap | The environment's ledger missing, emptied or without a genesis record | `LedgerMissing`, from `open_existing_blocking`: the ledger was lost |
+| A marked bootstrap | The environment's ledger present | A later open; the ledger's [Open](#open) table applies, the `read.db` rebuild included, and its refusals are `Ledger` (a ledger of another environment or incarnation: `WrongIncarnation`) |
 
-The current seed is the one unrevoked key of origin `Seed`; there is at most one. A seed must parse as a key; nothing else about it is judged, and it is dropped once parsed, its digest alone going on. `apply_seed` runs in its own transaction, after the ledger opens, so a failed later open changes no seed (D33, TEN-9):
+An open is one of three kinds (D41):
+
+| Open | Does | `Opened` |
+|---|---|---|
+| Bootstrapping | `new_env_ref()`; `ensure_bootstrap`, one transaction creating the tenant, project and environment named `default`, with fresh UUIDv7s, and the bootstrap key holding all three scopes: the seed if one is given, else a minted key; build the ledger in `ledgers/.staging/`, close it, rename it to `ledgers/<environment-id>/` (D40) and open it there; then `mark_ledger_created`, the last fallible step, so no failure after it can lose the secret | Without a seed, `minted`: the bootstrap key's secret. With one, `seed: Current` |
+| Finishing | Open the ledger at its final name if anything is there, else build it as above; `check_seed`, if a seed is given, which refuses `SeedConflict` before `control.db` is opened to write; `finish_bootstrap`, one transaction that marks, revokes a minted key, whose secret no open returned, and, without a seed, stores a fresh minted key in its place; then `apply_seed`, if a seed is given | `lost_secret` if it revoked a minted key; `minted` if it stored a replacement; `seed` from `apply_seed` |
+| Later | `open_existing_blocking` on the ledger; `check_seed`, if a seed is given, as above; then `apply_seed`, if a seed is given | `seed` from `apply_seed` |
+
+**Before the mark, a bootstrapping open that fails undoes itself:** it deletes the staging directory and, unless something is at the ledger's final name, the rows it inserted, in a transaction that checks they are unmarked. If the ledger is there already, the rows stay, and the next open is a finishing one; so too if the undo fails. **A finishing or later open undoes nothing:** a failure leaves the bootstrap as it found it, plus the mark if that committed, with the previous seed current. The engine never deletes a directory at a ledger's final name.
+
+**What a refused open may change:** a layout refusal (steps 1–4, `LedgerMissing`, a ledger of another incarnation) changes nothing but the lock file and the removal of a leftover staging directory. `SeedConflict` changes no key and writes nothing to `control.db` or its WAL, but the ledger opened before it may have rebuilt its `read.db`, or, on a finishing open, been built. A finishing open checks its seed before the mark, so a conflict leaves the bootstrap unmarked. After a crash, or with a damaged ledger, two things are recovered before they can be refused: reading a WAL rebuilds `control.db-shm`, which SQLite derives from it; and a log that has a segment is opened, making its lock files, before its genesis record can be read, and drops a torn tail or a torn segment header as it opens, which hold nothing acknowledged. No refusal writes a genesis record.
+
+**A cancelled open** may still finish the step it was in. Each step, the ledger's own open and the staging build included, holds the root's lock until it ends and what it made is closed, so no later open runs beside it. It undoes nothing: cancelled before the mark, it leaves an unmarked bootstrap.
+
+**The first secret is returned at most once.** If a bootstrapping open dies before the mark, the next open finishes the bootstrap, reports `lost_secret` and, without a seed, returns a replacement; a seeded bootstrap has no minted key, so its seed stays the bootstrap key. If it dies after the mark and before `open` returns, the secret is lost and nothing can tell: the key stays listed with origin `Minted`.
+
+The current seed is the one unrevoked key of origin `Seed`; there is at most one. A seed must parse as a key; nothing else about it is judged, and it is dropped once parsed, its digest alone going on. `apply_seed` runs in its own transaction, on a finishing or later open, after the ledger opens, so a failed open changes no seed (D33, TEN-9):
 
 | Seed | Result | `Opened.seed` |
 |---|---|---|
@@ -360,7 +400,7 @@ An engine's data directory, `<root>`:
 | `<root>/engine.lock` | The engine's lock file; never deleted |
 | `<root>/control.db` (SQLite, WAL, `synchronous=FULL`, `fullfsync`) | `tenants` (id, name, created_at) · `projects` (id, tenant_id, name, created_at) · `environments` (id, project_id, name, token, created_at, ledger_created_at) · `keys` (seq, id, environment_id, environment_token, scopes, digest, origin, created_by, label, expires_at, expiry_recorded, revoked_at, created_at) · `meta` (format version, 1). Times are `Timestamp`'s `i64` milliseconds (D18); the digest is `KeyDigest::to_stored()`; no last-used time (D38) |
 | `<root>/ledgers/<environment-id>/` | The environment's ledger, laid out as below |
-| `<root>/ledgers/.staging/` | A ledger being built; deleted by any open that finds it |
+| `<root>/ledgers/.staging/` | A ledger being built; deleted by any open that locks the root and reads its control plane |
 
 A ledger's directory, `<dir>`:
 

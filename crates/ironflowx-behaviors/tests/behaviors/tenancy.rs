@@ -3,11 +3,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
-use ironflowx_cell::ManualClock;
+use ironflowx_cell::{Ledger, ManualClock, new_env_ref};
 use ironflowx_core::{EnvRef, ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_operations::{Engine, EngineError, Opened, SeedState};
 use ironflowx_proto::{
@@ -32,6 +33,9 @@ pub const REGISTERED: &[(&str, usize)] = &[
     ("ACC-010", 1),
     ("ACC-013", 1),
     ("ACC-014", 2),
+    ("ACC-016", 4),
+    ("ACC-017", 1),
+    ("ACC-018", 1),
     ("ACC-020", 2),
     ("ACC-021", 2),
     ("ACC-022", 3),
@@ -109,6 +113,8 @@ pub struct Tenancy {
     pages: Vec<KeyPage>,
     /// The number of keys before a refused creation.
     keys_before: Option<usize>,
+    /// Every path in the directory before a refused open, with a file's bytes.
+    contents: Option<BTreeMap<PathBuf, Option<Vec<u8>>>>,
 }
 
 impl fmt::Debug for Tenancy {
@@ -166,7 +172,27 @@ impl Tenancy {
             created: None,
             pages: Vec::new(),
             keys_before: None,
+            contents: None,
         }
+    }
+
+    /// Every path in the directory, with a file's bytes.
+    fn read_directory(&self) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+        let mut out = BTreeMap::new();
+        let mut stack = vec![self.dir.path().to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path.clone());
+                    out.insert(path, None);
+                } else {
+                    let bytes = std::fs::read(&path).unwrap();
+                    out.insert(path, Some(bytes));
+                }
+            }
+        }
+        out
     }
 
     async fn open(&mut self) {
@@ -1282,6 +1308,116 @@ async fn k_revoked_a(w: &mut Tenancy) {
 fn reported_revoked(w: &mut Tenancy) {
     assert!(w.refused.is_none(), "{:?}", w.refused);
     assert_eq!(w.reported, Some(SeedState::Revoked));
+}
+
+#[given(
+    regex = r#"^the engine was opened, a client emitted event "([^"]+)", and the engine was closed$"#
+)]
+async fn emitted_and_closed(w: &mut Tenancy, name: String) {
+    w.open().await;
+    w.emit(named(&name)).await;
+    assert_eq!(w.outcome, Some(Ok(())));
+    w.engine.take().unwrap().close().await;
+}
+
+#[when(
+    regex = r"^the (control plane file is deleted|control plane file and the lock file are deleted|environment's ledger directory is deleted|environment's ledger directory is emptied)$"
+)]
+fn lost(w: &mut Tenancy, what: String) {
+    let root = w.dir.path();
+    let entries = std::fs::read_dir(root.join("ledgers")).unwrap();
+    let ledgers: Vec<_> = entries.map(|e| e.unwrap().path()).collect();
+    let [ledger] = ledgers.as_slice() else {
+        panic!("one ledger: {ledgers:?}");
+    };
+    match what.as_str() {
+        "control plane file is deleted" => {
+            std::fs::remove_file(root.join("control.db")).unwrap();
+        }
+        "control plane file and the lock file are deleted" => {
+            std::fs::remove_file(root.join("control.db")).unwrap();
+            std::fs::remove_file(root.join("engine.lock")).unwrap();
+        }
+        "environment's ledger directory is deleted" => {
+            std::fs::remove_dir_all(ledger).unwrap();
+        }
+        _ => {
+            std::fs::remove_dir_all(ledger).unwrap();
+            std::fs::create_dir(ledger).unwrap();
+        }
+    }
+    w.contents = Some(w.read_directory());
+}
+
+#[when("the engine is opened again")]
+#[when("an engine is opened on that directory")]
+async fn opened_again(w: &mut Tenancy) {
+    w.reopen_with(None).await;
+}
+
+#[then(regex = r"^the open is refused as (orphaned|ledger missing|not an engine directory)$")]
+fn layout_refused(w: &mut Tenancy, refusal: String) {
+    let err = w.refused.as_ref().expect("a refused open");
+    let matches = match refusal.as_str() {
+        "orphaned" => matches!(err, EngineError::Orphaned),
+        "ledger missing" => matches!(err, EngineError::LedgerMissing),
+        _ => matches!(err, EngineError::NotAnEngineRoot),
+    };
+    assert!(matches, "{err:?}");
+}
+
+#[then("no key is returned, and nothing in the directory changed but the lock file")]
+fn only_the_lock_changed(w: &mut Tenancy) {
+    assert_eq!(w.returned, None);
+    let lock = w.dir.path().join("engine.lock");
+    let mut before = w.contents.take().unwrap();
+    let mut after = w.read_directory();
+    before.remove(&lock);
+    after.remove(&lock);
+    assert!(after == before, "{:?}", after.keys());
+}
+
+#[given("a ledger directory written by the ledger alone")]
+async fn ledger_alone(w: &mut Tenancy) {
+    let ledger = Ledger::open(w.dir.path(), new_env_ref(), w.clock.clone()).await;
+    ledger.expect("a ledger opens").close().await;
+    w.contents = Some(w.read_directory());
+}
+
+#[then("nothing in the directory changed")]
+fn nothing_changed(w: &mut Tenancy) {
+    let before = w.contents.take().unwrap();
+    let after = w.read_directory();
+    assert!(after == before, "{:?}", after.keys());
+}
+
+#[given("an engine is open on the directory with seed key A")]
+async fn open_with_a(w: &mut Tenancy) {
+    opened_with_a(w).await;
+}
+
+#[when("a second engine is opened on the same directory with seed key B")]
+async fn second_opened_with_b(w: &mut Tenancy) {
+    let b = new_seed();
+    w.texts.insert("B".into(), b.clone());
+    let second = Engine::open(w.dir.path(), w.clock.clone(), Some(Secret::new(b))).await;
+    w.refused = second.err();
+}
+
+#[then("the second open is refused as locked")]
+fn second_locked(w: &mut Tenancy) {
+    let err = w.refused.take().expect("a refused open");
+    assert!(matches!(err, EngineError::Locked), "{err:?}");
+}
+
+#[then("key A still authenticates on the first engine")]
+async fn a_on_the_first(w: &mut Tenancy) {
+    authenticates_as_admin(w, "A".into()).await;
+}
+
+#[then("key B is refused on the first engine")]
+async fn b_on_the_first(w: &mut Tenancy) {
+    refused_as_invalid_key(w, "B".into()).await;
 }
 
 /// Runs the registered tenancy scenarios. True if any failed or one did not run.

@@ -65,11 +65,19 @@ CREATE TABLE keys (
 
 /// A control-plane read or write failed.
 #[derive(Debug)]
-pub struct StoreError(String);
+pub enum StoreError {
+    /// The file is in another format version.
+    Format,
+    /// SQLite failed, or a check of the stored rows did.
+    Failed(String),
+}
 
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "control plane: {}", self.0)
+        match self {
+            Self::Format => f.write_str("control plane: another format version"),
+            Self::Failed(why) => write!(f, "control plane: {why}"),
+        }
     }
 }
 
@@ -78,6 +86,7 @@ impl std::error::Error for StoreError {}
 /// The private failure, so that `rusqlite` stays out of the public API.
 enum Error {
     Db(rusqlite::Error),
+    Format,
     Refused(&'static str),
 }
 
@@ -94,8 +103,9 @@ const fn refused(why: &'static str) -> Error {
 /// Runs a body that fails with the private error, answering the public one.
 fn run<T>(body: impl FnOnce() -> Result<T, Error>) -> Result<T, StoreError> {
     body().map_err(|e| match e {
-        Error::Db(e) => StoreError(e.to_string()),
-        Error::Refused(why) => StoreError(why.to_owned()),
+        Error::Db(e) => StoreError::Failed(e.to_string()),
+        Error::Format => StoreError::Format,
+        Error::Refused(why) => StoreError::Failed(why.to_owned()),
     })
 }
 
@@ -219,24 +229,20 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// If the file is in another format, or SQLite fails.
+    /// `Format` if the file is in another format; `Failed` if it is no control plane, or SQLite
+    /// fails.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         run(|| {
             let mut conn = Connection::open(path)?;
+            // Before the journal mode, which is written to the file.
+            has_schema(&conn)?;
             conn.pragma_update(None, "journal_mode", "WAL")?;
             conn.pragma_update(None, "synchronous", "FULL")?;
             // A no-op except on macOS, where fsync alone does not reach the disk.
             conn.pragma_update(None, "fullfsync", true)?;
             conn.pragma_update(None, "foreign_keys", true)?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let has_meta: bool = tx.query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
-                [],
-                |r| r.get(0),
-            )?;
-            if has_meta {
-                check_format(&tx)?;
-            } else {
+            if !has_schema(&tx)? {
                 tx.execute_batch(SCHEMA)?;
                 tx.execute("INSERT INTO meta VALUES (?1)", [FORMAT])?;
             }
@@ -247,11 +253,13 @@ impl ControlPlane {
         })
     }
 
-    /// Reads where the bootstrap at `path` stands. Opens the file read-only and creates nothing.
+    /// Reads where the bootstrap at `path` stands. Writes no row, creates nothing, and leaves
+    /// behind no file SQLite makes to read it.
     ///
     /// # Errors
     ///
-    /// If the file is in another format, or SQLite fails.
+    /// `Format` if the file is in another format; `Failed` if it is no control plane, or SQLite
+    /// fails.
     pub fn bootstrap_state(path: &Path) -> Result<BootstrapState, StoreError> {
         run(|| {
             if !path
@@ -260,8 +268,11 @@ impl ControlPlane {
             {
                 return Ok(BootstrapState::NoFile);
             }
-            let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-            check_format(&conn)?;
+            let conn = open_to_read(path)?;
+            // A crash before the schema's transaction committed.
+            if !has_schema(&conn)? {
+                return Ok(BootstrapState::Unbootstrapped);
+            }
             let row = conn
                 .query_row(
                     "SELECT id, token, ledger_created_at IS NOT NULL FROM environments",
@@ -326,26 +337,100 @@ impl ControlPlane {
         })
     }
 
+    /// Deletes everything the bootstrap of `env` created, in one transaction; a file that does not
+    /// hold `env` is left as it is.
+    ///
+    /// # Errors
+    ///
+    /// If `env` is marked, or SQLite fails; nothing is deleted then.
+    pub fn undo_bootstrap(&self, env: &EnvRef) -> Result<(), StoreError> {
+        run(|| {
+            let mut conn = self.lock()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let (id, token) = (env.id().to_string(), env.token().to_string());
+            let row = tx
+                .query_row(
+                    "SELECT e.ledger_created_at IS NOT NULL, p.id, p.tenant_id \
+                     FROM environments e JOIN projects p ON p.id = e.project_id \
+                     WHERE e.id = ?1 AND e.token = ?2",
+                    params![id, token],
+                    |r| {
+                        Ok((
+                            r.get::<_, bool>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((marked, project, tenant)) = row else {
+                return Ok(());
+            };
+            if marked {
+                return Err(refused("the bootstrap is finished"));
+            }
+            tx.execute("DELETE FROM keys WHERE environment_id = ?1", [&id])?;
+            tx.execute("DELETE FROM environments WHERE id = ?1", [&id])?;
+            tx.execute("DELETE FROM projects WHERE id = ?1", [project])?;
+            tx.execute("DELETE FROM tenants WHERE id = ?1", [tenant])?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
     /// Marks `env`'s ledger created: the bootstrap is finished.
     ///
     /// # Errors
     ///
-    /// If `env` is not this file's environment, or SQLite fails.
+    /// If `env` is not this file's environment or is marked already, or SQLite fails; nothing is
+    /// written then.
     pub fn mark_ledger_created(&self, env: &EnvRef, clock: &dyn Clock) -> Result<(), StoreError> {
         run(|| {
             let mut conn = self.lock()?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let now = clock.now().as_millis();
-            let changed = tx.execute(
-                "UPDATE environments SET ledger_created_at = ?1 WHERE id = ?2 AND token = ?3",
-                params![now, env.id().to_string(), env.token().to_string()],
-            )?;
-            if changed != 1 {
-                return Err(refused("no such environment"));
-            }
+            mark(&tx, env, clock.now())?;
             tx.commit()?;
             Ok(())
         })
+    }
+
+    /// Marks the bootstrap of `env` that an earlier open left unfinished, in one transaction: a
+    /// minted key, whose secret no open returned, is revoked, and `replacement`, if given,
+    /// inserted in its place. Whether there was one to revoke.
+    ///
+    /// # Errors
+    ///
+    /// As [`ControlPlane::mark_ledger_created`].
+    pub fn finish_bootstrap(
+        &self,
+        env: &EnvRef,
+        replacement: Option<&KeyParts>,
+        clock: &dyn Clock,
+    ) -> Result<bool, StoreError> {
+        run(|| {
+            let mut conn = self.lock()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let now = clock.now();
+            mark(&tx, env, now)?;
+            let lost = revoke_all(&tx, env, MINTED, now)? > 0;
+            if lost && let Some(key) = replacement {
+                insert_admin(&tx, key, env, MINTED, now)?;
+            }
+            tx.commit()?;
+            Ok(lost)
+        })
+    }
+
+    /// Reads whether [`ControlPlane::apply_seed`] would find `seed` in conflict with a key of
+    /// `env` at `path`; writes nothing, as [`ControlPlane::bootstrap_state`].
+    ///
+    /// # Errors
+    ///
+    /// As [`ControlPlane::apply_seed`].
+    pub fn check_seed(path: &Path, env: &EnvRef, seed: &KeyParts) -> Result<(), SeedError> {
+        run(|| Ok(seed_state(&open_to_read(path)?, env, seed)?.map(drop)))
+            .map_err(SeedError::Store)?
+            .map_err(|SeedConflict| SeedError::Conflict)
     }
 
     /// Applies the seed a host supplied to `env`, in one transaction: a key ID not stored yet
@@ -367,43 +452,18 @@ impl ControlPlane {
             let mut conn = self.lock()?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let now = clock.now();
-            let here: bool = tx.query_row(
-                "SELECT count(*) > 0 FROM environments WHERE id = ?1 AND token = ?2",
-                params![env.id().to_string(), env.token().to_string()],
-                |r| r.get(0),
-            )?;
-            if !here {
-                return Err(refused("no such environment"));
+            match seed_state(&tx, env, seed)? {
+                Ok(Some(state)) => return Ok(Ok(state)),
+                Err(conflict) => return Ok(Err(conflict)),
+                Ok(None) => {}
             }
-            let id = seed.id.to_string();
-            // Of any environment: a key ID is used once in the file.
-            let origin = tx
-                .query_row("SELECT origin FROM keys WHERE id = ?1", [&id], |r| {
-                    r.get::<_, String>(0)
-                })
-                .optional()?;
-            if let Some(origin) = origin {
-                let origin = origin_from(&origin)?;
-                let state = lookup(&tx, seed.id, env)?
-                    .ok_or(SeedConflict)
-                    .and_then(|record| verify_seed(seed, &record, origin, env));
-                return Ok(state.map_err(|SeedConflict| SeedError::Conflict));
-            }
-            tx.execute(
-                "UPDATE keys SET revoked_at = ?1 WHERE environment_id = ?2 \
-                 AND environment_token = ?3 AND origin = ?4 AND revoked_at IS NULL",
-                params![
-                    now.as_millis(),
-                    env.id().to_string(),
-                    env.token().to_string(),
-                    SEED
-                ],
-            )?;
+            revoke_all(&tx, env, SEED, now)?;
             insert_admin(&tx, seed, env, SEED, now)?;
             tx.commit()?;
             Ok(Ok(SeedState::Current))
         })
         .map_err(SeedError::Store)?
+        .map_err(|SeedConflict| SeedError::Conflict)
     }
 
     /// The key `id`, if it was made for `env`'s ID and incarnation token, and then `clock`'s now:
@@ -684,6 +744,91 @@ fn lookup(conn: &Connection, id: KeyId, env: &EnvRef) -> Result<Option<KeyRecord
     row.map(|stored| stored.record(id, env)).transpose()
 }
 
+/// Opens `path` so that reading it leaves its bytes as they are, and no file beside it that was
+/// not there but `-shm`, which SQLite derives from a WAL a crash left.
+fn open_to_read(path: &Path) -> rusqlite::Result<Connection> {
+    // A read-only connection leaves behind the WAL files it made; a writable one removes them,
+    // but checkpoints a WAL it found.
+    let mut wal = path.as_os_str().to_owned();
+    wal.push("-wal");
+    let flags = if Path::new(&wal).exists() {
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+    } else {
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+    };
+    Connection::open_with_flags(path, flags)
+}
+
+/// What the key stored under `seed`'s key ID, if any, makes of `seed` in `env`. The outer error
+/// is SQLite's, or that `env` is not this file's environment.
+fn seed_state(
+    conn: &Connection,
+    env: &EnvRef,
+    seed: &KeyParts,
+) -> Result<Result<Option<SeedState>, SeedConflict>, Error> {
+    let here: bool = conn.query_row(
+        "SELECT count(*) > 0 FROM environments WHERE id = ?1 AND token = ?2",
+        params![env.id().to_string(), env.token().to_string()],
+        |r| r.get(0),
+    )?;
+    if !here {
+        return Err(refused("no such environment"));
+    }
+    // Of any environment: a key ID is used once in the file.
+    let origin = conn
+        .query_row(
+            "SELECT origin FROM keys WHERE id = ?1",
+            [seed.id.to_string()],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(origin) = origin else {
+        return Ok(Ok(None));
+    };
+    let origin = origin_from(&origin)?;
+    Ok(lookup(conn, seed.id, env)?
+        .ok_or(SeedConflict)
+        .and_then(|record| verify_seed(seed, &record, origin, env))
+        .map(Some))
+}
+
+/// Marks `env`'s ledger created, if it is this file's environment and unmarked.
+fn mark(conn: &Connection, env: &EnvRef, now: Timestamp) -> Result<(), Error> {
+    let changed = conn.execute(
+        "UPDATE environments SET ledger_created_at = ?1 \
+         WHERE id = ?2 AND token = ?3 AND ledger_created_at IS NULL",
+        params![
+            now.as_millis(),
+            env.id().to_string(),
+            env.token().to_string()
+        ],
+    )?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(refused("no such unmarked environment"))
+    }
+}
+
+/// Revokes `env`'s unrevoked keys of `origin`; how many.
+fn revoke_all(
+    conn: &Connection,
+    env: &EnvRef,
+    origin: &str,
+    now: Timestamp,
+) -> Result<usize, Error> {
+    Ok(conn.execute(
+        "UPDATE keys SET revoked_at = ?1 WHERE environment_id = ?2 \
+         AND environment_token = ?3 AND origin = ?4 AND revoked_at IS NULL",
+        params![
+            now.as_millis(),
+            env.id().to_string(),
+            env.token().to_string(),
+            origin
+        ],
+    )?)
+}
+
 /// Inserts an admin key no key created: all three scopes, no expiry, no label.
 fn insert_admin(
     conn: &Connection,
@@ -780,12 +925,18 @@ fn origin_from(text: &str) -> Result<KeyOrigin, Error> {
     }
 }
 
-fn check_format(conn: &Connection) -> Result<(), Error> {
-    let format: u16 = conn.query_row("SELECT format FROM meta", [], |r| r.get(0))?;
-    if format == FORMAT {
-        Ok(())
+/// Whether the file holds this format's schema; false only for a file with nothing in it. One
+/// without `meta`, no control plane, is an error.
+fn has_schema(conn: &Connection) -> Result<bool, Error> {
+    let empty: bool = conn.query_row("SELECT count(*) = 0 FROM sqlite_master", [], |r| r.get(0))?;
+    if empty {
+        return Ok(false);
+    }
+    let format: i64 = conn.query_row("SELECT format FROM meta", [], |r| r.get(0))?;
+    if format == i64::from(FORMAT) {
+        Ok(true)
     } else {
-        Err(refused("another format version"))
+        Err(Error::Format)
     }
 }
 

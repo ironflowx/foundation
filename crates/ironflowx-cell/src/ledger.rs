@@ -74,6 +74,8 @@ pub enum OpenError {
     /// The log is damaged, holds a foreign record, or lost records the read store already
     /// folded. Needs a person: architecture.md, "When open answers `Corrupt`".
     Corrupt,
+    /// An open of an existing ledger found none, or one without a genesis record.
+    Missing,
     Io(std::io::Error),
 }
 
@@ -86,6 +88,7 @@ impl fmt::Display for OpenError {
             }
             Self::Format => f.write_str("the ledger directory is in another format"),
             Self::Corrupt => f.write_str("the ledger log is corrupt"),
+            Self::Missing => f.write_str("the ledger is missing"),
             Self::Io(e) => write!(f, "ledger I/O: {e}"),
         }
     }
@@ -150,9 +153,39 @@ impl Ledger {
         clock: impl Clock + Send + 'static,
     ) -> Result<Self, OpenError> {
         let dir = dir.to_owned();
-        let recovered = tokio::task::spawn_blocking(move || recover(&dir, env))
+        tokio::task::spawn_blocking(move || Self::open_blocking(&dir, env, clock))
             .await
-            .expect("open does not panic")?;
+            .expect("open does not panic")
+    }
+
+    /// As [`Ledger::open`], on this thread and outside a runtime too.
+    pub fn open_blocking(
+        dir: &Path,
+        env: EnvRef,
+        clock: impl Clock + Send + 'static,
+    ) -> Result<Self, OpenError> {
+        create_directory(dir)?;
+        Self::start(recover(dir, env, false)?, env, clock)
+    }
+
+    /// As [`Ledger::open_blocking`], but refuses a directory that is missing, or holds no genesis
+    /// record, as `Missing`: it creates neither. A log that has a segment is opened to find out.
+    pub fn open_existing_blocking(
+        dir: &Path,
+        env: EnvRef,
+        clock: impl Clock + Send + 'static,
+    ) -> Result<Self, OpenError> {
+        if !holds_segment(dir)? {
+            return Err(OpenError::Missing);
+        }
+        Self::start(recover(dir, env, true)?, env, clock)
+    }
+
+    fn start(
+        recovered: Recovered,
+        env: EnvRef,
+        clock: impl Clock + Send + 'static,
+    ) -> Result<Self, OpenError> {
         let progress = Arc::new(watch::Sender::new(Progress {
             committed: recovered.watermark,
             applied: recovered.watermark,
@@ -497,9 +530,25 @@ fn create_directory(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Take the ledger lock before opening either store.
-fn recover(dir: &Path, env: EnvRef) -> Result<Recovered, OpenError> {
-    create_directory(dir)?;
+/// Whether `dir` holds a log with a segment, read without creating anything.
+fn holds_segment(dir: &Path) -> std::io::Result<bool> {
+    let entries = match std::fs::read_dir(dir.join("log")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        entries => entries?,
+    };
+    for entry in entries {
+        // The log's own rule: it ignores any other name, and creates a first segment beside it.
+        let name = entry?.file_name();
+        let base = name.to_str().and_then(|n| n.strip_suffix(".seg"));
+        if base.is_some_and(|b| b.len() == 20 && b.bytes().all(|b| b.is_ascii_digit())) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Take the ledger lock before opening either store. `existing` refuses a log without records.
+fn recover(dir: &Path, env: EnvRef, existing: bool) -> Result<Recovered, OpenError> {
     // The segment log releases its own lock when sealed. Keep exclusive ownership
     // of the read store through recovery, normal operation and close.
     let directory_lock = File::options()
@@ -532,6 +581,9 @@ fn recover(dir: &Path, env: EnvRef) -> Result<Recovered, OpenError> {
             }
         }
     })?;
+    if existing && log.watermark() == 0 {
+        return Err(OpenError::Missing);
+    }
     // The fold runs only after fsync, so a read store of this environment ahead of the log
     // proves the log lost durable records. Refuse, before a genesis could paper over it.
     if store::recorded(dir, env, log.watermark() == 0)?
@@ -551,6 +603,7 @@ fn recover(dir: &Path, env: EnvRef) -> Result<Recovered, OpenError> {
             return Err(OpenError::WrongIncarnation);
         }
         record::Decoded::Genesis { .. } => {}
+        record::Decoded::Events { .. } if existing => return Err(OpenError::Missing),
         record::Decoded::Events { .. } => return Err(OpenError::Corrupt),
     }
     let watermark = log.watermark();

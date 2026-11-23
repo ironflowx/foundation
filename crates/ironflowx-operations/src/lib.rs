@@ -55,9 +55,12 @@ pub struct Engine {
 /// What an open returns.
 pub struct Opened {
     pub engine: Engine,
-    /// The bootstrap key's secret, returned once: only by an open that bootstrapped without a
-    /// seed.
+    /// The bootstrap key's secret, returned once: only by an open without a seed that
+    /// bootstrapped, or that replaced a key whose secret was lost.
     pub minted: Option<Secret>,
+    /// An earlier open died before it returned the secret of the key it minted, and this one
+    /// revoked that key.
+    pub lost_secret: bool,
     /// Whether the seed the open was given still works: a host should warn of a revoked one.
     /// `None` when it was given none.
     pub seed: Option<SeedState>,

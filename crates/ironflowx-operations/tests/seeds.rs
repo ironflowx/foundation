@@ -271,21 +271,16 @@ async fn a_cancelled_open_holds_the_root_until_its_seed_is_applied() {
 }
 
 /// So does a cancelled first open, through the bootstrap's transaction and through the mark's:
-/// the first leaves an unmarked bootstrap, the second a finished one.
+/// the first leaves an unmarked bootstrap, which the next open finishes, the second a finished
+/// one. Either way the seed stays the bootstrap key.
 #[tokio::test]
 async fn a_cancelled_first_open_holds_the_root_until_its_write_ends() {
     let a = seed(1, 1);
-    let dir = tempfile::tempdir().unwrap();
-    let err = cancel_inside_a_write(dir.path(), &a, 0)
-        .await
-        .err()
-        .expect("refused");
-    assert!(
-        matches!(&err, EngineError::Io(e) if e.to_string().contains("did not finish the bootstrap")),
-        "{err:?}"
-    );
-    let dir = tempfile::tempdir().unwrap();
-    let opened = cancel_inside_a_write(dir.path(), &a, 1).await.unwrap();
-    assert!(authenticates(&opened.engine, &a).await);
-    opened.engine.close().await;
+    for skip in [0, 1] {
+        let dir = tempfile::tempdir().unwrap();
+        let opened = cancel_inside_a_write(dir.path(), &a, skip).await.unwrap();
+        assert!(authenticates(&opened.engine, &a).await);
+        assert!(opened.minted.is_none() && !opened.lost_secret);
+        opened.engine.close().await;
+    }
 }

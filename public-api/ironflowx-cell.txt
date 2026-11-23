@@ -4,6 +4,7 @@ pub ironflowx_cell::OpenError::Corrupt
 pub ironflowx_cell::OpenError::Format
 pub ironflowx_cell::OpenError::Io(core::io::error::Error)
 pub ironflowx_cell::OpenError::Locked
+pub ironflowx_cell::OpenError::Missing
 pub ironflowx_cell::OpenError::WrongIncarnation
 impl core::convert::From<core::io::error::Error> for ironflowx_cell::OpenError
 pub fn ironflowx_cell::OpenError::from(core::io::error::Error) -> Self
@@ -64,6 +65,8 @@ impl ironflowx_cell::Ledger
 pub async fn ironflowx_cell::Ledger::close(self)
 pub const fn ironflowx_cell::Ledger::env(&self) -> ironflowx_core::id::EnvRef
 pub async fn ironflowx_cell::Ledger::open(&std::path::Path, ironflowx_core::id::EnvRef, impl ironflowx_core::time::Clock + core::marker::Send + 'static) -> core::result::Result<Self, ironflowx_cell::OpenError>
+pub fn ironflowx_cell::Ledger::open_blocking(&std::path::Path, ironflowx_core::id::EnvRef, impl ironflowx_core::time::Clock + core::marker::Send + 'static) -> core::result::Result<Self, ironflowx_cell::OpenError>
+pub fn ironflowx_cell::Ledger::open_existing_blocking(&std::path::Path, ironflowx_core::id::EnvRef, impl ironflowx_core::time::Clock + core::marker::Send + 'static) -> core::result::Result<Self, ironflowx_cell::OpenError>
 pub async fn ironflowx_cell::Ledger::read<R: core::marker::Send + 'static>(&self, impl core::ops::function::FnOnce(&ironflowx_cell::ReadStore<'_>) -> core::result::Result<R, ironflowx_events::Error<ironflowx_cell::StoreError>> + core::marker::Send + 'static) -> core::result::Result<R, ironflowx_cell::ReadError>
 pub async fn ironflowx_cell::Ledger::submit(&self, ironflowx_events::Submission, ironflowx_core::who::SubmitAs) -> core::result::Result<ironflowx_cell::Committed, ironflowx_cell::SubmitError>
 impl core::ops::drop::Drop for ironflowx_cell::Ledger

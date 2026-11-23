@@ -1,11 +1,11 @@
 //! Engine rows of the Open and Errors tables in architecture.md that no scenario covers yet.
 
-use ironflowx_authz::{KeyParts, mint};
-use ironflowx_cell::{ManualClock, new_env_ref};
+use ironflowx_authz::mint;
+use ironflowx_cell::ManualClock;
 use ironflowx_core::{ErrorKind, Secret, Timestamp};
-use ironflowx_operations::{Engine, EngineError, SeedState};
+use ironflowx_operations::{Engine, SeedState};
 use ironflowx_proto::{Call, Operations, WhoamiRequest};
-use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane};
+use ironflowx_store::ControlPlane;
 
 fn clock() -> ManualClock {
     ManualClock::new(Timestamp::from_millis(1_800_000_000_000))
@@ -15,60 +15,26 @@ fn uuid(n: u8) -> String {
     format!("019a9f3e-7c2b-7d41-8a3e-1000000000{n:02x}")
 }
 
-#[tokio::test]
-async fn an_unmarked_bootstrap_is_refused_and_left_as_it_was() {
-    let dir = tempfile::tempdir().unwrap();
-    let control = dir.path().join("control.db");
-    let env = new_env_ref();
-    {
-        let cp = ControlPlane::open(&control).unwrap();
-        let id = uuid(3).parse().unwrap();
-        let bootstrap = Bootstrap {
-            env,
-            tenant: uuid(1).parse().unwrap(),
-            project: uuid(2).parse().unwrap(),
-            key: KeyParts {
-                id,
-                digest: mint(id, [5; 32]).1,
-            },
-            by_seed: false,
-        };
-        cp.ensure_bootstrap(&bootstrap, &clock()).unwrap();
-    }
-    let seed = mint(uuid(4).parse().unwrap(), [6; 32]).0;
-    for seed in [None, Some(seed)] {
-        let err = Engine::open(dir.path(), clock(), seed)
-            .await
-            .err()
-            .expect("refused");
-        assert!(
-            matches!(&err, EngineError::Io(e) if e.to_string().contains("did not finish the bootstrap")),
-            "{err:?}"
-        );
-        assert_eq!(
-            ControlPlane::bootstrap_state(&control).unwrap(),
-            BootstrapState::Unmarked { env }
-        );
-    }
-    let keys = ControlPlane::open(&control)
-        .unwrap()
-        .list_keys(&env, None, 10);
-    assert_eq!(keys.unwrap().len(), 1, "the seed was not applied");
-    assert!(
-        !dir.path()
-            .join("ledgers")
-            .join(env.id().to_string())
-            .exists()
-    );
-}
-
-/// A `control.db` with no bootstrap in it is bootstrapped, with a seed or without.
+/// A `control.db` with no bootstrap in it is bootstrapped, with a seed or without: one with its
+/// schema, and one that a crash left empty before its schema was committed.
 #[tokio::test]
 async fn a_never_bootstrapped_control_plane_is_bootstrapped() {
+    type Make = fn(&std::path::Path);
+    let with_schema: Make = |path| drop(ControlPlane::open(path).unwrap());
+    let empty: Make = |path| std::fs::write(path, "").unwrap();
+    let no_table: Make = |path| {
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.pragma_update(None, "journal_mode", "WAL").unwrap();
+    };
     let seed = || mint(uuid(5).parse().unwrap(), [7; 32]).0;
-    for given in [None, Some(seed())] {
+    for (given, make) in [
+        (None, with_schema),
+        (Some(seed()), with_schema),
+        (None, empty),
+        (None, no_table),
+    ] {
         let dir = tempfile::tempdir().unwrap();
-        drop(ControlPlane::open(&dir.path().join("control.db")).unwrap());
+        make(&dir.path().join("control.db"));
         let with_seed = given.is_some();
         let opened = Engine::open(dir.path(), clock(), given).await.unwrap();
         assert_eq!(opened.minted.is_none(), with_seed);

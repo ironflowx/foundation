@@ -1,10 +1,14 @@
 pub mod ironflowx_operations
 pub use ironflowx_operations::SeedState
 pub enum ironflowx_operations::EngineError
+pub ironflowx_operations::EngineError::Format
 pub ironflowx_operations::EngineError::Io(core::io::error::Error)
 pub ironflowx_operations::EngineError::Ledger(ironflowx_cell::ledger::OpenError)
+pub ironflowx_operations::EngineError::LedgerMissing
 pub ironflowx_operations::EngineError::Locked
 pub ironflowx_operations::EngineError::MalformedSeed
+pub ironflowx_operations::EngineError::NotAnEngineRoot
+pub ironflowx_operations::EngineError::Orphaned
 pub ironflowx_operations::EngineError::SeedConflict
 pub ironflowx_operations::EngineError::Store(ironflowx_store::StoreError)
 impl core::convert::From<core::io::error::Error> for ironflowx_operations::EngineError
@@ -40,5 +44,6 @@ pub async fn ironflowx_operations::Engine::revoke_key(&self, &ironflowx_proto::C
 pub async fn ironflowx_operations::Engine::whoami(&self, &ironflowx_proto::Call, ironflowx_proto::WhoamiRequest) -> core::result::Result<ironflowx_proto::Whoami, ironflowx_proto::OpError>
 pub struct ironflowx_operations::Opened
 pub ironflowx_operations::Opened::engine: ironflowx_operations::Engine
+pub ironflowx_operations::Opened::lost_secret: bool
 pub ironflowx_operations::Opened::minted: core::option::Option<ironflowx_core::secret::Secret>
 pub ironflowx_operations::Opened::seed: core::option::Option<ironflowx_authz::SeedState>
