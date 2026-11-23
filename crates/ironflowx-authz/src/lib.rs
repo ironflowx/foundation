@@ -62,9 +62,13 @@ pub fn parse(raw: &Secret) -> Result<KeyParts, Malformed> {
     let id = head.strip_prefix(PREFIX).ok_or(Malformed)?;
     let secret = rest.strip_prefix('_').ok_or(Malformed)?;
     let id = id.parse().map_err(|_| Malformed)?;
-    // The decoder refuses padding, other alphabets and non-canonical trailing bits; 43
-    // characters decode to exactly 32 bytes.
-    URL_SAFE_NO_PAD.decode(secret).map_err(|_| Malformed)?;
+    // Checked without decoding, so no copy of the secret is made (TEN-3): base64url characters,
+    // the last with its 2 spare bits zero, since 43 characters hold 258 bits.
+    let base64url = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_';
+    let canonical = secret.ends_with(|c| "AEIMQUYcgkosw048".contains(c));
+    if !(secret.bytes().all(base64url) && canonical) {
+        return Err(Malformed);
+    }
     Ok(KeyParts {
         id,
         digest: KeyDigest::of(text),
@@ -73,7 +77,10 @@ pub fn parse(raw: &Secret) -> Result<KeyParts, Malformed> {
 
 /// Makes a key from its ID and 256 random bits, which the caller draws.
 pub fn mint(id: KeyId, secret: [u8; 32]) -> (Secret, KeyDigest) {
-    let text = format!("{PREFIX}{id}_{}", URL_SAFE_NO_PAD.encode(secret));
+    // Encoded in place, into a block that never grows, so no copy of the secret is left (TEN-3).
+    let mut text = String::with_capacity(KEY_LEN);
+    text.push_str(&format!("{PREFIX}{id}_"));
+    URL_SAFE_NO_PAD.encode_string(secret, &mut text);
     let digest = KeyDigest::of(&text);
     (Secret::new(text), digest)
 }
