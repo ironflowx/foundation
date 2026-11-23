@@ -1,6 +1,7 @@
 //! Admission: the one way to an [`Authorized`] (TEN-1). Every call runs, in order: no key →
 //! `Unauthenticated`; `parse`; `lookup_key`, with no cache (D45); `verify` at the clock's now;
-//! `admit` against the operation's `required_scope` (D37).
+//! `admit` against the operation's `required_scope` (D37). A key refused as newly
+//! expired has its expiry recorded (`record_expiry`, D42), admission's one write.
 
 use ironflowx_authz::{Grant, admit, parse, verify};
 use ironflowx_core::ErrorKind;
@@ -45,9 +46,18 @@ impl Engine {
         let control = self.control.clone();
         let (id, env) = (parts.id, self.env);
         let record = blocking(move || control.lookup_key(id, &env)).await?;
-        // One answer for every invalid key (D30).
-        let grant = verify(&parts, record.as_ref(), &self.env, self.clock.now())
-            .map_err(|_| unauthenticated("invalid API key", None))?;
+        let grant = match verify(&parts, record.as_ref(), &self.env, self.clock.now()) {
+            Ok(grant) => grant,
+            Err(refused) => {
+                if refused.newly_expired() {
+                    let control = self.control.clone();
+                    // If it fails, the next refusal tries again; the answer is the same (TEN-7).
+                    let _ = blocking(move || control.record_expiry(&env, id)).await;
+                }
+                // One answer for every invalid key (D30).
+                return Err(unauthenticated("invalid API key", None));
+            }
+        };
         admit(&grant, required_scope(op)).map_err(|missing| {
             let scope = missing.scope();
             OpError {

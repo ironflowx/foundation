@@ -13,7 +13,9 @@ use std::sync::Mutex;
 
 use ironflowx_authz::{CreateRefusal, Grant, KeyDigest, KeyParts, KeyRecord, may_create, recheck};
 use ironflowx_core::{Clock, EnvRef, KeyId, KeyOrigin, ProjectId, Scope, TenantId, Timestamp};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 
 /// The control plane's format. A change refuses older files at open.
 const FORMAT: u16 = 1;
@@ -52,6 +54,7 @@ CREATE TABLE keys (
     created_by TEXT,
     label TEXT,
     expires_at INTEGER,
+    expiry_recorded INTEGER NOT NULL DEFAULT 0,
     revoked_at INTEGER,
     created_at INTEGER NOT NULL
 );
@@ -141,7 +144,8 @@ pub struct KeyRow {
     pub created_at: Timestamp,
 }
 
-/// Why a key change did not happen. Nothing was written.
+/// Why a key change did not happen. Nothing was written, but for a calling key found newly
+/// expired: its expiry is recorded (D42).
 #[derive(Debug)]
 pub enum KeyChangeError {
     /// The calling key is unknown, revoked, expired, or of another environment, read again
@@ -149,6 +153,8 @@ pub enum KeyChangeError {
     Caller,
     /// A creation request breaks a creation rule.
     Refused(CreateRefusal),
+    /// As many created keys as the cap allows hold a slot.
+    Full,
     /// No key has that ID in this environment.
     NotFound,
     Store(StoreError),
@@ -159,6 +165,7 @@ impl fmt::Display for KeyChangeError {
         match self {
             Self::Caller => f.write_str("the calling key is no longer valid"),
             Self::Refused(r) => r.fmt(f),
+            Self::Full => f.write_str("key limit reached"),
             Self::NotFound => f.write_str("key not found"),
             Self::Store(e) => e.fmt(f),
         }
@@ -337,31 +344,60 @@ impl ControlPlane {
         run(|| lookup(&*self.lock()?, id, env))
     }
 
-    /// Creates `new` in `env` for `creator`, in one transaction: with the write lock held and
-    /// now read from `clock`, the creator's record is read again and checked (`recheck`), then
-    /// the request (`may_create`), so no key outlives or outranks its creator (TEN-5).
+    /// Records that `id`, a key of `env` that is not revoked, was refused as expired: it stays
+    /// expired whatever the clock does (D42). Recording it again changes nothing.
     ///
     /// # Errors
     ///
-    /// `Caller` or `Refused` as the checks find, `Store` if SQLite fails; nothing is written.
+    /// If SQLite fails; nothing is recorded then.
+    pub fn record_expiry(&self, env: &EnvRef, id: KeyId) -> Result<(), StoreError> {
+        run(|| {
+            let mut conn = self.lock()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            set_expiry_recorded(&tx, id, env)?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// Creates `new` in `env` for `creator`, in one transaction: with the write lock held and
+    /// now read from `clock`, the creator's record is read again and checked (`recheck`), then
+    /// the request (`may_create`), so no key outlives or outranks its creator (TEN-5), then
+    /// that fewer than `cap` created keys hold a slot: one does until it is revoked or its
+    /// expiry is recorded, whatever the clock reads (TEN-15).
+    ///
+    /// # Errors
+    ///
+    /// `Caller`, `Refused` or `Full` as the checks find, `Store` if SQLite fails; no key is
+    /// created. A newly expired `creator` has its expiry recorded.
     pub fn insert_key(
         &self,
         env: &EnvRef,
         new: NewKey,
         creator: KeyId,
         clock: &dyn Clock,
+        cap: u32,
     ) -> Result<KeyRow, KeyChangeError> {
         // The outer error is SQLite's; the inner one, a check that refused.
         run(|| {
             let mut conn = self.lock()?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let now = clock.now();
-            let Some(grant) = caller(&tx, creator, env, now)? else {
+            let Some((tx, grant)) = caller(tx, creator, env, now)? else {
                 return Ok(Err(KeyChangeError::Caller));
             };
             let label = new.label.as_deref();
             if let Err(r) = may_create(&grant, &new.scopes, new.expires_at, label, now) {
                 return Ok(Err(KeyChangeError::Refused(r)));
+            }
+            let slots: u32 = tx.query_row(
+                "SELECT count(*) FROM keys WHERE environment_id = ?1 AND environment_token = ?2 \
+                 AND origin = ?3 AND revoked_at IS NULL AND expiry_recorded = 0",
+                params![env.id().to_string(), env.token().to_string(), CREATED],
+                |r| r.get(0),
+            )?;
+            if slots >= cap {
+                return Ok(Err(KeyChangeError::Full));
             }
             tx.execute(
                 "INSERT INTO keys (id, environment_id, environment_token, scopes, digest, origin, \
@@ -390,6 +426,7 @@ impl ControlPlane {
                     scopes: new.scopes,
                     digest: new.digest,
                     expires_at: new.expires_at,
+                    expiry_recorded: false,
                     revoked_at: None,
                 },
                 origin: KeyOrigin::Created,
@@ -408,7 +445,7 @@ impl ControlPlane {
     /// # Errors
     ///
     /// `Caller` if `by` is no longer valid, `NotFound` if `env` holds no key `id`, `Store` if
-    /// SQLite fails; nothing is written.
+    /// SQLite fails; no key is revoked. A newly expired `by` has its expiry recorded.
     pub fn revoke_key(
         &self,
         env: &EnvRef,
@@ -421,9 +458,9 @@ impl ControlPlane {
             let mut conn = self.lock()?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let now = clock.now();
-            if caller(&tx, by, env, now)?.is_none() {
+            let Some((tx, _)) = caller(tx, by, env, now)? else {
                 return Ok(Err(KeyChangeError::Caller));
-            }
+            };
             if lookup(&tx, id, env)?.is_none() {
                 return Ok(Err(KeyChangeError::NotFound));
             }
@@ -452,8 +489,8 @@ impl ControlPlane {
         run(|| {
             let conn = self.lock()?;
             let mut stmt = conn.prepare(
-                "SELECT seq, id, scopes, digest, expires_at, revoked_at, origin, created_by, \
-                 label, created_at FROM keys \
+                "SELECT seq, id, scopes, digest, expires_at, expiry_recorded, revoked_at, origin, \
+                 created_by, label, created_at FROM keys \
                  WHERE environment_id = ?1 AND environment_token = ?2 AND seq < ?3 \
                  ORDER BY seq DESC LIMIT ?4",
             )?;
@@ -468,12 +505,13 @@ impl ControlPlane {
                             scopes: r.get(2)?,
                             digest: r.get(3)?,
                             expires_at: r.get(4)?,
-                            revoked_at: r.get(5)?,
+                            expiry_recorded: r.get(5)?,
+                            revoked_at: r.get(6)?,
                         },
-                        r.get::<_, String>(6)?,
-                        r.get::<_, Option<String>>(7)?,
+                        r.get::<_, String>(7)?,
                         r.get::<_, Option<String>>(8)?,
-                        r.get::<_, i64>(9)?,
+                        r.get::<_, Option<String>>(9)?,
+                        r.get::<_, i64>(10)?,
                     ))
                 },
             )?;
@@ -543,7 +581,7 @@ impl ControlPlane {
 fn lookup(conn: &Connection, id: KeyId, env: &EnvRef) -> Result<Option<KeyRecord>, Error> {
     let row = conn
         .query_row(
-            "SELECT scopes, digest, expires_at, revoked_at FROM keys \
+            "SELECT scopes, digest, expires_at, expiry_recorded, revoked_at FROM keys \
              WHERE id = ?1 AND environment_id = ?2 AND environment_token = ?3",
             params![
                 id.to_string(),
@@ -555,7 +593,8 @@ fn lookup(conn: &Connection, id: KeyId, env: &EnvRef) -> Result<Option<KeyRecord
                     scopes: r.get(0)?,
                     digest: r.get(1)?,
                     expires_at: r.get(2)?,
-                    revoked_at: r.get(3)?,
+                    expiry_recorded: r.get(3)?,
+                    revoked_at: r.get(4)?,
                 })
             },
         )
@@ -563,15 +602,42 @@ fn lookup(conn: &Connection, id: KeyId, env: &EnvRef) -> Result<Option<KeyRecord
     row.map(|stored| stored.record(id, env)).transpose()
 }
 
+/// Sets `id`'s recorded expiry unless it is set or the key is revoked.
+fn set_expiry_recorded(conn: &Connection, id: KeyId, env: &EnvRef) -> Result<(), Error> {
+    conn.execute(
+        "UPDATE keys SET expiry_recorded = 1 WHERE id = ?1 AND environment_id = ?2 \
+         AND environment_token = ?3 AND revoked_at IS NULL AND expiry_recorded = 0",
+        params![
+            id.to_string(),
+            env.id().to_string(),
+            env.token().to_string()
+        ],
+    )?;
+    Ok(())
+}
+
 /// The calling key of a key change, read again inside its transaction and checked at the
-/// transaction's now: `None` if it is unknown, revoked or expired by then (D43).
-fn caller(
-    conn: &Connection,
+/// transaction's now, with the transaction to go on with: `None` if the key is unknown, revoked
+/// or expired by then (D43). A newly expired key's expiry is recorded, ending the transaction.
+fn caller<'c>(
+    tx: Transaction<'c>,
     id: KeyId,
     env: &EnvRef,
     now: Timestamp,
-) -> Result<Option<Grant>, Error> {
-    Ok(lookup(conn, id, env)?.and_then(|r| recheck(&r, env, now).ok()))
+) -> Result<Option<(Transaction<'c>, Grant)>, Error> {
+    let Some(record) = lookup(&tx, id, env)? else {
+        return Ok(None);
+    };
+    match recheck(&record, env, now) {
+        Ok(grant) => Ok(Some((tx, grant))),
+        Err(refused) => {
+            if refused.newly_expired() && set_expiry_recorded(&tx, id, env).is_ok() {
+                // Refused alike whether or not the expiry was recorded (TEN-7).
+                let _ = tx.commit();
+            }
+            Ok(None)
+        }
+    }
 }
 
 /// A key row's credential columns, as read.
@@ -579,6 +645,7 @@ struct Stored {
     scopes: String,
     digest: Vec<u8>,
     expires_at: Option<i64>,
+    expiry_recorded: bool,
     revoked_at: Option<i64>,
 }
 
@@ -590,6 +657,7 @@ impl Stored {
             scopes: parse_scopes(&self.scopes)?,
             digest: KeyDigest::from_stored(&self.digest).ok_or_else(|| refused("bad digest"))?,
             expires_at: self.expires_at.map(Timestamp::from_millis),
+            expiry_recorded: self.expiry_recorded,
             revoked_at: self.revoked_at.map(Timestamp::from_millis),
         })
     }

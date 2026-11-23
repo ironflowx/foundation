@@ -45,6 +45,7 @@ pub struct ironflowx_authz::KeyRecord
 pub ironflowx_authz::KeyRecord::digest: ironflowx_authz::KeyDigest
 pub ironflowx_authz::KeyRecord::env: ironflowx_core::id::EnvRef
 pub ironflowx_authz::KeyRecord::expires_at: core::option::Option<ironflowx_core::time::Timestamp>
+pub ironflowx_authz::KeyRecord::expiry_recorded: bool
 pub ironflowx_authz::KeyRecord::id: ironflowx_core::id::KeyId
 pub ironflowx_authz::KeyRecord::revoked_at: core::option::Option<ironflowx_core::time::Timestamp>
 pub ironflowx_authz::KeyRecord::scopes: alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>
@@ -79,9 +80,12 @@ pub fn ironflowx_authz::MissingScope::fmt(&self, &mut core::fmt::Formatter<'_>) 
 impl core::marker::Copy for ironflowx_authz::MissingScope
 impl core::marker::StructuralPartialEq for ironflowx_authz::MissingScope
 pub struct ironflowx_authz::Refused
+impl ironflowx_authz::Refused
+pub const fn ironflowx_authz::Refused::newly_expired(&self) -> bool
 impl core::clone::Clone for ironflowx_authz::Refused
 pub fn ironflowx_authz::Refused::clone(&self) -> Self
 impl core::cmp::Eq for ironflowx_authz::Refused
+pub fn ironflowx_authz::Refused::assert_fields_are_eq(&self)
 impl core::cmp::PartialEq for ironflowx_authz::Refused
 pub fn ironflowx_authz::Refused::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_authz::Refused

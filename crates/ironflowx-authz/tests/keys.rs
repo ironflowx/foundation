@@ -89,6 +89,7 @@ fn record(bytes: [u8; 32], env: EnvRef) -> KeyRecord {
         scopes: BTreeSet::from([Scope::Read, Scope::Admin]),
         digest: mint(id(), bytes).1,
         expires_at: None,
+        expiry_recorded: false,
         revoked_at: None,
     }
 }

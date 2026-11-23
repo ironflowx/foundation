@@ -36,6 +36,7 @@ pub const REGISTERED: &[(&str, usize)] = &[
     ("ACC-041", 1),
     ("ACC-042", 1),
     ("ACC-043", 3),
+    ("ACC-044", 1),
     ("ACC-045", 4),
     ("ACC-046", 1),
     ("ACC-047", 1),
@@ -43,6 +44,7 @@ pub const REGISTERED: &[(&str, usize)] = &[
     ("ACC-051", 1),
     ("ACC-052", 1),
     ("ACC-053", 1),
+    ("ACC-054", 1),
     ("ACC-060", 1),
     ("ACC-061", 1),
 ];
@@ -85,6 +87,8 @@ pub struct Tenancy {
     listed: Option<Vec<Environment>>,
     /// Keys a scenario names (A, B, C, K), by key ID.
     named: BTreeMap<String, String>,
+    /// The secrets of those keys (ACC-044).
+    secrets: Vec<String>,
     /// The key the client created last: its text and what was said about it.
     created: Option<(String, KeyInfo)>,
     /// Pages of keys, as listed.
@@ -141,6 +145,7 @@ impl Tenancy {
             t: None,
             listed: None,
             named: BTreeMap::new(),
+            secrets: Vec::new(),
             created: None,
             pages: Vec::new(),
             keys_before: None,
@@ -352,7 +357,13 @@ async fn lists_one(w: &mut Tenancy, name: String) {
 
 #[when("the engine is closed and opened again")]
 async fn reopened(w: &mut Tenancy) {
-    w.env_before = Some(w.environments().await[0].env);
+    // With the bootstrap key: the client's may be refused by now (ACC-054).
+    let envs = w
+        .engine()
+        .list_environments(&w.bootstrap(), ListEnvironmentsRequest {})
+        .await
+        .expect("the bootstrap key lists environments");
+    w.env_before = Some(envs[0].env);
     w.engine.take().unwrap().close().await;
     w.open().await;
 }
@@ -1003,6 +1014,81 @@ async fn next_call_refused(w: &mut Tenancy) {
         .await
         .expect_err("refused");
     assert_eq!(err.kind, ErrorKind::Unauthenticated);
+}
+
+#[then(regex = r#"^the client's next call is refused as unauthenticated with "([^"]+)"$"#)]
+async fn next_call_refused_with(w: &mut Tenancy, message: String) {
+    w.list_events(w.key()).await;
+    refused_as(w, message);
+}
+
+#[given("the clock reads T and the key was refused")]
+async fn refused_at_t(w: &mut Tenancy) {
+    clock_reads(w, String::new());
+    next_call_refused_with(w, "invalid API key".into()).await;
+}
+
+#[when("the clock steps back one hour")]
+fn steps_back(w: &mut Tenancy) {
+    let back = w.now().as_millis() - HOUR;
+    w.clock.set(Timestamp::from_millis(back));
+}
+
+#[given("a client with the bootstrap key created keys A, B and C, with C expiring in one hour")]
+async fn created_abc_expiring(w: &mut Tenancy) {
+    w.open().await;
+    let hour = Timestamp::from_millis(w.now().as_millis() + HOUR);
+    for (name, expires_at) in [("A", None), ("B", None), ("C", Some(hour))] {
+        let key = w.create(BTreeSet::new(), expires_at, None).await;
+        w.named.insert(name.into(), key[4..40].to_owned());
+        w.secrets.push(key[41..].to_owned());
+    }
+}
+
+#[given("the client revoked key B")]
+async fn client_revoked_b(w: &mut Tenancy) {
+    let b = w.named["B"].clone();
+    w.revoke(&w.key(), b).await;
+    assert_eq!(w.outcome, Some(Ok(())));
+}
+
+#[given("two hours pass")]
+fn two_hours_pass(w: &mut Tenancy) {
+    let later = w.now().as_millis() + 2 * HOUR;
+    w.clock.set(Timestamp::from_millis(later));
+}
+
+#[when("the client lists keys")]
+async fn client_lists_keys(w: &mut Tenancy) {
+    let page = w
+        .engine()
+        .list_keys(&w.key(), ListKeysRequest::default())
+        .await;
+    w.pages.push(page.expect("the client lists keys"));
+}
+
+#[then(r#"A is "active", B is "revoked" and C is "expired""#)]
+fn statuses(w: &mut Tenancy) {
+    let status = |name: &str| {
+        let keys = &w.pages[0].keys;
+        let key = keys.iter().find(|k| k.key_id.to_string() == w.named[name]);
+        key.expect("listed").status
+    };
+    assert_eq!(
+        (status("A"), status("B"), status("C")),
+        (KeyStatus::Active, KeyStatus::Revoked, KeyStatus::Expired)
+    );
+}
+
+#[then("no listed key holds a secret")]
+fn no_listed_secret(w: &mut Tenancy) {
+    // `KeyInfo` has no field for one; nor does any text a listing prints.
+    let shown = format!("{:?}", w.pages);
+    let bootstrap = &w.bootstrap_key.as_deref().unwrap()[41..];
+    assert_eq!(w.secrets.len(), 3);
+    for secret in w.secrets.iter().map(String::as_str).chain([bootstrap]) {
+        assert!(!shown.contains(secret), "{shown}");
+    }
 }
 
 /// Runs the registered tenancy scenarios. True if any failed or one did not run.

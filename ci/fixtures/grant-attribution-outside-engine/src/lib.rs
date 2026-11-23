@@ -13,6 +13,7 @@ pub fn forges_a_key_attribution(id: KeyId, env: EnvRef, now: Timestamp) -> Optio
         scopes: Default::default(),
         digest,
         expires_at: None,
+        expiry_recorded: false,
         revoked_at: None,
     };
     Some(verify(&parts, Some(&record), &env, now).ok()?.submit_as())

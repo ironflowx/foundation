@@ -7,7 +7,7 @@ use ironflowx_authz::{KeyRecord, mint, parse, verify};
 use ironflowx_cell::ManualClock;
 use ironflowx_core::{Clock, EnvRef, ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
-use ironflowx_proto::{Call, OpError, WhoamiRequest};
+use ironflowx_proto::{Call, CreateKeyRequest, OpError, RevokeKeyRequest, WhoamiRequest};
 
 fn clock() -> ManualClock {
     ManualClock::new(Timestamp::from_millis(1_800_000_000_000))
@@ -86,6 +86,76 @@ async fn every_bad_key_is_refused_and_only_a_malformed_one_hints() {
     other.engine.close().await;
 }
 
+/// The five kinds of bad key get one answer, byte for byte, and the same one when recording an
+/// expiry fails; a wrong-secret or revoked key that has also expired is no different (TEN-7).
+#[tokio::test]
+async fn the_five_refusals_are_one_answer_whether_or_not_an_expiry_is_recorded() {
+    const HOUR: i64 = 3_600_000;
+    let (dir, other_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let clock = clock();
+    let t = clock.now().as_millis();
+    let opened = Engine::open(dir.path(), clock.clone()).await.unwrap();
+    let other = Engine::open(other_dir.path(), clock.clone()).await.unwrap();
+    let engine = &opened.engine;
+    let admin = key(opened.minted.as_ref().unwrap().expose());
+    let mut made = Vec::new();
+    for _ in 0..4 {
+        let req = CreateKeyRequest {
+            expires_at: Some(Timestamp::from_millis(t + HOUR)),
+            ..CreateKeyRequest::default()
+        };
+        made.push(engine.create_key(&admin, req).await.unwrap());
+    }
+    let revoke = async |id: String| {
+        let req = RevokeKeyRequest { key_id: id };
+        engine.revoke_key(&admin, req).await.unwrap();
+    };
+    revoke(made[2].info.key_id.to_string()).await;
+    let wrong = mint(made[3].info.key_id, [2; 32]).0;
+    let unknown = mint(
+        "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f".parse().unwrap(),
+        [1; 32],
+    )
+    .0;
+    let recorded = || -> i64 {
+        let db = rusqlite::Connection::open(dir.path().join("control.db")).unwrap();
+        let sql = "SELECT count(*) FROM keys WHERE expiry_recorded";
+        db.query_row(sql, [], |r| r.get(0)).unwrap()
+    };
+    let expected = OpError {
+        kind: ErrorKind::Unauthenticated,
+        message: "invalid API key".into(),
+        hint: None,
+    };
+
+    clock.set(Timestamp::from_millis(t + HOUR));
+    let bad = [
+        ("expired", made[0].key.expose()),
+        ("unknown", unknown.expose()),
+        ("wrong secret", wrong.expose()),
+        ("revoked", made[2].key.expose()),
+        ("foreign", other.minted.as_ref().unwrap().expose()),
+    ];
+    let db = rusqlite::Connection::open(dir.path().join("control.db")).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER fail BEFORE UPDATE ON keys BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    )
+    .unwrap();
+    for (case, text) in bad {
+        let got = refusal(engine, &key(text)).await;
+        assert_eq!(got, expected, "{case}, recording failing");
+    }
+    assert_eq!(recorded(), 0, "the recording did fail");
+    db.execute_batch("DROP TRIGGER fail").unwrap();
+    // The expired key twice: newly expired, then recorded.
+    for (case, text) in bad.into_iter().chain([bad[0]]) {
+        assert_eq!(refusal(engine, &key(text)).await, expected, "{case}");
+    }
+    assert_eq!(recorded(), 1, "the expired key alone");
+    opened.engine.close().await;
+    other.engine.close().await;
+}
+
 #[tokio::test]
 async fn a_key_row_of_another_environment_or_incarnation_is_refused_by_lookup_and_verify() {
     let dir = tempfile::tempdir().unwrap();
@@ -136,6 +206,7 @@ async fn a_key_row_of_another_environment_or_incarnation_is_refused_by_lookup_an
             scopes: BTreeSet::from([Scope::Admin]),
             digest: parts.digest.clone(),
             expires_at: None,
+            expiry_recorded: false,
             revoked_at: None,
         };
         let verified = verify(&parts, Some(&record), &engine_env, clock().now());

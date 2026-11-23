@@ -25,7 +25,7 @@ fn scopes_have_one_text_form_each() {
 }
 
 #[test]
-fn only_unavailable_and_unknown_are_retryable_so_far() {
+fn only_unavailable_unknown_and_exhausted_are_retryable() {
     for (kind, retryable) in [
         (ErrorKind::Invalid, false),
         (ErrorKind::NotFound, false),
@@ -33,6 +33,7 @@ fn only_unavailable_and_unknown_are_retryable_so_far() {
         (ErrorKind::PermissionDenied, false),
         (ErrorKind::Unavailable, true),
         (ErrorKind::Unknown, true),
+        (ErrorKind::ResourceExhausted, true),
     ] {
         assert_eq!(kind.retryable(), retryable, "{kind:?}");
     }
