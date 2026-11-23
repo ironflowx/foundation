@@ -35,7 +35,7 @@ Any key holding the `admin` scope.
 The admin key bootstrap makes, holding all three scopes: the seed if one is given, else a minted key.
 
 **Seed**:
-A key the host supplies: bootstrap uses it instead of minting one, and a later open can rotate to it.
+A key the host supplies: bootstrap uses it instead of minting one, and an open after it can rotate to it.
 
 **Scope**:
 What a key may do: `read`, `write`, `admin`. A set, not a ladder.

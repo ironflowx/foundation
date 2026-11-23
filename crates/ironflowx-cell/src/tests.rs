@@ -258,6 +258,9 @@ async fn a_log_without_a_genesis_record_is_refused() {
     }
     let err = Ledger::open(dir.path(), env, clock()).await.err();
     assert!(matches!(err, Some(OpenError::Corrupt)), "{err:?}");
+    // To an open that asks for a ledger already there, one without its genesis record is not it.
+    let err = Ledger::open_existing_blocking(dir.path(), env, clock()).err();
+    assert!(matches!(err, Some(OpenError::Missing)), "{err:?}");
 }
 
 #[tokio::test]
@@ -919,4 +922,82 @@ async fn a_format_1_directory_is_refused_as_another_format() {
     }
     let err = Ledger::open(dir.path(), env, clock()).await.err();
     assert!(matches!(err, Some(OpenError::Format)), "{err:?}");
+}
+
+/// Every file under `dir` with its bytes, and every directory.
+fn contents(dir: &Path) -> Vec<(std::path::PathBuf, Option<Vec<u8>>)> {
+    let read = |p: &Path| p.is_file().then(|| std::fs::read(p).unwrap());
+    let whole = |p: std::path::PathBuf| (p.clone(), read(&dir.join(&p)));
+    listing(dir).into_iter().map(whole).collect()
+}
+
+/// Opening an existing ledger refuses a directory that holds none, whatever else it holds, and
+/// creates nothing in it: the records are lost, and a fresh ledger would hide that (TEN-12).
+#[tokio::test]
+async fn opening_an_existing_ledger_refuses_a_missing_one_and_changes_nothing() {
+    type Loss = (&'static str, fn(&Path));
+    let losses: [Loss; 7] = [
+        ("the directory", |d| std::fs::remove_dir_all(d).unwrap()),
+        ("its contents", |d| {
+            std::fs::remove_dir_all(d).unwrap();
+            std::fs::create_dir(d).unwrap();
+        }),
+        ("the log, the read store kept", |d| {
+            std::fs::remove_dir_all(d.join("log")).unwrap();
+        }),
+        ("the log's contents", |d| {
+            std::fs::remove_dir_all(d.join("log")).unwrap();
+            std::fs::create_dir(d.join("log")).unwrap();
+        }),
+        ("the log's segments", |d| {
+            std::fs::remove_file(segment(d)).unwrap();
+        }),
+        ("the log's segments, files the log ignores left", |d| {
+            std::fs::remove_file(segment(d)).unwrap();
+            let names = [
+                "notes.seg",
+                "0.seg",
+                "0000000000000000000a.seg",
+                "00000000000000000000.bak",
+            ];
+            for name in names {
+                std::fs::write(d.join("log").join(name), "").unwrap();
+            }
+        }),
+        ("every record, the genesis record too", |d| {
+            std::fs::remove_dir_all(d.join("log")).unwrap();
+            drop(SegmentLog::open(d.join("log"), Options::default()).unwrap());
+        }),
+    ];
+    for (lost, lose) in losses {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("ledger");
+        let env = new_env_ref();
+        two_events(&dir, env).await;
+        lose(&dir);
+        let before = contents(root.path());
+        let err = Ledger::open_existing_blocking(&dir, env, clock()).err();
+        assert!(matches!(err, Some(OpenError::Missing)), "{lost}: {err:?}");
+        assert_eq!(contents(root.path()), before, "{lost}");
+    }
+}
+
+/// An existing ledger opens with its records, and is refused as `open` refuses it.
+#[tokio::test]
+async fn opening_an_existing_ledger_opens_or_refuses_it_as_open_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    two_events(dir.path(), env).await;
+    let ledger = Ledger::open_existing_blocking(dir.path(), env, clock()).unwrap();
+    assert_eq!(names(&ledger).await, ["b", "a"]);
+    let err = Ledger::open_existing_blocking(dir.path(), env, clock()).err();
+    assert!(matches!(err, Some(OpenError::Locked)), "{err:?}");
+    ledger.close().await;
+    let before = contents(dir.path());
+    let err = Ledger::open_existing_blocking(dir.path(), new_env_ref(), clock()).err();
+    assert!(matches!(err, Some(OpenError::WrongIncarnation)), "{err:?}");
+    assert_eq!(contents(dir.path()), before, "another incarnation");
+    std::fs::remove_file(dir.path().join("read.db")).unwrap();
+    let ledger = Ledger::open_existing_blocking(dir.path(), env, clock()).unwrap();
+    assert_eq!(names(&ledger).await, ["b", "a"]);
 }

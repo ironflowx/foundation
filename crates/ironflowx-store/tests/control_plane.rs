@@ -7,7 +7,9 @@ use ironflowx_authz::{KeyParts, KeyRecord, SeedState, mint};
 use ironflowx_core::{Clock, EnvRef, KeyId, KeyOrigin, ProjectId, Scope, TenantId, Timestamp};
 use rusqlite::types::Value;
 
-use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, KeyChangeError, NewKey, SeedError};
+use ironflowx_store::{
+    Bootstrap, BootstrapState, ControlPlane, KeyChangeError, NewKey, SeedError, StoreError,
+};
 
 const T: i64 = 1_800_000_000_000;
 
@@ -696,12 +698,23 @@ fn a_seed_whose_key_id_is_another_key_is_a_conflict() {
         assert_eq!(whole_rows(dir.path()), before, "{case}");
         assert_eq!(ironflowx_authz::ct_eq_calls() - calls, compared, "{case}");
         assert_eq!(current_seeds(&cp), [a.id], "{case}");
+        let calls = ironflowx_authz::ct_eq_calls();
+        let got = ControlPlane::check_seed(&path(dir.path()), &env(1), s);
+        assert!(matches!(got, Err(SeedError::Conflict)), "{case}: {got:?}");
+        assert_eq!(ironflowx_authz::ct_eq_calls() - calls, compared, "{case}");
+        assert_eq!(whole_rows(dir.path()), before, "{case}");
     };
     conflicts(&seed(116, 2), 1, "the current seed's ID, another secret");
     conflicts(&seed(117, 2), 1, "a revoked seed's ID, another secret");
     conflicts(&made_parts, 1, "a created key's own text");
     conflicts(&seed(115, 9), 1, "a created key's ID, another secret");
     conflicts(&minted, 1, "the minted key's own text");
+    // A seed that would apply is no conflict, and checking it applies nothing.
+    let before = whole_rows(dir.path());
+    for fine in [&a, &old, &seed(118, 1)] {
+        ControlPlane::check_seed(&path(dir.path()), &env(1), fine).expect("no conflict");
+    }
+    assert_eq!(whole_rows(dir.path()), before);
 
     let db = rusqlite::Connection::open(path(dir.path())).unwrap();
     let set = |origin: &str, token: &str| {
@@ -834,7 +847,285 @@ fn a_seed_for_an_environment_the_file_does_not_hold_is_not_applied() {
         for s in [&a, &seed(161, 1)] {
             let got = cp.apply_seed(&elsewhere, s, &Fixed(T + 1));
             assert!(matches!(got, Err(SeedError::Store(_))), "{got:?}");
+            let got = ControlPlane::check_seed(&path(dir.path()), &elsewhere, s);
+            assert!(matches!(got, Err(SeedError::Store(_))), "{got:?}");
             assert_eq!(whole_rows(dir.path()), before, "{elsewhere}");
         }
     }
+}
+
+/// Every row of every table but `meta`, as text.
+fn everything(dir: &Path) -> Vec<String> {
+    let db = rusqlite::Connection::open(path(dir)).unwrap();
+    let mut out = Vec::new();
+    for table in ["tenants", "projects", "environments", "keys"] {
+        let mut stmt = db.prepare(&format!("SELECT * FROM {table}")).unwrap();
+        let columns = stmt.column_count();
+        let rows = stmt.query_map([], |r| {
+            let row: Result<Vec<Value>, _> = (0..columns).map(|c| r.get(c)).collect();
+            Ok(format!("{table} {:?}", row?))
+        });
+        out.extend(rows.unwrap().map(Result::unwrap));
+    }
+    out
+}
+
+/// When `env(1)` was marked, if it was.
+fn marked_at(dir: &Path) -> Option<i64> {
+    let db = rusqlite::Connection::open(path(dir)).unwrap();
+    let sql = "SELECT ledger_created_at FROM environments";
+    db.query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
+/// `env(1)`'s ID with another incarnation token.
+fn other_token() -> EnvRef {
+    format!("{}.{:032x}", env(1).id(), 8).parse().unwrap()
+}
+
+/// Undoing deletes all the bootstrap made, so the file bootstraps again; not once it is marked,
+/// and nothing for an environment or an incarnation the file does not hold (D41).
+#[test]
+fn an_undo_deletes_an_unmarked_bootstrap_and_nothing_else() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    cp.undo_bootstrap(&env(1)).expect("nothing to undo");
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    let before = everything(dir.path());
+    assert_eq!(before.len(), 4);
+    for elsewhere in [env(2), other_token()] {
+        cp.undo_bootstrap(&elsewhere).expect("nothing to undo");
+        assert_eq!(everything(dir.path()), before, "{elsewhere}");
+    }
+    cp.undo_bootstrap(&env(1)).unwrap();
+    assert_eq!(everything(dir.path()), [""; 0]);
+    let state = ControlPlane::bootstrap_state(&path(dir.path())).unwrap();
+    assert_eq!(state, BootstrapState::Unbootstrapped);
+
+    cp.ensure_bootstrap(&bootstrap(env(1), 1).0, &Fixed(T))
+        .expect("bootstraps again");
+    cp.mark_ledger_created(&env(1), &Fixed(T)).unwrap();
+    let before = everything(dir.path());
+    cp.undo_bootstrap(&env(1)).expect_err("marked");
+    assert_eq!(everything(dir.path()), before);
+}
+
+/// The undo is one transaction: failing at its last delete, it deletes nothing (TEN-11).
+#[test]
+fn an_undo_that_fails_deletes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    let before = everything(dir.path());
+    let db = rusqlite::Connection::open(path(dir.path())).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER fail BEFORE DELETE ON tenants BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    )
+    .unwrap();
+    cp.undo_bootstrap(&env(1)).expect_err("injected");
+    assert_eq!(everything(dir.path()), before);
+}
+
+/// Finishing marks the bootstrap and, with a minted key, revokes it and stores its replacement,
+/// if there is one; a seeded bootstrap keeps its seed and stores no replacement (D41).
+#[test]
+fn finishing_revokes_a_minted_key_and_replaces_it_but_keeps_a_seed() {
+    let replacement = seed(170, 1);
+    for (by_seed, replace) in [(false, true), (false, false), (true, true), (true, false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = ControlPlane::open(&path(dir.path())).unwrap();
+        let (b, first) = bootstrap(env(1), 0);
+        let b = Bootstrap { by_seed, ..b };
+        cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
+        let mut expected = whole_rows(dir.path());
+        let given = replace.then_some(&replacement);
+        let lost = cp.finish_bootstrap(&env(1), given, &Fixed(T + 1)).unwrap();
+        assert_eq!(lost, !by_seed);
+        if lost {
+            let old = expected.get_mut(&first.id.to_string()).unwrap();
+            old.insert("revoked_at".into(), Value::Integer(T + 1));
+        }
+        if lost && replace {
+            let mut row = seed_row(&replacement, 2, T + 1);
+            row.insert("origin".into(), Value::Text("minted".into()));
+            expected.insert(replacement.id.to_string(), row);
+        }
+        assert_eq!(whole_rows(dir.path()), expected, "{by_seed} {replace}");
+        assert_eq!(marked_at(dir.path()), Some(T + 1));
+    }
+}
+
+/// Marking, or finishing, happens once, and only for the file's own environment: a finished
+/// bootstrap's minted key is in use, and finishing again would revoke it.
+#[test]
+fn a_bootstrap_is_marked_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    let refused = |env: &EnvRef, case: &str| {
+        let before = everything(dir.path());
+        let replacement = seed(171, 1);
+        cp.mark_ledger_created(env, &Fixed(T + 2)).expect_err(case);
+        cp.finish_bootstrap(env, Some(&replacement), &Fixed(T + 2))
+            .expect_err(case);
+        assert_eq!(everything(dir.path()), before, "{case}");
+    };
+    refused(&env(2), "another environment");
+    refused(&other_token(), "another incarnation");
+    cp.mark_ledger_created(&env(1), &Fixed(T + 1)).unwrap();
+    assert_eq!(marked_at(dir.path()), Some(T + 1));
+    refused(&env(1), "marked");
+}
+
+/// Finishing is one transaction: if the replacement cannot be stored, or the mark cannot, nothing
+/// is revoked or marked (TEN-11).
+#[test]
+fn a_finish_that_fails_changes_nothing() {
+    for point in ["INSERT ON keys", "UPDATE ON environments", "UPDATE ON keys"] {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = ControlPlane::open(&path(dir.path())).unwrap();
+        cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+            .unwrap();
+        let before = everything(dir.path());
+        let db = rusqlite::Connection::open(path(dir.path())).unwrap();
+        db.execute_batch(&format!(
+            "CREATE TRIGGER fail BEFORE {point} BEGIN SELECT RAISE(ABORT, 'injected'); END;"
+        ))
+        .unwrap();
+        let replacement = seed(172, 1);
+        cp.finish_bootstrap(&env(1), Some(&replacement), &Fixed(T + 1))
+            .expect_err(point);
+        assert_eq!(everything(dir.path()), before, "{point}");
+    }
+}
+
+/// A finish revokes the minted key only: a key some other way of making one stored stays.
+#[test]
+fn finishing_revokes_no_key_of_another_origin_or_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    let (b, minted) = bootstrap(env(1), 0);
+    cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
+    let db = rusqlite::Connection::open(path(dir.path())).unwrap();
+    db.pragma_update(None, "foreign_keys", false).unwrap();
+    for (n, origin, at) in [
+        (173, "seed", env(1)),
+        (174, "created", env(1)),
+        (175, "recovered", env(1)),
+        (176, "minted", env(2)),
+        (177, "minted", other_token()),
+    ] {
+        let new = new_key(n, &[Scope::Admin], None, None);
+        let id = new.id.to_string();
+        cp.insert_key(&env(1), new, minted.id, &Fixed(T), CAP)
+            .unwrap();
+        db.execute(
+            "UPDATE keys SET origin = ?1, environment_id = ?2, environment_token = ?3 \
+             WHERE id = ?4",
+            [origin, &at.id().to_string(), &at.token().to_string(), &id],
+        )
+        .unwrap();
+    }
+    assert!(cp.finish_bootstrap(&env(1), None, &Fixed(T + 1)).unwrap());
+    let revoked: Vec<_> = whole_rows(dir.path())
+        .into_iter()
+        .filter(|(_, row)| row["revoked_at"] != Value::Null)
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(revoked, [minted.id.to_string()]);
+}
+
+/// Marking and finishing take the write lock before they read the clock (TEN-11).
+#[test]
+fn a_mark_is_made_at_a_now_read_after_the_write_lock() {
+    struct Told(std::sync::mpsc::Sender<()>);
+    impl Clock for Told {
+        fn now(&self) -> Timestamp {
+            let _ = self.0.send(());
+            Timestamp::from_millis(T)
+        }
+    }
+    for finishing in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = ControlPlane::open(&path(dir.path())).unwrap();
+        cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+            .unwrap();
+        let db = rusqlite::Connection::open(path(dir.path())).unwrap();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let (tell, told) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            let marked = s.spawn(move || {
+                if finishing {
+                    cp.finish_bootstrap(&env(1), None, &Told(tell)).map(drop)
+                } else {
+                    cp.mark_ledger_created(&env(1), &Told(tell))
+                }
+            });
+            // One-sided: with the lock held, a reading can only come from the defect.
+            let early = told.recv_timeout(std::time::Duration::from_millis(200));
+            db.execute_batch("COMMIT").unwrap();
+            assert!(early.is_err(), "the clock was read before the lock");
+            marked.join().unwrap().unwrap();
+            told.recv().expect("read once the lock is free");
+        });
+    }
+}
+
+/// A file in another format is refused as that; one that is not a control plane is refused and
+/// left as it is, not given a schema; one with nothing in it is not bootstrapped yet.
+#[test]
+fn a_file_is_opened_only_if_it_is_this_formats_control_plane_or_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = path(dir.path());
+    let refused = |case: &str, format: bool| {
+        let before = std::fs::read(&path).unwrap();
+        let read = ControlPlane::bootstrap_state(&path).expect_err(case);
+        let opened = ControlPlane::open(&path).err().expect(case);
+        for err in [read, opened] {
+            assert_eq!(matches!(err, StoreError::Format), format, "{case}: {err}");
+        }
+        assert!(std::fs::read(&path).unwrap() == before, "{case}");
+    };
+    for format in ["0", "2", "-1", "65537", "4294967297"] {
+        drop(ControlPlane::open(&path).unwrap());
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(&format!("UPDATE meta SET format = {format}"))
+            .unwrap();
+        drop(db);
+        refused(format, true);
+        std::fs::remove_file(&path).unwrap();
+    }
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TABLE notes (text TEXT)").unwrap();
+    drop(db);
+    refused("another program's file", false);
+    std::fs::write(&path, "not a database at all").unwrap();
+    refused("not a database", false);
+
+    std::fs::write(&path, "").unwrap();
+    assert_eq!(
+        ControlPlane::bootstrap_state(&path).unwrap(),
+        BootstrapState::Unbootstrapped
+    );
+    ControlPlane::open(&path).expect("an empty file takes the schema");
+}
+
+/// Reading the state leaves no file behind (the directory may be one the engine refuses).
+#[test]
+fn reading_the_state_leaves_no_file_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    drop(cp);
+    let before = std::fs::read(path(dir.path())).unwrap();
+    ControlPlane::bootstrap_state(&path(dir.path())).unwrap();
+    let names: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["control.db"]);
+    assert!(std::fs::read(path(dir.path())).unwrap() == before);
 }

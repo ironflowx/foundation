@@ -1,9 +1,10 @@
-//! `Engine::open`: lock the root, then a bootstrapping or a later open (architecture.md, "Open"
-//! and "Bootstrap").
+//! `Engine::open`: check and lock the root, then a bootstrapping, a finishing or a later open
+//! (architecture.md, "Engine open").
 
 use std::fmt;
 use std::fs::File;
-use std::path::Path;
+use std::io::ErrorKind::NotFound;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ironflowx_authz::{KeyDigest, KeyParts, Malformed, SeedConflict, SeedState, mint, parse};
@@ -18,8 +19,17 @@ use crate::{Engine, Opened};
 pub enum EngineError {
     /// The seed is not in the key format. Its message names the format, never the seed.
     MalformedSeed,
+    /// The directory holds a ledger, not an engine.
+    NotAnEngineRoot,
     /// Another engine holds the root.
     Locked,
+    /// The control plane is in another format version.
+    Format,
+    /// A ledger without its control plane: the control plane was lost.
+    Orphaned,
+    /// The control plane without its environment's ledger: the ledger was lost, emptied, or holds
+    /// no genesis record.
+    LedgerMissing,
     /// The seed's key ID is already a key, and not this seed.
     SeedConflict,
     Ledger(OpenError),
@@ -31,7 +41,11 @@ impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MalformedSeed => write!(f, "malformed seed: {Malformed}"),
+            Self::NotAnEngineRoot => f.write_str("the directory holds a ledger, not an engine"),
             Self::Locked => f.write_str("the engine root is in use"),
+            Self::Format => f.write_str("the control plane is in another format version"),
+            Self::Orphaned => f.write_str("the control plane is missing, and a ledger is not"),
+            Self::LedgerMissing => f.write_str("the environment's ledger is missing"),
             Self::SeedConflict => SeedConflict.fmt(f),
             Self::Ledger(e) => write!(f, "ledger: {e}"),
             Self::Store(e) => e.fmt(f),
@@ -50,7 +64,10 @@ impl From<std::io::Error> for EngineError {
 
 impl From<StoreError> for EngineError {
     fn from(e: StoreError) -> Self {
-        Self::Store(e)
+        match e {
+            StoreError::Format => Self::Format,
+            e @ StoreError::Failed(_) => Self::Store(e),
+        }
     }
 }
 
@@ -58,14 +75,17 @@ impl From<SeedError> for EngineError {
     fn from(e: SeedError) -> Self {
         match e {
             SeedError::Conflict => Self::SeedConflict,
-            SeedError::Store(e) => Self::Store(e),
+            SeedError::Store(e) => e.into(),
         }
     }
 }
 
 impl From<OpenError> for EngineError {
     fn from(e: OpenError) -> Self {
-        Self::Ledger(e)
+        match e {
+            OpenError::Missing => Self::LedgerMissing,
+            e => Self::Ledger(e),
+        }
     }
 }
 
@@ -78,34 +98,99 @@ async fn blocking<T: Send + 'static>(
         .expect("open's blocking steps do not panic")
 }
 
-/// Runs a step of an open off the runtime. The step holds the root's lock itself, since it
-/// outlives an open that is cancelled: no later open runs beside it.
-async fn locked<T: Send + 'static>(
-    lock: &Arc<File>,
-    step: impl FnOnce() -> Result<T, EngineError> + Send + 'static,
-) -> Result<T, EngineError> {
-    let lock = lock.clone();
-    blocking(move || {
-        let done = step();
-        drop(lock);
-        done
-    })
-    .await
+/// A locked engine root.
+struct Root {
+    dir: PathBuf,
+    lock: Arc<File>,
+}
+
+impl Root {
+    /// Runs a step of an open off the runtime. The step holds the root's lock itself, since it
+    /// outlives an open that is cancelled: no later open runs beside it.
+    async fn step<T: Send + 'static>(
+        &self,
+        step: impl FnOnce() -> Result<T, EngineError> + Send + 'static,
+    ) -> Result<T, EngineError> {
+        let lock = self.lock.clone();
+        // With what it made: a cancelled open's ledger closes before the lock goes.
+        let (made, _lock) = blocking(move || Ok((step()?, lock))).await?;
+        Ok(made)
+    }
+
+    /// Opens the control plane for writing.
+    async fn control(&self) -> Result<Arc<ControlPlane>, EngineError> {
+        let path = self.dir.join("control.db");
+        self.step(move || Ok(Arc::new(ControlPlane::open(&path)?)))
+            .await
+    }
+
+    /// Opens the control plane of a bootstrapped root for writing, unless `seed` conflicts with a
+    /// key in it: then nothing is written to it, not even a WAL that a crash left (D33).
+    async fn control_for(
+        &self,
+        env: EnvRef,
+        seed: Option<KeyParts>,
+    ) -> Result<Arc<ControlPlane>, EngineError> {
+        if let Some(seed) = seed {
+            let path = self.dir.join("control.db");
+            self.step(move || Ok(ControlPlane::check_seed(&path, &env, &seed)?))
+                .await?;
+        }
+        self.control().await
+    }
+
+    /// Opens `env`'s ledger at its final name if anything is there, else builds it in staging and
+    /// renames it into place first (D40).
+    async fn create_ledger(
+        &self,
+        env: EnvRef,
+        clock: impl Clock + Clone + Send + 'static,
+    ) -> Result<Ledger, EngineError> {
+        let (staging, target) = (staging(&self.dir), ledger_dir(&self.dir, env));
+        let ledgers = self.dir.join("ledgers");
+        self.step(move || {
+            if !target.try_exists()? {
+                drop(Ledger::open_blocking(&staging, env, clock.clone())?);
+                std::fs::rename(&staging, &target)?;
+            }
+            // Also for a rename an earlier open died after: the mark must not outlive it.
+            File::open(&ledgers)?.sync_all()?;
+            Ok(Ledger::open_blocking(&target, env, clock)?)
+        })
+        .await
+    }
+}
+
+/// What an open of any kind makes.
+struct Made {
+    env: EnvRef,
+    ledger: Ledger,
+    control: Arc<ControlPlane>,
+    minted: Option<Secret>,
+    lost_secret: bool,
+    seed: Option<SeedState>,
 }
 
 impl Engine {
     /// Opens the data directory `root`, creating and bootstrapping it on the first open. `seed`
     /// is a key the host supplies: the first open makes it the bootstrap key, and returns the
     /// secret of the one it mints when there is none (`Opened::minted`); a later open applies it
-    /// once the ledger is open, rotating to it if its key ID is new (D33).
+    /// once the ledger is open, rotating to it if its key ID is new (D33). An open that finds a
+    /// bootstrap an earlier one did not finish finishes it: a minted key whose secret that one
+    /// never returned is revoked (`Opened::lost_secret`), and replaced if there is no seed.
     ///
     /// # Errors
     ///
-    /// `MalformedSeed` before anything is read; `Locked` if another engine holds `root`;
-    /// `SeedConflict` if the seed's key ID is already another key; a store, ledger or I/O
-    /// failure otherwise. A failed later open changes no seed; a first open that fails before its
-    /// bootstrap is marked can leave it, seed included, and later opens refuse it. A cancelled
-    /// open may still finish the write it was in: `root` stays locked until that write ends.
+    /// `MalformedSeed` before anything is read. `NotAnEngineRoot`, `Locked`, `Format` and
+    /// `Orphaned` change nothing but the lock file and a leftover staging directory, nor does
+    /// `LedgerMissing`, but for what a log that has a segment recovers as it opens. `SeedConflict`
+    /// if the seed's key ID is already another key, with no key changed; a store, ledger or I/O
+    /// failure otherwise.
+    ///
+    /// An open that fails while it bootstraps undoes it, unless its ledger is already in place:
+    /// the next open then finishes it. No other open undoes anything, and one that fails changes
+    /// no seed. A cancelled open may still finish the step it was in, and undoes nothing: `root`
+    /// stays locked until that step ends.
     ///
     /// # Panics
     ///
@@ -121,77 +206,43 @@ impl Engine {
             Some(Ok(parts)) => Some(parts),
             None => None,
         };
-        let root = root.to_owned();
-        let control_path = root.join("control.db");
-        let (lock, state) = {
-            let (root, control_path) = (root.clone(), control_path.clone());
-            blocking(move || {
-                let lock = lock_root(&root)?;
-                let state = ControlPlane::bootstrap_state(&control_path)?;
-                // A staging directory never holds anything acknowledged.
-                match std::fs::remove_dir_all(staging(&root)) {
-                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-                    _ => {}
-                }
-                Ok((Arc::new(lock), state))
-            })
-            .await?
-        };
-        let control = {
-            let path = control_path.clone();
-            Arc::new(locked(&lock, move || Ok(ControlPlane::open(&path)?)).await?)
-        };
-        let engine_clock = Arc::new(clock.clone());
-        let (env, ledger, minted, seed) = match state {
+        let dir = root.to_owned();
+        let (root, state) = blocking(move || {
+            refuse_bare_ledger(&dir)?;
+            let lock = Arc::new(lock_root(&dir)?);
+            let state = classify(&dir)?;
+            Ok((Root { dir, lock }, state))
+        })
+        .await?;
+        let made = match state {
             BootstrapState::NoFile | BootstrapState::Unbootstrapped => {
-                // The seed is the bootstrap key, so there is nothing to apply.
-                let state = seed.as_ref().map(|_| SeedState::Current);
-                let (env, ledger, secret) = bootstrap(&root, &lock, &control, clock, seed).await?;
-                (env, ledger, secret, state)
+                bootstrap(&root, clock.clone(), seed).await?
             }
-            BootstrapState::Marked { env } => {
-                let ledger = Ledger::open(&ledger_dir(&root, env), env, clock.clone()).await?;
-                let state = apply_seed(&control, &lock, env, seed, clock).await?;
-                (env, ledger, None, state)
-            }
-            // Finishing an earlier open's bootstrap is not built yet: refuse, changing nothing.
-            // shortcut: refuses until finishing opens exist; upgrade with them.
-            BootstrapState::Unmarked { .. } => {
-                return Err(EngineError::Io(std::io::Error::other(
-                    "an earlier open did not finish the bootstrap",
-                )));
-            }
+            BootstrapState::Unmarked { env } => finish(&root, env, clock.clone(), seed).await?,
+            BootstrapState::Marked { env } => reopen(&root, env, clock.clone(), seed).await?,
         };
         Ok(Opened {
             engine: Engine {
-                ledger,
-                control,
-                env,
-                clock: engine_clock,
-                _lock: lock,
+                ledger: made.ledger,
+                control: made.control,
+                env: made.env,
+                clock: Arc::new(clock),
+                _lock: root.lock,
             },
-            minted,
-            seed,
+            minted: made.minted,
+            lost_secret: made.lost_secret,
+            seed: made.seed,
         })
     }
 }
 
-/// Applies the seed of a later open, if it was given one.
-async fn apply_seed(
-    control: &Arc<ControlPlane>,
-    lock: &Arc<File>,
-    env: EnvRef,
-    seed: Option<KeyParts>,
-    clock: impl Clock + Send + 'static,
-) -> Result<Option<SeedState>, EngineError> {
-    let Some(seed) = seed else {
-        return Ok(None);
-    };
-    let control = control.clone();
-    locked(lock, move || {
-        Ok(Some(control.apply_seed(&env, &seed, &clock)?))
-    })
-    .await
+/// Refuses a ledger's own directory before anything is created in it (D32).
+fn refuse_bare_ledger(root: &Path) -> Result<(), EngineError> {
+    match std::fs::metadata(root.join("log")) {
+        Ok(log) if log.is_dir() => Err(EngineError::NotAnEngineRoot),
+        Err(e) if e.kind() != NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
 }
 
 fn lock_root(root: &Path) -> Result<File, EngineError> {
@@ -210,11 +261,44 @@ fn lock_root(root: &Path) -> Result<File, EngineError> {
     Ok(lock)
 }
 
-fn staging(root: &Path) -> std::path::PathBuf {
+/// Reads which kind of open this is, deleting a leftover staging directory.
+fn classify(root: &Path) -> Result<BootstrapState, EngineError> {
+    let state = ControlPlane::bootstrap_state(&root.join("control.db"))?;
+    // A staging directory never holds anything acknowledged.
+    match std::fs::remove_dir_all(staging(root)) {
+        Err(e) if e.kind() != NotFound => return Err(e.into()),
+        _ => {}
+    }
+    let unbootstrapped = matches!(
+        state,
+        BootstrapState::NoFile | BootstrapState::Unbootstrapped
+    );
+    if unbootstrapped && holds_ledger(root)? {
+        return Err(EngineError::Orphaned);
+    }
+    Ok(state)
+}
+
+/// Whether `ledgers/` holds anything that could be a ledger: all but plain files, so that a
+/// symbolic link to one counts.
+fn holds_ledger(root: &Path) -> std::io::Result<bool> {
+    let entries = match std::fs::read_dir(root.join("ledgers")) {
+        Err(e) if e.kind() == NotFound => return Ok(false),
+        entries => entries?,
+    };
+    for entry in entries {
+        if !entry?.file_type()?.is_file() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn staging(root: &Path) -> PathBuf {
     root.join("ledgers").join(".staging")
 }
 
-fn ledger_dir(root: &Path, env: EnvRef) -> std::path::PathBuf {
+fn ledger_dir(root: &Path, env: EnvRef) -> PathBuf {
     root.join("ledgers").join(env.id().to_string())
 }
 
@@ -237,57 +321,148 @@ where
         .expect("a UUIDv7 parses")
 }
 
+/// The key an open without a seed mints, and its secret.
+fn minted_key() -> (KeyParts, Secret) {
+    let (id, secret, digest) = new_key();
+    (KeyParts { id, digest }, secret)
+}
+
 /// A bootstrapping open: mint the environment, and its admin key unless it is the seed;
-/// bootstrap the control plane in one transaction; build the ledger aside, rename it into place
-/// and open it; then mark it (D40). The mark is the last fallible step, so no failure after it
-/// can lose the secret.
-// shortcut: a failure before the mark leaves an unmarked bootstrap, which the next open refuses
-// rather than undoing or finishing; upgrade with finishing opens and the undo.
+/// bootstrap the control plane in one transaction; build the ledger; then mark it (D41). The mark
+/// is the last fallible step, so no failure after it can lose the secret. A failure before it
+/// undoes the bootstrap, unless the ledger is already in place.
 async fn bootstrap(
-    root: &Path,
-    lock: &Arc<File>,
-    control: &Arc<ControlPlane>,
+    root: &Root,
     clock: impl Clock + Clone + Send + Sync + 'static,
     seed: Option<KeyParts>,
-) -> Result<(EnvRef, Ledger, Option<Secret>), EngineError> {
+) -> Result<Made, EngineError> {
+    let control = root.control().await?;
     let env = new_env_ref();
-    let by_seed = seed.is_some();
-    let (key, secret) = seed.map_or_else(
-        || {
-            let (id, secret, digest) = new_key();
-            (KeyParts { id, digest }, Some(secret))
-        },
-        |seed| (seed, None),
-    );
+    // The seed is the bootstrap key, so there is nothing to apply.
+    let state = seed.as_ref().map(|_| SeedState::Current);
+    let (key, secret) = match seed {
+        Some(seed) => (seed, None),
+        None => {
+            let (key, secret) = minted_key();
+            (key, Some(secret))
+        }
+    };
     let plan = Bootstrap {
         env,
         tenant: uuid7(),
         project: uuid7(),
         key,
-        by_seed,
+        by_seed: secret.is_none(),
     };
+    match create(root, &control, plan, clock).await {
+        Ok(ledger) => Ok(Made {
+            env,
+            ledger,
+            control,
+            minted: secret,
+            lost_secret: false,
+            seed: state,
+        }),
+        Err(e) => {
+            let dir = root.dir.clone();
+            let undone = root.step(move || {
+                let _ = std::fs::remove_dir_all(staging(&dir));
+                if !ledger_dir(&dir, env).try_exists()? {
+                    control.undo_bootstrap(&env)?;
+                }
+                Ok(())
+            });
+            // What an undo that fails leaves, the next open finishes.
+            let _ = undone.await;
+            Err(e)
+        }
+    }
+}
+
+/// The steps of a bootstrapping open that a failure undoes.
+async fn create(
+    root: &Root,
+    control: &Arc<ControlPlane>,
+    plan: Bootstrap,
+    clock: impl Clock + Clone + Send + Sync + 'static,
+) -> Result<Ledger, EngineError> {
+    let env = plan.env;
     {
         let (control, clock) = (control.clone(), clock.clone());
-        locked(lock, move || Ok(control.ensure_bootstrap(&plan, &clock)?)).await?;
+        root.step(move || Ok(control.ensure_bootstrap(&plan, &clock)?))
+            .await?;
     }
-    let staging = staging(root);
-    Ledger::open(&staging, env, clock.clone())
-        .await?
-        .close()
-        .await;
-    let ledgers = root.join("ledgers");
-    let target = ledger_dir(root, env);
-    {
-        let target = target.clone();
-        locked(lock, move || {
-            std::fs::rename(&staging, &target)?;
-            File::open(&ledgers)?.sync_all()?;
-            Ok(())
-        })
-        .await?;
-    }
-    let ledger = Ledger::open(&target, env, clock.clone()).await?;
+    let ledger = root.create_ledger(env, clock.clone()).await?;
     let control = control.clone();
-    locked(lock, move || Ok(control.mark_ledger_created(&env, &clock)?)).await?;
-    Ok((env, ledger, secret))
+    root.step(move || Ok(control.mark_ledger_created(&env, &clock)?))
+        .await?;
+    Ok(ledger)
+}
+
+/// A finishing open: complete the bootstrap an earlier open left unmarked. It undoes nothing
+/// (D41), and refuses a conflicting seed before it writes (D33).
+async fn finish(
+    root: &Root,
+    env: EnvRef,
+    clock: impl Clock + Clone + Send + Sync + 'static,
+    seed: Option<KeyParts>,
+) -> Result<Made, EngineError> {
+    let ledger = root.create_ledger(env, clock.clone()).await?;
+    let control = root.control_for(env, seed.clone()).await?;
+    let (replacement, secret) = seed.is_none().then(minted_key).unzip();
+    let lost_secret = {
+        let (control, clock) = (control.clone(), clock.clone());
+        root.step(move || Ok(control.finish_bootstrap(&env, replacement.as_ref(), &clock)?))
+            .await?
+    };
+    let seed = apply_seed(root, &control, env, seed, clock).await?;
+    Ok(Made {
+        env,
+        ledger,
+        control,
+        // The replacement was stored only if it replaced a key.
+        minted: secret.filter(|_| lost_secret),
+        lost_secret,
+        seed,
+    })
+}
+
+/// A later open: the bootstrap is finished, so a ledger that is not there was lost.
+async fn reopen(
+    root: &Root,
+    env: EnvRef,
+    clock: impl Clock + Clone + Send + Sync + 'static,
+    seed: Option<KeyParts>,
+) -> Result<Made, EngineError> {
+    let (dir, ledger_clock) = (ledger_dir(&root.dir, env), clock.clone());
+    let ledger = root
+        .step(move || Ok(Ledger::open_existing_blocking(&dir, env, ledger_clock)?))
+        .await?;
+    // After the ledger, so that refusing a lost one does not write to `control.db`.
+    let control = root.control_for(env, seed.clone()).await?;
+    let seed = apply_seed(root, &control, env, seed, clock).await?;
+    Ok(Made {
+        env,
+        ledger,
+        control,
+        minted: None,
+        lost_secret: false,
+        seed,
+    })
+}
+
+/// Applies the seed, if the open was given one.
+async fn apply_seed(
+    root: &Root,
+    control: &Arc<ControlPlane>,
+    env: EnvRef,
+    seed: Option<KeyParts>,
+    clock: impl Clock + Send + 'static,
+) -> Result<Option<SeedState>, EngineError> {
+    let Some(seed) = seed else {
+        return Ok(None);
+    };
+    let control = control.clone();
+    root.step(move || Ok(Some(control.apply_seed(&env, &seed, &clock)?)))
+        .await
 }
