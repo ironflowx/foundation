@@ -8,7 +8,7 @@
 //! reading, and may move on; the other connection then commits, and the change's transaction,
 //! waiting on the lock, starts after it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use ironflowx_core::{Clock, ErrorKind, KeyId, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{Call, CreateKeyRequest, OpError, RevokeKeyRequest};
+use rusqlite::types::Value;
 
 const T: i64 = 1_800_000_000_000;
 const HOUR: i64 = 3_600_000;
@@ -91,18 +92,17 @@ const EVERY: [Meanwhile; 3] = [
     Meanwhile::RevokedAndExpired,
 ];
 
-/// Every key's ID, revoke time, recorded expiry, and other columns as one text, in order.
-fn rows(dir: &Path) -> Vec<(String, Option<i64>, bool, String)> {
+/// Every key row, in order: each column's value by its name.
+fn rows(dir: &Path) -> Vec<BTreeMap<String, Value>> {
     let db = rusqlite::Connection::open(dir.join("control.db")).unwrap();
-    let mut stmt = db
-        .prepare(
-            "SELECT id, revoked_at, expiry_recorded, concat_ws('|', seq, environment_id,
-                environment_token, scopes, hex(digest), origin, created_by, label, expires_at,
-                created_at)
-             FROM keys ORDER BY seq",
-        )
-        .unwrap();
-    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)));
+    let mut stmt = db.prepare("SELECT * FROM keys ORDER BY seq").unwrap();
+    let names: Vec<String> = stmt.column_names().map(str::to_owned).collect();
+    let rows = stmt.query_map([], |r| {
+        names
+            .iter()
+            .map(|n| Ok((n.clone(), r.get(n.as_str())?)))
+            .collect()
+    });
     rows.unwrap().map(Result::unwrap).collect()
 }
 
@@ -122,11 +122,16 @@ async fn assert_refused<F: Future<Output = Result<(), OpError>>>(
     let mut expected = rows(dir);
     let k = expected
         .iter_mut()
-        .find(|(id, ..)| *id == s.k_id.to_string())
+        .find(|row| row["id"] == Value::Text(s.k_id.to_string()))
         .unwrap();
-    assert_eq!((k.1, k.2), (None, false), "K, before");
-    k.1 = revoked.then_some(T);
-    k.2 = !revoked;
+    let before = (&k["revoked_at"], &k["expiry_recorded"]);
+    assert_eq!(before, (&Value::Null, &Value::Integer(0)), "K, before");
+    let (column, value) = if revoked {
+        ("revoked_at", T)
+    } else {
+        ("expiry_recorded", 1)
+    };
+    k.insert(column.into(), Value::Integer(value));
 
     let db = rusqlite::Connection::open(dir.join("control.db")).unwrap();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();

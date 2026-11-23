@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use ironflowx_authz::{KeyParts, mint};
+use ironflowx_authz::{KeyParts, KeyRecord, mint};
 use ironflowx_core::{Clock, EnvRef, KeyId, KeyOrigin, ProjectId, Scope, TenantId, Timestamp};
 use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, KeyChangeError, NewKey};
 
@@ -43,6 +43,11 @@ fn bootstrap(env: EnvRef, n: u8) -> (Bootstrap, KeyParts) {
 
 fn path(dir: &Path) -> std::path::PathBuf {
     dir.join("control.db")
+}
+
+/// The stored key, as admission looks it up.
+fn found(cp: &ControlPlane, id: KeyId, env: &EnvRef) -> Option<KeyRecord> {
+    cp.lookup_key(id, env, &Fixed(T)).unwrap().0
 }
 
 #[test]
@@ -86,10 +91,7 @@ fn the_bootstrap_names_each_parent_and_holds_one_admin_key() {
     assert_eq!(e.project_id, uuid(2).parse::<ProjectId>().unwrap());
     assert_eq!(e.tenant_id, uuid(1).parse::<TenantId>().unwrap());
     assert_eq!(e.created_at, Timestamp::from_millis(T));
-    let record = cp
-        .lookup_key(key.id, &env(1))
-        .unwrap()
-        .expect("the admin key");
+    let record = found(&cp, key.id, &env(1)).expect("the admin key");
     assert_eq!(record.id, key.id);
     assert_eq!(record.env, env(1));
     assert_eq!(
@@ -123,10 +125,10 @@ fn a_key_is_found_only_under_its_own_environment_and_incarnation() {
     let (b, key) = bootstrap(env(1), 0);
     cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
     let other_token: EnvRef = format!("{}.{:032x}", env(1).id(), 8).parse().unwrap();
-    assert!(cp.lookup_key(key.id, &other_token).unwrap().is_none());
-    assert!(cp.lookup_key(key.id, &env(2)).unwrap().is_none());
+    assert!(found(&cp, key.id, &other_token).is_none());
+    assert!(found(&cp, key.id, &env(2)).is_none());
     let unknown: KeyId = uuid(4).parse().unwrap();
-    assert!(cp.lookup_key(unknown, &env(1)).unwrap().is_none());
+    assert!(found(&cp, unknown, &env(1)).is_none());
 }
 
 #[test]
@@ -139,7 +141,7 @@ fn bootstrap_survives_reopen() {
         cp.mark_ledger_created(&env(1), &Fixed(T)).unwrap();
     }
     let cp = ControlPlane::open(&path(dir.path())).unwrap();
-    assert!(cp.lookup_key(key.id, &env(1)).unwrap().is_some());
+    assert!(found(&cp, key.id, &env(1)).is_some());
 }
 
 const HOUR: i64 = 3_600_000;
@@ -171,14 +173,14 @@ fn a_created_key_is_stored_with_its_scopes_expiry_and_label() {
     assert_eq!(row.label.as_deref(), Some("agent-7"));
     assert_eq!(row.created_at, Timestamp::from_millis(T + 5));
     assert_eq!(row.seq, 2, "after the bootstrap key");
-    let found = cp.lookup_key(id, &env(1)).unwrap().expect("the new key");
+    let found = found(&cp, id, &env(1)).expect("the new key");
     assert_eq!(found.scopes, BTreeSet::from([Scope::Read]));
     assert_eq!(found.expires_at, Some(Timestamp::from_millis(T + HOUR)));
     assert!(found.digest.ct_eq(&mint(id, [40; 32]).1));
 }
 
 /// The creator is read again, and each rule checked, inside the transaction at the clock's now:
-/// a creator expired by then, or a request beyond it, changes nothing (TEN-5).
+/// a creator expired by then, or a request beyond it, creates no key (TEN-5).
 #[test]
 fn the_creator_is_checked_inside_the_transaction() {
     let dir = tempfile::tempdir().unwrap();
@@ -234,10 +236,7 @@ fn the_creator_is_checked_inside_the_transaction() {
             ),
             "{case}: {refused:?}"
         );
-        assert!(
-            cp.lookup_key(id, &env(1)).unwrap().is_none(),
-            "{case}: stored"
-        );
+        assert!(found(&cp, id, &env(1)).is_none(), "{case}: stored");
     }
     let fine = new_key(48, &[Scope::Read], Some(T + HOUR), None);
     cp.insert_key(&env(1), fine, creator_id, &Fixed(T + HOUR - 1), CAP)
@@ -307,8 +306,8 @@ fn a_revoke_keeps_the_row_and_checks_the_revoker_inside_the_transaction() {
     cp.insert_key(&env(1), revoker, admin.id, &Fixed(T), CAP)
         .unwrap();
 
-    let revoked_at = |id| cp.lookup_key(id, &env(1)).unwrap().unwrap().revoked_at;
-    // An expired revoker changes nothing.
+    let revoked_at = |id| found(&cp, id, &env(1)).unwrap().revoked_at;
+    // An expired revoker revokes nothing.
     let expiring = new_key(64, &[Scope::Admin], Some(T + HOUR), None);
     let expiring_id = expiring.id;
     cp.insert_key(&env(1), expiring, admin.id, &Fixed(T), CAP)
@@ -378,23 +377,40 @@ fn recording_an_expiry_marks_that_key_only_and_survives_reopen() {
             .unwrap();
     }
     cp.revoke_key(&env(1), ids[1], admin.id, &Fixed(T)).unwrap();
-    let mut expected = marks(&cp);
-    assert!(expected.values().all(|(recorded, _)| !recorded));
+    let mut expected = BTreeMap::from([
+        (admin.id.to_string(), (false, None)),
+        (ids[0].to_string(), (false, None)),
+        (ids[1].to_string(), (false, Some(Timestamp::from_millis(T)))),
+        (ids[2].to_string(), (false, None)),
+    ]);
+    assert_eq!(marks(&cp), expected, "before");
+    let db = rusqlite::Connection::open(path(dir.path())).unwrap();
+    db.execute_batch(
+        "CREATE TABLE writes (id TEXT);
+         CREATE TRIGGER count AFTER UPDATE ON keys BEGIN INSERT INTO writes VALUES (new.id); END;",
+    )
+    .unwrap();
+    let writes = || -> i64 {
+        db.query_row("SELECT count(*) FROM writes", [], |r| r.get(0))
+            .unwrap()
+    };
 
     let other_token: EnvRef = format!("{}.{:032x}", env(1).id(), 8).parse().unwrap();
     cp.record_expiry(&other_token, ids[0]).unwrap();
     cp.record_expiry(&env(2), ids[0]).unwrap();
     cp.record_expiry(&env(1), ids[1]).unwrap();
     assert_eq!(marks(&cp), expected, "foreign or revoked");
+    assert_eq!(writes(), 0, "foreign or revoked");
 
     cp.record_expiry(&env(1), ids[0]).unwrap();
     cp.record_expiry(&env(1), ids[0]).expect("again");
+    assert_eq!(writes(), 1, "once per key (D42)");
     expected.insert(ids[0].to_string(), (true, None));
     assert_eq!(marks(&cp), expected);
     drop(cp);
     let cp = ControlPlane::open(&path(dir.path())).unwrap();
     assert_eq!(marks(&cp), expected, "after a reopen");
-    let found = cp.lookup_key(ids[0], &env(1)).unwrap().unwrap();
+    let found = found(&cp, ids[0], &env(1)).unwrap();
     assert!(found.expiry_recorded, "as admission reads it");
 }
 

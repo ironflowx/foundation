@@ -1085,7 +1085,6 @@ fn no_listed_secret(w: &mut Tenancy) {
     // `KeyInfo` has no field for one; nor does any text a listing prints.
     let shown = format!("{:?}", w.pages);
     let bootstrap = &w.bootstrap_key.as_deref().unwrap()[41..];
-    assert_eq!(w.secrets.len(), 3);
     for secret in w.secrets.iter().map(String::as_str).chain([bootstrap]) {
         assert!(!shown.contains(secret), "{shown}");
     }

@@ -117,10 +117,12 @@ async fn the_five_refusals_are_one_answer_whether_or_not_an_expiry_is_recorded()
         [1; 32],
     )
     .0;
-    let recorded = || -> i64 {
+    let recorded = || -> Vec<String> {
         let db = rusqlite::Connection::open(dir.path().join("control.db")).unwrap();
-        let sql = "SELECT count(*) FROM keys WHERE expiry_recorded";
-        db.query_row(sql, [], |r| r.get(0)).unwrap()
+        let sql = "SELECT id FROM keys WHERE expiry_recorded";
+        let mut stmt = db.prepare(sql).unwrap();
+        let ids = stmt.query_map([], |r| r.get(0)).unwrap();
+        ids.map(Result::unwrap).collect()
     };
     let expected = OpError {
         kind: ErrorKind::Unauthenticated,
@@ -145,13 +147,13 @@ async fn the_five_refusals_are_one_answer_whether_or_not_an_expiry_is_recorded()
         let got = refusal(engine, &key(text)).await;
         assert_eq!(got, expected, "{case}, recording failing");
     }
-    assert_eq!(recorded(), 0, "the recording did fail");
+    assert!(recorded().is_empty(), "the recording did fail");
     db.execute_batch("DROP TRIGGER fail").unwrap();
     // The expired key twice: newly expired, then recorded.
     for (case, text) in bad.into_iter().chain([bad[0]]) {
         assert_eq!(refusal(engine, &key(text)).await, expected, "{case}");
     }
-    assert_eq!(recorded(), 1, "the expired key alone");
+    assert_eq!(recorded(), [made[0].info.key_id.to_string()]);
     opened.engine.close().await;
     other.engine.close().await;
 }

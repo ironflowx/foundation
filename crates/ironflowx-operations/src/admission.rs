@@ -1,5 +1,5 @@
 //! Admission: the one way to an [`Authorized`] (TEN-1). Every call runs, in order: no key →
-//! `Unauthenticated`; `parse`; `lookup_key`, with no cache (D45); `verify` at the clock's now;
+//! `Unauthenticated`; `parse`; `lookup_key`, with no cache (D45); `verify` at the now it read;
 //! `admit` against the operation's `required_scope` (D37). A key refused as newly
 //! expired has its expiry recorded (`record_expiry`, D42), admission's one write.
 
@@ -44,9 +44,9 @@ impl Engine {
         let parts =
             parse(key).map_err(|e| unauthenticated("invalid API key", Some(e.to_string())))?;
         let control = self.control.clone();
-        let (id, env) = (parts.id, self.env);
-        let record = blocking(move || control.lookup_key(id, &env)).await?;
-        let grant = match verify(&parts, record.as_ref(), &self.env, self.clock.now()) {
+        let (id, env, clock) = (parts.id, self.env, self.clock.clone());
+        let (record, now) = blocking(move || control.lookup_key(id, &env, &*clock)).await?;
+        let grant = match verify(&parts, record.as_ref(), &self.env, now) {
             Ok(grant) => grant,
             Err(refused) => {
                 if refused.newly_expired() {

@@ -70,8 +70,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// `Unauthenticated` for a missing or invalid key; `Unavailable` if the control plane
-    /// fails.
+    /// `Unauthenticated` for a missing or invalid key, whether or not its expiry could be
+    /// recorded; `Unavailable` if the control plane fails otherwise.
     pub async fn whoami(&self, cx: &Call, _req: WhoamiRequest) -> Result<Whoami, OpError> {
         let a = self.admit(cx, Operation::Whoami).await?;
         let record = self.environment(&a).await?;

@@ -2,6 +2,9 @@
 //! are revoked or their expiry is recorded (TEN-15), through the engine on a `ManualClock`.
 
 use std::path::Path;
+use std::sync::mpsc::channel;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use ironflowx_cell::ManualClock;
 use ironflowx_core::{Clock, ErrorKind, Scope, Secret, Timestamp};
@@ -243,5 +246,68 @@ async fn a_thousand_created_keys_hold_a_slot_whatever_the_clock_does() {
     assert_refused(&engine, &first, "expired").await;
     create(&engine, &admin, &[Scope::Read], T + 2 * HOUR).await;
     full("a recorded expiry's slot freed and taken").await;
+    engine.close().await;
+}
+
+/// A clock that, once armed, runs a hook inside its next reading.
+#[derive(Clone)]
+struct Hooked(ManualClock, Arc<Mutex<Option<Hook>>>);
+
+type Hook = Box<dyn FnOnce() + Send>;
+
+impl Clock for Hooked {
+    fn now(&self) -> Timestamp {
+        let hook = self.1.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+        self.0.now()
+    }
+}
+
+/// Runs one `whoami` on a runtime of its own; whether the key was accepted.
+fn accepted(engine: &Engine, key: &str) -> bool {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    rt.block_on(engine.whoami(&call(key), WhoamiRequest {}))
+        .is_ok()
+}
+
+/// Admission reads the key and the clock as one step, so no expiry is recorded between them: call
+/// A, past the key's expiry, has read the row and is reading the clock; call B arrives and, while
+/// A waits, cannot be refused and record the expiry; the clock is then set back. Were B refused,
+/// A would go on to accept a key whose expiry is recorded (TEN-13).
+#[tokio::test]
+async fn no_expiry_is_recorded_between_a_calls_lookup_and_its_clock_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Hooked(ManualClock::new(at(T)), Arc::default());
+    let (engine, admin) = open(dir.path(), clock.clone()).await;
+    let key = create(&engine, &admin, &[Scope::Read], T + HOUR).await;
+    clock.0.set(at(T + HOUR));
+
+    let (reading, a_reads) = channel();
+    let (done, b_done) = channel();
+    let manual = clock.0.clone();
+    *clock.1.lock().unwrap() = Some(Box::new(move || {
+        reading.send(()).unwrap();
+        // B cannot finish while A reads, so this times out; unguarded, B takes milliseconds.
+        let _ = b_done.recv_timeout(Duration::from_millis(500));
+        manual.set(at(T));
+    }));
+    let (engine_ref, key_ref) = (&engine, key.as_str());
+    let (a, b) = std::thread::scope(|s| {
+        let a = s.spawn(move || accepted(engine_ref, key_ref));
+        let b = s.spawn(move || {
+            a_reads.recv().unwrap();
+            let b = accepted(engine_ref, key_ref);
+            let _ = done.send(());
+            b
+        });
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    // Each reads the corrected clock, and nothing was recorded.
+    assert_eq!((a, b), (true, true));
+    assert_eq!(status(&engine, &admin, &key).await, KeyStatus::Active);
     engine.close().await;
 }

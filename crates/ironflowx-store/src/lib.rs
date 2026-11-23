@@ -335,13 +335,24 @@ impl ControlPlane {
         })
     }
 
-    /// The key `id`, if it was made for `env`'s ID and incarnation token. Admission's one read.
+    /// The key `id`, if it was made for `env`'s ID and incarnation token, and then `clock`'s now:
+    /// admission's one read. One step, so no expiry this control plane records falls between
+    /// them, and a key is never judged by an old row and a clock set back since (TEN-13).
     ///
     /// # Errors
     ///
     /// If SQLite fails, or the stored row does not decode.
-    pub fn lookup_key(&self, id: KeyId, env: &EnvRef) -> Result<Option<KeyRecord>, StoreError> {
-        run(|| lookup(&*self.lock()?, id, env))
+    pub fn lookup_key(
+        &self,
+        id: KeyId,
+        env: &EnvRef,
+        clock: &dyn Clock,
+    ) -> Result<(Option<KeyRecord>, Timestamp), StoreError> {
+        run(|| {
+            let conn = self.lock()?;
+            let record = lookup(&conn, id, env)?;
+            Ok((record, clock.now()))
+        })
     }
 
     /// Records that `id`, a key of `env` that is not revoked, was refused as expired: it stays
