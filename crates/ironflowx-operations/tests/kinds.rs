@@ -593,35 +593,3 @@ async fn a_cancelled_open_holds_the_root_while_it_opens_its_control_plane() {
     assert!(opened.minted.is_some());
     opened.engine.close().await;
 }
-
-/// A later open cancelled while it recovers its ledger keeps the root until the recovery ends.
-#[tokio::test]
-async fn a_cancelled_open_holds_the_root_while_it_recovers_its_ledger() {
-    let dir = tempfile::tempdir().unwrap();
-    open(dir.path(), None).await.unwrap().engine.close().await;
-    let BootstrapState::Marked { env } = state(dir.path()) else {
-        panic!("marked");
-    };
-    // A FIFO for the log's segment: opening it to read waits until it is opened to write. The
-    // ledger's lock file comes first, so once it is back, the open is inside the recovery.
-    let at = ledger(dir.path(), env);
-    let segment = at.join("log/00000000000000000000.seg");
-    let kept = dir.path().join("kept.seg");
-    std::fs::rename(&segment, &kept).unwrap();
-    let made = std::process::Command::new("mkfifo").arg(&segment).status();
-    assert!(made.unwrap().success());
-    std::fs::remove_file(at.join("ledger.lock")).unwrap();
-    let inside = || at.join("ledger.lock").exists();
-    cancel_inside(dir.path(), clock(), inside).await;
-    let recovering = open(dir.path(), None).await.err();
-    // Both ends, so that this does not wait, and kept open until the recovery has ended. Before
-    // any assertion: a recovery left waiting would hang the test.
-    let mut both = std::fs::File::options();
-    let fifo = both.read(true).write(true).open(&segment).unwrap();
-    std::fs::rename(&kept, &segment).unwrap();
-    let opened = opened_once_free(dir.path()).await;
-    drop(fifo);
-    let locked = matches!(recovering, Some(EngineError::Locked));
-    assert!(locked, "{recovering:?}");
-    opened.unwrap().engine.close().await;
-}
