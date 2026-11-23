@@ -1,16 +1,14 @@
-//! The deterministic tests of invariants.md, through `Ledger` and `LocalOperations`.
+//! The deterministic tests of invariants.md, through `Ledger`.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
 
-use ironflowx_core::{Emitter, EnvRef, ErrorKind, SubmitAs, Timestamp};
-use ironflowx_proto::{
-    Call, EmitRequest, Event, GetEventRequest, ListEventsRequest, OpError, Operations,
-};
+use ironflowx_core::{Emitter, EnvRef, ErrorKind, EventId, SubmitAs, Timestamp};
+use ironflowx_events::{Emit, Event, ItemOutcome, Submission};
 use segment_log_core::{ExpectedRevision, NewRecord, Options, SegmentLog, Submit};
 
-use crate::{Ledger, LocalOperations, ManualClock, OpenError, new_env_ref, record};
+use crate::{Ledger, ManualClock, OpenError, ReadError, SubmitError, new_env_ref, record};
 
 const T: i64 = 1_800_000_000_000;
 const HOUR: i64 = 3_600_000;
@@ -19,59 +17,57 @@ fn clock() -> ManualClock {
     ManualClock::new(Timestamp::from_millis(T))
 }
 
-/// What `LocalOperations` attributes every submission to.
-fn local() -> Emitter {
-    "embedder:local-operations".parse().unwrap()
+/// What the tests submit as, unless one names another embedder.
+fn tests() -> SubmitAs {
+    SubmitAs::embedder("ledger-tests").unwrap()
+}
+
+/// How those submissions read back.
+fn by() -> Emitter {
+    "embedder:ledger-tests".parse().unwrap()
 }
 
 async fn open(dir: &Path, env: EnvRef) -> Ledger {
     Ledger::open(dir, env, clock()).await.expect("opens")
 }
 
-fn named(name: &str) -> EmitRequest {
-    EmitRequest {
+fn named(name: &str) -> Emit {
+    Emit {
         name: name.into(),
-        data: None,
-        metadata: None,
-        version: None,
-        idempotency_key: None,
+        ..Emit::default()
     }
 }
 
-fn keyed(name: &str, key: &str) -> EmitRequest {
-    EmitRequest {
+fn keyed(name: &str, key: &str) -> Emit {
+    Emit {
         idempotency_key: Some(key.into()),
         ..named(name)
     }
 }
 
-async fn emit(ledger: &Ledger, req: EmitRequest) -> Result<String, OpError> {
-    LocalOperations::new(ledger)
-        .emit(&Call::anonymous(), req)
-        .await
-        .map(|r| r.event_id.to_string())
+async fn outcome(ledger: &Ledger, emit: Emit) -> Result<ItemOutcome, SubmitError> {
+    let committed = ledger.submit(Submission::Emit(emit), tests()).await?;
+    let [outcome] = <[_; 1]>::try_from(committed.outcome).expect("one outcome per emit");
+    Ok(outcome)
 }
 
-async fn get(ledger: &Ledger, id: &str) -> Result<Event, OpError> {
-    LocalOperations::new(ledger)
-        .get_event(
-            &Call::anonymous(),
-            GetEventRequest {
-                event_id: id.into(),
-            },
-        )
+async fn emit(ledger: &Ledger, emit: Emit) -> Result<EventId, SubmitError> {
+    match outcome(ledger, emit).await? {
+        ItemOutcome::New(id) | ItemOutcome::Duplicate(id) => Ok(id),
+        refused @ ItemOutcome::Refused(_) => panic!("an emit answered {refused:?}"),
+    }
+}
+
+async fn get(ledger: &Ledger, id: EventId) -> Result<Event, ReadError> {
+    ledger
+        .read(move |v| ironflowx_events::get_event(v, &id.to_string()))
         .await
 }
 
-async fn all(ledger: &Ledger) -> Result<Vec<Event>, OpError> {
-    LocalOperations::new(ledger)
-        .list_events(
-            &Call::anonymous(),
-            ListEventsRequest {
-                limit: 200.try_into().ok(),
-                cursor: None,
-            },
-        )
+async fn all(ledger: &Ledger) -> Result<Vec<Event>, ReadError> {
+    let token = ledger.env().token();
+    ledger
+        .read(move |v| ironflowx_events::list_events(v, token, 200.try_into().ok(), None))
         .await
         .map(|p| p.events)
 }
@@ -94,19 +90,7 @@ async fn a_read_waits_for_a_held_fold_then_finds_the_event() {
     for name in ["first", "second"] {
         ledger.hold_fold();
         let id = emit(&ledger, named(name)).await.unwrap();
-        let other = LocalOperations::new(&ledger);
-        let read = async {
-            let event = other
-                .get_event(
-                    &Call::anonymous(),
-                    GetEventRequest {
-                        event_id: id.clone(),
-                    },
-                )
-                .await;
-            let page = all(&ledger).await;
-            (event, page)
-        };
+        let read = async { (get(&ledger, id).await, all(&ledger).await) };
         tokio::pin!(read);
         assert!(
             tokio::time::timeout(Duration::from_millis(100), &mut read)
@@ -117,7 +101,7 @@ async fn a_read_waits_for_a_held_fold_then_finds_the_event() {
         ledger.release_fold();
         let (event, page) = read.await;
         assert_eq!(event.unwrap().name, name);
-        assert_eq!(page.unwrap()[0].event_id.to_string(), id);
+        assert_eq!(page.unwrap()[0].id, id);
     }
 }
 
@@ -129,7 +113,7 @@ async fn event_time_follows_the_clock_and_never_goes_back() {
     let ledger = Ledger::open(dir.path(), env, clock.clone()).await.unwrap();
     let time = async |ledger: &Ledger| {
         let id = emit(ledger, named("tick")).await.unwrap();
-        get(ledger, &id).await.unwrap().time.as_millis()
+        get(ledger, id).await.unwrap().time.as_millis()
     };
     assert_eq!(time(&ledger).await, T);
     clock.step(HOUR);
@@ -145,13 +129,8 @@ async fn event_time_follows_the_clock_and_never_goes_back() {
 async fn every_event_of_one_batch_carries_the_record_time() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = open(dir.path(), new_env_ref()).await;
-    let batch = ironflowx_proto::EmitBatchRequest {
-        items: vec![named("a"), named("b")],
-    };
-    LocalOperations::new(&ledger)
-        .emit_batch(&Call::anonymous(), batch)
-        .await
-        .unwrap();
+    let batch = Submission::Batch(vec![named("a"), named("b")]);
+    ledger.submit(batch, tests()).await.unwrap();
     let times: Vec<_> = all(&ledger).await.unwrap().iter().map(|e| e.time).collect();
     assert_eq!(times, [Timestamp::from_millis(T); 2]);
 }
@@ -174,7 +153,7 @@ async fn replaying_folds_each_record_exactly_once() {
             events: vec![],
         };
         for offset in 0..applied {
-            crate::store::apply(&mut conn, offset, Some((&record, &local())), false).unwrap();
+            crate::store::apply(&mut conn, offset, Some((&record, &by())), false).unwrap();
         }
         assert_eq!(crate::store::applied(&conn).unwrap(), applied);
     }
@@ -183,10 +162,7 @@ async fn replaying_folds_each_record_exactly_once() {
     std::fs::remove_file(dir.path().join("read.db")).unwrap();
     let ledger = open(dir.path(), env).await;
     assert_eq!(all(&ledger).await.unwrap(), before);
-    assert_eq!(
-        emit(&ledger, keyed("x", "a")).await.unwrap(),
-        before[2].event_id.to_string()
-    );
+    assert_eq!(emit(&ledger, keyed("x", "a")).await.unwrap(), before[2].id);
 }
 
 #[tokio::test]
@@ -241,7 +217,7 @@ async fn a_later_record_with_another_token_is_refused() {
             time: Timestamp::from_millis(T),
             events: vec![],
         };
-        let foreign = record::events(new_env_ref().token(), &local(), &record);
+        let foreign = record::events(new_env_ref().token(), &by(), &record);
         append(&log, ExpectedRevision::At(revision), foreign);
     }
     std::fs::remove_file(dir.path().join("read.db")).unwrap();
@@ -277,7 +253,7 @@ async fn a_log_without_a_genesis_record_is_refused() {
         append(
             &log,
             ExpectedRevision::Empty,
-            record::events(env.token(), &local(), &record),
+            record::events(env.token(), &by(), &record),
         );
     }
     let err = Ledger::open(dir.path(), env, clock()).await.err();
@@ -331,11 +307,8 @@ async fn a_read_store_with_damaged_tables_is_rebuilt() {
         drop(conn);
         let ledger = open(dir.path(), env).await;
         assert_eq!(names(&ledger).await, ["a"], "{damage}");
-        let retry = LocalOperations::new(&ledger)
-            .emit(&Call::anonymous(), keyed("b", "k"))
-            .await
-            .unwrap();
-        assert!(retry.duplicate, "{damage}");
+        let retry = outcome(&ledger, keyed("b", "k")).await.unwrap();
+        assert!(matches!(retry, ItemOutcome::Duplicate(_)), "{damage}");
     }
 }
 
@@ -350,11 +323,11 @@ async fn a_panicking_query_fails_the_ledger_and_reopen_recovers() {
             |_| -> Result<(), ironflowx_events::Error<crate::StoreError>> { panic!("a query bug") },
         )
         .await;
-    assert_eq!(answer, Err(crate::ReadError::Unavailable));
-    assert_eq!(all(&ledger).await.unwrap_err().kind, ErrorKind::Unavailable);
+    assert_eq!(answer, Err(ReadError::Unavailable));
+    assert_eq!(all(&ledger).await.unwrap_err(), ReadError::Unavailable);
     assert_eq!(
-        emit(&ledger, named("b")).await.unwrap_err().kind,
-        ErrorKind::Unavailable
+        emit(&ledger, named("b")).await.unwrap_err(),
+        SubmitError::Unavailable
     );
     ledger.close().await;
     let ledger = open(dir.path(), env).await;
@@ -367,14 +340,9 @@ async fn a_cursor_past_every_sequence_lists_from_the_newest() {
     let env = new_env_ref();
     let ledger = open(dir.path(), env).await;
     emit(&ledger, named("a")).await.unwrap();
-    let page = LocalOperations::new(&ledger)
-        .list_events(
-            &Call::anonymous(),
-            ListEventsRequest {
-                limit: None,
-                cursor: Some(format!("{}.{}", env.token(), u64::MAX)),
-            },
-        )
+    let cursor = format!("{}.{}", env.token(), u64::MAX);
+    let page = ledger
+        .read(move |v| ironflowx_events::list_events(v, env.token(), None, Some(&cursor)))
         .await
         .unwrap();
     assert_eq!(page.events.len(), 1);
@@ -400,7 +368,7 @@ async fn a_failed_fold_ends_waiting_reads_and_reopen_applies_the_record() {
     ledger.fail_next_fold();
     let id = emit(&ledger, named("a")).await.unwrap();
     {
-        let read = get(&ledger, &id);
+        let read = get(&ledger, id);
         tokio::pin!(read);
         assert!(
             tokio::time::timeout(Duration::from_millis(100), &mut read)
@@ -408,15 +376,15 @@ async fn a_failed_fold_ends_waiting_reads_and_reopen_applies_the_record() {
                 .is_err()
         );
         ledger.release_fold();
-        assert_eq!(read.await.unwrap_err().kind, ErrorKind::Unavailable);
+        assert_eq!(read.await.unwrap_err(), ReadError::Unavailable);
     }
     assert_eq!(
-        emit(&ledger, named("b")).await.unwrap_err().kind,
-        ErrorKind::Unavailable
+        emit(&ledger, named("b")).await.unwrap_err(),
+        SubmitError::Unavailable
     );
     ledger.close().await;
     let ledger = open(dir.path(), env).await;
-    assert_eq!(get(&ledger, &id).await.unwrap().name, "a");
+    assert_eq!(get(&ledger, id).await.unwrap().name, "a");
 }
 
 #[tokio::test]
@@ -427,23 +395,25 @@ async fn an_unknown_append_is_recovered_by_a_keyed_retry() {
         let ledger = open(dir.path(), env).await;
         ledger.fail_next_append(landed);
         let err = emit(&ledger, keyed("a", "k")).await.unwrap_err();
-        assert_eq!(err.kind, ErrorKind::Unknown);
+        assert_eq!(err, SubmitError::Unknown);
         let err = emit(&ledger, keyed("a", "k")).await.unwrap_err();
-        assert_eq!(err.kind, ErrorKind::Unavailable);
-        assert_eq!(all(&ledger).await.unwrap_err().kind, ErrorKind::Unavailable);
+        assert_eq!(err, SubmitError::Unavailable);
+        assert_eq!(all(&ledger).await.unwrap_err(), ReadError::Unavailable);
         ledger.close().await;
 
         let ledger = open(dir.path(), env).await;
         let before = all(&ledger).await.unwrap();
         assert_eq!(before.len(), usize::from(landed));
-        let retry = LocalOperations::new(&ledger)
-            .emit(&Call::anonymous(), keyed("a", "k"))
-            .await
-            .unwrap();
-        assert_eq!(retry.duplicate, landed);
+        let retry = outcome(&ledger, keyed("a", "k")).await.unwrap();
         let after = all(&ledger).await.unwrap();
         assert_eq!(after.len(), 1);
-        assert_eq!(after[0].event_id, retry.event_id);
+        let id = after[0].id;
+        let expected = if landed {
+            ItemOutcome::Duplicate(id)
+        } else {
+            ItemOutcome::New(id)
+        };
+        assert_eq!(retry, expected);
     }
 }
 
@@ -452,7 +422,10 @@ async fn a_refused_emit_leaves_nothing_behind() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = open(dir.path(), new_env_ref()).await;
     let err = emit(&ledger, named("a..b")).await.unwrap_err();
-    assert_eq!(err.kind, ErrorKind::Invalid);
+    assert!(
+        matches!(&err, SubmitError::Refused(r) if r.kind() == ErrorKind::Invalid),
+        "{err:?}"
+    );
     assert!(all(&ledger).await.unwrap().is_empty());
     // The next event still takes sequence 1: nothing was drawn.
     emit(&ledger, named("a")).await.unwrap();
@@ -483,7 +456,7 @@ fn records_round_trip() {
         }],
     };
     let key: Emitter = "key:019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f".parse().unwrap();
-    for emitted_by in [local(), key] {
+    for emitted_by in [by(), key] {
         assert_eq!(
             record::decode(&record::events(env.token(), &emitted_by, &record)),
             Some(record::Decoded::Events {
@@ -551,11 +524,8 @@ async fn a_read_store_that_cannot_be_trusted_is_rebuilt() {
         damage(&dir.path().join("read.db"));
         let ledger = open(dir.path(), env).await;
         assert_eq!(names(&ledger).await, ["b", "a"], "{why}");
-        let retry = LocalOperations::new(&ledger)
-            .emit(&Call::anonymous(), keyed("x", "ka"))
-            .await
-            .unwrap();
-        assert!(retry.duplicate, "{why}");
+        let retry = outcome(&ledger, keyed("x", "ka")).await.unwrap();
+        assert!(matches!(retry, ItemOutcome::Duplicate(_)), "{why}");
         // Sequences continue after the rebuilt rows.
         emit(&ledger, named("c")).await.unwrap();
         assert_eq!(names(&ledger).await, ["c", "b", "a"], "{why}");
@@ -761,8 +731,8 @@ async fn a_sealed_log_opens_and_reads_and_refuses_the_first_emit() {
         Err(OpenError::Locked)
     ));
     let err = emit(&ledger, named("c")).await.unwrap_err();
-    assert_eq!(err.kind, ErrorKind::Unavailable);
-    assert_eq!(all(&ledger).await.unwrap_err().kind, ErrorKind::Unavailable);
+    assert_eq!(err, SubmitError::Unavailable);
+    assert_eq!(all(&ledger).await.unwrap_err(), ReadError::Unavailable);
 }
 
 /// A submission still queued when the ledger is dropped was never decided: it is not stored.
@@ -807,7 +777,7 @@ async fn close_finishes_queued_submissions() {
     let id = queued.await.unwrap().unwrap();
     std::sync::Arc::into_inner(ledger).unwrap().close().await;
     let ledger = open(dir.path(), env).await;
-    assert_eq!(get(&ledger, &id).await.unwrap().name, "queued");
+    assert_eq!(get(&ledger, id).await.unwrap().name, "queued");
 }
 
 #[tokio::test]
@@ -883,8 +853,8 @@ async fn a_writer_panic_before_append_refuses_queued_work() {
         () = std::future::ready(()) => {}
     }
     release.send(()).unwrap();
-    assert_eq!(second.await.unwrap_err().kind, ErrorKind::Unavailable);
-    assert_eq!(first.await.unwrap_err().kind, ErrorKind::Unavailable);
+    assert_eq!(second.await.unwrap_err(), SubmitError::Unavailable);
+    assert_eq!(first.await.unwrap_err(), SubmitError::Unavailable);
 }
 
 #[tokio::test]
@@ -902,19 +872,12 @@ async fn every_event_records_who_emitted_it_across_reopen_and_rebuild() {
     let dir = tempfile::tempdir().unwrap();
     let env = new_env_ref();
     let ledger = open(dir.path(), env).await;
-    let batch = ironflowx_events::Submission::Batch(
-        ["a", "b", "c"]
-            .map(|name| ironflowx_events::Emit {
-                name: name.into(),
-                ..Default::default()
-            })
-            .into(),
-    );
+    let batch = Submission::Batch(["a", "b", "c"].map(named).into());
     let app = SubmitAs::embedder("billing app").unwrap();
     let committed = ledger.submit(batch, app.clone()).await.unwrap();
     let solo = emit(&ledger, named("d")).await.unwrap();
     let expected = [
-        local(),
+        by(),
         Emitter::from(app.clone()),
         Emitter::from(app.clone()),
         Emitter::from(app),
@@ -928,12 +891,12 @@ async fn every_event_records_who_emitted_it_across_reopen_and_rebuild() {
             .collect()
     };
     assert_eq!(emitters(&ledger).await, expected);
-    let ironflowx_events::ItemOutcome::New(first) = committed.outcome[0] else {
+    let ItemOutcome::New(first) = committed.outcome[0] else {
         panic!("a new event");
     };
-    let read = get(&ledger, &first.to_string()).await.unwrap();
+    let read = get(&ledger, first).await.unwrap();
     assert_eq!(read.emitted_by.to_string(), "embedder:billing app");
-    assert_eq!(get(&ledger, &solo).await.unwrap().emitted_by, local());
+    assert_eq!(get(&ledger, solo).await.unwrap().emitted_by, by());
     ledger.close().await;
     let ledger = open(dir.path(), env).await;
     assert_eq!(emitters(&ledger).await, expected);
@@ -955,27 +918,4 @@ async fn a_format_1_directory_is_refused_as_another_format() {
     }
     let err = Ledger::open(dir.path(), env, clock()).await.err();
     assert!(matches!(err, Some(OpenError::Format)), "{err:?}");
-}
-
-#[tokio::test]
-async fn local_operations_manage_no_keys() {
-    let dir = tempfile::tempdir().unwrap();
-    let ledger = open(dir.path(), new_env_ref()).await;
-    let (ops, cx) = (LocalOperations::new(&ledger), Call::anonymous());
-    let revoke = ironflowx_proto::RevokeKeyRequest {
-        key_id: String::new(),
-    };
-    let refusals = [
-        ops.create_key(&cx, ironflowx_proto::CreateKeyRequest::default())
-            .await
-            .map(drop),
-        ops.list_keys(&cx, ironflowx_proto::ListKeysRequest::default())
-            .await
-            .map(drop),
-        ops.revoke_key(&cx, revoke).await,
-    ];
-    for refused in refusals {
-        assert_eq!(refused.map_err(|e| e.kind), Err(ErrorKind::Unauthenticated));
-    }
-    ledger.close().await;
 }

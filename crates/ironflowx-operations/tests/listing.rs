@@ -8,8 +8,8 @@ use ironflowx_cell::ManualClock;
 use ironflowx_core::{ErrorKind, KeyOrigin, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
-    Call, CreateKeyRequest, KeyPage, KeyStatus, ListKeysRequest, OpError, RevokeKeyRequest,
-    WhoamiRequest,
+    Call, CreateKeyRequest, KeyPage, KeyStatus, ListKeysRequest, OpError, Operations,
+    RevokeKeyRequest, WhoamiRequest,
 };
 
 const T: i64 = 1_800_000_000_000;

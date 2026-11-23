@@ -11,7 +11,7 @@ use ironflowx_core::{ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
     Call, CreateKeyRequest, EmitRequest, ListEnvironmentsRequest, ListEventsRequest,
-    ListKeysRequest, OpError, RevokeKeyRequest, WhoamiRequest,
+    ListKeysRequest, OpError, Operations, RevokeKeyRequest, WhoamiRequest,
 };
 
 async fn open(dir: &Path) -> (Engine, String) {

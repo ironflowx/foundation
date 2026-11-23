@@ -1,6 +1,6 @@
 [package]
 name = "ironflowx-crash-test"
-description = "Kills a process that owns a ledger at named fault points and checks what survives (#6). Unpublished."
+description = "Kills a process that owns an engine at named fault points and checks what survives (#6). Unpublished."
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -10,6 +10,7 @@ license.workspace = true
 [dependencies]
 ironflowx-core.workspace = true
 ironflowx-cell = { workspace = true, features = ["__fault-points"] }
+ironflowx-operations.workspace = true
 ironflowx-proto.workspace = true
 tokio = { version = "1.54.1", default-features = false, features = ["rt", "sync"] }
 

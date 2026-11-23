@@ -7,7 +7,9 @@ use ironflowx_authz::{KeyRecord, mint, parse, verify};
 use ironflowx_cell::ManualClock;
 use ironflowx_core::{Clock, EnvRef, ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
-use ironflowx_proto::{Call, CreateKeyRequest, OpError, RevokeKeyRequest, WhoamiRequest};
+use ironflowx_proto::{
+    Call, CreateKeyRequest, OpError, Operations, RevokeKeyRequest, WhoamiRequest,
+};
 
 fn clock() -> ManualClock {
     ManualClock::new(Timestamp::from_millis(1_800_000_000_000))

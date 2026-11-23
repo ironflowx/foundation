@@ -3,14 +3,12 @@
 //!
 //! [`Ledger::open`] opens one environment in a directory. A submission is acknowledged once its
 //! record is fsynced, and a read sees every write acknowledged before it arrived.
-//! [`LocalOperations`] puts the `Operations` interface over one ledger. This is the only crate
-//! that touches disk, the clock and randomness.
+//! It trusts its caller: keys and the `Operations` interface are the engine's, above it.
 
 #![forbid(unsafe_code)]
 
 mod clock;
 mod ledger;
-mod ops;
 mod record;
 mod store;
 #[cfg(test)]
@@ -21,5 +19,4 @@ pub use clock::{HostClock, ManualClock};
 #[doc(hidden)]
 pub use ironflowx_core::{FaultPoint, set_fault_hook};
 pub use ledger::{Committed, Ledger, OpenError, ReadError, SubmitError, new_env_ref};
-pub use ops::LocalOperations;
 pub use store::{ReadStore, StoreError};

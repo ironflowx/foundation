@@ -7,7 +7,7 @@ use ironflowx_cell::ManualClock;
 use ironflowx_core::{ErrorKind, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
-    Call, EmitBatchRequest, EmitRequest, Event, GetEventRequest, ListEventsRequest,
+    Call, EmitBatchRequest, EmitRequest, Event, GetEventRequest, ListEventsRequest, Operations,
 };
 
 fn emit(name: &str) -> EmitRequest {

@@ -1,18 +1,19 @@
 //! The parent side of the crash test (#6, invariants.md "Crash test"). It sees the child only
-//! through the pipe, then checks the directory through a reopened ledger and, read-only, the
+//! through the pipe, then checks the directory through a reopened engine and, read-only, the
 //! read store, for the sequences and applied position no public interface exposes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
 use std::num::NonZeroU32;
 use std::os::unix::process::ExitStatusExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use ironflowx_cell::{FaultPoint, Ledger, LocalOperations, ManualClock};
-use ironflowx_core::{Clock, EnvRef, Timestamp};
+use ironflowx_cell::{FaultPoint, ManualClock};
+use ironflowx_core::{Clock, EnvRef, Secret, Timestamp};
+use ironflowx_operations::Engine;
 use ironflowx_proto::{Call, EmitRequest, Event, GetEventRequest, ListEventsRequest, Operations};
 
 /// How long the parent waits for one line from the child before failing, so a stalled child
@@ -28,18 +29,52 @@ struct Driver {
     lines: mpsc::Receiver<std::io::Result<String>>,
 }
 
-impl Driver {
-    fn spawn(dir: &Path, env: EnvRef, point: &str, crossing: u64) -> Self {
-        let driver = Self::start(dir, env, point, crossing);
-        assert_eq!(driver.line("ready"), "ready", "the child opens its ledger");
-        driver
+/// What the child said it bootstrapped: its engine's environment and the minted key.
+struct Home {
+    root: PathBuf,
+    env: EnvRef,
+    key: String,
+}
+
+impl Home {
+    /// The environment's ledger directory.
+    fn ledger(&self) -> PathBuf {
+        self.root.join("ledgers").join(self.env.id().to_string())
     }
 
-    /// The child, before its ledger has opened.
-    fn start(dir: &Path, env: EnvRef, point: &str, crossing: u64) -> Self {
+    fn call(&self) -> Call {
+        Call::with_key(Secret::new(self.key.clone()))
+    }
+
+    /// Opens the engine again: its bootstrap is done, so no key is minted.
+    async fn open(&self, clock: ManualClock) -> Engine {
+        let opened = Engine::open(&self.root, clock, None)
+            .await
+            .expect("the engine reopens after the kill");
+        assert!(opened.minted.is_none(), "a reopen mints no key");
+        opened.engine
+    }
+}
+
+impl Driver {
+    /// The child, its engine open on the fresh `root`, and what it bootstrapped.
+    fn spawn(root: &Path, point: &str, crossing: u64) -> (Self, Home) {
+        let driver = Self::start(root, point, crossing);
+        assert_eq!(driver.line("ready"), "ready", "the child opens its engine");
+        let line = driver.line("the environment and the key");
+        let (env, key) = line.split_once(' ').expect("<env-ref> <key>");
+        let home = Home {
+            root: root.to_owned(),
+            env: env.parse().expect("an environment reference"),
+            key: key.to_owned(),
+        };
+        (driver, home)
+    }
+
+    /// The child, before its engine has opened.
+    fn start(root: &Path, point: &str, crossing: u64) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_crash-child"))
-            .arg(dir)
-            .arg(env.to_string())
+            .arg(root)
             .arg(point)
             .arg(crossing.to_string())
             .stdin(Stdio::piped())
@@ -333,8 +368,8 @@ fn appends(workload: &[Request]) -> u64 {
 
 /// Runs `workload` until the child stops at `point` on its `append`-th append, checking every
 /// answer, then kills the child.
-fn run(dir: &Path, env: EnvRef, point: FaultPoint, append: u64, workload: Vec<Request>) -> Seen {
-    let mut child = Driver::spawn(dir, env, point.name(), append);
+fn run(root: &Path, point: FaultPoint, append: u64, workload: Vec<Request>) -> (Seen, Home) {
+    let (mut child, home) = Driver::spawn(root, point.name(), append);
     let mut seen = Seen::default();
     let mut appends = 0;
     // The child's clock, as the parent stepped it, and the last record's time.
@@ -417,7 +452,7 @@ fn run(dir: &Path, env: EnvRef, point: FaultPoint, append: u64, workload: Vec<Re
         "the workload has an append {append} to stop at"
     );
     child.kill();
-    seen
+    (seen, home)
 }
 
 /// What two reopens must agree on.
@@ -441,21 +476,19 @@ fn marker(event: &Event) -> Option<&str> {
         .strip_suffix(r#""}"#)
 }
 
-/// Reopens the directory, checks every promise a client saw before the kill, closes, then
-/// reads the read store. A broken promise is an error naming its request.
-fn reopen(dir: &Path, env: EnvRef, seen: &Seen) -> Result<Snapshot, String> {
+/// Reopens the engine, checks every promise a client saw before the kill, closes, then reads
+/// the read store. A broken promise is an error naming its request.
+fn reopen(home: &Home, seen: &Seen) -> Result<Snapshot, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("a runtime");
     let events = runtime.block_on(async {
-        let ledger = Ledger::open(dir, env, clock())
-            .await
-            .expect("the ledger reopens after the kill");
-        let checked = check(&LocalOperations::new(&ledger), seen).await;
-        ledger.close().await;
+        let engine = home.open(clock()).await;
+        let checked = check(&engine, &home.call(), seen).await;
+        engine.close().await;
         checked
     })?;
-    let (sequences, applied) = read_store(dir);
+    let (sequences, applied) = read_store(home);
     Ok(Snapshot {
         events,
         sequences,
@@ -464,13 +497,12 @@ fn reopen(dir: &Path, env: EnvRef, seen: &Seen) -> Result<Snapshot, String> {
 }
 
 /// Every client-visible promise; returns every event, oldest first.
-async fn check(ops: &LocalOperations<'_>, seen: &Seen) -> Result<Vec<Event>, String> {
-    let cx = Call::anonymous();
+async fn check(engine: &Engine, cx: &Call, seen: &Seen) -> Result<Vec<Event>, String> {
     for item in &seen.items {
         let Some(id) = &item.acked else { continue };
-        let event = ops
+        let event = engine
             .get_event(
-                &cx,
+                cx,
                 GetEventRequest {
                     event_id: id.clone(),
                 },
@@ -486,9 +518,9 @@ async fn check(ops: &LocalOperations<'_>, seen: &Seen) -> Result<Vec<Event>, Str
             return Err(format!("{}: {id} reads back another event", item.request));
         }
     }
-    let page = ops
+    let page = engine
         .list_events(
-            &cx,
+            cx,
             ListEventsRequest {
                 limit: NonZeroU32::new(200),
                 cursor: None,
@@ -585,9 +617,9 @@ async fn check(ops: &LocalOperations<'_>, seen: &Seen) -> Result<Vec<Event>, Str
             .iter()
             .take(*limit as usize)
             .collect();
-        let next = ops
+        let next = engine
             .list_events(
-                &cx,
+                cx,
                 ListEventsRequest {
                     limit: NonZeroU32::new(*limit),
                     cursor: Some(cursor.clone()),
@@ -612,7 +644,7 @@ async fn check(ops: &LocalOperations<'_>, seen: &Seen) -> Result<Vec<Event>, Str
             version: None,
             idempotency_key: Some(key.clone()),
         };
-        match ops.emit(&cx, again).await {
+        match engine.emit(cx, again).await {
             Ok(r) if r.duplicate && r.event_id.to_string() == *id => {}
             other => {
                 return Err(format!(
@@ -625,9 +657,9 @@ async fn check(ops: &LocalOperations<'_>, seen: &Seen) -> Result<Vec<Event>, Str
 }
 
 /// Each event's sequence and ID, and the applied position, read-only.
-fn read_store(dir: &Path) -> (Vec<(u64, String)>, u64) {
+fn read_store(home: &Home) -> (Vec<(u64, String)>, u64) {
     let conn = rusqlite::Connection::open_with_flags(
-        dir.join("read.db"),
+        home.ledger().join("read.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .expect("the read store opens read-only");
@@ -653,21 +685,20 @@ fn read_store(dir: &Path) -> (Vec<(u64, String)>, u64) {
 
 /// Kills the child at `point` on its `append`-th append of `workload`, then checks what the read
 /// store held before reopen, which of the stopped request's new events reopen shows, and that
-/// two reopens agree. Returns what the client saw and what the reopens show.
+/// two reopens agree. Returns what the client saw, where, and what the reopens show.
 fn kill_at(
-    dir: &Path,
-    env: EnvRef,
+    root: &Path,
     point: FaultPoint,
     append: u64,
     workload: Vec<Request>,
-) -> (Seen, Snapshot) {
+) -> (Seen, Home, Snapshot) {
     // During open needs a record for open to fold: stop after the acknowledgment first.
-    let seen = if point == FaultPoint::DuringOpen {
-        let seen = run(dir, env, FaultPoint::AfterAck, append, workload);
-        kill_during_open(dir, env);
-        seen
+    let (seen, home) = if point == FaultPoint::DuringOpen {
+        let ran = run(root, FaultPoint::AfterAck, append, workload);
+        kill_during_open(root);
+        ran
     } else {
-        run(dir, env, point, append, workload)
+        run(root, point, append, workload)
     };
     let stopped = seen.stopped.as_deref().expect("the child stopped");
     let name = point.name();
@@ -681,7 +712,7 @@ fn kill_at(
         .filter(|i| i.request != stopped)
         .filter_map(|i| i.acked.as_ref())
         .collect();
-    let (folded, applied) = read_store(dir);
+    let (folded, applied) = read_store(&home);
     let folded: Vec<&String> = folded.iter().map(|(_, id)| id).collect();
     let mine = seen
         .items
@@ -706,7 +737,7 @@ fn kill_at(
          records"
     );
 
-    let first = reopen(dir, env, &seen).unwrap_or_else(|e| panic!("{e}"));
+    let first = reopen(&home, &seen).unwrap_or_else(|e| panic!("{e}"));
     let new: Vec<&SentItem> = seen
         .items
         .iter()
@@ -733,15 +764,15 @@ fn kill_at(
         append + u64::from(expected != 0),
         "killed at {name} on {stopped}: reopen folds every durable record"
     );
-    let second = reopen(dir, env, &seen).unwrap_or_else(|e| panic!("{e}"));
+    let second = reopen(&home, &seen).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(first, second, "killed at {name}, two reopens agree");
-    (seen, first)
+    (seen, home, first)
 }
 
-/// Kills a reopen of `dir` inside its fold of the record the last kill left unfolded, its rows
+/// Kills a reopen of `root` inside its fold of the record the last kill left unfolded, its rows
 /// written and nothing committed.
-fn kill_during_open(dir: &Path, env: EnvRef) {
-    let child = Driver::start(dir, env, FaultPoint::DuringOpen.name(), 1);
+fn kill_during_open(root: &Path) {
+    let child = Driver::start(root, FaultPoint::DuringOpen.name(), 1);
     let line = child.line("the reopen to stop during open");
     assert_eq!(
         line,
@@ -754,13 +785,7 @@ fn kill_during_open(dir: &Path, env: EnvRef) {
 /// `kill_at` with the fixed workload, in a fresh directory.
 fn kill_named(point: FaultPoint, append: u64) {
     let dir = tempfile::tempdir().expect("a temporary directory");
-    let (seen, _) = kill_at(
-        dir.path(),
-        ironflowx_cell::new_env_ref(),
-        point,
-        append,
-        workload(),
-    );
+    let (seen, ..) = kill_at(dir.path(), point, append, workload());
     // Four events precede its list of three, so the page has a cursor for `check` to page from.
     assert!(
         seen.cursor.is_some(),
@@ -801,10 +826,8 @@ fn killed_during_open() {
 #[test]
 fn a_broken_expectation_names_its_request() {
     let dir = tempfile::tempdir().expect("a temporary directory");
-    let env = ironflowx_cell::new_env_ref();
-    let mut seen = run(
+    let (mut seen, home) = run(
         dir.path(),
-        env,
         FaultPoint::BeforeAppend,
         BATCH_APPEND,
         workload(),
@@ -813,7 +836,7 @@ fn a_broken_expectation_names_its_request() {
     let (request, id) = seen.keys["k1"].clone();
     seen.keys.insert("k-missing".into(), (request.clone(), id));
 
-    let err = reopen(dir.path(), env, &seen).expect_err("a missing acknowledged key fails");
+    let err = reopen(&home, &seen).expect_err("a missing acknowledged key fails");
     assert!(
         err.starts_with(&format!("{request}: acknowledged key k-missing")),
         "the failure names the request: {err}"
@@ -907,8 +930,7 @@ fn kill_seeded(seed: u64) {
     let append = 1 + rng.below(appends(&workload));
     let behind = 1 + rng.below(60_000);
     let dir = tempfile::tempdir().expect("a temporary directory");
-    let env = ironflowx_cell::new_env_ref();
-    let (_, shown) = kill_at(dir.path(), env, point, append, workload);
+    let (_, home, shown) = kill_at(dir.path(), point, append, workload);
 
     let last = shown.events.last().map(|e| e.time);
     let at = last.map_or(clock().now(), |t| {
@@ -918,11 +940,8 @@ fn kill_seeded(seed: u64) {
         .build()
         .expect("a runtime");
     let time = runtime.block_on(async {
-        let ledger = Ledger::open(dir.path(), env, ManualClock::new(at))
-            .await
-            .expect("the ledger reopens");
-        let ops = LocalOperations::new(&ledger);
-        let cx = Call::anonymous();
+        let engine = home.open(ManualClock::new(at)).await;
+        let cx = home.call();
         let emit = EmitRequest {
             name: "crash.after".into(),
             data: None,
@@ -930,8 +949,8 @@ fn kill_seeded(seed: u64) {
             version: None,
             idempotency_key: None,
         };
-        let id = ops.emit(&cx, emit).await.expect("emits").event_id;
-        let event = ops
+        let id = engine.emit(&cx, emit).await.expect("emits").event_id;
+        let event = engine
             .get_event(
                 &cx,
                 GetEventRequest {
@@ -940,7 +959,7 @@ fn kill_seeded(seed: u64) {
             )
             .await
             .expect("reads back");
-        ledger.close().await;
+        engine.close().await;
         event.time
     });
     // Behind the last event it takes that event's time; with none, the clock's.

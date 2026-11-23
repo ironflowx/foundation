@@ -1,5 +1,5 @@
-# Events in release 0.1: emit, batch emit, idempotency, reading events back by
-# ID and by page, and read your writes, through Operations with no credential.
+# Events: emit, batch emit, idempotency, reading events back by ID and by page,
+# and read your writes, through Operations, each call with a key.
 # Conventions, adapters and what is out of scope: README.md. The rules these
 # scenarios sample: architecture.md, "Event rules".
 

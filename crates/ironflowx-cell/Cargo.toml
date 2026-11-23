@@ -22,7 +22,6 @@ __fault-points = ["ironflowx-core/__fault-points"]
 [dependencies]
 ironflowx-core.workspace = true
 ironflowx-events.workspace = true
-ironflowx-proto.workspace = true
 getrandom = { version = "0.4.3", default-features = false }
 rusqlite = { version = "0.43.0", default-features = false, features = ["bundled", "fallible_uint"] }
 # D16: an exact version, from crates.io.

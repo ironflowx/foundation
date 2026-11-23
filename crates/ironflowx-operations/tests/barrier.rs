@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use ironflowx_core::{Clock, ErrorKind, KeyId, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
-use ironflowx_proto::{Call, CreateKeyRequest, OpError, RevokeKeyRequest};
+use ironflowx_proto::{Call, CreateKeyRequest, OpError, Operations, RevokeKeyRequest};
 use rusqlite::types::Value;
 
 const T: i64 = 1_800_000_000_000;
