@@ -12,6 +12,10 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
+[features]
+# Hidden: counts `KeyDigest::ct_eq` calls, for the control plane's tests (TEN-4). No API promise.
+__count-ct-eq = []
+
 [dependencies]
 base64 = { version = "0.23.1", default-features = false, features = ["alloc"] }
 ironflowx-core.workspace = true

@@ -1132,7 +1132,7 @@ fn no_listed_secret(w: &mut Tenancy) {
     }
 }
 
-/// A well-formed key's text: `id`'s last digit, and a secret of 43 of `secret`.
+/// A well-formed key's text: `id` is its ID's last digit, and its secret 42 of `secret`, then A.
 fn seed_text(id: u8, secret: &str) -> String {
     // The last character carries only 4 bits of the secret, so it stays "A".
     let secret = secret.repeat(42);

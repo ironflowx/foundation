@@ -18,4 +18,5 @@ ironflowx-core.workspace = true
 rusqlite = { version = "0.43.0", default-features = false, features = ["bundled", "fallible_uint"] }
 
 [dev-dependencies]
+ironflowx-authz = { workspace = true, features = ["__count-ct-eq"] }
 tempfile = "3.27.0"

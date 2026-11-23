@@ -20,6 +20,13 @@ use ironflowx_core::{EnvRef, KeyId, KeyOrigin, Scope, Secret, SubmitAs, Timestam
 
 pub use digest::KeyDigest;
 
+/// How many times this thread called [`KeyDigest::ct_eq`].
+#[cfg(feature = "__count-ct-eq")]
+#[doc(hidden)]
+pub fn ct_eq_calls() -> usize {
+    digest::CT_EQ_CALLS.get()
+}
+
 const PREFIX: &str = "ixk_";
 /// `ixk_` + a 36-character key ID + `_` + 43 base64url characters (256 bits, no padding).
 const KEY_LEN: usize = 84;

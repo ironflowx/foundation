@@ -2,8 +2,8 @@
 //! plane (its key parsed, looked up and verified) before its handler reaches the environment's
 //! ledger or its key records.
 //!
-//! [`Engine::open`] opens a data directory, bootstrapping it on first open and returning the
-//! bootstrap key's secret once.
+//! [`Engine::open`] opens a data directory, bootstrapping it on first open: the bootstrap key is
+//! the seed the host supplies, or a minted one, whose secret it returns once.
 
 #![forbid(unsafe_code)]
 
@@ -47,7 +47,7 @@ pub struct Engine {
     /// The ledger's clock, which also decides key expiry.
     clock: Arc<dyn Clock + Send + Sync>,
     // Held until `close`, after the ledger closes.
-    _lock: File,
+    _lock: Arc<File>,
 }
 
 /// What an open returns.

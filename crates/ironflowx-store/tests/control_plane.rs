@@ -5,6 +5,8 @@ use std::path::Path;
 
 use ironflowx_authz::{KeyParts, KeyRecord, SeedState, mint};
 use ironflowx_core::{Clock, EnvRef, KeyId, KeyOrigin, ProjectId, Scope, TenantId, Timestamp};
+use rusqlite::types::Value;
+
 use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, KeyChangeError, NewKey, SeedError};
 
 const T: i64 = 1_800_000_000_000;
@@ -531,6 +533,21 @@ fn seed(n: u8, secret: u8) -> KeyParts {
     }
 }
 
+/// Every key row by ID: each column's value by its name.
+fn whole_rows(dir: &Path) -> BTreeMap<String, BTreeMap<String, Value>> {
+    let db = rusqlite::Connection::open(path(dir)).unwrap();
+    let mut stmt = db.prepare("SELECT * FROM keys").unwrap();
+    let names: Vec<String> = stmt.column_names().map(str::to_owned).collect();
+    let rows = stmt.query_map([], |r| {
+        let row: Result<BTreeMap<_, _>, rusqlite::Error> = names
+            .iter()
+            .map(|n| Ok((n.clone(), r.get(n.as_str())?)))
+            .collect();
+        Ok((r.get("id")?, row?))
+    });
+    rows.unwrap().map(Result::unwrap).collect()
+}
+
 /// Every unrevoked seed's ID.
 fn current_seeds(cp: &ControlPlane) -> Vec<KeyId> {
     let rows = cp.list_keys(&env(1), None, 2_000).unwrap();
@@ -579,42 +596,65 @@ fn a_new_seed_rotates_the_current_one_and_an_old_one_stays_revoked() {
     let made_id = made.id;
     cp.insert_key(&env(1), made, minted.id, &Fixed(T), CAP)
         .unwrap();
-    let mut expected = marks(&cp);
     let (a, b) = (seed(112, 1), seed(113, 1));
     let apply = |s: &KeyParts, now: i64| cp.apply_seed(&env(1), s, &Fixed(now)).unwrap();
-    let revoked = |now: i64| (false, Some(Timestamp::from_millis(now)));
+    let mut expected = whole_rows(dir.path());
+    // The rows are `expected` with `new` added, a seed made at `now`, and `revoked` revoked then.
+    let mut rotated = |new: &KeyParts, revoked: Option<&KeyParts>, now: i64, case: &str| {
+        let mut rows = whole_rows(dir.path());
+        if let Some(old) = revoked {
+            let old = expected.get_mut(&old.id.to_string()).unwrap();
+            old.insert("revoked_at".into(), Value::Integer(now));
+        }
+        let unchanged = rows.clone();
+        rows.remove(&new.id.to_string()).expect("the new seed");
+        assert_eq!(rows, expected, "{case}");
+        expected = unchanged;
+        let row = cp.list_keys(&env(1), None, 1).unwrap().remove(0);
+        assert_eq!(
+            (row.record.id, row.origin, row.created_by, row.created_at),
+            (new.id, KeyOrigin::Seed, None, Timestamp::from_millis(now)),
+            "{case}"
+        );
+        let every = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]);
+        assert_eq!((row.record.scopes, row.record.expires_at), (every, None));
+        assert!(row.record.digest.ct_eq(&new.digest), "{case}");
+        assert_eq!(current_seeds(&cp), [new.id], "{case}");
+    };
 
     assert_eq!(apply(&a, T + 1), SeedState::Current);
-    expected.insert(a.id.to_string(), (false, None));
-    assert_eq!(marks(&cp), expected, "the first seed");
+    rotated(&a, None, T + 1, "the first seed");
+    let before = whole_rows(dir.path());
+    let calls = ironflowx_authz::ct_eq_calls();
     assert_eq!(apply(&a, T + 2), SeedState::Current);
-    assert_eq!(marks(&cp), expected, "the current seed again");
+    assert_eq!(
+        ironflowx_authz::ct_eq_calls() - calls,
+        1,
+        "compared (TEN-4)"
+    );
+    assert_eq!(whole_rows(dir.path()), before, "the current seed again");
 
     assert_eq!(apply(&b, T + 3), SeedState::Current);
-    expected.insert(a.id.to_string(), revoked(T + 3));
-    expected.insert(b.id.to_string(), (false, None));
-    assert_eq!(marks(&cp), expected, "a new seed");
+    rotated(&b, Some(&a), T + 3, "a new seed");
+    let before = whole_rows(dir.path());
+    let calls = ironflowx_authz::ct_eq_calls();
     assert_eq!(apply(&a, T + 4), SeedState::Revoked);
-    assert_eq!(marks(&cp), expected, "a revoked seed");
-    assert_eq!(current_seeds(&cp), [b.id]);
-
-    let row = cp.list_keys(&env(1), None, 1).unwrap().remove(0);
     assert_eq!(
-        (row.record.id, row.origin, row.created_by, row.created_at),
-        (b.id, KeyOrigin::Seed, None, Timestamp::from_millis(T + 3))
+        ironflowx_authz::ct_eq_calls() - calls,
+        1,
+        "compared (TEN-4)"
     );
-    let every = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]);
-    assert_eq!((row.record.scopes, row.record.expires_at), (every, None));
-    assert!(row.record.digest.ct_eq(&b.digest));
+    assert_eq!(whole_rows(dir.path()), before, "a revoked seed");
 
-    // With no current seed left, a new one revokes nothing.
+    // With no current seed left, a new one revokes nothing, and `a` keeps its first time.
     cp.revoke_key(&env(1), b.id, made_id, &Fixed(T + 5))
         .unwrap();
-    expected.insert(b.id.to_string(), revoked(T + 5));
+    let before = whole_rows(dir.path());
     let c = seed(114, 1);
     assert_eq!(apply(&c, T + 6), SeedState::Current);
-    expected.insert(c.id.to_string(), (false, None));
-    assert_eq!(marks(&cp), expected, "after the last seed was revoked");
+    let mut rows = whole_rows(dir.path());
+    rows.remove(&c.id.to_string()).expect("the new seed");
+    assert_eq!(rows, before, "after the last seed was revoked");
     assert_eq!(current_seeds(&cp), [c.id]);
 }
 
@@ -638,10 +678,14 @@ fn a_seed_whose_key_id_is_another_key_is_a_conflict() {
         cp.apply_seed(&env(1), s, &Fixed(T)).unwrap();
     }
     let conflicts = |s: &KeyParts, case: &str| {
-        let before = marks(&cp);
+        let before = whole_rows(dir.path());
+        let calls = ironflowx_authz::ct_eq_calls();
         let got = cp.apply_seed(&env(1), s, &Fixed(T + 1));
         assert!(matches!(got, Err(SeedError::Conflict)), "{case}: {got:?}");
-        assert_eq!(marks(&cp), before, "{case}");
+        assert_eq!(whole_rows(dir.path()), before, "{case}");
+        // Of this incarnation, the row is compared, and through `ct_eq` (TEN-4).
+        let compared = usize::from(case != "a seed of another incarnation");
+        assert_eq!(ironflowx_authz::ct_eq_calls() - calls, compared, "{case}");
         assert_eq!(current_seeds(&cp), [a.id], "{case}");
     };
     conflicts(&seed(116, 2), "the current seed's ID, another secret");
@@ -674,7 +718,7 @@ fn a_seed_change_that_fails_keeps_the_previous_seed() {
         .unwrap();
     let (a, b) = (seed(118, 1), seed(119, 1));
     cp.apply_seed(&env(1), &a, &Fixed(T)).unwrap();
-    let before = marks(&cp);
+    let before = whole_rows(dir.path());
     let db = rusqlite::Connection::open(path(dir.path())).unwrap();
     db.execute_batch(
         "CREATE TRIGGER fail BEFORE INSERT ON keys BEGIN SELECT RAISE(ABORT, 'injected'); END;",
@@ -682,7 +726,7 @@ fn a_seed_change_that_fails_keeps_the_previous_seed() {
     .unwrap();
     let failed = cp.apply_seed(&env(1), &b, &Fixed(T + 1));
     assert!(matches!(failed, Err(SeedError::Store(_))), "{failed:?}");
-    assert_eq!(marks(&cp), before);
+    assert_eq!(whole_rows(dir.path()), before);
     db.execute_batch("DROP TRIGGER fail").unwrap();
     cp.apply_seed(&env(1), &b, &Fixed(T + 2)).unwrap();
     assert_eq!(current_seeds(&cp), [b.id]);
@@ -734,4 +778,33 @@ fn a_rotation_leaves_the_seeds_of_other_environments_and_incarnations() {
         let kept = found(&cp, moved.id, &elsewhere).expect("the moved row");
         assert_eq!(kept.revoked_at, None, "{elsewhere}");
     }
+}
+
+/// The seed's transaction takes the write lock before it reads the clock (TEN-11): while another
+/// connection holds the lock, the clock is not read.
+#[test]
+fn a_seed_is_applied_at_a_now_read_after_the_write_lock() {
+    struct Told(std::sync::mpsc::Sender<()>);
+    impl Clock for Told {
+        fn now(&self) -> Timestamp {
+            let _ = self.0.send(());
+            Timestamp::from_millis(T)
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    let db = rusqlite::Connection::open(path(dir.path())).unwrap();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let (tell, told) = std::sync::mpsc::channel();
+    std::thread::scope(|s| {
+        let applied = s.spawn(move || cp.apply_seed(&env(1), &seed(150, 1), &Told(tell)));
+        // One-sided: with the lock held, a reading can only come from the defect.
+        let early = told.recv_timeout(std::time::Duration::from_millis(200));
+        db.execute_batch("COMMIT").unwrap();
+        assert!(early.is_err(), "the clock was read before the lock");
+        assert_eq!(applied.join().unwrap().unwrap(), SeedState::Current);
+        told.recv().expect("read once the lock is free");
+    });
 }

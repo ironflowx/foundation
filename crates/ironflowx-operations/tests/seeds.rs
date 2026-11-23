@@ -2,10 +2,13 @@
 //! changes no seed (TEN-9). ACC-004–008, 013 and 014 cover the same rules as a host sees them.
 
 use std::path::Path;
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use ironflowx_authz::mint;
 use ironflowx_cell::{Ledger, ManualClock, OpenError};
-use ironflowx_core::{EnvRef, Secret, Timestamp};
+use ironflowx_core::{Clock, EnvRef, ErrorKind, Secret, Timestamp};
 use ironflowx_operations::{Engine, EngineError, Opened, SeedState};
 use ironflowx_proto::{Call, ListEnvironmentsRequest, WhoamiRequest};
 
@@ -30,16 +33,25 @@ async fn open(dir: &Path, seed: Option<&str>) -> Result<Opened, EngineError> {
     Engine::open(dir, clock(), seed.map(secret)).await
 }
 
+/// Whether `key` is accepted; if not, it must be refused as an invalid key.
 async fn authenticates(engine: &Engine, key: &str) -> bool {
     let cx = Call::with_key(secret(key));
-    engine.whoami(&cx, WhoamiRequest {}).await.is_ok()
+    let Err(err) = engine.whoami(&cx, WhoamiRequest {}).await else {
+        return true;
+    };
+    assert_eq!(
+        (err.kind, err.message.as_str(), err.hint),
+        (ErrorKind::Unauthenticated, "invalid API key", None)
+    );
+    false
 }
 
-/// The error of an open that must fail, its message free of the seed.
+/// The error of an open that must fail, its message free of the seed and of its secret alone.
 async fn refused(dir: &Path, seed: &str) -> EngineError {
     let err = open(dir, Some(seed)).await.err().expect("refused");
     for shown in [format!("{err}"), format!("{err:?}")] {
         assert!(!shown.contains(seed), "{shown}");
+        assert!(!shown.contains(&seed[41..]), "{shown}");
     }
     err
 }
@@ -167,5 +179,67 @@ async fn a_seed_that_is_not_applied_changes_no_key_and_releases_the_directory() 
     for not_applied in [&other_secret, &b] {
         assert!(!authenticates(&opened.engine, not_applied).await);
     }
+    opened.engine.close().await;
+}
+
+/// A clock whose first reading after it is armed says so, then waits to be let go.
+#[derive(Clone, Default)]
+struct Held(Arc<Mutex<Option<Hook>>>);
+
+/// Says a reading began; waits for leave to finish it.
+type Hook = (Sender<()>, Receiver<()>);
+
+impl Clock for Held {
+    fn now(&self) -> Timestamp {
+        let hook = self.0.lock().unwrap().take();
+        if let Some((reading, go)) = hook {
+            reading.send(()).unwrap();
+            let _ = go.recv();
+        }
+        clock().now()
+    }
+}
+
+/// An open cancelled while it applies its seed keeps the root until the seed is applied or not,
+/// so no later open runs beside it, its own seed then revoked by the cancelled one's.
+#[tokio::test]
+async fn a_cancelled_open_holds_the_root_until_its_seed_is_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (seed(1, 1), seed(2, 2));
+    open(dir.path(), Some(&a))
+        .await
+        .unwrap()
+        .engine
+        .close()
+        .await;
+
+    let held = Held::default();
+    let (reading, applying) = channel();
+    let (go, wait) = channel();
+    *held.0.lock().unwrap() = Some((reading, wait));
+    let root = dir.path().to_owned();
+    let seed = Some(secret(&b));
+    let task = tokio::spawn(async move { Engine::open(&root, held, seed).await.map(drop) });
+    while applying.try_recv().is_err() {
+        tokio::task::yield_now().await;
+    }
+    // The clock is read inside the seed's transaction: the write lock is taken.
+    let db = rusqlite::Connection::open(dir.path().join("control.db")).unwrap();
+    db.busy_timeout(Duration::ZERO).unwrap();
+    assert!(db.execute_batch("BEGIN IMMEDIATE").is_err());
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    let err = open(dir.path(), None).await.err().expect("refused");
+    assert!(matches!(err, EngineError::Locked), "{err:?}");
+    go.send(()).unwrap();
+    let opened = loop {
+        match open(dir.path(), None).await {
+            Err(EngineError::Locked) => tokio::task::yield_now().await,
+            opened => break opened.unwrap(),
+        }
+    };
+    assert!(authenticates(&opened.engine, &b).await);
+    assert!(!authenticates(&opened.engine, &a).await);
     opened.engine.close().await;
 }

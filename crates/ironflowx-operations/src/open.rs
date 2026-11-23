@@ -88,7 +88,8 @@ impl Engine {
     ///
     /// `MalformedSeed` before anything is read; `Locked` if another engine holds `root`;
     /// `SeedConflict` if the seed's key ID is already another key; a store, ledger or I/O
-    /// failure otherwise. A failed open changes no seed.
+    /// failure otherwise. A failed open changes no seed. A cancelled one may still apply its own:
+    /// `root` stays locked until it has, or has failed to.
     ///
     /// # Panics
     ///
@@ -116,7 +117,7 @@ impl Engine {
                     Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
                     _ => {}
                 }
-                Ok((lock, state))
+                Ok((Arc::new(lock), state))
             })
             .await?
         };
@@ -134,13 +135,8 @@ impl Engine {
             }
             BootstrapState::Marked { env } => {
                 let ledger = Ledger::open(&ledger_dir(&root, env), env, clock.clone()).await?;
-                match apply_seed(&control, env, seed, clock).await {
-                    Ok(state) => (env, ledger, None, state),
-                    Err(e) => {
-                        ledger.close().await;
-                        return Err(e);
-                    }
-                }
+                let state = apply_seed(&control, &lock, env, seed, clock).await?;
+                (env, ledger, None, state)
             }
             // Finishing an earlier open's bootstrap is not built yet: refuse, changing nothing.
             // shortcut: refuses until finishing opens exist; upgrade with them.
@@ -164,9 +160,11 @@ impl Engine {
     }
 }
 
-/// Applies the seed of a later open, if it was given one.
+/// Applies the seed of a later open, if it was given one. The transaction holds the root's lock
+/// itself, since it outlives an open that is cancelled: no later open runs beside it.
 async fn apply_seed(
     control: &Arc<ControlPlane>,
+    lock: &Arc<File>,
     env: EnvRef,
     seed: Option<KeyParts>,
     clock: impl Clock + Send + 'static,
@@ -174,8 +172,13 @@ async fn apply_seed(
     let Some(seed) = seed else {
         return Ok(None);
     };
-    let control = control.clone();
-    blocking(move || Ok(Some(control.apply_seed(&env, &seed, &clock)?))).await
+    let (control, lock) = (control.clone(), lock.clone());
+    blocking(move || {
+        let state = control.apply_seed(&env, &seed, &clock)?;
+        drop(lock);
+        Ok(Some(state))
+    })
+    .await
 }
 
 fn lock_root(root: &Path) -> Result<File, EngineError> {

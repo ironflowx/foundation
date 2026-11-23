@@ -62,6 +62,24 @@ async fn an_unmarked_bootstrap_is_refused_and_left_as_it_was() {
     );
 }
 
+/// A `control.db` with no bootstrap in it is bootstrapped, with a seed or without.
+#[tokio::test]
+async fn a_never_bootstrapped_control_plane_is_bootstrapped() {
+    let seed = || mint(uuid(5).parse().unwrap(), [7; 32]).0;
+    for given in [None, Some(seed())] {
+        let dir = tempfile::tempdir().unwrap();
+        drop(ControlPlane::open(&dir.path().join("control.db")).unwrap());
+        let with_seed = given.is_some();
+        let opened = Engine::open(dir.path(), clock(), given).await.unwrap();
+        assert_eq!(opened.minted.is_none(), with_seed);
+        let key = opened.minted.unwrap_or_else(seed);
+        let cx = Call::with_key(key);
+        let whoami = opened.engine.whoami(&cx, WhoamiRequest {}).await;
+        whoami.expect("the bootstrap key");
+        opened.engine.close().await;
+    }
+}
+
 #[tokio::test]
 async fn a_failed_control_plane_read_is_unavailable_and_the_engine_stays_open() {
     let dir = tempfile::tempdir().unwrap();
