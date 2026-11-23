@@ -95,7 +95,7 @@ async fn call(engine: &Engine, op: Operation, cx: &Call, t: &Targets) -> Result<
 async fn every_operation_admits_exactly_the_keys_holding_its_scope() {
     let dir = tempfile::tempdir().unwrap();
     let clock = ManualClock::new(Timestamp::from_millis(1_800_000_000_000));
-    let opened = Engine::open(dir.path(), clock).await.unwrap();
+    let opened = Engine::open(dir.path(), clock, None).await.unwrap();
     let engine = &opened.engine;
     let admin = Call::with_key(opened.minted.unwrap());
     let event_id = engine

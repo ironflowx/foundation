@@ -36,7 +36,7 @@ const fn page() -> ListEventsRequest {
 async fn an_admin_key_creates_a_key_that_works_until_its_expiry() {
     let dir = tempfile::tempdir().unwrap();
     let clock = ManualClock::new(at(T));
-    let opened = Engine::open(dir.path(), clock.clone()).await.unwrap();
+    let opened = Engine::open(dir.path(), clock.clone(), None).await.unwrap();
     let engine = &opened.engine;
     let admin = Call::with_key(opened.minted.unwrap());
     let admin_id = engine
@@ -101,7 +101,7 @@ async fn an_admin_key_creates_a_key_that_works_until_its_expiry() {
 async fn a_key_grants_nothing_beyond_its_creator() {
     let dir = tempfile::tempdir().unwrap();
     let clock = ManualClock::new(at(T));
-    let opened = Engine::open(dir.path(), clock.clone()).await.unwrap();
+    let opened = Engine::open(dir.path(), clock.clone(), None).await.unwrap();
     let engine = &opened.engine;
     let admin = Call::with_key(opened.minted.unwrap());
     let creator = engine
@@ -178,7 +178,7 @@ async fn a_creator_that_expires_before_its_key_is_stored_is_refused() {
         now: Arc::new(AtomicI64::new(T)),
         step: Arc::new(AtomicI64::new(0)),
     };
-    let opened = Engine::open(dir.path(), clock.clone()).await.unwrap();
+    let opened = Engine::open(dir.path(), clock.clone(), None).await.unwrap();
     let engine = &opened.engine;
     let admin = Call::with_key(opened.minted.unwrap());
     let creator = CreateKeyRequest {
@@ -240,7 +240,7 @@ async fn a_creator_that_expires_before_its_key_is_stored_is_refused() {
 #[tokio::test]
 async fn a_failed_insert_is_unavailable_and_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let opened = Engine::open(dir.path(), ManualClock::new(at(T)))
+    let opened = Engine::open(dir.path(), ManualClock::new(at(T)), None)
         .await
         .unwrap();
     let engine = &opened.engine;

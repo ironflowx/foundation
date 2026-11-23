@@ -16,9 +16,16 @@ use std::fmt;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use ironflowx_core::{EnvRef, KeyId, Scope, Secret, SubmitAs, Timestamp};
+use ironflowx_core::{EnvRef, KeyId, KeyOrigin, Scope, Secret, SubmitAs, Timestamp};
 
 pub use digest::KeyDigest;
+
+/// How many times this thread called [`KeyDigest::ct_eq`].
+#[cfg(feature = "__count-ct-eq")]
+#[doc(hidden)]
+pub fn ct_eq_calls() -> usize {
+    digest::CT_EQ_CALLS.get()
+}
 
 const PREFIX: &str = "ixk_";
 /// `ixk_` + a 36-character key ID + `_` + 43 base64url characters (256 bits, no padding).
@@ -203,6 +210,52 @@ pub fn recheck(record: &KeyRecord, env: &EnvRef, now: Timestamp) -> Result<Grant
     })
 }
 
+/// Whether the seed a host supplied still works.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedState {
+    /// It is the one unrevoked seed.
+    Current,
+    /// It was revoked, by an admin or by a later seed, and stays revoked (D33).
+    Revoked,
+}
+
+/// The seed's key ID is already a key, and not this seed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeedConflict;
+
+impl fmt::Display for SeedConflict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the seed's key ID is already another key")
+    }
+}
+
+impl std::error::Error for SeedConflict {}
+
+/// Decides what the stored key `record`, of origin `origin`, found under `seed`'s key ID, makes
+/// of `seed` in `env`.
+///
+/// # Errors
+///
+/// [`SeedConflict`] if the key has another digest or environment, or is not a seed.
+pub fn verify_seed(
+    seed: &KeyParts,
+    record: &KeyRecord,
+    origin: KeyOrigin,
+    env: &EnvRef,
+) -> Result<SeedState, SeedConflict> {
+    // The digest comparison runs whatever the other checks find.
+    let same_secret = record.digest.ct_eq(&seed.digest);
+    let same_key = record.id == seed.id && record.env == *env && origin == KeyOrigin::Seed;
+    if !(same_secret && same_key) {
+        return Err(SeedConflict);
+    }
+    Ok(if record.revoked_at.is_some() {
+        SeedState::Revoked
+    } else {
+        SeedState::Current
+    })
+}
+
 /// A grant lacks the scope an operation requires (D31).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MissingScope(Scope);
@@ -317,6 +370,45 @@ mod tests {
                 "{case}"
             );
             assert_eq!(digest::CT_EQ_CALLS.get() - before, 1, "{case}");
+        }
+    }
+
+    /// `verify_seed` compares digests through `ct_eq` once on every record it is given, whatever
+    /// its origin, environment or state, and only a seed with that digest is the host's (TEN-4).
+    #[test]
+    fn verify_seed_reaches_ct_eq_for_every_record() {
+        use KeyOrigin::{Created, Minted, Recovered, Seed};
+        let id: KeyId = "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f".parse().unwrap();
+        let other: KeyId = "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e10".parse().unwrap();
+        let seed = parse(&mint(id, [7; 32]).0).unwrap();
+        for (record_id, matches_id) in [(id, true), (other, false)] {
+            for (digest, same) in [(seed.digest.clone(), true), (mint(id, [8; 32]).1, false)] {
+                for (key_env, own) in [(env(1), true), (env(2), false)] {
+                    for origin in [Seed, Minted, Recovered, Created] {
+                        for revoked_at in [None, Some(Timestamp::from_millis(5))] {
+                            let record = KeyRecord {
+                                id: record_id,
+                                env: key_env,
+                                scopes: BTreeSet::new(),
+                                digest: digest.clone(),
+                                expires_at: None,
+                                expiry_recorded: false,
+                                revoked_at,
+                            };
+                            let hosts = matches_id && same && own && origin == Seed;
+                            let expected = match (hosts, revoked_at) {
+                                (false, _) => Err(SeedConflict),
+                                (true, None) => Ok(SeedState::Current),
+                                (true, Some(_)) => Ok(SeedState::Revoked),
+                            };
+                            let before = digest::CT_EQ_CALLS.get();
+                            let got = verify_seed(&seed, &record, origin, &env(1));
+                            assert_eq!(got, expected, "{origin:?}: {record:?}");
+                            assert_eq!(digest::CT_EQ_CALLS.get() - before, 1, "{record:?}");
+                        }
+                    }
+                }
+            }
         }
     }
 }

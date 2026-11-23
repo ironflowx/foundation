@@ -16,7 +16,7 @@ use ironflowx_proto::{
 
 async fn open(dir: &Path) -> (Engine, String) {
     let clock = ManualClock::new(Timestamp::from_millis(1_800_000_000_000));
-    let opened = Engine::open(dir, clock).await.unwrap();
+    let opened = Engine::open(dir, clock, None).await.unwrap();
     (opened.engine, opened.minted.unwrap().expose().to_owned())
 }
 

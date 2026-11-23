@@ -11,7 +11,10 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Mutex;
 
-use ironflowx_authz::{CreateRefusal, Grant, KeyDigest, KeyParts, KeyRecord, may_create, recheck};
+use ironflowx_authz::{
+    CreateRefusal, Grant, KeyDigest, KeyParts, KeyRecord, SeedConflict, SeedState, may_create,
+    recheck, verify_seed,
+};
 use ironflowx_core::{Clock, EnvRef, KeyId, KeyOrigin, ProjectId, Scope, TenantId, Timestamp};
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -110,14 +113,16 @@ pub enum BootstrapState {
     },
 }
 
-/// What one bootstrap creates: the default tenant, project and environment, and its admin key,
-/// origin minted. The engine draws every ID and the key's secret.
+/// What one bootstrap creates: the default tenant, project and environment, and its admin key.
+/// The engine draws every ID and the key's secret, but for a seed's, which the host supplied.
 #[derive(Debug, Clone)]
 pub struct Bootstrap {
     pub env: EnvRef,
     pub tenant: TenantId,
     pub project: ProjectId,
     pub key: KeyParts,
+    /// The key is a seed, else minted.
+    pub by_seed: bool,
 }
 
 /// A key to create: the engine draws its ID and secret; its creation time, sequence number and
@@ -173,6 +178,25 @@ impl fmt::Display for KeyChangeError {
 }
 
 impl std::error::Error for KeyChangeError {}
+
+/// Why a seed was not applied. No key changed.
+#[derive(Debug)]
+pub enum SeedError {
+    /// The seed's key ID is already a key, and not this seed.
+    Conflict,
+    Store(StoreError),
+}
+
+impl fmt::Display for SeedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Conflict => SeedConflict.fmt(f),
+            Self::Store(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for SeedError {}
 
 /// An environment with its parents' IDs and the names its address is derived from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,8 +283,8 @@ impl ControlPlane {
         })
     }
 
-    /// Creates the default tenant, project and environment and the minted admin key, in one
-    /// transaction.
+    /// Creates the default tenant, project and environment and the admin key, minted or a seed,
+    /// in one transaction.
     ///
     /// # Errors
     ///
@@ -269,7 +293,8 @@ impl ControlPlane {
         run(|| {
             let mut conn = self.lock()?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let now = clock.now().as_millis();
+            let at = clock.now();
+            let now = at.as_millis();
             let bootstrapped: bool =
                 tx.query_row("SELECT count(*) > 0 FROM environments", [], |r| r.get(0))?;
             if bootstrapped {
@@ -294,20 +319,8 @@ impl ControlPlane {
                     now
                 ],
             )?;
-            let admin = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]);
-            tx.execute(
-                "INSERT INTO keys (id, environment_id, environment_token, scopes, digest, origin, \
-             created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    b.key.id.to_string(),
-                    env.id().to_string(),
-                    env.token().to_string(),
-                    scopes_text(&admin),
-                    b.key.digest.to_stored(),
-                    MINTED,
-                    now
-                ],
-            )?;
+            let origin = if b.by_seed { SEED } else { MINTED };
+            insert_admin(&tx, &b.key, &env, origin, at)?;
             tx.commit()?;
             Ok(())
         })
@@ -333,6 +346,64 @@ impl ControlPlane {
             tx.commit()?;
             Ok(())
         })
+    }
+
+    /// Applies the seed a host supplied to `env`, in one transaction: a key ID not stored yet
+    /// revokes the current seed, if any, and becomes the current one, other keys unchanged; the
+    /// current seed, or a revoked one, changes nothing (D33).
+    ///
+    /// # Errors
+    ///
+    /// `Conflict` if the seed's key ID is already a key and not this seed, `Store` if `env` is
+    /// not this file's environment or SQLite fails; no key changes.
+    pub fn apply_seed(
+        &self,
+        env: &EnvRef,
+        seed: &KeyParts,
+        clock: &dyn Clock,
+    ) -> Result<SeedState, SeedError> {
+        // The outer error is SQLite's; the inner one, a check that refused.
+        run(|| {
+            let mut conn = self.lock()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let now = clock.now();
+            let here: bool = tx.query_row(
+                "SELECT count(*) > 0 FROM environments WHERE id = ?1 AND token = ?2",
+                params![env.id().to_string(), env.token().to_string()],
+                |r| r.get(0),
+            )?;
+            if !here {
+                return Err(refused("no such environment"));
+            }
+            let id = seed.id.to_string();
+            // Of any environment: a key ID is used once in the file.
+            let origin = tx
+                .query_row("SELECT origin FROM keys WHERE id = ?1", [&id], |r| {
+                    r.get::<_, String>(0)
+                })
+                .optional()?;
+            if let Some(origin) = origin {
+                let origin = origin_from(&origin)?;
+                let state = lookup(&tx, seed.id, env)?
+                    .ok_or(SeedConflict)
+                    .and_then(|record| verify_seed(seed, &record, origin, env));
+                return Ok(state.map_err(|SeedConflict| SeedError::Conflict));
+            }
+            tx.execute(
+                "UPDATE keys SET revoked_at = ?1 WHERE environment_id = ?2 \
+                 AND environment_token = ?3 AND origin = ?4 AND revoked_at IS NULL",
+                params![
+                    now.as_millis(),
+                    env.id().to_string(),
+                    env.token().to_string(),
+                    SEED
+                ],
+            )?;
+            insert_admin(&tx, seed, env, SEED, now)?;
+            tx.commit()?;
+            Ok(Ok(SeedState::Current))
+        })
+        .map_err(SeedError::Store)?
     }
 
     /// The key `id`, if it was made for `env`'s ID and incarnation token, and then `clock`'s now:
@@ -611,6 +682,31 @@ fn lookup(conn: &Connection, id: KeyId, env: &EnvRef) -> Result<Option<KeyRecord
         )
         .optional()?;
     row.map(|stored| stored.record(id, env)).transpose()
+}
+
+/// Inserts an admin key no key created: all three scopes, no expiry, no label.
+fn insert_admin(
+    conn: &Connection,
+    key: &KeyParts,
+    env: &EnvRef,
+    origin: &str,
+    now: Timestamp,
+) -> Result<(), Error> {
+    let every = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]);
+    conn.execute(
+        "INSERT INTO keys (id, environment_id, environment_token, scopes, digest, origin, \
+         created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            key.id.to_string(),
+            env.id().to_string(),
+            env.token().to_string(),
+            scopes_text(&every),
+            key.digest.to_stored(),
+            origin,
+            now.as_millis()
+        ],
+    )?;
+    Ok(())
 }
 
 /// Sets `id`'s recorded expiry unless it is set or the key is revoked.

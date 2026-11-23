@@ -16,9 +16,9 @@ use subtle::ConstantTimeEq as _;
 #[derive(Clone)]
 pub struct KeyDigest([u8; 32]);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "__count-ct-eq"))]
 thread_local! {
-    /// How many times this thread called `ct_eq`, so a test can show `verify` reaches it.
+    /// How many times this thread called `ct_eq`, so a test can show a comparison reaches it.
     pub(crate) static CT_EQ_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -29,7 +29,7 @@ impl KeyDigest {
 
     /// Compares in constant time.
     pub fn ct_eq(&self, other: &Self) -> bool {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "__count-ct-eq"))]
         CT_EQ_CALLS.set(CT_EQ_CALLS.get() + 1);
         self.0.ct_eq(&other.0).into()
     }

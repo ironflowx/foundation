@@ -27,7 +27,7 @@ fn call(key: &str) -> Call {
 
 /// Opens `dir` for the first time; the engine and the bootstrap key's text.
 async fn open(dir: &Path, clock: impl Clock + Clone + Send + Sync + 'static) -> (Engine, String) {
-    let opened = Engine::open(dir, clock).await.unwrap();
+    let opened = Engine::open(dir, clock, None).await.unwrap();
     (opened.engine, opened.minted.unwrap().expose().to_owned())
 }
 
@@ -106,7 +106,7 @@ async fn a_key_refused_as_expired_stays_refused_when_the_clock_steps_back_and_af
     assert_eq!(status(&engine, &admin, &key).await, KeyStatus::Expired);
     engine.close().await;
 
-    let engine = Engine::open(dir.path(), clock).await.unwrap().engine;
+    let engine = Engine::open(dir.path(), clock, None).await.unwrap().engine;
     assert_refused(&engine, &key, "after a restart").await;
     engine.close().await;
 }

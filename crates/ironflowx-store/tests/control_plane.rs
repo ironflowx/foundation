@@ -3,9 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use ironflowx_authz::{KeyParts, KeyRecord, mint};
+use ironflowx_authz::{KeyParts, KeyRecord, SeedState, mint};
 use ironflowx_core::{Clock, EnvRef, KeyId, KeyOrigin, ProjectId, Scope, TenantId, Timestamp};
-use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, KeyChangeError, NewKey};
+use rusqlite::types::Value;
+
+use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, KeyChangeError, NewKey, SeedError};
 
 const T: i64 = 1_800_000_000_000;
 
@@ -37,6 +39,7 @@ fn bootstrap(env: EnvRef, n: u8) -> (Bootstrap, KeyParts) {
         tenant: uuid(16 * n + 1).parse().unwrap(),
         project: uuid(16 * n + 2).parse().unwrap(),
         key: key.clone(),
+        by_seed: false,
     };
     (b, key)
 }
@@ -518,5 +521,320 @@ fn a_slot_is_held_until_a_revoke_or_a_recorded_expiry() {
         cp.revoke_key(&env(1), made, admin.id, &Fixed(T)).unwrap();
         set(column, &own);
         full(create(T), "a key of this environment again");
+    }
+}
+
+/// A seed: a key the host made, its ID from `n` and its secret from `secret`.
+fn seed(n: u8, secret: u8) -> KeyParts {
+    let id: KeyId = uuid(n).parse().unwrap();
+    KeyParts {
+        id,
+        digest: mint(id, [secret; 32]).1,
+    }
+}
+
+/// Every key row by ID: each column's value by its name.
+fn whole_rows(dir: &Path) -> BTreeMap<String, BTreeMap<String, Value>> {
+    let db = rusqlite::Connection::open(path(dir)).unwrap();
+    let mut stmt = db.prepare("SELECT * FROM keys").unwrap();
+    let names: Vec<String> = stmt.column_names().map(str::to_owned).collect();
+    let rows = stmt.query_map([], |r| {
+        let row: Result<BTreeMap<_, _>, rusqlite::Error> = names
+            .iter()
+            .map(|n| Ok((n.clone(), r.get(n.as_str())?)))
+            .collect();
+        Ok((r.get("id")?, row?))
+    });
+    rows.unwrap().map(Result::unwrap).collect()
+}
+
+/// The row of a seed made at `now`: every column.
+fn seed_row(seed: &KeyParts, seq: i64, now: i64) -> BTreeMap<String, Value> {
+    let text = |s: &str| Value::Text(s.to_owned());
+    let columns = [
+        ("seq", Value::Integer(seq)),
+        ("id", text(&seed.id.to_string())),
+        ("environment_id", text(&env(1).id().to_string())),
+        ("environment_token", text(&env(1).token().to_string())),
+        ("scopes", text("read,write,admin")),
+        ("digest", Value::Blob(seed.digest.to_stored().to_vec())),
+        ("origin", text("seed")),
+        ("created_by", Value::Null),
+        ("label", Value::Null),
+        ("expires_at", Value::Null),
+        ("expiry_recorded", Value::Integer(0)),
+        ("revoked_at", Value::Null),
+        ("created_at", Value::Integer(now)),
+    ];
+    columns.map(|(name, value)| (name.to_owned(), value)).into()
+}
+
+/// Every unrevoked seed's ID.
+fn current_seeds(cp: &ControlPlane) -> Vec<KeyId> {
+    let rows = cp.list_keys(&env(1), None, 2_000).unwrap();
+    rows.into_iter()
+        .filter(|r| r.origin == KeyOrigin::Seed && r.record.revoked_at.is_none())
+        .map(|r| r.record.id)
+        .collect()
+}
+
+#[test]
+fn a_seeded_bootstrap_holds_the_seed_as_its_one_admin_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    let a = seed(110, 1);
+    let b = Bootstrap {
+        key: a.clone(),
+        by_seed: true,
+        ..bootstrap(env(1), 0).0
+    };
+    cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
+    let rows = cp.list_keys(&env(1), None, 10).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].record.id, rows[0].origin, rows[0].created_by),
+        (a.id, KeyOrigin::Seed, None)
+    );
+    let every = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]);
+    assert_eq!(rows[0].record.scopes, every);
+    assert!(rows[0].record.digest.ct_eq(&a.digest));
+    assert_eq!(
+        cp.apply_seed(&env(1), &a, &Fixed(T + 1)).unwrap(),
+        SeedState::Current
+    );
+}
+
+/// A new seed revokes the current one and becomes current, holding all three scopes and no
+/// expiry; other admin keys, and seeds revoked before, keep what they were. A seed applied
+/// again, current or revoked, changes nothing (D33). At every step one seed is unrevoked.
+#[test]
+fn a_new_seed_rotates_the_current_one_and_an_old_one_stays_revoked() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    let (b, minted) = bootstrap(env(1), 0);
+    cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
+    let made = new_key(111, &[Scope::Admin], None, None);
+    let made_id = made.id;
+    cp.insert_key(&env(1), made, minted.id, &Fixed(T), CAP)
+        .unwrap();
+    let (a, b) = (seed(112, 1), seed(113, 1));
+    let apply = |s: &KeyParts, now: i64| cp.apply_seed(&env(1), s, &Fixed(now)).unwrap();
+    let mut expected = whole_rows(dir.path());
+    // The rows are `expected` with `new` added, a seed made at `now`, and `revoked` revoked then.
+    let mut rotated = |new: &KeyParts, revoked: Option<&KeyParts>, now: i64, case: &str| {
+        if let Some(old) = revoked {
+            let old = expected.get_mut(&old.id.to_string()).unwrap();
+            old.insert("revoked_at".into(), Value::Integer(now));
+        }
+        let seq = i64::try_from(expected.len()).unwrap() + 1;
+        expected.insert(new.id.to_string(), seed_row(new, seq, now));
+        assert_eq!(whole_rows(dir.path()), expected, "{case}");
+        assert_eq!(current_seeds(&cp), [new.id], "{case}");
+    };
+
+    assert_eq!(apply(&a, T + 1), SeedState::Current);
+    rotated(&a, None, T + 1, "the first seed");
+    let before = whole_rows(dir.path());
+    let calls = ironflowx_authz::ct_eq_calls();
+    assert_eq!(apply(&a, T + 2), SeedState::Current);
+    assert_eq!(
+        ironflowx_authz::ct_eq_calls() - calls,
+        1,
+        "compared (TEN-4)"
+    );
+    assert_eq!(whole_rows(dir.path()), before, "the current seed again");
+
+    assert_eq!(apply(&b, T + 3), SeedState::Current);
+    rotated(&b, Some(&a), T + 3, "a new seed");
+    let before = whole_rows(dir.path());
+    let calls = ironflowx_authz::ct_eq_calls();
+    assert_eq!(apply(&a, T + 4), SeedState::Revoked);
+    assert_eq!(
+        ironflowx_authz::ct_eq_calls() - calls,
+        1,
+        "compared (TEN-4)"
+    );
+    assert_eq!(whole_rows(dir.path()), before, "a revoked seed");
+
+    // With no current seed left, a new one revokes nothing, and `a` keeps its first time.
+    cp.revoke_key(&env(1), b.id, made_id, &Fixed(T + 5))
+        .unwrap();
+    let before = whole_rows(dir.path());
+    let c = seed(114, 1);
+    assert_eq!(apply(&c, T + 6), SeedState::Current);
+    let mut rows = whole_rows(dir.path());
+    rows.remove(&c.id.to_string()).expect("the new seed");
+    assert_eq!(rows, before, "after the last seed was revoked");
+    assert_eq!(current_seeds(&cp), [c.id]);
+}
+
+/// A seed whose key ID is a key already, with another digest or another origin, or of another
+/// incarnation, is a conflict: no key changes.
+#[test]
+fn a_seed_whose_key_id_is_another_key_is_a_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    let (b, minted) = bootstrap(env(1), 0);
+    cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
+    let made = new_key(115, &[Scope::Admin], None, None);
+    let made_parts = KeyParts {
+        id: made.id,
+        digest: made.digest.clone(),
+    };
+    cp.insert_key(&env(1), made, minted.id, &Fixed(T), CAP)
+        .unwrap();
+    let (a, old) = (seed(116, 1), seed(117, 1));
+    for s in [&old, &a] {
+        cp.apply_seed(&env(1), s, &Fixed(T)).unwrap();
+    }
+    // `compared`: how many digests are compared, each through `ct_eq` (TEN-4).
+    let conflicts = |s: &KeyParts, compared: usize, case: &str| {
+        let before = whole_rows(dir.path());
+        let calls = ironflowx_authz::ct_eq_calls();
+        let got = cp.apply_seed(&env(1), s, &Fixed(T + 1));
+        assert!(matches!(got, Err(SeedError::Conflict)), "{case}: {got:?}");
+        assert_eq!(whole_rows(dir.path()), before, "{case}");
+        assert_eq!(ironflowx_authz::ct_eq_calls() - calls, compared, "{case}");
+        assert_eq!(current_seeds(&cp), [a.id], "{case}");
+    };
+    conflicts(&seed(116, 2), 1, "the current seed's ID, another secret");
+    conflicts(&seed(117, 2), 1, "a revoked seed's ID, another secret");
+    conflicts(&made_parts, 1, "a created key's own text");
+    conflicts(&seed(115, 9), 1, "a created key's ID, another secret");
+    conflicts(&minted, 1, "the minted key's own text");
+
+    let db = rusqlite::Connection::open(path(dir.path())).unwrap();
+    let set = |origin: &str, token: &str| {
+        db.execute(
+            "UPDATE keys SET origin = ?1, environment_token = ?2 WHERE id = ?3",
+            [origin, token, &made_parts.id.to_string()],
+        )
+        .unwrap();
+    };
+    set("recovered", &env(1).token().to_string());
+    conflicts(&made_parts, 1, "a recovered key's own text");
+    set("seed", &format!("{:032x}", 8));
+    conflicts(&made_parts, 0, "a seed of another incarnation");
+}
+
+/// A failed change leaves the previous seed current: the revoke and the insert are one
+/// transaction (TEN-11).
+#[test]
+fn a_seed_change_that_fails_keeps_the_previous_seed() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    let (a, b) = (seed(118, 1), seed(119, 1));
+    cp.apply_seed(&env(1), &a, &Fixed(T)).unwrap();
+    let before = whole_rows(dir.path());
+    let db = rusqlite::Connection::open(path(dir.path())).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER fail BEFORE INSERT ON keys BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    )
+    .unwrap();
+    let failed = cp.apply_seed(&env(1), &b, &Fixed(T + 1));
+    assert!(matches!(failed, Err(SeedError::Store(_))), "{failed:?}");
+    assert_eq!(whole_rows(dir.path()), before);
+    db.execute_batch("DROP TRIGGER fail").unwrap();
+    cp.apply_seed(&env(1), &b, &Fixed(T + 2)).unwrap();
+    assert_eq!(current_seeds(&cp), [b.id]);
+}
+
+/// Seeds hold no slot: they apply at a full cap, and free none (TEN-15).
+#[test]
+fn a_seed_holds_no_slot() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    let (b, admin) = bootstrap(env(1), 0);
+    cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
+    let create = |n: u8| {
+        let new = new_key(n, &[Scope::Read], None, None);
+        cp.insert_key(&env(1), new, admin.id, &Fixed(T), 2)
+    };
+    cp.apply_seed(&env(1), &seed(120, 1), &Fixed(T)).unwrap();
+    create(121).expect("the first slot");
+    create(122).expect("the cap itself");
+    cp.apply_seed(&env(1), &seed(123, 1), &Fixed(T)).unwrap();
+    let full = create(124);
+    assert!(matches!(full, Err(KeyChangeError::Full)), "{full:?}");
+}
+
+/// A rotation revokes the current seed of its own environment and incarnation only.
+#[test]
+fn a_rotation_leaves_the_seeds_of_other_environments_and_incarnations() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    let db = rusqlite::Connection::open(path(dir.path())).unwrap();
+    // The planted rows name environments this file does not hold.
+    db.pragma_update(None, "foreign_keys", false).unwrap();
+    let other_token: EnvRef = format!("{}.{:032x}", env(1).id(), 8).parse().unwrap();
+    for (n, elsewhere) in [(130, env(2)), (131, other_token)] {
+        let moved = seed(n, 1);
+        cp.apply_seed(&env(1), &moved, &Fixed(T)).unwrap();
+        db.execute(
+            "UPDATE keys SET environment_id = ?1, environment_token = ?2 WHERE id = ?3",
+            [
+                elsewhere.id().to_string(),
+                elsewhere.token().to_string(),
+                moved.id.to_string(),
+            ],
+        )
+        .unwrap();
+        cp.apply_seed(&env(1), &seed(n + 10, 1), &Fixed(T)).unwrap();
+        let kept = found(&cp, moved.id, &elsewhere).expect("the moved row");
+        assert_eq!(kept.revoked_at, None, "{elsewhere}");
+    }
+}
+
+/// The seed's transaction takes the write lock before it reads the clock (TEN-11): while another
+/// connection holds the lock, the clock is not read.
+#[test]
+fn a_seed_is_applied_at_a_now_read_after_the_write_lock() {
+    struct Told(std::sync::mpsc::Sender<()>);
+    impl Clock for Told {
+        fn now(&self) -> Timestamp {
+            let _ = self.0.send(());
+            Timestamp::from_millis(T)
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    let db = rusqlite::Connection::open(path(dir.path())).unwrap();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let (tell, told) = std::sync::mpsc::channel();
+    std::thread::scope(|s| {
+        let applied = s.spawn(move || cp.apply_seed(&env(1), &seed(150, 1), &Told(tell)));
+        // One-sided: with the lock held, a reading can only come from the defect.
+        let early = told.recv_timeout(std::time::Duration::from_millis(200));
+        db.execute_batch("COMMIT").unwrap();
+        assert!(early.is_err(), "the clock was read before the lock");
+        assert_eq!(applied.join().unwrap().unwrap(), SeedState::Current);
+        told.recv().expect("read once the lock is free");
+    });
+}
+
+/// An environment, or an incarnation, the file does not hold takes no seed: it would be a second
+/// unrevoked one, which no key of the engine's could be.
+#[test]
+fn a_seed_for_an_environment_the_file_does_not_hold_is_not_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    let a = seed(160, 1);
+    cp.apply_seed(&env(1), &a, &Fixed(T)).unwrap();
+    let before = whole_rows(dir.path());
+    let other_token: EnvRef = format!("{}.{:032x}", env(1).id(), 8).parse().unwrap();
+    for elsewhere in [other_token, env(2)] {
+        for s in [&a, &seed(161, 1)] {
+            let got = cp.apply_seed(&elsewhere, s, &Fixed(T + 1));
+            assert!(matches!(got, Err(SeedError::Store(_))), "{got:?}");
+            assert_eq!(whole_rows(dir.path()), before, "{elsewhere}");
+        }
     }
 }

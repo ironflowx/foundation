@@ -40,7 +40,7 @@ impl fmt::Display for Scope {
 pub enum KeyOrigin {
     /// The bootstrap key, minted by the engine.
     Minted,
-    /// The bootstrap key, from a seed the host supplied.
+    /// A seed the host supplied.
     Seed,
     /// An admin key recovered from the data directory.
     Recovered,

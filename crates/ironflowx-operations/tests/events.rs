@@ -31,7 +31,7 @@ const fn first_page() -> ListEventsRequest {
 /// attribution, taken from the minted text (`ixk_<key-id>_<secret>`), not from the engine.
 async fn open(root: &Path) -> (Engine, Call, String) {
     let clock = ManualClock::new(Timestamp::from_millis(1_800_000_000_000));
-    let opened = Engine::open(root, clock).await.unwrap();
+    let opened = Engine::open(root, clock, None).await.unwrap();
     let minted = opened.minted.unwrap();
     let by = format!("key:{}", &minted.expose()[4..40]);
     (opened.engine, Call::with_key(minted), by)
