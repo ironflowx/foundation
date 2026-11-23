@@ -76,7 +76,7 @@ fn state(root: &Path) -> BootstrapState {
     ControlPlane::bootstrap_state(&control(root)).unwrap()
 }
 
-/// Every key's ID and origin, oldest first, with the environment they are read in.
+/// Every key's ID and origin, oldest first.
 fn keys(root: &Path) -> Vec<(String, KeyOrigin)> {
     let (BootstrapState::Unmarked { env } | BootstrapState::Marked { env }) = state(root) else {
         panic!("not bootstrapped");
@@ -109,7 +109,7 @@ fn died(root: &Path, seed: &str) -> EnvRef {
 }
 
 /// The last admin key, its own included, may be revoked: a key recovered beside the engine is
-/// accepted on its next call, and can do all a bootstrap key could. Again after a restart.
+/// accepted on its next call, with all three scopes. Again after a restart.
 #[tokio::test]
 async fn a_key_recovered_beside_an_engine_works_on_its_next_call() {
     let dir = tempfile::tempdir().unwrap();
@@ -294,6 +294,17 @@ fn recovering(
     std::thread::spawn(move || recover_admin_key(&root, clock))
 }
 
+/// The open failed at its rename and undid its bootstrap: no key is left.
+fn undone(root: &Path, opened: Outcome) {
+    let err = opened.err().expect("the rename fails");
+    assert!(matches!(err, EngineError::Io(_)), "{err:?}");
+    assert_eq!(state(root), BootstrapState::Unbootstrapped);
+    let db = rusqlite::Connection::open(control(root)).unwrap();
+    let count = "SELECT count(*) FROM keys";
+    let rows: u32 = db.query_row(count, [], |r| r.get(0)).unwrap();
+    assert_eq!(rows, 0);
+}
+
 /// The recovery first: inside a bootstrapping open, after its transaction and before its mark, it
 /// is refused and stores nothing, whether the open then marks or undoes its bootstrap.
 #[tokio::test]
@@ -316,13 +327,7 @@ async fn a_recovery_before_the_mark_is_refused_and_stores_nothing() {
         assert!(unmarked, "stopped before its mark");
         not_ready(recovery);
         if fails {
-            let err = opened.err().expect("the rename fails");
-            assert!(matches!(err, EngineError::Io(_)), "{err:?}");
-            assert_eq!(state(dir.path()), BootstrapState::Unbootstrapped);
-            let db = rusqlite::Connection::open(control(dir.path())).unwrap();
-            let count = "SELECT count(*) FROM keys";
-            let rows: u32 = db.query_row(count, [], |r| r.get(0)).unwrap();
-            assert_eq!(rows, 0);
+            undone(dir.path(), opened);
         } else {
             opened.unwrap().engine.close().await;
             assert_eq!(keys(dir.path()), [(id(&a), KeyOrigin::Seed)]);
@@ -363,8 +368,7 @@ async fn a_recovery_whose_transaction_precedes_the_mark_or_the_undo_is_refused()
         not_ready(recovery.join().unwrap());
         let opened = open.await.unwrap();
         if fails {
-            opened.err().expect("the rename fails");
-            assert_eq!(state(dir.path()), BootstrapState::Unbootstrapped);
+            undone(dir.path(), opened);
         } else {
             opened.unwrap().engine.close().await;
             assert_eq!(keys(dir.path()), [(id(&a), KeyOrigin::Seed)]);

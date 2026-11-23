@@ -1080,23 +1080,24 @@ fn a_mark_is_made_at_a_now_read_after_the_write_lock() {
 fn a_recovered_key_is_a_labelled_admin_key_and_changes_no_other_row() {
     let dir = tempfile::tempdir().unwrap();
     let cp = ControlPlane::open(&path(dir.path())).unwrap();
-    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
-        .unwrap();
+    let (b, admin) = bootstrap(env(1), 0);
+    cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
     cp.mark_ledger_created(&env(1), &Fixed(T)).unwrap();
-    let before = whole_rows(dir.path());
-    for (seq, n) in [(2, 180), (3, 181)] {
+    // A key of every origin, the second recovery finding a recovered one.
+    cp.apply_seed(&env(1), &seed(178, 1), &Fixed(T)).unwrap();
+    let new = new_key(179, &[Scope::Read], None, None);
+    cp.insert_key(&env(1), new, admin.id, &Fixed(T), CAP)
+        .unwrap();
+    for (seq, n) in [(4, 180), (5, 181)] {
+        let mut expected = whole_rows(dir.path());
         let key = seed(n, 1);
         cp.insert_recovered(&key, &Fixed(T + seq)).unwrap();
-        let mut expected = seed_row(&key, seq, T + seq);
+        let mut row = seed_row(&key, seq, T + seq);
         for column in ["origin", "label"] {
-            expected.insert(column.into(), Value::Text("recovered".into()));
+            row.insert(column.into(), Value::Text("recovered".into()));
         }
-        let rows = whole_rows(dir.path());
-        assert_eq!(rows[&key.id.to_string()], expected);
-        assert_eq!(rows.len(), before.len() + usize::from(n == 181) + 1);
-        for (id, row) in &before {
-            assert_eq!(&rows[id], row);
-        }
+        expected.insert(key.id.to_string(), row);
+        assert_eq!(whole_rows(dir.path()), expected);
     }
 }
 

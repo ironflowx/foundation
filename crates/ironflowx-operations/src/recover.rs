@@ -5,14 +5,14 @@ use std::path::Path;
 use ironflowx_core::{Clock, Secret};
 use ironflowx_store::{BootstrapState, ControlPlane, RecoverError};
 
-use crate::open::minted_key;
+use crate::open::new_admin_key;
 
 /// Stores a fresh admin key in the data directory `root` and returns its secret, once: all three
 /// scopes, no expiry, origin `Recovered`, labelled `recovered`, holding no slot. For a host, not
 /// an operation: reaching the directory is the authority. It takes no engine lock, so it works
 /// beside a running engine, which accepts the key on its next call.
 ///
-/// Blocking. A write of the engine's and this one wait for each other, up to 5 seconds.
+/// Blocking. It waits a bounded time for a write of the engine's, as that does for this one.
 ///
 /// # Errors
 ///
@@ -32,7 +32,7 @@ pub fn recover_admin_key(root: &Path, clock: impl Clock) -> Result<Secret, Recov
         }
         BootstrapState::Unmarked { .. } | BootstrapState::Marked { .. } => {}
     }
-    let (key, secret) = minted_key();
+    let (key, secret) = new_admin_key();
     ControlPlane::open(&path)?.insert_recovered(&key, &clock)?;
     Ok(secret)
 }

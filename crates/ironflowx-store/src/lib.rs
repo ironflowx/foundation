@@ -1,8 +1,9 @@
 //! The Ironflow X control plane: which tenants, projects, environments and keys exist, in
 //! `<root>/control.db` (SQLite).
 //!
-//! Blocking: the engine calls it under `spawn_blocking`. Every change is one transaction that
-//! takes SQLite's write lock first, then reads now from the clock it is given (TEN-11).
+//! Blocking: the engine calls it under `spawn_blocking`, a recovery on its caller's thread. Every
+//! change is one transaction that takes SQLite's write lock first, then reads now from the clock
+//! it is given (TEN-11).
 
 #![forbid(unsafe_code)]
 
@@ -219,7 +220,7 @@ pub enum RecoverError {
 impl fmt::Display for RecoverError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotReady => f.write_str("the engine is not bootstrapped"),
+            Self::NotReady => f.write_str("the bootstrap is not finished"),
             Self::Store(e) => e.fmt(f),
         }
     }
