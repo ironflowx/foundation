@@ -14,7 +14,10 @@ use std::time::Duration;
 use ironflowx_cell::{FaultPoint, ManualClock};
 use ironflowx_core::{Clock, EnvRef, Secret, Timestamp};
 use ironflowx_operations::Engine;
-use ironflowx_proto::{Call, EmitRequest, Event, GetEventRequest, ListEventsRequest, Operations};
+use ironflowx_proto::{
+    Call, EmitRequest, Event, GetEventRequest, ListEnvironmentsRequest, ListEventsRequest,
+    Operations,
+};
 
 /// How long the parent waits for one line from the child before failing, so a stalled child
 /// fails the test instead of hanging it.
@@ -46,12 +49,24 @@ impl Home {
         Call::with_key(Secret::new(self.key.clone()))
     }
 
-    /// Opens the engine again: its bootstrap is done, so no key is minted.
+    /// Opens the engine again: its bootstrap is done, so no key is minted, and the child's key
+    /// still reaches the environment the child reported, its incarnation included.
     async fn open(&self, clock: ManualClock) -> Engine {
         let opened = Engine::open(&self.root, clock, None)
             .await
             .expect("the engine reopens after the kill");
         assert!(opened.minted.is_none(), "a reopen mints no key");
+        let envs = opened
+            .engine
+            .list_environments(&self.call(), ListEnvironmentsRequest {})
+            .await
+            .expect("the child's key still authenticates");
+        let envs: Vec<EnvRef> = envs.iter().map(|e| e.env).collect();
+        assert_eq!(
+            envs,
+            [self.env],
+            "a reopen serves the environment the child reported"
+        );
         opened.engine
     }
 }

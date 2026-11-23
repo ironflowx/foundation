@@ -15,7 +15,7 @@ Each scenario is mapped to the spec stories that own it in [Spec 4, "Behavior co
 
 ## How they run
 
-The steps call `Operations`, never a URL or a status code. One set of steps for each adapter:
+The steps call `Operations`, never a URL or a status code. One set of steps, whichever the adapter:
 
 | Adapter | Drives | When |
 |---|---|---|
@@ -41,5 +41,5 @@ The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It 
 |---|---|
 | The wire format, timestamps on the wire, a limit the wire cannot carry, invalid UTF-8 in an idempotency key | 0.3 (door) |
 | Emits from a run, the version a function receives, paging back, totals, filters, listing event names | 0.4 |
-| Keys per environment | 0.9 |
+| More than one environment | 0.9 |
 | Restart durability as a scenario | A property: the crash test proves it (`../invariants.md`) |

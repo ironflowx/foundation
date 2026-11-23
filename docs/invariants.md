@@ -58,7 +58,7 @@ A parent process drives a child process that owns an engine's root, over a pipe,
 - **Named fault points**, each run deterministically, the child and parent meeting at a barrier: before the append, after fsync and before the acknowledgment, after the acknowledgment and before the fold, mid-fold, and during open. At a point before the acknowledgment the parent then sends a `probe`; the child polls the stopped request before answering `pending`, so a reply already sent shows, by the same barrier and not by a timed wait. **Seeded random kills**, a separate test the test runner may run alongside the named ones, try cases nobody named; the seed is printed and replays the run.
 - **The parent records** each acknowledged event ID and key, the cursor of its last list, and each request with no answer. Every new event carries a unique marker in its metadata, so the parent can find it without its ID; it also knows each item's expected outcome.
 - **After each kill** it reopens the engine twice and asserts:
-  - no reopen mints a key, and the child's key still authenticates;
+  - no reopen mints a key, and the child's key still authenticates and reaches the environment the child reported, its incarnation token included;
   - every acknowledged ID reads back, and every acknowledged key returns its original ID;
   - the new events of an unanswered request are all present or all absent; its duplicates and refusals store nothing;
   - event sequences have no gap and no repeat, and event times never decrease while the seed steps the `ManualClock` both ways;

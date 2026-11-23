@@ -19,6 +19,7 @@ use ironflowx_operations::Engine;
 use ironflowx_proto::{
     Call, CreateKeyRequest, EmitBatchRequest, EmitBatchResponse, EmitRequest, EmitResponse, Event,
     EventPage, GetEventRequest, ListEnvironmentsRequest, ListEventsRequest, OpError, Operations,
+    WhoamiRequest,
 };
 use tempfile::TempDir;
 
@@ -69,6 +70,10 @@ fn request(name: impl Into<String>) -> EmitRequest {
     }
 }
 
+fn all_scopes() -> BTreeSet<Scope> {
+    BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin])
+}
+
 impl Env {
     fn new() -> Self {
         Self {
@@ -97,13 +102,22 @@ impl Env {
         self.client.as_ref().expect("a client")
     }
 
-    /// Whoever a step names: the other client, or the client.
-    fn reader(&self, other: &str) -> &Call {
+    /// Whoever a step names: the other client, which holds another key with all three scopes,
+    /// or the client.
+    async fn reader(&self, other: &str) -> &Call {
         if other.is_empty() {
-            self.client()
-        } else {
-            self.other.as_ref().expect("another client")
+            return self.client();
         }
+        let cx = self.other.as_ref().expect("another client");
+        let mine = self.ops().whoami(self.client(), WhoamiRequest {}).await;
+        let theirs = self.ops().whoami(cx, WhoamiRequest {}).await.unwrap();
+        assert_ne!(
+            theirs.key_id,
+            mine.unwrap().key_id,
+            "the other client holds a key of its own"
+        );
+        assert_eq!(theirs.scopes, all_scopes());
+        cx
     }
 
     async fn emit(&mut self, req: EmitRequest) -> Result<EmitResponse, OpError> {
@@ -322,7 +336,10 @@ fn quoted_list(s: &str) -> Vec<String> {
 
 fn refused(r: &Result<impl fmt::Debug, OpError>, kind: ErrorKind) -> &str {
     match r {
-        Err(e) if e.kind == kind => &e.message,
+        Err(e) if e.kind == kind => {
+            assert_eq!(e.hint, None, "a rule's refusal carries no hint");
+            &e.message
+        }
         other => panic!("expected {kind:?}, got {other:?}"),
     }
 }
@@ -346,7 +363,7 @@ fn client(w: &mut Env) {
 #[given("another client")]
 async fn another_client(w: &mut Env) {
     let req = CreateKeyRequest {
-        scopes: BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]),
+        scopes: all_scopes(),
         ..CreateKeyRequest::default()
     };
     let created = w.ops().create_key(w.client(), req).await.unwrap();
@@ -692,14 +709,14 @@ async fn foreign_cursor(w: &mut Env) {
 #[then(regex = r"^(the other client )?reading that event by ID right away finds it$")]
 async fn finds_it(w: &mut Env, other: String) {
     let id = w.last_id();
-    let event = w.get_as(w.reader(&other), id.to_string()).await;
+    let event = w.get_as(w.reader(&other).await, id.to_string()).await;
     assert_eq!(event.unwrap().event_id, id);
 }
 
 #[then(regex = r"^(the other client )?listing events right away includes it$")]
 async fn lists_it(w: &mut Env, other: String) {
     let id = w.last_id();
-    let page = w.list_as(w.reader(&other), None, None).await.unwrap();
+    let page = w.list_as(w.reader(&other).await, None, None).await.unwrap();
     assert!(page.events.iter().any(|e| e.event_id == id));
 }
 

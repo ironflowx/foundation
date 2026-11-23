@@ -300,7 +300,7 @@ async fn a_read_store_with_damaged_tables_is_rebuilt() {
         let dir = tempfile::tempdir().unwrap();
         let env = new_env_ref();
         let ledger = open(dir.path(), env).await;
-        emit(&ledger, keyed("a", "k")).await.unwrap();
+        let id = emit(&ledger, keyed("a", "k")).await.unwrap();
         ledger.close().await;
         let conn = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
         conn.execute_batch(damage).unwrap();
@@ -308,7 +308,7 @@ async fn a_read_store_with_damaged_tables_is_rebuilt() {
         let ledger = open(dir.path(), env).await;
         assert_eq!(names(&ledger).await, ["a"], "{damage}");
         let retry = outcome(&ledger, keyed("b", "k")).await.unwrap();
-        assert!(matches!(retry, ItemOutcome::Duplicate(_)), "{damage}");
+        assert_eq!(retry, ItemOutcome::Duplicate(id), "{damage}");
     }
 }
 
@@ -493,12 +493,13 @@ fn append(log: &SegmentLog, expected: ExpectedRevision, payload: Vec<u8>) {
     .unwrap();
 }
 
-/// A ledger at `dir` holding events "a" and "b", closed.
-async fn two_events(dir: &Path, env: EnvRef) {
+/// A ledger at `dir` holding events "a" and "b", closed; the ID of "a".
+async fn two_events(dir: &Path, env: EnvRef) -> EventId {
     let ledger = open(dir, env).await;
-    emit(&ledger, keyed("a", "ka")).await.unwrap();
+    let id = emit(&ledger, keyed("a", "ka")).await.unwrap();
     emit(&ledger, keyed("b", "kb")).await.unwrap();
     ledger.close().await;
+    id
 }
 
 /// What a test does to `read.db`, and why.
@@ -520,12 +521,12 @@ async fn a_read_store_that_cannot_be_trusted_is_rebuilt() {
     for (why, damage) in damages {
         let dir = tempfile::tempdir().unwrap();
         let env = new_env_ref();
-        two_events(dir.path(), env).await;
+        let id = two_events(dir.path(), env).await;
         damage(&dir.path().join("read.db"));
         let ledger = open(dir.path(), env).await;
         assert_eq!(names(&ledger).await, ["b", "a"], "{why}");
         let retry = outcome(&ledger, keyed("x", "ka")).await.unwrap();
-        assert!(matches!(retry, ItemOutcome::Duplicate(_)), "{why}");
+        assert_eq!(retry, ItemOutcome::Duplicate(id), "{why}");
         // Sequences continue after the rebuilt rows.
         emit(&ledger, named("c")).await.unwrap();
         assert_eq!(names(&ledger).await, ["c", "b", "a"], "{why}");
