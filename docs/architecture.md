@@ -1,12 +1,12 @@
 # Architecture
 
-One environment's commit path, as foundation crates linked into an embedder's process.
+One environment's commit path and the engine in front of it, as foundation crates linked into a host's or an embedder's process.
 
 ## C1: Context
 
 ![C1 system context](img/c1-context.svg)
 
-The ledger is linked, not run: an embedder opens it in a directory.
+The engine is linked, not run: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead.
 
 ## C2: Crates
 

@@ -18,12 +18,12 @@ fn clock() -> ManualClock {
 }
 
 /// What the tests submit as, unless one names another embedder.
-fn tests() -> SubmitAs {
+fn embedder() -> SubmitAs {
     SubmitAs::embedder("ledger-tests").unwrap()
 }
 
 /// How those submissions read back.
-fn by() -> Emitter {
+fn emitter() -> Emitter {
     "embedder:ledger-tests".parse().unwrap()
 }
 
@@ -46,7 +46,7 @@ fn keyed(name: &str, key: &str) -> Emit {
 }
 
 async fn outcome(ledger: &Ledger, emit: Emit) -> Result<ItemOutcome, SubmitError> {
-    let committed = ledger.submit(Submission::Emit(emit), tests()).await?;
+    let committed = ledger.submit(Submission::Emit(emit), embedder()).await?;
     let [outcome] = <[_; 1]>::try_from(committed.outcome).expect("one outcome per emit");
     Ok(outcome)
 }
@@ -130,7 +130,7 @@ async fn every_event_of_one_batch_carries_the_record_time() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = open(dir.path(), new_env_ref()).await;
     let batch = Submission::Batch(vec![named("a"), named("b")]);
-    ledger.submit(batch, tests()).await.unwrap();
+    ledger.submit(batch, embedder()).await.unwrap();
     let times: Vec<_> = all(&ledger).await.unwrap().iter().map(|e| e.time).collect();
     assert_eq!(times, [Timestamp::from_millis(T); 2]);
 }
@@ -153,7 +153,7 @@ async fn replaying_folds_each_record_exactly_once() {
             events: vec![],
         };
         for offset in 0..applied {
-            crate::store::apply(&mut conn, offset, Some((&record, &by())), false).unwrap();
+            crate::store::apply(&mut conn, offset, Some((&record, &emitter())), false).unwrap();
         }
         assert_eq!(crate::store::applied(&conn).unwrap(), applied);
     }
@@ -217,7 +217,7 @@ async fn a_later_record_with_another_token_is_refused() {
             time: Timestamp::from_millis(T),
             events: vec![],
         };
-        let foreign = record::events(new_env_ref().token(), &by(), &record);
+        let foreign = record::events(new_env_ref().token(), &emitter(), &record);
         append(&log, ExpectedRevision::At(revision), foreign);
     }
     std::fs::remove_file(dir.path().join("read.db")).unwrap();
@@ -253,7 +253,7 @@ async fn a_log_without_a_genesis_record_is_refused() {
         append(
             &log,
             ExpectedRevision::Empty,
-            record::events(env.token(), &by(), &record),
+            record::events(env.token(), &emitter(), &record),
         );
     }
     let err = Ledger::open(dir.path(), env, clock()).await.err();
@@ -456,7 +456,7 @@ fn records_round_trip() {
         }],
     };
     let key: Emitter = "key:019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f".parse().unwrap();
-    for emitted_by in [by(), key] {
+    for emitted_by in [emitter(), key] {
         assert_eq!(
             record::decode(&record::events(env.token(), &emitted_by, &record)),
             Some(record::Decoded::Events {
@@ -877,7 +877,7 @@ async fn every_event_records_who_emitted_it_across_reopen_and_rebuild() {
     let committed = ledger.submit(batch, app.clone()).await.unwrap();
     let solo = emit(&ledger, named("d")).await.unwrap();
     let expected = [
-        by(),
+        emitter(),
         Emitter::from(app.clone()),
         Emitter::from(app.clone()),
         Emitter::from(app),
@@ -896,7 +896,7 @@ async fn every_event_records_who_emitted_it_across_reopen_and_rebuild() {
     };
     let read = get(&ledger, first).await.unwrap();
     assert_eq!(read.emitted_by.to_string(), "embedder:billing app");
-    assert_eq!(get(&ledger, solo).await.unwrap().emitted_by, by());
+    assert_eq!(get(&ledger, solo).await.unwrap().emitted_by, emitter());
     ledger.close().await;
     let ledger = open(dir.path(), env).await;
     assert_eq!(emitters(&ledger).await, expected);

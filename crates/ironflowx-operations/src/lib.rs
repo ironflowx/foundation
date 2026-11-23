@@ -19,7 +19,7 @@ use ironflowx_cell::Ledger;
 use ironflowx_core::{
     Address, Clock, EnvRef, ErrorKind, IncarnationToken, Scope, Secret, Timestamp,
 };
-use ironflowx_events::Submission;
+use ironflowx_events::{ItemOutcome, Submission};
 use ironflowx_proto::{
     Call, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
     EmitResponse, Environment, Event, EventPage, GetEventRequest, KeyInfo, KeyPage, KeyStatus,
@@ -73,10 +73,16 @@ impl Engine {
         self.ledger.close().await;
     }
 
-    /// The ledger, reached only with a proof of admission (TEN-1). A submission to it is
-    /// attributed to that proof's grant (TEN-6).
+    /// The ledger, reached only with a proof of admission (TEN-1).
     fn ledger(&self, _: &Authorized) -> &Ledger {
         &self.ledger
+    }
+
+    /// The engine's one way to submit: attributed to the admitted call's grant (TEN-6).
+    async fn submit(&self, a: &Authorized, sub: Submission) -> Result<Vec<ItemOutcome>, OpError> {
+        let by = a.grant().submit_as();
+        let committed = self.ledger(a).submit(sub, by).await;
+        Ok(committed.map_err(events::submit_error)?.outcome)
     }
 
     /// The key records, reached only with a proof of admission (TEN-1).
@@ -137,12 +143,9 @@ impl Operations for Engine {
     /// As [`Engine::whoami`], or as the ledger refuses the event.
     async fn emit(&self, cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError> {
         let a = self.admit(cx, Operation::Emit).await?;
-        let committed = self
-            .ledger(&a)
-            .submit(Submission::Emit(events::emit(req)), a.grant().submit_as())
-            .await
-            .map_err(events::submit_error)?;
-        let [outcome] = <[_; 1]>::try_from(committed.outcome).expect("one outcome per emit");
+        let sub = Submission::Emit(events::emit(req));
+        let outcomes = self.submit(&a, sub).await?;
+        let [outcome] = <[_; 1]>::try_from(outcomes).expect("one outcome per emit");
         events::response(outcome)
     }
 
@@ -158,18 +161,10 @@ impl Operations for Engine {
         req: EmitBatchRequest,
     ) -> Result<EmitBatchResponse, OpError> {
         let a = self.admit(cx, Operation::EmitBatch).await?;
-        let items = req.items.into_iter().map(events::emit).collect();
-        let committed = self
-            .ledger(&a)
-            .submit(Submission::Batch(items), a.grant().submit_as())
-            .await
-            .map_err(events::submit_error)?;
+        let sub = Submission::Batch(req.items.into_iter().map(events::emit).collect());
+        let outcomes = self.submit(&a, sub).await?;
         Ok(EmitBatchResponse {
-            items: committed
-                .outcome
-                .into_iter()
-                .map(events::response)
-                .collect(),
+            items: outcomes.into_iter().map(events::response).collect(),
         })
     }
 

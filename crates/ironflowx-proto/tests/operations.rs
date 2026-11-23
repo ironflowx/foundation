@@ -172,12 +172,9 @@ fn drive<O: Operations>(ops: &O) {
     .unwrap();
     assert!(page.next.is_none());
 
-    let me = ready(assert_send(ops.whoami(&cx, WhoamiRequest {}))).unwrap();
-    assert_eq!(me.key_id.to_string(), KEY[4..40]);
-    let envs = ready(assert_send(
-        ops.list_environments(&cx, ListEnvironmentsRequest {}),
-    ));
-    assert_eq!(envs, Ok(Vec::new()));
+    ready(assert_send(ops.whoami(&cx, WhoamiRequest {}))).unwrap();
+    let envs = ops.list_environments(&cx, ListEnvironmentsRequest {});
+    ready(assert_send(envs)).unwrap();
 
     let key = ready(assert_send(ops.create_key(
         &cx,

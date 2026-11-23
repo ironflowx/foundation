@@ -19,7 +19,7 @@ Released as `0.1.0`: one environment's ledger, linked into your process.
 
 ## Architecture
 
-The engine is linked, not run: an embedder opens it on a data directory, and every call carries a key. One that needs no keys opens the ledger under it directly. Event rules, credentials and core are pure; only the ledger, the control plane and the engine touch disk, the clock and randomness.
+The engine is linked, not run: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead. Event rules, credentials and core are pure; only the ledger, the control plane and the engine touch disk, the clock and randomness.
 
 ![C2 crates](https://raw.githubusercontent.com/ironflowx/foundation/main/docs/img/c2-crates.svg)
 
