@@ -26,6 +26,9 @@ pub const fn ironflowx_operations::Authorized::grant(&self) -> &ironflowx_authz:
 pub struct ironflowx_operations::Engine
 impl ironflowx_operations::Engine
 pub async fn ironflowx_operations::Engine::close(self)
+impl ironflowx_operations::Engine
+pub async fn ironflowx_operations::Engine::open(&std::path::Path, impl ironflowx_core::time::Clock + core::clone::Clone + core::marker::Send + core::marker::Sync + 'static, core::option::Option<ironflowx_core::secret::Secret>) -> core::result::Result<ironflowx_operations::Opened, ironflowx_operations::EngineError>
+impl ironflowx_proto::Operations for ironflowx_operations::Engine
 pub async fn ironflowx_operations::Engine::create_key(&self, &ironflowx_proto::Call, ironflowx_proto::CreateKeyRequest) -> core::result::Result<ironflowx_proto::CreatedKey, ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::emit(&self, &ironflowx_proto::Call, ironflowx_proto::EmitRequest) -> core::result::Result<ironflowx_proto::EmitResponse, ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::emit_batch(&self, &ironflowx_proto::Call, ironflowx_proto::EmitBatchRequest) -> core::result::Result<ironflowx_proto::EmitBatchResponse, ironflowx_proto::OpError>
@@ -35,8 +38,6 @@ pub async fn ironflowx_operations::Engine::list_events(&self, &ironflowx_proto::
 pub async fn ironflowx_operations::Engine::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> core::result::Result<(), ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::whoami(&self, &ironflowx_proto::Call, ironflowx_proto::WhoamiRequest) -> core::result::Result<ironflowx_proto::Whoami, ironflowx_proto::OpError>
-impl ironflowx_operations::Engine
-pub async fn ironflowx_operations::Engine::open(&std::path::Path, impl ironflowx_core::time::Clock + core::clone::Clone + core::marker::Send + core::marker::Sync + 'static, core::option::Option<ironflowx_core::secret::Secret>) -> core::result::Result<ironflowx_operations::Opened, ironflowx_operations::EngineError>
 pub struct ironflowx_operations::Opened
 pub ironflowx_operations::Opened::engine: ironflowx_operations::Engine
 pub ironflowx_operations::Opened::minted: core::option::Option<ironflowx_core::secret::Secret>

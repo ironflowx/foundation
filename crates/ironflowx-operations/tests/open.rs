@@ -4,7 +4,7 @@ use ironflowx_authz::{KeyParts, mint};
 use ironflowx_cell::{ManualClock, new_env_ref};
 use ironflowx_core::{ErrorKind, Secret, Timestamp};
 use ironflowx_operations::{Engine, EngineError, SeedState};
-use ironflowx_proto::{Call, WhoamiRequest};
+use ironflowx_proto::{Call, Operations, WhoamiRequest};
 use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane};
 
 fn clock() -> ManualClock {

@@ -16,6 +16,7 @@ authors.workspace = true
 ironflowx-authz.workspace = true
 ironflowx-cell.workspace = true
 ironflowx-core.workspace = true
+ironflowx-events.workspace = true
 ironflowx-proto.workspace = true
 ironflowx-store.workspace = true
 getrandom = { version = "0.4.3", default-features = false }
@@ -23,6 +24,8 @@ tokio = { version = "1.54.1", default-features = false, features = ["rt"] }
 uuid = { workspace = true, features = ["v7"] }
 
 [dev-dependencies]
+# For tests/unknown.rs; a dev-dependency does not ship (ci/no-fault-points.sh).
+ironflowx-cell = { workspace = true, features = ["__fault-points"] }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", default-features = false, features = ["rt", "macros"] }
 rusqlite = { version = "0.43.0", default-features = false, features = ["bundled"] }

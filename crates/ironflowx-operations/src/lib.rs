@@ -8,16 +8,18 @@
 #![forbid(unsafe_code)]
 
 mod admission;
+mod events;
 mod open;
 
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::sync::Arc;
 
-use ironflowx_cell::{Ledger, LocalOperations};
+use ironflowx_cell::Ledger;
 use ironflowx_core::{
     Address, Clock, EnvRef, ErrorKind, IncarnationToken, Scope, Secret, Timestamp,
 };
+use ironflowx_events::{ItemOutcome, Submission};
 use ironflowx_proto::{
     Call, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
     EmitResponse, Environment, Event, EventPage, GetEventRequest, KeyInfo, KeyPage, KeyStatus,
@@ -71,13 +73,38 @@ impl Engine {
         self.ledger.close().await;
     }
 
+    /// The ledger, reached only with a proof of admission (TEN-1).
+    fn ledger(&self, _: &Authorized) -> &Ledger {
+        &self.ledger
+    }
+
+    /// The engine's one way to submit: attributed to the admitted call's grant (TEN-6).
+    async fn submit(&self, a: &Authorized, sub: Submission) -> Result<Vec<ItemOutcome>, OpError> {
+        let by = a.grant().submit_as();
+        let committed = self.ledger(a).submit(sub, by).await;
+        Ok(committed.map_err(events::submit_error)?.outcome)
+    }
+
+    /// The key records, reached only with a proof of admission (TEN-1).
+    fn keys(&self, _: &Authorized) -> Arc<ControlPlane> {
+        self.control.clone()
+    }
+
+    async fn environment(&self, a: &Authorized) -> Result<EnvironmentRecord, OpError> {
+        let keys = self.keys(a);
+        let env = a.grant().env();
+        blocking(move || keys.environment(&env)).await
+    }
+}
+
+impl Operations for Engine {
     /// The calling key, as it sees itself. Any valid key may ask.
     ///
     /// # Errors
     ///
     /// `Unauthenticated` for a missing or invalid key, whether or not its expiry could be
     /// recorded; `Unavailable` if the control plane fails otherwise.
-    pub async fn whoami(&self, cx: &Call, _req: WhoamiRequest) -> Result<Whoami, OpError> {
+    async fn whoami(&self, cx: &Call, _req: WhoamiRequest) -> Result<Whoami, OpError> {
         let a = self.admit(cx, Operation::Whoami).await?;
         let record = self.environment(&a).await?;
         Ok(Whoami {
@@ -93,7 +120,7 @@ impl Engine {
     /// # Errors
     ///
     /// As [`Engine::whoami`].
-    pub async fn list_environments(
+    async fn list_environments(
         &self,
         cx: &Call,
         _req: ListEnvironmentsRequest,
@@ -114,9 +141,12 @@ impl Engine {
     /// # Errors
     ///
     /// As [`Engine::whoami`], or as the ledger refuses the event.
-    pub async fn emit(&self, cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError> {
+    async fn emit(&self, cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError> {
         let a = self.admit(cx, Operation::Emit).await?;
-        self.ledger(&a).emit(cx, req).await
+        let sub = Submission::Emit(events::emit(req));
+        let outcomes = self.submit(&a, sub).await?;
+        let [outcome] = <[_; 1]>::try_from(outcomes).expect("one outcome per emit");
+        events::response(outcome)
     }
 
     /// Emits a batch, every event attributed to the calling key; one result per item, in
@@ -125,13 +155,17 @@ impl Engine {
     /// # Errors
     ///
     /// As [`Engine::emit`].
-    pub async fn emit_batch(
+    async fn emit_batch(
         &self,
         cx: &Call,
         req: EmitBatchRequest,
     ) -> Result<EmitBatchResponse, OpError> {
         let a = self.admit(cx, Operation::EmitBatch).await?;
-        self.ledger(&a).emit_batch(cx, req).await
+        let sub = Submission::Batch(req.items.into_iter().map(events::emit).collect());
+        let outcomes = self.submit(&a, sub).await?;
+        Ok(EmitBatchResponse {
+            items: outcomes.into_iter().map(events::response).collect(),
+        })
     }
 
     /// Reads one event of the key's environment by ID.
@@ -139,9 +173,13 @@ impl Engine {
     /// # Errors
     ///
     /// As [`Engine::whoami`]; `NotFound` for an unknown ID.
-    pub async fn get_event(&self, cx: &Call, req: GetEventRequest) -> Result<Event, OpError> {
+    async fn get_event(&self, cx: &Call, req: GetEventRequest) -> Result<Event, OpError> {
         let a = self.admit(cx, Operation::GetEvent).await?;
-        self.ledger(&a).get_event(cx, req).await
+        self.ledger(&a)
+            .read(move |v| ironflowx_events::get_event(v, &req.event_id))
+            .await
+            .map(events::event)
+            .map_err(events::read_error)
     }
 
     /// Lists a page of the key's environment's events, newest first.
@@ -149,13 +187,20 @@ impl Engine {
     /// # Errors
     ///
     /// As [`Engine::whoami`], or for a bad cursor.
-    pub async fn list_events(
-        &self,
-        cx: &Call,
-        req: ListEventsRequest,
-    ) -> Result<EventPage, OpError> {
+    async fn list_events(&self, cx: &Call, req: ListEventsRequest) -> Result<EventPage, OpError> {
         let a = self.admit(cx, Operation::ListEvents).await?;
-        self.ledger(&a).list_events(cx, req).await
+        let token = self.env.token();
+        let page = self
+            .ledger(&a)
+            .read(move |v| {
+                ironflowx_events::list_events(v, token, req.limit, req.cursor.as_deref())
+            })
+            .await
+            .map_err(events::read_error)?;
+        Ok(EventPage {
+            events: page.events.into_iter().map(events::event).collect(),
+            next: page.next,
+        })
     }
 
     /// Creates a key in the calling key's environment, holding no scope the caller lacks and
@@ -171,11 +216,7 @@ impl Engine {
     /// # Panics
     ///
     /// If the OS random source fails.
-    pub async fn create_key(
-        &self,
-        cx: &Call,
-        req: CreateKeyRequest,
-    ) -> Result<CreatedKey, OpError> {
+    async fn create_key(&self, cx: &Call, req: CreateKeyRequest) -> Result<CreatedKey, OpError> {
         let a = self.admit(cx, Operation::CreateKey).await?;
         let creator = a.grant().key_id();
         let scopes = if req.scopes.is_empty() {
@@ -203,7 +244,7 @@ impl Engine {
     ///
     /// As [`Engine::whoami`]; `PermissionDenied` without `admin`; `Invalid` for a cursor that
     /// does not decode or names another incarnation.
-    pub async fn list_keys(&self, cx: &Call, req: ListKeysRequest) -> Result<KeyPage, OpError> {
+    async fn list_keys(&self, cx: &Call, req: ListKeysRequest) -> Result<KeyPage, OpError> {
         let a = self.admit(cx, Operation::ListKeys).await?;
         let token = self.env.token();
         let before = req
@@ -240,29 +281,12 @@ impl Engine {
     /// As [`Engine::whoami`]; `PermissionDenied` without `admin`; `NotFound` "key not found"
     /// for an ID that does not parse or names no key here; `Unauthenticated` if the calling key
     /// was revoked or expired before the revoke's transaction.
-    pub async fn revoke_key(&self, cx: &Call, req: RevokeKeyRequest) -> Result<(), OpError> {
+    async fn revoke_key(&self, cx: &Call, req: RevokeKeyRequest) -> Result<(), OpError> {
         let a = self.admit(cx, Operation::RevokeKey).await?;
         let id = req.key_id.parse().map_err(|_| key_not_found())?;
         let by = a.grant().key_id();
         let (keys, env, clock) = (self.keys(&a), self.env, self.clock.clone());
         key_change(move || keys.revoke_key(&env, id, by, &*clock)).await
-    }
-
-    /// The ledger, reached only with a proof of admission, submitting as its grant (TEN-1,
-    /// TEN-6).
-    fn ledger(&self, a: &Authorized) -> LocalOperations<'_> {
-        LocalOperations::submitting_as(&self.ledger, a.grant().submit_as())
-    }
-
-    /// The key records, reached only with a proof of admission (TEN-1).
-    fn keys(&self, _: &Authorized) -> Arc<ControlPlane> {
-        self.control.clone()
-    }
-
-    async fn environment(&self, a: &Authorized) -> Result<EnvironmentRecord, OpError> {
-        let keys = self.keys(a);
-        let env = a.grant().env();
-        blocking(move || keys.environment(&env)).await
     }
 }
 

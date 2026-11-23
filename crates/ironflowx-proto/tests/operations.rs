@@ -8,12 +8,12 @@ use std::task::{Context, Poll, Waker};
 
 use std::collections::BTreeSet;
 
-use ironflowx_core::{ErrorKind, KeyOrigin, Scope, Secret, Timestamp};
+use ironflowx_core::{Address, ErrorKind, KeyOrigin, Scope, Secret, Timestamp};
 use ironflowx_proto::{
     Call, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
-    EmitResponse, Event, EventPage, GetEventRequest, KeyInfo, KeyPage, KeyStatus,
-    ListEventsRequest, ListKeysRequest, OpError, Operation, Operations, RevokeKeyRequest,
-    required_scope,
+    EmitResponse, Environment, Event, EventPage, GetEventRequest, KeyInfo, KeyPage, KeyStatus,
+    ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation, Operations,
+    RevokeKeyRequest, Whoami, WhoamiRequest, required_scope,
 };
 
 const KEY: &str =
@@ -64,6 +64,23 @@ impl Operations for Fixed {
             events: Vec::new(),
             next: None,
         })
+    }
+
+    async fn whoami(&self, _cx: &Call, _req: WhoamiRequest) -> Result<Whoami, OpError> {
+        Ok(Whoami {
+            key_id: KEY[4..40].parse().unwrap(),
+            scopes: BTreeSet::from([Scope::Read]),
+            environment: Address::new("default", "default"),
+            expires_at: None,
+        })
+    }
+
+    async fn list_environments(
+        &self,
+        _cx: &Call,
+        _req: ListEnvironmentsRequest,
+    ) -> Result<Vec<Environment>, OpError> {
+        Ok(Vec::new())
     }
 
     async fn create_key(&self, _cx: &Call, req: CreateKeyRequest) -> Result<CreatedKey, OpError> {
@@ -154,6 +171,10 @@ fn drive<O: Operations>(ops: &O) {
     )))
     .unwrap();
     assert!(page.next.is_none());
+
+    ready(assert_send(ops.whoami(&cx, WhoamiRequest {}))).unwrap();
+    let envs = ops.list_environments(&cx, ListEnvironmentsRequest {});
+    ready(assert_send(envs)).unwrap();
 
     let key = ready(assert_send(ops.create_key(
         &cx,

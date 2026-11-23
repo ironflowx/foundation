@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use ironflowx_cell::ManualClock;
 use ironflowx_core::{Clock, ErrorKind, KeyOrigin, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
-use ironflowx_proto::{Call, CreateKeyRequest, KeyStatus, ListEventsRequest, WhoamiRequest};
+use ironflowx_proto::{
+    Call, CreateKeyRequest, KeyStatus, ListEventsRequest, Operations, WhoamiRequest,
+};
 
 const T: i64 = 1_800_000_000_000;
 const HOUR: i64 = 3_600_000;

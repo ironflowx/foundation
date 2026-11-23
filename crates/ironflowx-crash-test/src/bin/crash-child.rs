@@ -1,6 +1,8 @@
-//! The child side of the crash test (#6). Usage: `crash-child <dir> <env-ref> <point> <crossing>`.
+//! The child side of the crash test (#6). Usage: `crash-child <root> <point> <crossing>`.
 //!
-//! Opens the ledger in `<dir>` with a manual clock and prints `ready`. Then, per stdin line:
+//! Opens an engine on `<root>`, without a seed and with a manual clock, and prints `ready`, then
+//! `<env-ref> <key>`: its environment and the bootstrap key it minted. So `<root>` must be fresh,
+//! unless the child is to stop before `ready`. Then, with that key, per stdin line:
 //!
 //! - `emit <item>` emits one item and prints `<result>`: `new:<event-id>`, `dup:<event-id>`
 //!   or `err:<kind>`;
@@ -23,16 +25,18 @@
 use std::future::{Future, poll_fn};
 use std::io::{BufRead, Write};
 use std::num::NonZeroU32;
-use std::path::PathBuf;
+use std::path::Path;
 use std::pin::pin;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::Poll;
 
-use ironflowx_cell::{FaultPoint, Ledger, LocalOperations, ManualClock, set_fault_hook};
-use ironflowx_core::{EnvRef, Timestamp};
+use ironflowx_cell::{FaultPoint, ManualClock, set_fault_hook};
+use ironflowx_core::{Secret, Timestamp};
+use ironflowx_operations::Engine;
 use ironflowx_proto::{
-    Call, EmitBatchRequest, EmitRequest, EmitResponse, ListEventsRequest, OpError, Operations,
+    Call, EmitBatchRequest, EmitRequest, EmitResponse, ListEnvironmentsRequest, ListEventsRequest,
+    OpError, Operations,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 
@@ -41,7 +45,7 @@ static STOP: OnceLock<(String, u64)> = OnceLock::new();
 static CROSSINGS: AtomicU64 = AtomicU64::new(0);
 
 fn at_point(point: FaultPoint) {
-    let (name, crossing) = STOP.get().expect("set before the ledger opens");
+    let (name, crossing) = STOP.get().expect("set before the engine opens");
     if point.name() != name || CROSSINGS.fetch_add(1, Ordering::SeqCst) + 1 != *crossing {
         return;
     }
@@ -109,11 +113,9 @@ async fn probing(
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let [dir, env, point, crossing] = &args[..] else {
-        panic!("usage: crash-child <dir> <env-ref> <point> <crossing>");
+    let [root, point, crossing] = &args[..] else {
+        panic!("usage: crash-child <root> <point> <crossing>");
     };
-    let dir = PathBuf::from(dir);
-    let env: EnvRef = env.parse().expect("an environment reference");
     let crossing = crossing.parse().expect("a crossing number");
     STOP.set((point.clone(), crossing)).expect("set once");
     set_fault_hook(at_point);
@@ -123,13 +125,20 @@ fn main() {
         .expect("a runtime");
     runtime.block_on(async {
         let clock = ManualClock::new(Timestamp::from_millis(1_700_000_000_000));
-        let ledger = Ledger::open(&dir, env, clock.clone())
+        let opened = Engine::open(Path::new(root), clock.clone(), None)
             .await
-            .expect("the ledger opens");
-        let ops = LocalOperations::new(&ledger);
-        let cx = Call::anonymous();
+            .expect("the engine opens");
+        let engine = opened.engine;
+        let key = opened.minted.expect("a fresh root mints a key");
+        let key = key.expose();
+        let cx = Call::with_key(Secret::new(key.to_owned()));
+        let envs = engine
+            .list_environments(&cx, ListEnvironmentsRequest {})
+            .await
+            .expect("the bootstrap key lists its environment");
         let mut out = std::io::stdout();
         writeln!(out, "ready").expect("the pipe writes");
+        writeln!(out, "{} {key}", envs[0].env).expect("the pipe writes");
         // Stdin is read on its own thread, so a `probe` reaches the runtime mid-request.
         let (send, mut lines) = mpsc::unbounded_channel();
         std::thread::spawn(move || {
@@ -143,10 +152,10 @@ fn main() {
             let (verb, rest) = line.split_once(' ').unwrap_or((&line, ""));
             let request = async {
                 match verb {
-                    "emit" => encode(&ops.emit(&cx, item(rest)).await),
+                    "emit" => encode(&engine.emit(&cx, item(rest)).await),
                     "batch" => {
                         let items = rest.split(' ').map(item).collect();
-                        match ops.emit_batch(&cx, EmitBatchRequest { items }).await {
+                        match engine.emit_batch(&cx, EmitBatchRequest { items }).await {
                             Ok(r) => r.items.iter().map(encode).collect::<Vec<_>>().join(" "),
                             Err(e) => encode(&Err(e)),
                         }
@@ -157,7 +166,7 @@ fn main() {
                             limit: NonZeroU32::new(limit.parse().expect("a limit")),
                             cursor: (cursor != "-").then(|| cursor.to_owned()),
                         };
-                        match ops.list_events(&cx, req).await {
+                        match engine.list_events(&cx, req).await {
                             Ok(page) => {
                                 let mut words = vec![page.next.unwrap_or_else(|| "-".into())];
                                 words.extend(page.events.iter().map(|e| e.event_id.to_string()));
@@ -176,6 +185,6 @@ fn main() {
             let answer = probing(request, &mut lines).await;
             writeln!(out, "{answer}").expect("the pipe writes");
         }
-        ledger.close().await;
+        engine.close().await;
     });
 }

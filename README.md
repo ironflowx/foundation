@@ -19,7 +19,7 @@ Released as `0.1.0`: one environment's ledger, linked into your process.
 
 ## Architecture
 
-The ledger is linked, not run: an embedder opens it in a directory. Event rules and core are pure; only the ledger touches disk, the clock and randomness.
+The engine is linked, not run: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead. Event rules, credentials and core are pure; only the ledger, the control plane and the engine touch disk, the clock and randomness.
 
 ![C2 crates](https://raw.githubusercontent.com/ironflowx/foundation/main/docs/img/c2-crates.svg)
 
@@ -34,12 +34,15 @@ More diagrams (modules and seams, crash recovery) and the details are in [`docs/
 | ironflowx-core | IDs, the environment reference, stored and event-clock time, the clock trait, error kinds |
 | ironflowx-events | event rules: what an event is and when an emit is refused |
 | ironflowx-proto | the Operations interface and its request and answer types |
-| ironflowx-cell | the ledger: one environment's durable commit log and read store, and `LocalOperations` |
+| ironflowx-cell | the ledger: one environment's durable commit log and read store |
+| ironflowx-authz | credentials: the key format, and whether a key is valid and may make a call |
+| ironflowx-store | the control plane: which tenants, projects, environments and keys exist |
+| ironflowx-operations | the engine: admits every call, then runs it on the ledger or the keys |
 | ironflowx | every foundation crate, re-exported |
 
 ## Use it
 
-Depend on the facade, with `tokio` for the runtime the ledger runs on:
+Depend on the facade, with `tokio` for the runtime the engine and the ledger run on:
 
 ```toml
 [dependencies]
@@ -47,4 +50,4 @@ ironflowx = "0.1"
 tokio = { version = "1", default-features = false, features = ["rt"] }
 ```
 
-[`examples/embed`](https://github.com/ironflowx/foundation/blob/main/examples/embed/src/main.rs) opens a ledger, emits an event and reads it back.
+On `main`, [`examples/embed`](https://github.com/ironflowx/foundation/blob/main/examples/embed/src/main.rs) bootstraps an engine, emits an event and reads it back with a read-only key. 0.1 has no engine: [its example](https://github.com/ironflowx/foundation/blob/v0.1.0/examples/embed/src/main.rs) opens a ledger.

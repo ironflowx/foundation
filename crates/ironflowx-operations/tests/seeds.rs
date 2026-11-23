@@ -10,7 +10,7 @@ use ironflowx_authz::mint;
 use ironflowx_cell::{Ledger, ManualClock, OpenError};
 use ironflowx_core::{Clock, EnvRef, ErrorKind, Secret, Timestamp};
 use ironflowx_operations::{Engine, EngineError, Opened, SeedState};
-use ironflowx_proto::{Call, ListEnvironmentsRequest, WhoamiRequest};
+use ironflowx_proto::{Call, ListEnvironmentsRequest, Operations, WhoamiRequest};
 
 fn clock() -> ManualClock {
     ManualClock::new(Timestamp::from_millis(1_800_000_000_000))

@@ -15,14 +15,13 @@ authors.workspace = true
 [features]
 # Internal and unstable, not part of the API: test hooks that hold the fold, inject an
 # append or fold fault, which can make a durable commit answer `Unknown`, and call a hook at
-# each named fault point (the hook lives in ironflowx-core). For this repo's crash test only;
+# each named fault point (the hook lives in ironflowx-core). For this repo's tests only;
 # ci/no-fault-points.sh fails if a published build can enable it.
 __fault-points = ["ironflowx-core/__fault-points"]
 
 [dependencies]
 ironflowx-core.workspace = true
 ironflowx-events.workspace = true
-ironflowx-proto.workspace = true
 getrandom = { version = "0.4.3", default-features = false }
 rusqlite = { version = "0.43.0", default-features = false, features = ["bundled", "fallible_uint"] }
 # D16: an exact version, from crates.io.

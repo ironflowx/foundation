@@ -13,7 +13,7 @@ use ironflowx_operations::{Engine, EngineError, Opened, SeedState};
 use ironflowx_proto::{
     Call, CreateKeyRequest, EmitBatchRequest, EmitRequest, Environment, GetEventRequest, KeyInfo,
     KeyPage, KeyStatus, ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError,
-    RevokeKeyRequest, Whoami, WhoamiRequest,
+    Operations, RevokeKeyRequest, Whoami, WhoamiRequest,
 };
 use tempfile::TempDir;
 

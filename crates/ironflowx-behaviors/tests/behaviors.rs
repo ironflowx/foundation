@@ -1,7 +1,6 @@
-//! The behavior scenarios in `docs/behaviors/`, each file on its own World, on a temporary
-//! directory with a `ManualClock` (D20). Steps call `Operations` or the engine, never a URL.
-//! `events.feature` runs through `LocalOperations` until the engine replaces it; tenancy
-//! scenarios run on the engine as each lands (`tenancy::REGISTERED`).
+//! The behavior scenarios in `docs/behaviors/`, each file on its own World: an engine on a
+//! temporary directory with a `ManualClock` (D20). Steps call `Operations`, never a URL. All of
+//! `events.feature` runs; tenancy scenarios run as each lands (`tenancy::REGISTERED`).
 
 #[path = "behaviors/tenancy.rs"]
 mod tenancy;
@@ -13,11 +12,14 @@ use cucumber::feature::Ext as _;
 use cucumber::gherkin::{Feature, GherkinEnv};
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
-use ironflowx_cell::{Ledger, LocalOperations, ManualClock, new_env_ref};
-use ironflowx_core::{EnvRef, ErrorKind, EventId, Timestamp};
+use ironflowx_cell::{Ledger, ManualClock, new_env_ref};
+use ironflowx_core::{EnvRef, ErrorKind, EventId, Scope, Secret, SubmitAs, Timestamp};
+use ironflowx_events::{Emit, Submission};
+use ironflowx_operations::Engine;
 use ironflowx_proto::{
-    Call, EmitBatchRequest, EmitBatchResponse, EmitRequest, EmitResponse, Event, EventPage,
-    GetEventRequest, ListEventsRequest, OpError, Operations,
+    Call, CreateKeyRequest, EmitBatchRequest, EmitBatchResponse, EmitRequest, EmitResponse, Event,
+    EventPage, GetEventRequest, ListEnvironmentsRequest, ListEventsRequest, OpError, Operations,
+    WhoamiRequest,
 };
 use tempfile::TempDir;
 
@@ -26,8 +28,14 @@ const DAY: i64 = 86_400_000;
 #[derive(World)]
 #[world(init = Self::new)]
 struct Env {
-    // Before `dir`: fields drop in order, and the ledger must go before its directory.
-    ledger: Option<Ledger>,
+    // Before `dir`: fields drop in order, and the engine must go before its directory.
+    engine: Option<Engine>,
+    /// The bootstrap key, as the fresh environment's open returned it.
+    bootstrap: Option<Secret>,
+    /// The client's call, holding the bootstrap key.
+    client: Option<Call>,
+    /// Another client's call, holding a key of its own.
+    other: Option<Call>,
     dir: TempDir,
     clock: ManualClock,
     emits: Vec<Result<EmitResponse, OpError>>,
@@ -62,12 +70,19 @@ fn request(name: impl Into<String>) -> EmitRequest {
     }
 }
 
+fn all_scopes() -> BTreeSet<Scope> {
+    BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin])
+}
+
 impl Env {
     fn new() -> Self {
         Self {
             dir: tempfile::tempdir().unwrap(),
             clock: ManualClock::new(Timestamp::from_millis(1_800_000_000_000)),
-            ledger: None,
+            engine: None,
+            bootstrap: None,
+            client: None,
+            other: None,
             emits: Vec::new(),
             sent: None,
             read: None,
@@ -79,13 +94,35 @@ impl Env {
         }
     }
 
-    fn ops(&self) -> LocalOperations<'_> {
-        LocalOperations::new(self.ledger.as_ref().expect("a fresh environment"))
+    fn ops(&self) -> &Engine {
+        self.engine.as_ref().expect("a fresh environment")
+    }
+
+    fn client(&self) -> &Call {
+        self.client.as_ref().expect("a client")
+    }
+
+    /// Whoever a step names: the other client, which holds another key with all three scopes,
+    /// or the client.
+    async fn reader(&self, other: &str) -> &Call {
+        if other.is_empty() {
+            return self.client();
+        }
+        let cx = self.other.as_ref().expect("another client");
+        let mine = self.ops().whoami(self.client(), WhoamiRequest {}).await;
+        let theirs = self.ops().whoami(cx, WhoamiRequest {}).await.unwrap();
+        assert_ne!(
+            theirs.key_id,
+            mine.unwrap().key_id,
+            "the other client holds a key of its own"
+        );
+        assert_eq!(theirs.scopes, all_scopes());
+        cx
     }
 
     async fn emit(&mut self, req: EmitRequest) -> Result<EmitResponse, OpError> {
         self.sent = req.data.clone();
-        let r = self.ops().emit(&Call::anonymous(), req).await;
+        let r = self.ops().emit(self.client(), req).await;
         self.emits.push(r.clone());
         r
     }
@@ -101,22 +138,32 @@ impl Env {
     async fn batch(&mut self, items: Vec<EmitRequest>) {
         let r = self
             .ops()
-            .emit_batch(&Call::anonymous(), EmitBatchRequest { items })
+            .emit_batch(self.client(), EmitBatchRequest { items })
             .await;
         self.batch = Some(r);
     }
 
     async fn list(&self, limit: Option<u32>, cursor: Option<String>) -> Result<EventPage, OpError> {
+        self.list_as(self.client(), limit, cursor).await
+    }
+
+    async fn list_as(
+        &self,
+        cx: &Call,
+        limit: Option<u32>,
+        cursor: Option<String>,
+    ) -> Result<EventPage, OpError> {
         let limit = limit.map(|l| l.try_into().unwrap());
-        self.ops()
-            .list_events(&Call::anonymous(), ListEventsRequest { limit, cursor })
-            .await
+        let req = ListEventsRequest { limit, cursor };
+        self.ops().list_events(cx, req).await
     }
 
     async fn get(&self, id: String) -> Result<Event, OpError> {
-        self.ops()
-            .get_event(&Call::anonymous(), GetEventRequest { event_id: id })
-            .await
+        self.get_as(self.client(), id).await
+    }
+
+    async fn get_as(&self, cx: &Call, event_id: String) -> Result<Event, OpError> {
+        self.ops().get_event(cx, GetEventRequest { event_id }).await
     }
 
     /// Every stored event, newest first.
@@ -289,7 +336,10 @@ fn quoted_list(s: &str) -> Vec<String> {
 
 fn refused(r: &Result<impl fmt::Debug, OpError>, kind: ErrorKind) -> &str {
     match r {
-        Err(e) if e.kind == kind => &e.message,
+        Err(e) if e.kind == kind => {
+            assert_eq!(e.hint, None, "a rule's refusal carries no hint");
+            &e.message
+        }
         other => panic!("expected {kind:?}, got {other:?}"),
     }
 }
@@ -298,12 +348,27 @@ fn refused(r: &Result<impl fmt::Debug, OpError>, kind: ErrorKind) -> &str {
 
 #[given("a fresh environment")]
 async fn fresh(w: &mut Env) {
-    let ledger = Ledger::open(w.dir.path(), new_env_ref(), w.clock.clone()).await;
-    w.ledger = Some(ledger.unwrap());
+    let opened = Engine::open(w.dir.path(), w.clock.clone(), None).await;
+    let opened = opened.unwrap();
+    w.bootstrap = opened.minted;
+    w.engine = Some(opened.engine);
 }
 
-#[given(regex = r"^(?:a|another) client$")]
-fn client(_: &mut Env) {}
+#[given("a client")]
+fn client(w: &mut Env) {
+    let key = w.bootstrap.take().expect("the bootstrap key");
+    w.client = Some(Call::with_key(key));
+}
+
+#[given("another client")]
+async fn another_client(w: &mut Env) {
+    let req = CreateKeyRequest {
+        scopes: all_scopes(),
+        ..CreateKeyRequest::default()
+    };
+    let created = w.ops().create_key(w.client(), req).await.unwrap();
+    w.other = Some(Call::with_key(created.key));
+}
 
 // ---- Emit ----
 
@@ -607,26 +672,32 @@ fn list_refused(w: &mut Env) {
 
 #[given("a cursor issued by an environment with the same ID and another incarnation token")]
 async fn foreign_cursor(w: &mut Env) {
-    let env = w.ledger.as_ref().unwrap().env();
-    let other: EnvRef = format!("{}.{}", env.id(), new_env_ref().token())
+    let mine = w
+        .ops()
+        .list_environments(w.client(), ListEnvironmentsRequest {})
+        .await
+        .unwrap();
+    let other: EnvRef = format!("{}.{}", mine[0].env.id(), new_env_ref().token())
         .parse()
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::open(dir.path(), other, w.clock.clone())
         .await
         .unwrap();
-    let ops = LocalOperations::new(&ledger);
+    // A direct ledger caller, which the ledger trusts (D36).
+    let by = SubmitAs::embedder("another incarnation").unwrap();
     for name in ["a", "b"] {
-        ops.emit(&Call::anonymous(), request(name)).await.unwrap();
+        let emit = Emit {
+            name: name.into(),
+            ..Emit::default()
+        };
+        ledger
+            .submit(Submission::Emit(emit), by.clone())
+            .await
+            .unwrap();
     }
-    let page = ops
-        .list_events(
-            &Call::anonymous(),
-            ListEventsRequest {
-                limit: 1.try_into().ok(),
-                cursor: None,
-            },
-        )
+    let page = ledger
+        .read(move |v| ironflowx_events::list_events(v, other.token(), 1.try_into().ok(), None))
         .await
         .unwrap();
     w.cursor = page.next;
@@ -635,16 +706,17 @@ async fn foreign_cursor(w: &mut Env) {
 
 // ---- Read your writes ----
 
-#[then(regex = r"^(?:the other client )?reading that event by ID right away finds it$")]
-async fn finds_it(w: &mut Env) {
+#[then(regex = r"^(the other client )?reading that event by ID right away finds it$")]
+async fn finds_it(w: &mut Env, other: String) {
     let id = w.last_id();
-    assert_eq!(w.get(id.to_string()).await.unwrap().event_id, id);
+    let event = w.get_as(w.reader(&other).await, id.to_string()).await;
+    assert_eq!(event.unwrap().event_id, id);
 }
 
-#[then(regex = r"^(?:the other client )?listing events right away includes it$")]
-async fn lists_it(w: &mut Env) {
+#[then(regex = r"^(the other client )?listing events right away includes it$")]
+async fn lists_it(w: &mut Env, other: String) {
     let id = w.last_id();
-    let page = w.list(None, None).await.unwrap();
+    let page = w.list_as(w.reader(&other).await, None, None).await.unwrap();
     assert!(page.events.iter().any(|e| e.event_id == id));
 }
 
@@ -735,8 +807,8 @@ async fn main() {
         // `close`, not a drop: dropping joins the writer thread on the runtime.
         .after(|_, _, _, _, world| {
             Box::pin(async move {
-                if let Some(ledger) = world.and_then(|w| w.ledger.take()) {
-                    ledger.close().await;
+                if let Some(engine) = world.and_then(|w| w.engine.take()) {
+                    engine.close().await;
                 }
             })
         })

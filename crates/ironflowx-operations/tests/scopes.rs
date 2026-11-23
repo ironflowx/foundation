@@ -9,7 +9,7 @@ use ironflowx_core::{ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
     Call, CreateKeyRequest, EmitBatchRequest, EmitRequest, GetEventRequest,
-    ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation,
+    ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation, Operations,
     RevokeKeyRequest, WhoamiRequest, required_scope,
 };
 

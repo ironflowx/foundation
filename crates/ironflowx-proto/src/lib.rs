@@ -14,8 +14,9 @@ use ironflowx_core::{
     Timestamp,
 };
 
-/// The four things a client can do in 0.1. Every caller, in process or remote, goes through
-/// this trait. Adapters are generic over it; there is no `dyn` use in 0.1.
+/// Everything a client can do. Every caller, in process or remote, goes through this trait, and
+/// a call is answered only for the key it carries (D36). Callers are generic over it; there is
+/// no `dyn` use.
 pub trait Operations: Send + Sync {
     /// Emits one event.
     fn emit(
@@ -44,6 +45,20 @@ pub trait Operations: Send + Sync {
         cx: &Call,
         req: ListEventsRequest,
     ) -> impl Future<Output = Result<EventPage, OpError>> + Send;
+
+    /// The calling key, as it sees itself.
+    fn whoami(
+        &self,
+        cx: &Call,
+        req: WhoamiRequest,
+    ) -> impl Future<Output = Result<Whoami, OpError>> + Send;
+
+    /// Lists the environments the calling key reaches: only its own.
+    fn list_environments(
+        &self,
+        cx: &Call,
+        req: ListEnvironmentsRequest,
+    ) -> impl Future<Output = Result<Vec<Environment>, OpError>> + Send;
 
     /// Creates a key in the calling key's environment; the answer holds its secret, once.
     fn create_key(

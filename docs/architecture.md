@@ -1,12 +1,12 @@
 # Architecture
 
-One environment's commit path, as foundation crates linked into an embedder's process.
+One environment's commit path and the engine in front of it, as foundation crates linked into a host's or an embedder's process.
 
 ## C1: Context
 
 ![C1 system context](img/c1-context.svg)
 
-The ledger is linked, not run: an embedder opens it in a directory.
+The engine is linked, not run: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead.
 
 ## C2: Crates
 
@@ -34,16 +34,16 @@ The rows behind it: [Open](#open).
 
 | Module | Does | Interface | Crate |
 |---|---|---|---|
-| Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time | `open`, `submit`, `read`, `close`, `LocalOperations`, `HostClock`, `ManualClock` | `ironflowx-cell` |
+| Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time | `open`, `submit`, `read`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
 | Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types; 0.3 maps a wire format onto them | `Operations` trait and messages | `ironflowx-proto` |
-| Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records | `Engine::open`, `close`, `whoami`, `list_environments`, `emit`, `emit_batch`, `get_event`, `list_events`, `create_key`, `list_keys`, `revoke_key` | `ironflowx-operations` |
+| Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records | `Engine::open`, `close`, `Operations` | `ironflowx-operations` |
 | Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create` | `ironflowx-authz` |
 | Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `mark_ledger_created`, `apply_seed`, `lookup_key`, `record_expiry`, `insert_key`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
 | Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Scope`, `KeyOrigin`, `Address`, `Secret`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
 | Facade | Re-exports the crates above as modules; the one crate an embedder depends on | Re-exports | `ironflowx` |
 
-`LocalOperations` implements `Operations` over one `Ledger`. It maps each request to a submission and each outcome to an answer and holds no rule: every check, default and limit is in event rules. Tests and embedders use the same adapter. `LocalOperations::new` attributes every submission as `embedder:local-operations` until the engine replaces it (D36); the engine runs its event operations through `LocalOperations::submitting_as`, passing its verified grant's `submit_as()`, so an event emitted with a key records `key:<key-id>`. It answers `create_key`, `list_keys` and `revoke_key` `Unauthenticated`: keys need the engine.
+`Engine` is the one in-process `Operations`, so `Operations` always means credentialed (D36). For an event operation it maps the request to a submission or a query and the outcome to an answer, and holds no event rule: every check, default and limit is in event rules. It submits as its verified grant's `submit_as()`, so an event emitted with a key records `key:<key-id>`. An embedder that needs no keys calls `Ledger::submit` and `read` directly, as `SubmitAs::embedder(name)`; the ledger trusts it.
 
 | Type | Is |
 |---|---|
@@ -64,9 +64,9 @@ The rows behind it: [Open](#open).
 
 ## Seams
 
-| Seam | Adapters | In 0.1 |
+| Seam | Adapters | Today |
 |---|---|---|
-| `Operations` | `LocalOperations` over one ledger · a remote client over the network | `LocalOperations`; the remote client arrives with the server in 0.3 |
+| `Operations` | The engine (`Engine`) · a remote client over the network | `Engine`; the remote client arrives with the server in 0.3 |
 | `Clock` | `HostClock` · `ManualClock`, which a test sets and steps, backwards too | Both, in `ironflowx-cell`. The behaviors and the crash test use `ManualClock` |
 | Control plane | SQLite · a shared database for clusters | SQLite only: hypothetical, so no trait |
 | Ledger, event rules, credentials | One adapter each | Module interfaces, not seams |
@@ -78,12 +78,14 @@ The segment log has a storage seam of its own, private to `segment-log-core`; 0.
 Shapes, abridged. Each crate's full public API is its snapshot in [`public-api/`](../public-api/), which CI checks (D21).
 
 ```rust
-// ironflowx-proto: the 0.1 subset. No dyn use in 0.1; adapters are generic.
+// ironflowx-proto. No dyn use; callers are generic over the trait.
 trait Operations: Send + Sync {
     fn emit(&self, cx: &Call, req: EmitRequest) -> impl Future<Output = Result<EmitResponse, OpError>> + Send;
     fn emit_batch(&self, cx: &Call, req: EmitBatchRequest) -> impl Future<Output = Result<EmitBatchResponse, OpError>> + Send;
     fn get_event(&self, cx: &Call, req: GetEventRequest) -> impl Future<Output = Result<Event, OpError>> + Send;
     fn list_events(&self, cx: &Call, req: ListEventsRequest) -> impl Future<Output = Result<EventPage, OpError>> + Send;
+    fn whoami(&self, cx: &Call, req: WhoamiRequest) -> impl Future<Output = Result<Whoami, OpError>> + Send;
+    fn list_environments(&self, cx: &Call, req: ListEnvironmentsRequest) -> impl Future<Output = Result<Vec<Environment>, OpError>> + Send;
     fn create_key(&self, cx: &Call, req: CreateKeyRequest) -> impl Future<Output = Result<CreatedKey, OpError>> + Send;
     fn list_keys(&self, cx: &Call, req: ListKeysRequest) -> impl Future<Output = Result<KeyPage, OpError>> + Send;
     fn revoke_key(&self, cx: &Call, req: RevokeKeyRequest) -> impl Future<Output = Result<(), OpError>> + Send;
@@ -114,23 +116,15 @@ const fn required_scope(op: Operation) -> Option<Scope>;   // an exhaustive matc
 // KeyPage          { keys: Vec<KeyInfo> /* newest first, by seq */, next: Option<String> /* <token>.<seq> */ }
 // RevokeKeyRequest { key_id: String }   // an ID that does not parse is NotFound
 
-// ironflowx-operations (tokio). These are the engine's own methods until the engine implements
-// the Operations trait. Each admits the call first, with no cache.
+// ironflowx-operations (tokio)
 impl Engine {
     async fn open(root: &Path, clock: impl Clock + Clone + Send + Sync + 'static, seed: Option<Secret>)
         -> Result<Opened, EngineError>;
     async fn close(self);
-    async fn whoami(&self, cx: &Call, req: WhoamiRequest) -> Result<Whoami, OpError>;
-    async fn list_environments(&self, cx: &Call, req: ListEnvironmentsRequest) -> Result<Vec<Environment>, OpError>;
-    // As Operations; each submission is attributed to the calling key, from its grant (TEN-6).
-    async fn emit(&self, cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError>;
-    async fn emit_batch(&self, cx: &Call, req: EmitBatchRequest) -> Result<EmitBatchResponse, OpError>;
-    async fn get_event(&self, cx: &Call, req: GetEventRequest) -> Result<Event, OpError>;
-    async fn list_events(&self, cx: &Call, req: ListEventsRequest) -> Result<EventPage, OpError>;
-    async fn create_key(&self, cx: &Call, req: CreateKeyRequest) -> Result<CreatedKey, OpError>;
-    async fn list_keys(&self, cx: &Call, req: ListKeysRequest) -> Result<KeyPage, OpError>;
-    async fn revoke_key(&self, cx: &Call, req: RevokeKeyRequest) -> Result<(), OpError>;
 }
+// Each call is admitted first, with no cache; each submission is attributed to the calling key,
+// from its grant (TEN-6).
+impl Operations for Engine { .. }
 // Opened      { engine: Engine,
 //               minted: Option<Secret>,      // the bootstrap key, returned by a bootstrapping open without a seed only
 //               seed: Option<SeedState> }    // Current | Revoked; None when no seed was given
