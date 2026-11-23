@@ -182,21 +182,73 @@ async fn a_seed_that_is_not_applied_changes_no_key_and_releases_the_directory() 
     opened.engine.close().await;
 }
 
-/// A clock whose first reading after it is armed says so, then waits to be let go.
+/// A clock that, once armed, holds one reading, after letting some go: it says the reading began,
+/// then waits for leave to finish it.
 #[derive(Clone, Default)]
 struct Held(Arc<Mutex<Option<Hook>>>);
 
-/// Says a reading began; waits for leave to finish it.
-type Hook = (Sender<()>, Receiver<()>);
+struct Hook {
+    skip: usize,
+    reading: Sender<()>,
+    go: Receiver<()>,
+}
 
 impl Clock for Held {
     fn now(&self) -> Timestamp {
-        let hook = self.0.lock().unwrap().take();
-        if let Some((reading, go)) = hook {
-            reading.send(()).unwrap();
-            let _ = go.recv();
+        let mut armed = self.0.lock().unwrap();
+        let hook = match &mut *armed {
+            Some(hook) if hook.skip > 0 => {
+                hook.skip -= 1;
+                None
+            }
+            armed => armed.take(),
+        };
+        drop(armed);
+        if let Some(hook) = hook {
+            hook.reading.send(()).unwrap();
+            let _ = hook.go.recv();
         }
         clock().now()
+    }
+}
+
+/// Opens `dir` with `seed` and cancels the open inside the control-plane write that makes its
+/// clock reading number `skip`, counting from 0. The root stays locked until that write ends;
+/// then, how the next open, given no seed, ends.
+async fn cancel_inside_a_write(dir: &Path, seed: &str, skip: usize) -> Result<Opened, EngineError> {
+    let held = Held::default();
+    let (reading, writing) = channel();
+    let (go, wait) = channel();
+    *held.0.lock().unwrap() = Some(Hook {
+        skip,
+        reading,
+        go: wait,
+    });
+    let (root, seed) = (dir.to_owned(), Some(secret(seed)));
+    let task = tokio::spawn(async move { Engine::open(&root, held, seed).await.map(drop) });
+    while writing.try_recv().is_err() {
+        assert!(!task.is_finished(), "the open ended without that reading");
+        tokio::task::yield_now().await;
+    }
+    // The clock is read inside the transaction: the write lock is taken.
+    let db = rusqlite::Connection::open(dir.join("control.db")).unwrap();
+    db.busy_timeout(Duration::ZERO).unwrap();
+    let busy = db.execute_batch("BEGIN IMMEDIATE").unwrap_err();
+    assert_eq!(
+        busy.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy)
+    );
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    let err = open(dir, None).await.err().expect("refused");
+    assert!(matches!(err, EngineError::Locked), "{err:?}");
+    go.send(()).unwrap();
+    loop {
+        match open(dir, None).await {
+            Err(EngineError::Locked) => tokio::task::yield_now().await,
+            opened => break opened,
+        }
     }
 }
 
@@ -212,34 +264,28 @@ async fn a_cancelled_open_holds_the_root_until_its_seed_is_applied() {
         .engine
         .close()
         .await;
-
-    let held = Held::default();
-    let (reading, applying) = channel();
-    let (go, wait) = channel();
-    *held.0.lock().unwrap() = Some((reading, wait));
-    let root = dir.path().to_owned();
-    let seed = Some(secret(&b));
-    let task = tokio::spawn(async move { Engine::open(&root, held, seed).await.map(drop) });
-    while applying.try_recv().is_err() {
-        tokio::task::yield_now().await;
-    }
-    // The clock is read inside the seed's transaction: the write lock is taken.
-    let db = rusqlite::Connection::open(dir.path().join("control.db")).unwrap();
-    db.busy_timeout(Duration::ZERO).unwrap();
-    assert!(db.execute_batch("BEGIN IMMEDIATE").is_err());
-    task.abort();
-    assert!(task.await.unwrap_err().is_cancelled());
-
-    let err = open(dir.path(), None).await.err().expect("refused");
-    assert!(matches!(err, EngineError::Locked), "{err:?}");
-    go.send(()).unwrap();
-    let opened = loop {
-        match open(dir.path(), None).await {
-            Err(EngineError::Locked) => tokio::task::yield_now().await,
-            opened => break opened.unwrap(),
-        }
-    };
+    let opened = cancel_inside_a_write(dir.path(), &b, 0).await.unwrap();
     assert!(authenticates(&opened.engine, &b).await);
     assert!(!authenticates(&opened.engine, &a).await);
+    opened.engine.close().await;
+}
+
+/// So does a cancelled first open, through the bootstrap's transaction and through the mark's:
+/// the first leaves an unmarked bootstrap, the second a finished one.
+#[tokio::test]
+async fn a_cancelled_first_open_holds_the_root_until_its_write_ends() {
+    let a = seed(1, 1);
+    let dir = tempfile::tempdir().unwrap();
+    let err = cancel_inside_a_write(dir.path(), &a, 0)
+        .await
+        .err()
+        .expect("refused");
+    assert!(
+        matches!(&err, EngineError::Io(e) if e.to_string().contains("did not finish the bootstrap")),
+        "{err:?}"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let opened = cancel_inside_a_write(dir.path(), &a, 1).await.unwrap();
+    assert!(authenticates(&opened.engine, &a).await);
     opened.engine.close().await;
 }

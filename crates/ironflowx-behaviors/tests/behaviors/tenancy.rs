@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
@@ -1132,17 +1133,23 @@ fn no_listed_secret(w: &mut Tenancy) {
     }
 }
 
-/// A well-formed key's text: `id` is its ID's last digit, and its secret 42 of `secret`, then A.
-fn seed_text(id: u8, secret: &str) -> String {
-    // The last character carries only 4 bits of the secret, so it stays "A".
-    let secret = secret.repeat(42);
-    format!("ixk_019a9f3e-7c2b-7d41-8a3e-20000000000{id}_{secret}A")
+/// A seed's text: a well-formed key with a fresh key ID.
+fn new_seed() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    // The secret is 43 characters, and the last carries only 4 bits, so it stays "A".
+    format!("ixk_019a9f3e-7c2b-7d41-8a3e-{n:012x}_{}A", "a".repeat(42))
+}
+
+/// `key`'s text with another secret.
+fn other_secret(key: &str) -> String {
+    format!("{}{}A", &key[..41], "c".repeat(42))
 }
 
 #[when("the engine is opened with a seed key")]
 #[given("the engine was opened with seed key A")]
 async fn opened_with_a(w: &mut Tenancy) {
-    let a = seed_text(1, "a");
+    let a = new_seed();
     w.texts.insert("A".into(), a.clone());
     w.open_with(Some(&a)).await.expect("the engine opens");
 }
@@ -1162,7 +1169,7 @@ async fn seed_authenticates(w: &mut Tenancy, names: String) {
 #[when("the engine is reopened with seed key B, which has another key ID")]
 #[given("the engine was reopened with seed key B")]
 async fn reopened_with_b(w: &mut Tenancy) {
-    let b = seed_text(2, "b");
+    let b = new_seed();
     w.texts.insert("B".into(), b.clone());
     w.reopen_with(Some(&b)).await;
     assert_eq!(w.reported, Some(SeedState::Current));
@@ -1172,16 +1179,12 @@ async fn reopened_with_b(w: &mut Tenancy) {
     regex = r"^the engine is reopened with (seed key A|no seed|a seed with K's key ID|a seed with A's key ID and another secret)$"
 )]
 async fn reopened_with(w: &mut Tenancy, which: String) {
-    let a = seed_text(1, "a");
-    // A seed added later (ACC-013) is first named here.
-    if which == "seed key A" {
-        w.texts.insert("A".into(), a.clone());
-    }
     let seed = match which.as_str() {
-        "seed key A" => Some(a),
+        // A seed added later (ACC-013) is first named here.
+        "seed key A" => Some(w.texts.entry("A".into()).or_insert_with(new_seed).clone()),
         "no seed" => None,
-        "a seed with K's key ID" => Some(format!("{}{}A", &w.text("K")[..41], "c".repeat(42))),
-        _ => Some(seed_text(1, "c")),
+        "a seed with K's key ID" => Some(other_secret(w.text("K"))),
+        _ => Some(other_secret(w.text("A"))),
     };
     w.reopen_with(seed.as_deref()).await;
 }
@@ -1213,7 +1216,7 @@ async fn key_still_authenticates(w: &mut Tenancy, name: String) {
 
 #[when(regex = r"^the engine is opened with (.+) as the seed$")]
 async fn opened_with_malformed(w: &mut Tenancy, which: String) {
-    let good = seed_text(1, "a");
+    let good = new_seed();
     let text = match which.as_str() {
         r#""not-a-key""# => "not-a-key".to_owned(),
         "a valid key with one character removed" => good[..83].to_owned(),

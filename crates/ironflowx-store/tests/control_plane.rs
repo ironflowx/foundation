@@ -548,6 +548,27 @@ fn whole_rows(dir: &Path) -> BTreeMap<String, BTreeMap<String, Value>> {
     rows.unwrap().map(Result::unwrap).collect()
 }
 
+/// The row of a seed made at `now`: every column.
+fn seed_row(seed: &KeyParts, seq: i64, now: i64) -> BTreeMap<String, Value> {
+    let text = |s: &str| Value::Text(s.to_owned());
+    let columns = [
+        ("seq", Value::Integer(seq)),
+        ("id", text(&seed.id.to_string())),
+        ("environment_id", text(&env(1).id().to_string())),
+        ("environment_token", text(&env(1).token().to_string())),
+        ("scopes", text("read,write,admin")),
+        ("digest", Value::Blob(seed.digest.to_stored().to_vec())),
+        ("origin", text("seed")),
+        ("created_by", Value::Null),
+        ("label", Value::Null),
+        ("expires_at", Value::Null),
+        ("expiry_recorded", Value::Integer(0)),
+        ("revoked_at", Value::Null),
+        ("created_at", Value::Integer(now)),
+    ];
+    columns.map(|(name, value)| (name.to_owned(), value)).into()
+}
+
 /// Every unrevoked seed's ID.
 fn current_seeds(cp: &ControlPlane) -> Vec<KeyId> {
     let rows = cp.list_keys(&env(1), None, 2_000).unwrap();
@@ -601,24 +622,13 @@ fn a_new_seed_rotates_the_current_one_and_an_old_one_stays_revoked() {
     let mut expected = whole_rows(dir.path());
     // The rows are `expected` with `new` added, a seed made at `now`, and `revoked` revoked then.
     let mut rotated = |new: &KeyParts, revoked: Option<&KeyParts>, now: i64, case: &str| {
-        let mut rows = whole_rows(dir.path());
         if let Some(old) = revoked {
             let old = expected.get_mut(&old.id.to_string()).unwrap();
             old.insert("revoked_at".into(), Value::Integer(now));
         }
-        let unchanged = rows.clone();
-        rows.remove(&new.id.to_string()).expect("the new seed");
-        assert_eq!(rows, expected, "{case}");
-        expected = unchanged;
-        let row = cp.list_keys(&env(1), None, 1).unwrap().remove(0);
-        assert_eq!(
-            (row.record.id, row.origin, row.created_by, row.created_at),
-            (new.id, KeyOrigin::Seed, None, Timestamp::from_millis(now)),
-            "{case}"
-        );
-        let every = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]);
-        assert_eq!((row.record.scopes, row.record.expires_at), (every, None));
-        assert!(row.record.digest.ct_eq(&new.digest), "{case}");
+        let seq = i64::try_from(expected.len()).unwrap() + 1;
+        expected.insert(new.id.to_string(), seed_row(new, seq, now));
+        assert_eq!(whole_rows(dir.path()), expected, "{case}");
         assert_eq!(current_seeds(&cp), [new.id], "{case}");
     };
 
@@ -677,22 +687,21 @@ fn a_seed_whose_key_id_is_another_key_is_a_conflict() {
     for s in [&old, &a] {
         cp.apply_seed(&env(1), s, &Fixed(T)).unwrap();
     }
-    let conflicts = |s: &KeyParts, case: &str| {
+    // `compared`: how many digests are compared, each through `ct_eq` (TEN-4).
+    let conflicts = |s: &KeyParts, compared: usize, case: &str| {
         let before = whole_rows(dir.path());
         let calls = ironflowx_authz::ct_eq_calls();
         let got = cp.apply_seed(&env(1), s, &Fixed(T + 1));
         assert!(matches!(got, Err(SeedError::Conflict)), "{case}: {got:?}");
         assert_eq!(whole_rows(dir.path()), before, "{case}");
-        // Of this incarnation, the row is compared, and through `ct_eq` (TEN-4).
-        let compared = usize::from(case != "a seed of another incarnation");
         assert_eq!(ironflowx_authz::ct_eq_calls() - calls, compared, "{case}");
         assert_eq!(current_seeds(&cp), [a.id], "{case}");
     };
-    conflicts(&seed(116, 2), "the current seed's ID, another secret");
-    conflicts(&seed(117, 2), "a revoked seed's ID, another secret");
-    conflicts(&made_parts, "a created key's own text");
-    conflicts(&seed(115, 9), "a created key's ID, another secret");
-    conflicts(&minted, "the minted key's own text");
+    conflicts(&seed(116, 2), 1, "the current seed's ID, another secret");
+    conflicts(&seed(117, 2), 1, "a revoked seed's ID, another secret");
+    conflicts(&made_parts, 1, "a created key's own text");
+    conflicts(&seed(115, 9), 1, "a created key's ID, another secret");
+    conflicts(&minted, 1, "the minted key's own text");
 
     let db = rusqlite::Connection::open(path(dir.path())).unwrap();
     let set = |origin: &str, token: &str| {
@@ -703,9 +712,9 @@ fn a_seed_whose_key_id_is_another_key_is_a_conflict() {
         .unwrap();
     };
     set("recovered", &env(1).token().to_string());
-    conflicts(&made_parts, "a recovered key's own text");
+    conflicts(&made_parts, 1, "a recovered key's own text");
     set("seed", &format!("{:032x}", 8));
-    conflicts(&made_parts, "a seed of another incarnation");
+    conflicts(&made_parts, 0, "a seed of another incarnation");
 }
 
 /// A failed change leaves the previous seed current: the revoke and the insert are one
@@ -807,4 +816,25 @@ fn a_seed_is_applied_at_a_now_read_after_the_write_lock() {
         assert_eq!(applied.join().unwrap().unwrap(), SeedState::Current);
         told.recv().expect("read once the lock is free");
     });
+}
+
+/// An environment, or an incarnation, the file does not hold takes no seed: it would be a second
+/// unrevoked one, which no key of the engine's could be.
+#[test]
+fn a_seed_for_an_environment_the_file_does_not_hold_is_not_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    let a = seed(160, 1);
+    cp.apply_seed(&env(1), &a, &Fixed(T)).unwrap();
+    let before = whole_rows(dir.path());
+    let other_token: EnvRef = format!("{}.{:032x}", env(1).id(), 8).parse().unwrap();
+    for elsewhere in [other_token, env(2)] {
+        for s in [&a, &seed(161, 1)] {
+            let got = cp.apply_seed(&elsewhere, s, &Fixed(T + 1));
+            assert!(matches!(got, Err(SeedError::Store(_))), "{got:?}");
+            assert_eq!(whole_rows(dir.path()), before, "{elsewhere}");
+        }
+    }
 }

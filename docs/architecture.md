@@ -339,7 +339,7 @@ A sealed log, after a lossy repair, opens and reads until the first emit that ap
 
 ## Engine open
 
-`Engine::open(root, clock, seed)` first parses the seed, if it is given one: a malformed seed is `MalformedSeed`, which names the key format and never echoes the seed, and nothing is read. It then creates `root` if missing, takes the OS lock on `<root>/engine.lock` (another holder: `Locked`; the file is never deleted, so every contender locks the same one), reads the bootstrap state of `control.db` without creating it, and deletes a leftover `ledgers/.staging/`, which never holds anything acknowledged. Then:
+`Engine::open(root, clock, seed)` first parses the seed, if it is given one: a malformed seed is `MalformedSeed`, which names the key format and never echoes the seed, and nothing is read. It then creates `root` if missing, takes the OS lock on `<root>/engine.lock` (another holder: `Locked`; the file is never deleted, so every contender locks the same one), reads the bootstrap state of `control.db` without creating it, and deletes a leftover `ledgers/.staging/`, which never holds anything acknowledged. Each control-plane write below holds the root's lock until it ends, so an open cancelled inside one may still finish it, but no later open runs beside it. Then:
 
 | Finds | Does | `Opened` |
 |---|---|---|
@@ -347,7 +347,7 @@ A sealed log, after a lossy repair, opens and reads until the first emit that ap
 | A marked bootstrap | A later open: the environment's ledger, with 0.1's open; then `apply_seed`, if a seed is given | `seed` from `apply_seed` |
 | An unmarked bootstrap: an earlier open died before its mark | Refused with an `Io` error naming the unfinished bootstrap, changing nothing; finishing it is not built yet | |
 
-The current seed is the one unrevoked key of origin `Seed`; there is at most one. A seed must parse as a key; nothing else about it is judged, and it is dropped once parsed, its digest alone going on. `apply_seed` runs in its own transaction, after the ledger opens, so a failed open changes no seed (D33, TEN-9). It holds the root's lock until it ends: an open cancelled meanwhile may still apply its seed, but no later open runs beside it:
+The current seed is the one unrevoked key of origin `Seed`; there is at most one. A seed must parse as a key; nothing else about it is judged, and it is dropped once parsed, its digest alone going on. `apply_seed` runs in its own transaction, after the ledger opens, so a failed later open changes no seed (D33, TEN-9):
 
 | Seed | Result | `Opened.seed` |
 |---|---|---|

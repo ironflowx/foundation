@@ -3,7 +3,7 @@
 use ironflowx_authz::{KeyParts, mint};
 use ironflowx_cell::{ManualClock, new_env_ref};
 use ironflowx_core::{ErrorKind, Secret, Timestamp};
-use ironflowx_operations::{Engine, EngineError};
+use ironflowx_operations::{Engine, EngineError, SeedState};
 use ironflowx_proto::{Call, WhoamiRequest};
 use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane};
 
@@ -72,6 +72,7 @@ async fn a_never_bootstrapped_control_plane_is_bootstrapped() {
         let with_seed = given.is_some();
         let opened = Engine::open(dir.path(), clock(), given).await.unwrap();
         assert_eq!(opened.minted.is_none(), with_seed);
+        assert_eq!(opened.seed, with_seed.then_some(SeedState::Current));
         let key = opened.minted.unwrap_or_else(seed);
         let cx = Call::with_key(key);
         let whoami = opened.engine.whoami(&cx, WhoamiRequest {}).await;

@@ -114,7 +114,7 @@ pub enum BootstrapState {
 }
 
 /// What one bootstrap creates: the default tenant, project and environment, and its admin key.
-/// The engine draws every ID, and the key's secret unless the host supplied it as a seed.
+/// The engine draws every ID and the key's secret, but for a seed's, which the host supplied.
 #[derive(Debug, Clone)]
 pub struct Bootstrap {
     pub env: EnvRef,
@@ -354,8 +354,8 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// `Conflict` if the seed's key ID is already a key and not this seed, `Store` if SQLite
-    /// fails; no key changes.
+    /// `Conflict` if the seed's key ID is already a key and not this seed, `Store` if `env` is
+    /// not this file's environment or SQLite fails; no key changes.
     pub fn apply_seed(
         &self,
         env: &EnvRef,
@@ -367,6 +367,14 @@ impl ControlPlane {
             let mut conn = self.lock()?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let now = clock.now();
+            let here: bool = tx.query_row(
+                "SELECT count(*) > 0 FROM environments WHERE id = ?1 AND token = ?2",
+                params![env.id().to_string(), env.token().to_string()],
+                |r| r.get(0),
+            )?;
+            if !here {
+                return Err(refused("no such environment"));
+            }
             let id = seed.id.to_string();
             // Of any environment: a key ID is used once in the file.
             let origin = tx
