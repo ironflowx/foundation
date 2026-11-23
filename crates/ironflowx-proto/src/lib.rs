@@ -296,7 +296,7 @@ pub struct KeyInfo {
 }
 
 /// Whether a key works: `Revoked` once revoked, whatever its expiry; otherwise `Expired` from
-/// its expiry; otherwise `Active`.
+/// its expiry, or once refused as expired; otherwise `Active`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeyStatus {
     Active,

@@ -188,18 +188,50 @@ async fn a_creator_that_expires_before_its_key_is_stored_is_refused() {
     };
     let creator = as_call(&engine.create_key(&admin, creator).await.unwrap());
 
-    // Admission reads T; the insert, an hour on, when the creator has expired.
-    clock.step.store(HOUR, Ordering::SeqCst);
-    let req = CreateKeyRequest {
-        scopes: scopes(&[Scope::Read]),
-        expires_at: Some(at(T + HOUR)),
-        label: None,
-    };
-    let err = engine.create_key(&creator, req).await.expect_err("refused");
-    assert_eq!(
-        (err.kind, err.message.as_str(), err.hint),
-        (ErrorKind::Unauthenticated, "invalid API key", None)
-    );
+    // Admission reads T; the insert, an hour on, when the creator has expired. First with the
+    // recording of its expiry failing: the answer is the same, and the clock set back accepts it.
+    let db = rusqlite::Connection::open(dir.path().join("control.db")).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER fail BEFORE UPDATE ON keys BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    )
+    .unwrap();
+    for recording in ["fails", "fails at commit", "works"] {
+        clock.now.store(T, Ordering::SeqCst);
+        clock.step.store(HOUR, Ordering::SeqCst);
+        let req = CreateKeyRequest {
+            scopes: scopes(&[Scope::Read]),
+            expires_at: Some(at(T + HOUR)),
+            label: None,
+        };
+        let err = engine.create_key(&creator, req).await.expect_err("refused");
+        assert_eq!(
+            (err.kind, err.message.as_str(), err.hint),
+            (ErrorKind::Unauthenticated, "invalid API key", None),
+            "recording {recording}"
+        );
+        clock.now.store(T, Ordering::SeqCst);
+        clock.step.store(0, Ordering::SeqCst);
+        let back = engine.whoami(&creator, WhoamiRequest {}).await;
+        if recording == "works" {
+            let err = back.expect_err("its expiry was recorded");
+            assert_eq!(
+                (err.kind, err.message.as_str(), err.hint),
+                (ErrorKind::Unauthenticated, "invalid API key", None)
+            );
+        } else {
+            back.expect(recording);
+        }
+        db.execute_batch("DROP TRIGGER IF EXISTS fail").unwrap();
+        if recording == "fails" {
+            // The update works, and breaks a constraint SQLite checks at the commit.
+            db.execute_batch(
+                "CREATE TABLE late (t REFERENCES tenants(id) DEFERRABLE INITIALLY DEFERRED);
+                 CREATE TRIGGER fail AFTER UPDATE ON keys
+                 BEGIN INSERT INTO late VALUES ('none'); END;",
+            )
+            .unwrap();
+        }
+    }
     opened.engine.close().await;
 }
 

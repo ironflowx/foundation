@@ -16,12 +16,17 @@ pub enum ErrorKind {
     Unauthenticated,
     /// A valid key that lacks the operation's scope; the hint names it.
     PermissionDenied,
+    /// A limit is reached; the hint says what frees room.
+    ResourceExhausted,
 }
 
 impl ErrorKind {
     /// True when the same request, unchanged, may succeed later; the error's hint says when.
     pub const fn retryable(self) -> bool {
-        matches!(self, Self::Unavailable | Self::Unknown)
+        matches!(
+            self,
+            Self::Unavailable | Self::Unknown | Self::ResourceExhausted
+        )
     }
 }
 

@@ -32,6 +32,8 @@ use ironflowx_store::{
 /// every key the cap allows.
 const KEY_PAGE: u32 = 100;
 const MAX_KEY_PAGE: u32 = 1_000;
+/// The most created keys of an environment that hold a slot at once (TEN-15).
+const KEY_CAP: u32 = 1_000;
 
 pub use admission::Authorized;
 pub use open::EngineError;
@@ -68,8 +70,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// `Unauthenticated` for a missing or invalid key; `Unavailable` if the control plane
-    /// fails.
+    /// `Unauthenticated` for a missing or invalid key, whether or not its expiry could be
+    /// recorded; `Unavailable` if the control plane fails otherwise.
     pub async fn whoami(&self, cx: &Call, _req: WhoamiRequest) -> Result<Whoami, OpError> {
         let a = self.admit(cx, Operation::Whoami).await?;
         let record = self.environment(&a).await?;
@@ -157,8 +159,9 @@ impl Engine {
     /// # Errors
     ///
     /// As [`Engine::whoami`]; `PermissionDenied` without `admin`; `Invalid` for a request
-    /// beyond the caller, an expiry not after now, or a bad label; `Unauthenticated` if the
-    /// caller expired before the key was stored.
+    /// beyond the caller, an expiry not after now, or a bad label; `ResourceExhausted` while
+    /// 1,000 created keys hold a slot: not revoked, and no expiry recorded; `Unauthenticated` if
+    /// the caller expired before the key was stored.
     ///
     /// # Panics
     ///
@@ -184,7 +187,7 @@ impl Engine {
             expires_at: req.expires_at,
         };
         let (keys, env, clock) = (self.keys(&a), self.env, self.clock.clone());
-        let row = key_change(move || keys.insert_key(&env, new, creator, &*clock)).await?;
+        let row = key_change(move || keys.insert_key(&env, new, creator, &*clock, KEY_CAP)).await?;
         let info = key_info(row, self.clock.now());
         Ok(CreatedKey { key, info })
     }
@@ -258,12 +261,13 @@ impl Engine {
     }
 }
 
-/// What is listed about a key, its status by the clock (architecture.md, "Keys").
+/// What is listed about a key, its status by the clock and its recorded expiry
+/// (architecture.md, "Keys").
 fn key_info(row: KeyRow, now: Timestamp) -> KeyInfo {
     let r = row.record;
     let status = if r.revoked_at.is_some() {
         KeyStatus::Revoked
-    } else if r.expires_at.is_some_and(|t| now >= t) {
+    } else if r.expiry_recorded || r.expires_at.is_some_and(|t| now >= t) {
         KeyStatus::Expired
     } else {
         KeyStatus::Active
@@ -309,6 +313,11 @@ async fn key_change<T: Send + 'static>(
                 kind: ErrorKind::Invalid,
                 message: why.to_string(),
                 hint: None,
+            },
+            KeyChangeError::Full => OpError {
+                kind: ErrorKind::ResourceExhausted,
+                message: "key limit reached".into(),
+                hint: Some("revoke keys, expired ones first".into()),
             },
             KeyChangeError::NotFound => key_not_found(),
             KeyChangeError::Store(_) => unavailable(),

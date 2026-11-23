@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use ironflowx_authz::{Grant, KeyRecord, admit, may_create, mint, parse, recheck, verify};
+use ironflowx_authz::{Grant, KeyRecord, Refused, admit, may_create, mint, parse, recheck, verify};
 use ironflowx_core::{EnvRef, KeyId, Scope, Timestamp};
 
 const T: i64 = 1_800_000_000_000;
@@ -30,6 +30,7 @@ fn record(scopes: &BTreeSet<Scope>, expires_at: Option<Timestamp>) -> KeyRecord 
         scopes: scopes.clone(),
         digest: mint(id(), [7; 32]).1,
         expires_at,
+        expiry_recorded: false,
         revoked_at: None,
     }
 }
@@ -85,6 +86,51 @@ fn a_revoked_key_is_refused() {
         );
         assert!(recheck(&rec, &env(), at(T)).is_err(), "{expires_at:?}");
     }
+}
+
+/// Over every key and time: `newly_expired` says to record an expiry exactly when the digest
+/// matches and the key, of this environment and neither revoked nor recorded before, has reached
+/// its expiry; a recorded expiry refuses whatever the clock (TEN-13, D42).
+#[test]
+fn only_an_expiry_not_yet_recorded_is_newly_expired() {
+    let right = parse(&mint(id(), [7; 32]).0).unwrap();
+    let wrong = parse(&mint(id(), [8; 32]).0).unwrap();
+    let other_env: EnvRef = "019a9f3e-7c2b-7d41-8a3e-000000000001.ffeeddccbbaa99887766554433221100"
+        .parse()
+        .unwrap();
+    let verdict = |r: Result<Grant, Refused>| match r {
+        Ok(_) => "granted",
+        Err(r) if r.newly_expired() => "newly expired",
+        Err(_) => "refused",
+    };
+    for now in [T - 1, T, T + 1] {
+        for revoked in [false, true] {
+            for recorded in [false, true] {
+                for key_env in [env(), other_env] {
+                    let rec = KeyRecord {
+                        env: key_env,
+                        expiry_recorded: recorded,
+                        revoked_at: revoked.then_some(at(T - 5)),
+                        ..record(&BTreeSet::from([Scope::Read]), Some(at(T)))
+                    };
+                    let case = format!("now {now}: {rec:?}");
+                    let expected = match (revoked || recorded || key_env != env(), now < T) {
+                        (true, _) => "refused",
+                        (false, true) => "granted",
+                        (false, false) => "newly expired",
+                    };
+                    let got = recheck(&rec, &env(), at(now));
+                    assert_eq!(verdict(got), expected, "recheck, {case}");
+                    let got = verify(&right, Some(&rec), &env(), at(now));
+                    assert_eq!(verdict(got), expected, "verify, {case}");
+                    let got = verify(&wrong, Some(&rec), &env(), at(now));
+                    assert_eq!(verdict(got), "refused", "wrong secret, {case}");
+                }
+            }
+        }
+    }
+    let unknown = verify(&right, None, &env(), at(T));
+    assert_eq!(verdict(unknown), "refused", "unknown");
 }
 
 #[test]

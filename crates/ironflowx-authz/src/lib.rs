@@ -91,6 +91,8 @@ pub struct KeyRecord {
     pub digest: KeyDigest,
     /// `None`: the key never expires.
     pub expires_at: Option<Timestamp>,
+    /// The key was refused as expired, and stays expired whatever the clock does (D42).
+    pub expiry_recorded: bool,
     /// `Some`: the key was revoked then, and is refused from then on.
     pub revoked_at: Option<Timestamp>,
 }
@@ -131,27 +133,42 @@ impl Grant {
 /// One answer for every key that is not valid: unknown, a wrong secret, revoked, expired, or
 /// another environment or incarnation, so no refusal tells which keys exist.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Refused;
+pub struct Refused {
+    newly_expired: bool,
+}
+
+impl Refused {
+    const PLAIN: Self = Self {
+        newly_expired: false,
+    };
+
+    /// True when the key is refused only for having reached an expiry not yet recorded, its
+    /// secret matching if it was presented: the caller records the expiry (D42). It never
+    /// shapes the answer.
+    pub const fn newly_expired(&self) -> bool {
+        self.newly_expired
+    }
+}
 
 /// Decides whether `parts` is a valid key for `env` at `now`, given the record its ID looked
 /// up.
 ///
 /// # Errors
 ///
-/// [`Refused`], alike for every reason.
+/// [`Refused`]: one answer for every reason.
 pub fn verify(
     parts: &KeyParts,
     record: Option<&KeyRecord>,
     env: &EnvRef,
     now: Timestamp,
 ) -> Result<Grant, Refused> {
-    let record = record.ok_or(Refused)?;
+    let record = record.ok_or(Refused::PLAIN)?;
     // The digest comparison runs whatever the other checks find.
     let same_secret = record.digest.ct_eq(&parts.digest);
     if same_secret && record.id == parts.id {
         recheck(record, env, now)
     } else {
-        Err(Refused)
+        Err(Refused::PLAIN)
     }
 }
 
@@ -160,20 +177,23 @@ pub fn verify(
 ///
 /// # Errors
 ///
-/// [`Refused`] for another environment or incarnation, a revoked key, or from
-/// `now >= expires_at`.
+/// [`Refused`] for another environment or incarnation, a revoked key, a recorded expiry, or
+/// from `now >= expires_at`.
 pub fn recheck(record: &KeyRecord, env: &EnvRef, now: Timestamp) -> Result<Grant, Refused> {
-    let live = record.revoked_at.is_none() && record.expires_at.is_none_or(|t| now < t);
-    if record.env == *env && live {
-        Ok(Grant {
-            key_id: record.id,
-            scopes: record.scopes.clone(),
-            env: record.env,
-            expires_at: record.expires_at,
-        })
-    } else {
-        Err(Refused)
+    if record.env != *env || record.revoked_at.is_some() || record.expiry_recorded {
+        return Err(Refused::PLAIN);
     }
+    if record.expires_at.is_some_and(|t| now >= t) {
+        return Err(Refused {
+            newly_expired: true,
+        });
+    }
+    Ok(Grant {
+        key_id: record.id,
+        scopes: record.scopes.clone(),
+        env: record.env,
+        expires_at: record.expires_at,
+    })
 }
 
 /// A grant lacks the scope an operation requires (D31).
@@ -267,6 +287,7 @@ mod tests {
             scopes: BTreeSet::new(),
             digest: mint(id, bytes).1,
             expires_at: None,
+            expiry_recorded: false,
             revoked_at: None,
         };
         for (case, record, granted) in [
