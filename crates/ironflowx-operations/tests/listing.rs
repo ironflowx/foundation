@@ -20,7 +20,7 @@ const fn at(ms: i64) -> Timestamp {
 }
 
 async fn open(dir: &std::path::Path, clock: &ManualClock) -> (Engine, Call) {
-    let opened = Engine::open(dir, clock.clone()).await.unwrap();
+    let opened = Engine::open(dir, clock.clone(), None).await.unwrap();
     (opened.engine, Call::with_key(opened.minted.unwrap()))
 }
 

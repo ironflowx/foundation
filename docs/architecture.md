@@ -38,8 +38,8 @@ The rows behind it: [Open](#open).
 | Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types; 0.3 maps a wire format onto them | `Operations` trait and messages | `ironflowx-proto` |
 | Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records | `Engine::open`, `close`, `whoami`, `list_environments`, `emit`, `emit_batch`, `get_event`, `list_events`, `create_key`, `list_keys`, `revoke_key` | `ironflowx-operations` |
-| Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `admit`, `may_create` | `ironflowx-authz` |
-| Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `mark_ledger_created`, `lookup_key`, `record_expiry`, `insert_key`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
+| Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create` | `ironflowx-authz` |
+| Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `mark_ledger_created`, `apply_seed`, `lookup_key`, `record_expiry`, `insert_key`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
 | Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Scope`, `KeyOrigin`, `Address`, `Secret`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
 | Facade | Re-exports the crates above as modules; the one crate an embedder depends on | Re-exports | `ironflowx` |
 
@@ -117,7 +117,8 @@ const fn required_scope(op: Operation) -> Option<Scope>;   // an exhaustive matc
 // ironflowx-operations (tokio). These are the engine's own methods until the engine implements
 // the Operations trait. Each admits the call first, with no cache.
 impl Engine {
-    async fn open(root: &Path, clock: impl Clock + Clone + Send + Sync + 'static) -> Result<Opened, EngineError>;
+    async fn open(root: &Path, clock: impl Clock + Clone + Send + Sync + 'static, seed: Option<Secret>)
+        -> Result<Opened, EngineError>;
     async fn close(self);
     async fn whoami(&self, cx: &Call, req: WhoamiRequest) -> Result<Whoami, OpError>;
     async fn list_environments(&self, cx: &Call, req: ListEnvironmentsRequest) -> Result<Vec<Environment>, OpError>;
@@ -130,8 +131,10 @@ impl Engine {
     async fn list_keys(&self, cx: &Call, req: ListKeysRequest) -> Result<KeyPage, OpError>;
     async fn revoke_key(&self, cx: &Call, req: RevokeKeyRequest) -> Result<(), OpError>;
 }
-// Opened      { engine: Engine, minted: Option<Secret> }   // the bootstrap key, returned by the bootstrapping open only
-// EngineError Locked | Ledger(OpenError) | Store(StoreError) | Io(io::Error)
+// Opened      { engine: Engine,
+//               minted: Option<Secret>,      // the bootstrap key, returned by a bootstrapping open without a seed only
+//               seed: Option<SeedState> }    // Current | Revoked; None when no seed was given
+// EngineError MalformedSeed | Locked | SeedConflict | Ledger(OpenError) | Store(StoreError) | Io(io::Error)
 
 // ironflowx-authz: pure, depends only on core. The engine passes in the random secret.
 fn parse(raw: &Secret) -> Result<KeyParts, Malformed>;   // KeyParts { id: KeyId, digest: KeyDigest }
@@ -139,6 +142,8 @@ fn mint(id: KeyId, secret: [u8; 32]) -> (Secret, KeyDigest);
 fn verify(parts: &KeyParts, record: Option<&KeyRecord>, env: &EnvRef, now: Timestamp) -> Result<Grant, Refused>;
 fn recheck(record: &KeyRecord, env: &EnvRef, now: Timestamp) -> Result<Grant, Refused>;   // verify, without the secret
 // Refused: one answer for every bad key; newly_expired() says to record the expiry (D42), never shapes the answer
+// What the key stored under the seed's key ID makes of the seed: SeedState, Current or Revoked
+fn verify_seed(seed: &KeyParts, record: &KeyRecord, origin: KeyOrigin, env: &EnvRef) -> Result<SeedState, SeedConflict>;
 fn admit(grant: &Grant, required: Option<Scope>) -> Result<(), MissingScope>;   // MissingScope::scope() names it
 fn may_create(creator: &Grant, scopes: &BTreeSet<Scope>, expires_at: Option<Timestamp>, label: Option<&str>,
               now: Timestamp) -> Result<(), CreateRefusal>;
@@ -150,8 +155,10 @@ impl ControlPlane {
     fn bootstrap_state(path: &Path) -> Result<BootstrapState, StoreError>;  // read-only; creates nothing
     // BootstrapState: NoFile | Unbootstrapped | Unmarked { env: EnvRef } | Marked { env: EnvRef }
     fn ensure_bootstrap(&self, b: &Bootstrap, clock: &dyn Clock) -> Result<(), StoreError>; // one transaction
-    // Bootstrap { env: EnvRef, tenant: TenantId, project: ProjectId, key: KeyParts }   // the engine draws each
+    // Bootstrap { env: EnvRef, tenant: TenantId, project: ProjectId, key: KeyParts, by_seed: bool }
     fn mark_ledger_created(&self, env: &EnvRef, clock: &dyn Clock) -> Result<(), StoreError>;
+    fn apply_seed(&self, env: &EnvRef, seed: &KeyParts, clock: &dyn Clock) -> Result<SeedState, SeedError>; // one transaction
+    // SeedError Conflict | Store(StoreError)
     // Admission's one read: the key's record, then now, as one step no recorded expiry falls between
     fn lookup_key(&self, id: KeyId, env: &EnvRef, clock: &dyn Clock) -> Result<(Option<KeyRecord>, Timestamp), StoreError>;
     fn record_expiry(&self, env: &EnvRef, id: KeyId) -> Result<(), StoreError>;             // sets expiry_recorded, once
@@ -229,7 +236,7 @@ A list query, not `decide`, checks the cursor: a token that does not decode, or 
 | Valid | Parses; a record exists for the engine's environment ID and token; digests match, compared in constant time; not revoked; not expired: `now < expires_at` when an expiry is set, by the ledger's clock, and `expiry_recorded` unset |
 | Scopes | A non-empty set of `read`, `write`, `admin`, none implying another (D27). The bootstrap key holds all three |
 | Created | By a key holding `admin`. Scopes default to `{read}` when none are asked for, and must be a subset of the creator's. The expiry must be after now and no later than the creator's; no expiry only when the creator has none (D28). A label is 0–128 bytes of UTF-8 with no control character (Unicode Cc). At most 1,000 created keys per environment hold a slot: a key holds one until it is revoked or its expiry is recorded, whatever the clock reads. All checked inside the transaction, with now read after the write lock, the creator's record read again there |
-| Origin | `Minted` for the bootstrap key, which has no creator and holds no slot; `Created` keys name their creator in `created_by` (D35). `Seed` and `Recovered`, which hold no slot either, arrive with seeds and recovery |
+| Origin | `Minted` for a bootstrap key the engine minted; `Seed` for a key the host supplied; neither has a creator or holds a slot. `Created` keys name their creator in `created_by` (D35). `Recovered`, which holds no slot either, arrives with recovery |
 | Status | `Revoked` when `revoked_at` is set, whatever the expiry; otherwise `Expired` from `now ≥ expires_at`, by the clock, or once its expiry is recorded; otherwise `Active` |
 | Revoked | `revoked_at` is set; the row stays, so every `key:` emitter names a row (D35). Revoking a revoked key succeeds and keeps the first time |
 | Order | Keys list newest first by `seq`, a counter assigned under the write lock, so keys made in the same millisecond never tie. A page holds 100 keys unless asked otherwise, 1,000 at most; its cursor is `<incarnation token>.<seq>`, as event cursors are |
@@ -238,7 +245,7 @@ A list query, not `decide`, checks the cursor: a token that does not decode, or 
 
 **Recorded expiry sticks.** A key is expired when `now ≥ expires_at` or its `expiry_recorded` flag is set (D42). The flag is set, once, when the key is refused as expired with a matching digest and not revoked (`record_expiry`), or when a key change finds its calling key newly expired, in that change's transaction. A key whose expiry was recorded is never accepted again, whatever the clock does later, across restarts too. If recording fails, the call still gets the one uniform refusal, but nothing is recorded: until a later refusal records it, a clock set back can accept that key again. A clock that runs ahead and is corrected expires for good only the keys refused while it ran ahead; a recorded expiry does not spread to the keys a key created, so a child can stay usable until its own expiry. `list_keys` reports status by the clock and the flag and records nothing, so a key listed as expired can list as active again after the clock is set back. Event time is never compared with key time (LED-1).
 
-**Revocation and calls in flight.** A revoke takes effect when its transaction commits: a call whose `lookup_key` runs after it is refused; a call that read the key before may finish. `insert_key` and `revoke_key` take the write lock, read now, then read their calling key's record again and `recheck` it: a key revoked or expired by then changes no key, except that a newly expired one has its own expiry recorded, and the call is `Unauthenticated` (D43). No lock spans the control plane and the ledger, so an emit admitted before a revoke may still commit after it. Key and identity operations do not touch the ledger, so they keep working while it is `Unavailable`.
+**Revocation and calls in flight.** A revoke, or the revoke a seed's rotation makes, which has no calling key, takes effect when its transaction commits: a call whose `lookup_key` runs after it is refused; a call that read the key before may finish. `insert_key` and `revoke_key` take the write lock, read now, then read their calling key's record again and `recheck` it: a key revoked or expired by then changes no key, except that a newly expired one has its own expiry recorded, and the call is `Unauthenticated` (D43). No lock spans the control plane and the ledger, so an emit admitted before a revoke may still commit after it. Key and identity operations do not touch the ledger, so they keep working while it is `Unavailable`.
 
 | Operation | Scope |
 |---|---|
@@ -332,13 +339,23 @@ A sealed log, after a lossy repair, opens and reads until the first emit that ap
 
 ## Engine open
 
-`Engine::open(root, clock)` creates `root` if missing, takes the OS lock on `<root>/engine.lock` (another holder: `Locked`; the file is never deleted, so every contender locks the same one), reads the bootstrap state of `control.db` without creating it, and deletes a leftover `ledgers/.staging/`, which never holds anything acknowledged. Then:
+`Engine::open(root, clock, seed)` first parses the seed, if it is given one: a malformed seed is `MalformedSeed`, which names the key format and never echoes the seed, and nothing is read. It then creates `root` if missing, takes the OS lock on `<root>/engine.lock` (another holder: `Locked`; the file is never deleted, so every contender locks the same one), reads the bootstrap state of `control.db` without creating it, and deletes a leftover `ledgers/.staging/`, which never holds anything acknowledged. Each control-plane write below holds the root's lock until it ends, so an open cancelled inside one may still finish it, but no later open runs beside it. Then:
 
-| Finds | Does | `Opened.minted` |
+| Finds | Does | `Opened` |
 |---|---|---|
-| No `control.db`, or one never bootstrapped | A bootstrapping open: `new_env_ref()`; `ensure_bootstrap`, one transaction creating the tenant, project and environment named `default`, with fresh UUIDv7s, and the minted bootstrap key holding all three scopes; build the ledger in `ledgers/.staging/`, close it, rename it to `ledgers/<environment-id>/` (D40) and open it there; then `mark_ledger_created`, the last fallible step, so no failure after it can lose the secret | The bootstrap key's secret, returned this once |
-| A marked bootstrap | A later open: the environment's ledger, with 0.1's open | None |
+| No `control.db`, or one never bootstrapped | A bootstrapping open: `new_env_ref()`; `ensure_bootstrap`, one transaction creating the tenant, project and environment named `default`, with fresh UUIDv7s, and the bootstrap key holding all three scopes: the seed if one is given, else a minted key; build the ledger in `ledgers/.staging/`, close it, rename it to `ledgers/<environment-id>/` (D40) and open it there; then `mark_ledger_created`, the last fallible step, so no failure after it can lose the secret | Without a seed, `minted`: the bootstrap key's secret, returned this once. With one, `seed: Current` |
+| A marked bootstrap | A later open: the environment's ledger, with 0.1's open; then `apply_seed`, if a seed is given | `seed` from `apply_seed` |
 | An unmarked bootstrap: an earlier open died before its mark | Refused with an `Io` error naming the unfinished bootstrap, changing nothing; finishing it is not built yet | |
+
+The current seed is the one unrevoked key of origin `Seed`; there is at most one. A seed must parse as a key; nothing else about it is judged, and it is dropped once parsed, its digest alone going on. `apply_seed` runs in its own transaction, after the ledger opens, so a failed later open changes no seed (D33, TEN-9):
+
+| Seed | Result | `Opened.seed` |
+|---|---|---|
+| None | Nothing changes | None |
+| The current seed | Nothing changes | `Current` |
+| A revoked seed, same key ID and digest | Nothing changes; it stays revoked, since a revoked key never returns | `Revoked`: the host should warn |
+| A seed with a new key ID | Revokes the current seed, if any, and inserts the new one, with all three scopes and no expiry; other admin keys are untouched | `Current` |
+| A seed whose key ID is a key with another digest, of another origin or of another incarnation | Refused: `EngineError::SeedConflict`; no key changes | |
 
 ## What is stored
 

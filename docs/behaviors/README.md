@@ -34,7 +34,7 @@ The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It 
 - The background is "a fresh environment and a client": no credential in 0.1. "Another client" is a second `LocalOperations` over the same ledger.
 - "N days ago" steps the `ManualClock`.
 - `@local`: the scenario needs a fixture only the in-process adapters have (the clock, a second incarnation, the data directory, what `open` returns). The remote adapter skips it until it can drive them.
-- In `tenancy.feature`, "opened", "closed" and "reopened" are `Engine::open` and `close` on the scenario's directory; "the bootstrap key" is the key the first open returned.
+- In `tenancy.feature`, "opened", "closed" and "reopened" are `Engine::open` and `close` on the scenario's directory; "the bootstrap key" is the key the first open returned; a seed is a well-formed key the step builds.
 
 ## Not yet
 

@@ -58,7 +58,7 @@ struct Setup {
 
 async fn setup(dir: &Path) -> Setup {
     let clock = Signalling(Arc::new(Mutex::new((T, None))));
-    let opened = Engine::open(dir, clock.clone()).await.unwrap();
+    let opened = Engine::open(dir, clock.clone(), None).await.unwrap();
     let admin = Call::with_key(opened.minted.unwrap());
     let mut made = Vec::new();
     for scopes in [vec![Scope::Admin, Scope::Read], vec![Scope::Read]] {

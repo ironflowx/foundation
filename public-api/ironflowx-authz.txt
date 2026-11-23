@@ -1,4 +1,17 @@
 pub mod ironflowx_authz
+pub enum ironflowx_authz::SeedState
+pub ironflowx_authz::SeedState::Current
+pub ironflowx_authz::SeedState::Revoked
+impl core::clone::Clone for ironflowx_authz::SeedState
+pub fn ironflowx_authz::SeedState::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_authz::SeedState
+impl core::cmp::Eq for ironflowx_authz::SeedState
+impl core::cmp::PartialEq for ironflowx_authz::SeedState
+pub fn ironflowx_authz::SeedState::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_authz::SeedState
+pub fn ironflowx_authz::SeedState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for ironflowx_authz::SeedState
+impl core::marker::StructuralPartialEq for ironflowx_authz::SeedState
 pub struct ironflowx_authz::CreateRefusal(_)
 impl core::clone::Clone for ironflowx_authz::CreateRefusal
 pub fn ironflowx_authz::CreateRefusal::clone(&self) -> Self
@@ -91,9 +104,24 @@ pub fn ironflowx_authz::Refused::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_authz::Refused
 pub fn ironflowx_authz::Refused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_authz::Refused
+pub struct ironflowx_authz::SeedConflict
+impl core::clone::Clone for ironflowx_authz::SeedConflict
+pub fn ironflowx_authz::SeedConflict::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_authz::SeedConflict
+impl core::cmp::Eq for ironflowx_authz::SeedConflict
+impl core::cmp::PartialEq for ironflowx_authz::SeedConflict
+pub fn ironflowx_authz::SeedConflict::eq(&self, &Self) -> bool
+impl core::error::Error for ironflowx_authz::SeedConflict
+impl core::fmt::Debug for ironflowx_authz::SeedConflict
+pub fn ironflowx_authz::SeedConflict::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_authz::SeedConflict
+pub fn ironflowx_authz::SeedConflict::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for ironflowx_authz::SeedConflict
+impl core::marker::StructuralPartialEq for ironflowx_authz::SeedConflict
 pub fn ironflowx_authz::admit(&ironflowx_authz::Grant, core::option::Option<ironflowx_core::tenancy::Scope>) -> core::result::Result<(), ironflowx_authz::MissingScope>
 pub fn ironflowx_authz::may_create(&ironflowx_authz::Grant, &alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>, core::option::Option<ironflowx_core::time::Timestamp>, core::option::Option<&str>, ironflowx_core::time::Timestamp) -> core::result::Result<(), ironflowx_authz::CreateRefusal>
 pub fn ironflowx_authz::mint(ironflowx_core::id::KeyId, [u8; 32]) -> (ironflowx_core::secret::Secret, ironflowx_authz::KeyDigest)
 pub fn ironflowx_authz::parse(&ironflowx_core::secret::Secret) -> core::result::Result<ironflowx_authz::KeyParts, ironflowx_authz::Malformed>
 pub fn ironflowx_authz::recheck(&ironflowx_authz::KeyRecord, &ironflowx_core::id::EnvRef, ironflowx_core::time::Timestamp) -> core::result::Result<ironflowx_authz::Grant, ironflowx_authz::Refused>
 pub fn ironflowx_authz::verify(&ironflowx_authz::KeyParts, core::option::Option<&ironflowx_authz::KeyRecord>, &ironflowx_core::id::EnvRef, ironflowx_core::time::Timestamp) -> core::result::Result<ironflowx_authz::Grant, ironflowx_authz::Refused>
+pub fn ironflowx_authz::verify_seed(&ironflowx_authz::KeyParts, &ironflowx_authz::KeyRecord, ironflowx_core::tenancy::KeyOrigin, &ironflowx_core::id::EnvRef) -> core::result::Result<ironflowx_authz::SeedState, ironflowx_authz::SeedConflict>

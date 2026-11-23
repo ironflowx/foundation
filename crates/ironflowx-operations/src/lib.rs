@@ -2,8 +2,8 @@
 //! plane (its key parsed, looked up and verified) before its handler reaches the environment's
 //! ledger or its key records.
 //!
-//! [`Engine::open`] opens a data directory, bootstrapping it on first open and returning the
-//! bootstrap key's secret once.
+//! [`Engine::open`] opens a data directory, bootstrapping it on first open: the bootstrap key is
+//! the seed the host supplies, or a minted one, whose secret it returns once.
 
 #![forbid(unsafe_code)]
 
@@ -36,6 +36,7 @@ const MAX_KEY_PAGE: u32 = 1_000;
 const KEY_CAP: u32 = 1_000;
 
 pub use admission::Authorized;
+pub use ironflowx_authz::SeedState;
 pub use open::EngineError;
 
 /// An open data directory: its control plane, its environment's ledger and the root's lock.
@@ -46,14 +47,18 @@ pub struct Engine {
     /// The ledger's clock, which also decides key expiry.
     clock: Arc<dyn Clock + Send + Sync>,
     // Held until `close`, after the ledger closes.
-    _lock: File,
+    _lock: Arc<File>,
 }
 
 /// What an open returns.
 pub struct Opened {
     pub engine: Engine,
-    /// The bootstrap key's secret, returned once: only by the open that bootstrapped.
+    /// The bootstrap key's secret, returned once: only by an open that bootstrapped without a
+    /// seed.
     pub minted: Option<Secret>,
+    /// Whether the seed the open was given still works: a host should warn of a revoked one.
+    /// `None` when it was given none.
+    pub seed: Option<SeedState>,
 }
 
 impl Engine {
