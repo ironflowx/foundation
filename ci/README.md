@@ -40,6 +40,13 @@ skips what is already done. Rehearse it first with
 A new pure crate needs all three, plus a `ci/check-deps.sh` line in `ci/purity.sh`. A new crate of
 any kind needs its name in the loop in `ci/public-api.sh` and a blessed snapshot.
 
+## Fixtures
+
+Some crates in `fixtures/` build against the workspace's crates from outside the workspace, so
+`cargo` there does not show them breaking. After changing a public type or function, grep
+`fixtures/` for it: `must-reject.sh` rejects a fixture that fails for a compile error instead of
+its lint.
+
 ## Tools
 
 `ci/tools.env` pins every tool version; CI reads it, and `ci/install-tools.sh` installs the nightly,
