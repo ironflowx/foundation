@@ -31,8 +31,8 @@ async fn refusal(engine: &Engine, cx: &Call) -> OpError {
 async fn every_bad_key_is_refused_and_only_a_malformed_one_hints() {
     let dir = tempfile::tempdir().unwrap();
     let other_dir = tempfile::tempdir().unwrap();
-    let opened = Engine::open(dir.path(), clock()).await.unwrap();
-    let other = Engine::open(other_dir.path(), clock()).await.unwrap();
+    let opened = Engine::open(dir.path(), clock(), None).await.unwrap();
+    let other = Engine::open(other_dir.path(), clock(), None).await.unwrap();
     let engine = &opened.engine;
     let bootstrap = opened.minted.as_ref().unwrap().expose().to_owned();
     let foreign = other.minted.as_ref().unwrap().expose().to_owned();
@@ -94,8 +94,10 @@ async fn the_five_refusals_are_one_answer_whether_or_not_an_expiry_is_recorded()
     let (dir, other_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let clock = clock();
     let t = clock.now().as_millis();
-    let opened = Engine::open(dir.path(), clock.clone()).await.unwrap();
-    let other = Engine::open(other_dir.path(), clock.clone()).await.unwrap();
+    let opened = Engine::open(dir.path(), clock.clone(), None).await.unwrap();
+    let other = Engine::open(other_dir.path(), clock.clone(), None)
+        .await
+        .unwrap();
     let engine = &opened.engine;
     let admin = key(opened.minted.as_ref().unwrap().expose());
     let mut made = Vec::new();
@@ -161,7 +163,7 @@ async fn the_five_refusals_are_one_answer_whether_or_not_an_expiry_is_recorded()
 #[tokio::test]
 async fn a_key_row_of_another_environment_or_incarnation_is_refused_by_lookup_and_verify() {
     let dir = tempfile::tempdir().unwrap();
-    let opened = Engine::open(dir.path(), clock()).await.unwrap();
+    let opened = Engine::open(dir.path(), clock(), None).await.unwrap();
     let bootstrap = opened.minted.as_ref().unwrap().expose().to_owned();
     let unknown = mint(
         "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f".parse().unwrap(),
@@ -200,7 +202,10 @@ async fn a_key_row_of_another_environment_or_incarnation_is_refused_by_lookup_an
             [row_id, row_token],
         )
         .unwrap();
-        let engine = Engine::open(dir.path(), clock()).await.unwrap().engine;
+        let engine = Engine::open(dir.path(), clock(), None)
+            .await
+            .unwrap()
+            .engine;
         let answer = engine.whoami(&key(&bootstrap), WhoamiRequest {}).await;
         let record = KeyRecord {
             id: parts.id,

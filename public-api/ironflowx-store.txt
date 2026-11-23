@@ -28,7 +28,16 @@ impl core::fmt::Debug for ironflowx_store::KeyChangeError
 pub fn ironflowx_store::KeyChangeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for ironflowx_store::KeyChangeError
 pub fn ironflowx_store::KeyChangeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum ironflowx_store::SeedError
+pub ironflowx_store::SeedError::Conflict
+pub ironflowx_store::SeedError::Store(ironflowx_store::StoreError)
+impl core::error::Error for ironflowx_store::SeedError
+impl core::fmt::Debug for ironflowx_store::SeedError
+pub fn ironflowx_store::SeedError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_store::SeedError
+pub fn ironflowx_store::SeedError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct ironflowx_store::Bootstrap
+pub ironflowx_store::Bootstrap::by_seed: bool
 pub ironflowx_store::Bootstrap::env: ironflowx_core::id::EnvRef
 pub ironflowx_store::Bootstrap::key: ironflowx_authz::KeyParts
 pub ironflowx_store::Bootstrap::project: ironflowx_core::id::ProjectId
@@ -39,6 +48,7 @@ impl core::fmt::Debug for ironflowx_store::Bootstrap
 pub fn ironflowx_store::Bootstrap::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct ironflowx_store::ControlPlane
 impl ironflowx_store::ControlPlane
+pub fn ironflowx_store::ControlPlane::apply_seed(&self, &ironflowx_core::id::EnvRef, &ironflowx_authz::KeyParts, &dyn ironflowx_core::time::Clock) -> core::result::Result<ironflowx_authz::SeedState, ironflowx_store::SeedError>
 pub fn ironflowx_store::ControlPlane::bootstrap_state(&std::path::Path) -> core::result::Result<ironflowx_store::BootstrapState, ironflowx_store::StoreError>
 pub fn ironflowx_store::ControlPlane::ensure_bootstrap(&self, &ironflowx_store::Bootstrap, &dyn ironflowx_core::time::Clock) -> core::result::Result<(), ironflowx_store::StoreError>
 pub fn ironflowx_store::ControlPlane::environment(&self, &ironflowx_core::id::EnvRef) -> core::result::Result<ironflowx_store::EnvironmentRecord, ironflowx_store::StoreError>

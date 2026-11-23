@@ -6,18 +6,22 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-use ironflowx_authz::{KeyDigest, KeyParts, mint};
+use ironflowx_authz::{KeyDigest, KeyParts, Malformed, SeedConflict, SeedState, mint, parse};
 use ironflowx_cell::{Ledger, OpenError, new_env_ref};
 use ironflowx_core::{Clock, EnvRef, KeyId, Secret};
-use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, StoreError};
+use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, SeedError, StoreError};
 
 use crate::{Engine, Opened};
 
 /// Why an engine did not open.
 #[derive(Debug)]
 pub enum EngineError {
+    /// The seed is not in the key format. Its message names the format, never the seed.
+    MalformedSeed,
     /// Another engine holds the root.
     Locked,
+    /// The seed's key ID is already a key, and not this seed.
+    SeedConflict,
     Ledger(OpenError),
     Store(StoreError),
     Io(std::io::Error),
@@ -26,7 +30,9 @@ pub enum EngineError {
 impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::MalformedSeed => write!(f, "malformed seed: {Malformed}"),
             Self::Locked => f.write_str("the engine root is in use"),
+            Self::SeedConflict => SeedConflict.fmt(f),
             Self::Ledger(e) => write!(f, "ledger: {e}"),
             Self::Store(e) => e.fmt(f),
             Self::Io(e) => write!(f, "engine I/O: {e}"),
@@ -48,6 +54,15 @@ impl From<StoreError> for EngineError {
     }
 }
 
+impl From<SeedError> for EngineError {
+    fn from(e: SeedError) -> Self {
+        match e {
+            SeedError::Conflict => Self::SeedConflict,
+            SeedError::Store(e) => Self::Store(e),
+        }
+    }
+}
+
 impl From<OpenError> for EngineError {
     fn from(e: OpenError) -> Self {
         Self::Ledger(e)
@@ -64,12 +79,16 @@ async fn blocking<T: Send + 'static>(
 }
 
 impl Engine {
-    /// Opens the data directory `root`, creating and bootstrapping it on the first open, which
-    /// alone returns the bootstrap key's secret (`Opened::minted`).
+    /// Opens the data directory `root`, creating and bootstrapping it on the first open. `seed`
+    /// is a key the host supplies: the first open makes it the bootstrap key, and returns the
+    /// secret of the one it mints when there is none (`Opened::minted`); a later open applies it
+    /// once the ledger is open, rotating to it if its key ID is new (D33).
     ///
     /// # Errors
     ///
-    /// `Locked` if another engine holds `root`; a store, ledger or I/O failure otherwise.
+    /// `MalformedSeed` before anything is read; `Locked` if another engine holds `root`;
+    /// `SeedConflict` if the seed's key ID is already another key; a store, ledger or I/O
+    /// failure otherwise. A failed open changes no seed.
     ///
     /// # Panics
     ///
@@ -77,7 +96,14 @@ impl Engine {
     pub async fn open(
         root: &Path,
         clock: impl Clock + Clone + Send + Sync + 'static,
+        seed: Option<Secret>,
     ) -> Result<Opened, EngineError> {
+        // The secret goes out of memory here; only its digest goes on.
+        let seed = match seed.map(|s| parse(&s)) {
+            Some(Err(Malformed)) => return Err(EngineError::MalformedSeed),
+            Some(Ok(parts)) => Some(parts),
+            None => None,
+        };
         let root = root.to_owned();
         let control_path = root.join("control.db");
         let (lock, state) = {
@@ -99,14 +125,22 @@ impl Engine {
             Arc::new(blocking(move || Ok(ControlPlane::open(&path)?)).await?)
         };
         let engine_clock = Arc::new(clock.clone());
-        let (env, ledger, minted) = match state {
+        let (env, ledger, minted, seed) = match state {
             BootstrapState::NoFile | BootstrapState::Unbootstrapped => {
-                let (env, ledger, secret) = bootstrap(&root, &control, clock).await?;
-                (env, ledger, Some(secret))
+                // The seed is the bootstrap key, so there is nothing to apply.
+                let state = seed.as_ref().map(|_| SeedState::Current);
+                let (env, ledger, secret) = bootstrap(&root, &control, clock, seed).await?;
+                (env, ledger, secret, state)
             }
             BootstrapState::Marked { env } => {
-                let ledger = Ledger::open(&ledger_dir(&root, env), env, clock).await?;
-                (env, ledger, None)
+                let ledger = Ledger::open(&ledger_dir(&root, env), env, clock.clone()).await?;
+                match apply_seed(&control, env, seed, clock).await {
+                    Ok(state) => (env, ledger, None, state),
+                    Err(e) => {
+                        ledger.close().await;
+                        return Err(e);
+                    }
+                }
             }
             // Finishing an earlier open's bootstrap is not built yet: refuse, changing nothing.
             // shortcut: refuses until finishing opens exist; upgrade with them.
@@ -125,8 +159,23 @@ impl Engine {
                 _lock: lock,
             },
             minted,
+            seed,
         })
     }
+}
+
+/// Applies the seed of a later open, if it was given one.
+async fn apply_seed(
+    control: &Arc<ControlPlane>,
+    env: EnvRef,
+    seed: Option<KeyParts>,
+    clock: impl Clock + Send + 'static,
+) -> Result<Option<SeedState>, EngineError> {
+    let Some(seed) = seed else {
+        return Ok(None);
+    };
+    let control = control.clone();
+    blocking(move || Ok(Some(control.apply_seed(&env, &seed, &clock)?))).await
 }
 
 fn lock_root(root: &Path) -> Result<File, EngineError> {
@@ -172,23 +221,33 @@ where
         .expect("a UUIDv7 parses")
 }
 
-/// A bootstrapping open: mint the environment and its admin key, bootstrap the control plane
-/// in one transaction, build the ledger aside, rename it into place and open it, then mark it
-/// (D40). The mark is the last fallible step, so no failure after it can lose the secret.
+/// A bootstrapping open: mint the environment, and its admin key unless it is the seed;
+/// bootstrap the control plane in one transaction; build the ledger aside, rename it into place
+/// and open it; then mark it (D40). The mark is the last fallible step, so no failure after it
+/// can lose the secret.
 // shortcut: a failure before the mark leaves an unmarked bootstrap, which the next open refuses
 // rather than undoing or finishing; upgrade with finishing opens and the undo.
 async fn bootstrap(
     root: &Path,
     control: &Arc<ControlPlane>,
     clock: impl Clock + Clone + Send + Sync + 'static,
-) -> Result<(EnvRef, Ledger, Secret), EngineError> {
+    seed: Option<KeyParts>,
+) -> Result<(EnvRef, Ledger, Option<Secret>), EngineError> {
     let env = new_env_ref();
-    let (key_id, secret, digest) = new_key();
+    let by_seed = seed.is_some();
+    let (key, secret) = seed.map_or_else(
+        || {
+            let (id, secret, digest) = new_key();
+            (KeyParts { id, digest }, Some(secret))
+        },
+        |seed| (seed, None),
+    );
     let plan = Bootstrap {
         env,
         tenant: uuid7(),
         project: uuid7(),
-        key: KeyParts { id: key_id, digest },
+        key,
+        by_seed,
     };
     {
         let (control, clock) = (control.clone(), clock.clone());

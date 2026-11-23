@@ -8,7 +8,7 @@ use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
 use ironflowx_cell::ManualClock;
 use ironflowx_core::{EnvRef, ErrorKind, Scope, Secret, Timestamp};
-use ironflowx_operations::{Engine, Opened};
+use ironflowx_operations::{Engine, EngineError, Opened, SeedState};
 use ironflowx_proto::{
     Call, CreateKeyRequest, EmitBatchRequest, EmitRequest, Environment, GetEventRequest, KeyInfo,
     KeyPage, KeyStatus, ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError,
@@ -22,8 +22,15 @@ pub const REGISTERED: &[(&str, usize)] = &[
     ("ACC-001", 1),
     ("ACC-002", 1),
     ("ACC-003", 1),
+    ("ACC-004", 1),
+    ("ACC-005", 1),
+    ("ACC-006", 2),
+    ("ACC-007", 4),
+    ("ACC-008", 2),
     ("ACC-009", 1),
     ("ACC-010", 1),
+    ("ACC-013", 1),
+    ("ACC-014", 2),
     ("ACC-020", 2),
     ("ACC-021", 2),
     ("ACC-022", 3),
@@ -85,6 +92,12 @@ pub struct Tenancy {
     /// The time a key expires at (ACC-053).
     t: Option<Timestamp>,
     listed: Option<Vec<Environment>>,
+    /// What the last open reported about its seed.
+    reported: Option<SeedState>,
+    /// Why the last reopen was refused, if it was.
+    refused: Option<EngineError>,
+    /// The text of the seeds and keys a scenario names.
+    texts: BTreeMap<String, String>,
     /// Keys a scenario names (A, B, C, K), by key ID.
     named: BTreeMap<String, String>,
     /// The secrets of those keys (ACC-044).
@@ -144,6 +157,9 @@ impl Tenancy {
             emitted: Vec::new(),
             t: None,
             listed: None,
+            reported: None,
+            refused: None,
+            texts: BTreeMap::new(),
             named: BTreeMap::new(),
             secrets: Vec::new(),
             created: None,
@@ -153,14 +169,40 @@ impl Tenancy {
     }
 
     async fn open(&mut self) {
-        let Opened { engine, minted } = Engine::open(self.dir.path(), self.clock.clone())
-            .await
-            .expect("the engine opens");
-        self.returned = Some(minted.is_some());
-        if let Some(key) = minted {
+        self.open_with(None).await.expect("the engine opens");
+    }
+
+    /// Opens the engine on the scenario's directory with `seed`, a key's text.
+    async fn open_with(&mut self, seed: Option<&str>) -> Result<(), EngineError> {
+        let seed = seed.map(|s| Secret::new(s.to_owned()));
+        let opened = Engine::open(self.dir.path(), self.clock.clone(), seed).await?;
+        self.returned = Some(opened.minted.is_some());
+        self.reported = opened.seed;
+        if let Some(key) = opened.minted {
             self.bootstrap_key = Some(key.expose().to_owned());
         }
-        self.engine = Some(engine);
+        self.engine = Some(opened.engine);
+        Ok(())
+    }
+
+    /// Closes the engine, if it is open, and opens it again, keeping how the open ended.
+    async fn reopen_with(&mut self, seed: Option<&str>) {
+        if let Some(engine) = self.engine.take() {
+            engine.close().await;
+        }
+        self.returned = None;
+        self.reported = None;
+        self.refused = self.open_with(seed).await.err();
+    }
+
+    /// The text of a key the scenario names: a seed (A, B) or a created key (K).
+    fn text(&self, name: &str) -> &str {
+        self.texts.get(name).expect("a key the scenario named")
+    }
+
+    async fn whoami_with(&self, name: &str) -> Result<Whoami, OpError> {
+        let cx = call(self.text(name));
+        self.engine().whoami(&cx, WhoamiRequest {}).await
     }
 
     fn engine(&self) -> &Engine {
@@ -384,7 +426,7 @@ async fn same_environment(w: &mut Tenancy) {
 async fn two_engines(w: &mut Tenancy) {
     w.open().await;
     let dir = tempfile::tempdir().unwrap();
-    let Opened { engine, minted } = Engine::open(dir.path(), clock()).await.unwrap();
+    let Opened { engine, minted, .. } = Engine::open(dir.path(), clock(), None).await.unwrap();
     let key = call(minted.expect("the second engine's bootstrap key").expose());
     let mut envs = engine
         .list_environments(&key, ListEnvironmentsRequest {})
@@ -449,7 +491,7 @@ async fn lists_presenting(w: &mut Tenancy, key: String) {
 async fn second_engine(w: &mut Tenancy) {
     w.open().await;
     let dir = tempfile::tempdir().unwrap();
-    let Opened { engine, minted } = Engine::open(dir.path(), clock()).await.unwrap();
+    let Opened { engine, minted, .. } = Engine::open(dir.path(), clock(), None).await.unwrap();
     w.other_key = Some(minted.unwrap().expose().to_owned());
     w.other = Some((engine, dir));
 }
@@ -1088,6 +1130,155 @@ fn no_listed_secret(w: &mut Tenancy) {
     for secret in w.secrets.iter().map(String::as_str).chain([bootstrap]) {
         assert!(!shown.contains(secret), "{shown}");
     }
+}
+
+/// A well-formed key's text: `id`'s last digit, and a secret of 43 of `secret`.
+fn seed_text(id: u8, secret: &str) -> String {
+    // The last character carries only 4 bits of the secret, so it stays "A".
+    let secret = secret.repeat(42);
+    format!("ixk_019a9f3e-7c2b-7d41-8a3e-20000000000{id}_{secret}A")
+}
+
+#[when("the engine is opened with a seed key")]
+#[given("the engine was opened with seed key A")]
+async fn opened_with_a(w: &mut Tenancy) {
+    let a = seed_text(1, "a");
+    w.texts.insert("A".into(), a.clone());
+    w.open_with(Some(&a)).await.expect("the engine opens");
+}
+
+#[then("no key is returned and the open reports the seed as current")]
+fn reported_current(w: &mut Tenancy) {
+    assert_eq!(w.returned, Some(false));
+    assert_eq!(w.reported, Some(SeedState::Current));
+}
+
+#[then(regex = r#"^the seed key authenticates with scopes (.+)$"#)]
+async fn seed_authenticates(w: &mut Tenancy, names: String) {
+    let me = w.whoami_with("A").await.expect("the seed authenticates");
+    assert_eq!(me.scopes, scopes(&names));
+}
+
+#[when("the engine is reopened with seed key B, which has another key ID")]
+#[given("the engine was reopened with seed key B")]
+async fn reopened_with_b(w: &mut Tenancy) {
+    let b = seed_text(2, "b");
+    w.texts.insert("B".into(), b.clone());
+    w.reopen_with(Some(&b)).await;
+    assert_eq!(w.reported, Some(SeedState::Current));
+}
+
+#[when(
+    regex = r"^the engine is reopened with (seed key A|no seed|a seed with K's key ID|a seed with A's key ID and another secret)$"
+)]
+async fn reopened_with(w: &mut Tenancy, which: String) {
+    let a = seed_text(1, "a");
+    // A seed added later (ACC-013) is first named here.
+    if which == "seed key A" {
+        w.texts.insert("A".into(), a.clone());
+    }
+    let seed = match which.as_str() {
+        "seed key A" => Some(a),
+        "no seed" => None,
+        "a seed with K's key ID" => Some(format!("{}{}A", &w.text("K")[..41], "c".repeat(42))),
+        _ => Some(seed_text(1, "c")),
+    };
+    w.reopen_with(seed.as_deref()).await;
+}
+
+#[then(regex = r"^key (A|B) authenticates as an admin key$")]
+async fn authenticates_as_admin(w: &mut Tenancy, name: String) {
+    let me = w.whoami_with(&name).await.expect("an admin key");
+    let every = [Scope::Read, Scope::Write, Scope::Admin];
+    assert_eq!(me.scopes, BTreeSet::from(every));
+    let req = ListKeysRequest::default();
+    let listed = w.engine().list_keys(&call(w.text(&name)), req).await;
+    listed.expect("an admin key lists keys");
+}
+
+#[then(regex = r"^key (A|B) is refused as an invalid key$")]
+async fn refused_as_invalid_key(w: &mut Tenancy, name: String) {
+    let err = w.whoami_with(&name).await.expect_err("refused");
+    assert_eq!(
+        (err.kind, err.message.as_str(), err.hint),
+        (ErrorKind::Unauthenticated, "invalid API key", None)
+    );
+}
+
+#[then(regex = r"^key (A|K) still authenticates$")]
+async fn key_still_authenticates(w: &mut Tenancy, name: String) {
+    assert!(w.refused.is_none(), "{:?}", w.refused);
+    w.whoami_with(&name).await.expect("it authenticates");
+}
+
+#[when(regex = r"^the engine is opened with (.+) as the seed$")]
+async fn opened_with_malformed(w: &mut Tenancy, which: String) {
+    let good = seed_text(1, "a");
+    let text = match which.as_str() {
+        r#""not-a-key""# => "not-a-key".to_owned(),
+        "a valid key with one character removed" => good[..83].to_owned(),
+        "a valid key whose ID is in uppercase" => good.replace("019a9f3e", "019A9F3E"),
+        "a valid key whose ID is not a UUIDv7" => good.replace("-7d41-", "-4d41-"),
+        other => panic!("no such seed: {other}"),
+    };
+    assert!(text != good);
+    w.presented = Some(text.clone());
+    w.reopen_with(Some(&text)).await;
+}
+
+#[then("the open is refused and names the key format")]
+fn open_refused_naming_format(w: &mut Tenancy) {
+    let err = w.refused.as_ref().expect("a refused open");
+    assert!(matches!(err, EngineError::MalformedSeed), "{err:?}");
+    assert!(err.to_string().contains("ixk_<key-id>_<secret>"), "{err}");
+}
+
+#[then("the error does not contain the seed")]
+fn seed_not_echoed(w: &mut Tenancy) {
+    let err = w.refused.as_ref().expect("a refused open");
+    let shown = format!("{err} {err:?}");
+    let seed = w.presented.as_deref().unwrap();
+    // Neither the whole text nor, for a key, its secret alone.
+    for part in [Some(seed), seed.get(41..)].into_iter().flatten() {
+        assert!(!shown.contains(part), "{shown}");
+    }
+}
+
+#[given(regex = r"^a client with key A created (a key|an admin key) K$")]
+async fn a_created_k(w: &mut Tenancy, kind: String) {
+    let scopes = match kind.as_str() {
+        "a key" => BTreeSet::from([Scope::Read]),
+        _ => BTreeSet::from([Scope::Admin]),
+    };
+    let req = CreateKeyRequest {
+        scopes,
+        ..CreateKeyRequest::default()
+    };
+    let created = w.engine().create_key(&call(w.text("A")), req).await;
+    let key = created.expect("key A creates a key").key;
+    w.texts.insert("K".into(), key.expose().to_owned());
+}
+
+#[given("nothing else happened")]
+fn nothing_else(_: &mut Tenancy) {}
+
+#[then("the open is refused as a seed conflict")]
+fn seed_conflict(w: &mut Tenancy) {
+    let err = w.refused.as_ref().expect("a refused open");
+    assert!(matches!(err, EngineError::SeedConflict), "{err:?}");
+}
+
+#[given("a client with key K revoked key A")]
+async fn k_revoked_a(w: &mut Tenancy) {
+    let (k, a) = (call(w.text("K")), w.text("A")[4..40].to_owned());
+    w.revoke(&k, a).await;
+    assert_eq!(w.outcome, Some(Ok(())));
+}
+
+#[then("the open succeeds and reports the seed as revoked")]
+fn reported_revoked(w: &mut Tenancy) {
+    assert!(w.refused.is_none(), "{:?}", w.refused);
+    assert_eq!(w.reported, Some(SeedState::Revoked));
 }
 
 /// Runs the registered tenancy scenarios. True if any failed or one did not run.

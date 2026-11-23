@@ -1,13 +1,18 @@
 pub mod ironflowx_operations
+pub use ironflowx_operations::SeedState
 pub enum ironflowx_operations::EngineError
 pub ironflowx_operations::EngineError::Io(core::io::error::Error)
 pub ironflowx_operations::EngineError::Ledger(ironflowx_cell::ledger::OpenError)
 pub ironflowx_operations::EngineError::Locked
+pub ironflowx_operations::EngineError::MalformedSeed
+pub ironflowx_operations::EngineError::SeedConflict
 pub ironflowx_operations::EngineError::Store(ironflowx_store::StoreError)
 impl core::convert::From<core::io::error::Error> for ironflowx_operations::EngineError
 pub fn ironflowx_operations::EngineError::from(core::io::error::Error) -> Self
 impl core::convert::From<ironflowx_cell::ledger::OpenError> for ironflowx_operations::EngineError
 pub fn ironflowx_operations::EngineError::from(ironflowx_cell::ledger::OpenError) -> Self
+impl core::convert::From<ironflowx_store::SeedError> for ironflowx_operations::EngineError
+pub fn ironflowx_operations::EngineError::from(ironflowx_store::SeedError) -> Self
 impl core::convert::From<ironflowx_store::StoreError> for ironflowx_operations::EngineError
 pub fn ironflowx_operations::EngineError::from(ironflowx_store::StoreError) -> Self
 impl core::error::Error for ironflowx_operations::EngineError
@@ -31,7 +36,8 @@ pub async fn ironflowx_operations::Engine::list_keys(&self, &ironflowx_proto::Ca
 pub async fn ironflowx_operations::Engine::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> core::result::Result<(), ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::whoami(&self, &ironflowx_proto::Call, ironflowx_proto::WhoamiRequest) -> core::result::Result<ironflowx_proto::Whoami, ironflowx_proto::OpError>
 impl ironflowx_operations::Engine
-pub async fn ironflowx_operations::Engine::open(&std::path::Path, impl ironflowx_core::time::Clock + core::clone::Clone + core::marker::Send + core::marker::Sync + 'static) -> core::result::Result<ironflowx_operations::Opened, ironflowx_operations::EngineError>
+pub async fn ironflowx_operations::Engine::open(&std::path::Path, impl ironflowx_core::time::Clock + core::clone::Clone + core::marker::Send + core::marker::Sync + 'static, core::option::Option<ironflowx_core::secret::Secret>) -> core::result::Result<ironflowx_operations::Opened, ironflowx_operations::EngineError>
 pub struct ironflowx_operations::Opened
 pub ironflowx_operations::Opened::engine: ironflowx_operations::Engine
 pub ironflowx_operations::Opened::minted: core::option::Option<ironflowx_core::secret::Secret>
+pub ironflowx_operations::Opened::seed: core::option::Option<ironflowx_authz::SeedState>
