@@ -71,6 +71,32 @@ fn malformed_keys_are_refused() {
     }
 }
 
+/// Over every byte at every place in the secret that is judged alike, and the last: the key is
+/// accepted exactly when base64url without padding decodes it.
+#[test]
+fn a_secret_is_accepted_exactly_when_it_decodes() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let good = mint(id(), AWKWARD).0.expose().to_owned();
+    let mut accepted = 0;
+    for place in [41, 60, 82, 83] {
+        for byte in 0..=0x7F_u8 {
+            let mut text = good.clone().into_bytes();
+            text[place] = byte;
+            let text = String::from_utf8(text).unwrap();
+            let decodes = URL_SAFE_NO_PAD.decode(&text[41..]).is_ok();
+            assert_eq!(
+                parse(&secret(&text)).is_ok(),
+                decodes,
+                "{byte:#x} at {place}"
+            );
+            accepted += usize::from(decodes);
+        }
+    }
+    // 64 characters anywhere but last; 16 of them there.
+    assert_eq!(accepted, 3 * 64 + 16);
+}
+
 #[test]
 fn malformed_names_the_key_format_and_never_echoes_the_key() {
     let text = format!("ixk_{}_{}", ID.to_uppercase(), "A".repeat(43));
