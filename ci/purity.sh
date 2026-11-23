@@ -89,8 +89,9 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     ci/no-fault-points.sh ci/fixtures/fault-points
 }
 
-# ci/red.sh passes only on a failure that names its pattern, and restores the file every time,
-# with a new mtime: one it kept would leave cargo using the build that had the defect in.
+# ci/red.sh passes only on a failure that names its pattern, of a command that without the defect
+# passes and does not print it, and restores the file every time, with a new mtime: one it kept
+# would leave cargo using the build that had the defect in.
 red=ci/fixtures/red
 before=$(mktemp)
 sleep 1
@@ -104,6 +105,10 @@ ci/must-reject.sh "changed nothing" -- ci/red.sh "$red/value.txt" 's/absent/no/'
 ci/must-reject.sh "still passes" -- ci/red.sh "$red/value.txt" 's/ok/OK/' x -- true
 ci/must-reject.sh "failed without 'other_test'" -- \
   ci/red.sh "$red/value.txt" 's/ok/no/' other_test -- "$red/check.sh"
+ci/must-reject.sh "a passing run prints 'value_is_ok'" -- \
+  ci/red.sh "$red/value.txt" 's/ok/no/' value_is_ok -- "$red/check.sh"
+ci/must-reject.sh "fails without the defect" -- \
+  ci/red.sh "$red/value.txt" 's/ok/no/' x -- sh -c 'echo x; exit 1'
 grep -qx ok "$red/value.txt" || {
   echo "purity: ci/red.sh did not restore $red/value.txt"
   exit 1
