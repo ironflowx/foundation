@@ -87,7 +87,7 @@ impl ironflowx_events::EventsView for ironflowx_cell::ReadStore<'_>
 pub type ironflowx_cell::ReadStore<'_>::Error = ironflowx_cell::StoreError
 pub fn ironflowx_cell::ReadStore<'_>::event(&self, ironflowx_core::id::EventId) -> core::result::Result<core::option::Option<ironflowx_events::Event>, ironflowx_cell::StoreError>
 pub fn ironflowx_cell::ReadStore<'_>::event_by_key(&self, &str) -> core::result::Result<core::option::Option<ironflowx_core::id::EventId>, ironflowx_cell::StoreError>
-pub fn ironflowx_cell::ReadStore<'_>::events_before(&self, core::option::Option<u64>, &mut dyn core::ops::function::FnMut(usize) -> bool) -> core::result::Result<alloc::vec::Vec<ironflowx_events::Event>, ironflowx_cell::StoreError>
+pub fn ironflowx_cell::ReadStore<'_>::events_before(&self, core::option::Option<u64>, &mut ironflowx_events::PageBudget) -> core::result::Result<alloc::vec::Vec<ironflowx_events::Event>, ironflowx_cell::StoreError>
 pub fn ironflowx_cell::ReadStore<'_>::last_sequence(&self) -> core::result::Result<u64, ironflowx_cell::StoreError>
 pub struct ironflowx_cell::StoreError(_)
 impl core::error::Error for ironflowx_cell::StoreError

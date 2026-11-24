@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::Path;
 
 use ironflowx_core::{Emitter, EnvRef, EventId, Timestamp};
-use ironflowx_events::{Event, EventTables, EventsView, Record};
+use ironflowx_events::{Event, EventTables, EventsView, PageBudget, Record};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
@@ -269,12 +269,13 @@ impl EventsView for ReadStore<'_> {
     fn events_before(
         &self,
         before: Option<u64>,
-        take: &mut dyn FnMut(usize) -> bool,
+        budget: &mut PageBudget,
     ) -> Result<Vec<Event>, StoreError> {
         // A cursor past every sequence lists from the newest.
         let before = before.map_or(i64::MAX, |b| i64::try_from(b).unwrap_or(i64::MAX));
         store_err((|| {
-            // SQLite takes a blob's length from its row's header, without reading the blob.
+            // SQLite takes a blob's length from its row's header, so of an event that ends the
+            // page, it reads no more than the one database page that holds the row.
             let mut sizes = self.0.prepare(
                 "SELECT sequence, length(data) + ifnull(length(metadata), 0) FROM events
                  WHERE sequence < ?1 ORDER BY sequence DESC",
@@ -285,7 +286,7 @@ impl EventsView for ReadStore<'_> {
             // Both statements read one snapshot, the open query's.
             let mut rows = sizes.query([before])?;
             while let Some(row) = rows.next()? {
-                if !take(row.get(1)?) {
+                if !budget.take(row.get(1)?) {
                     break;
                 }
                 events.push(event.query_row([row.get::<_, u64>(0)?], row_event)?);

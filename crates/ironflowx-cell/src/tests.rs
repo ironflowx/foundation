@@ -363,13 +363,26 @@ async fn a_cursor_past_every_sequence_lists_from_the_newest() {
     assert_eq!(page.events.len(), 1);
 }
 
+fn store_message(e: ironflowx_events::Error<crate::StoreError>) -> String {
+    match e {
+        ironflowx_events::Error::Store(e) => e.to_string(),
+        ironflowx_events::Error::Refused(r) => panic!("refused: {r:?}"),
+    }
+}
+
 #[tokio::test]
 async fn a_page_of_events_reads_no_event_past_its_end() {
-    // Ten events of 512 KiB, the newest with or without metadata: six are 3 MiB exactly.
-    for (metadata, limit, first) in [
-        (None, None, vec![10, 9, 8, 7, 6, 5]),
-        (Some("{}"), None, vec![10, 9, 8, 7, 6]),
-        (None, 2.try_into().ok(), vec![10, 9]),
+    // Ten events of 512 KiB, with or without metadata: six without are 3 MiB exactly.
+    for (metadata, limit, first, second, third) in [
+        (None, None, vec![10, 9, 8, 7, 6, 5], vec![4, 3, 2, 1], false),
+        (
+            Some("{}"),
+            None,
+            vec![10, 9, 8, 7, 6],
+            vec![5, 4, 3, 2, 1],
+            false,
+        ),
+        (None, 2.try_into().ok(), vec![10, 9], vec![8, 7], true),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let env = new_env_ref();
@@ -378,7 +391,7 @@ async fn a_page_of_events_reads_no_event_past_its_end() {
         for letter in 'a'..='j' {
             let big = Emit {
                 data: Some(format!("\"{}\"", letter.to_string().repeat(524_286)).into_bytes()),
-                metadata: metadata.filter(|_| letter == 'j').map(Into::into),
+                metadata: metadata.map(Into::into),
                 ..named("blob.saved")
             };
             emit(&ledger, big).await.unwrap();
@@ -395,13 +408,14 @@ async fn a_page_of_events_reads_no_event_past_its_end() {
         };
         let (listed, next) = list(None).unwrap();
         assert_eq!(listed, first);
-        let past = first[first.len() - 1] - 1;
-        assert_eq!(list(next.as_deref()).unwrap().0[0], past);
+        let after = list(next.as_deref()).unwrap();
+        let third = third.then(|| format!("{}.{}", env.token(), second[second.len() - 1]));
+        assert_eq!(after, (second.clone(), third));
 
         // Cut the chain of pages that holds the data of every event past the first page: SQLite
         // fails to read any of them now, and the first page lists all the same.
         let mut file = std::fs::read(&path).unwrap();
-        let past_letters: BTreeSet<u8> = (b'a'..).zip(1..=past).map(|(l, _)| l).collect();
+        let past_letters: BTreeSet<u8> = (b'a'..).zip(1..=second[0]).map(|(l, _)| l).collect();
         let mut cut = BTreeSet::new();
         for page in file.chunks_mut(4096) {
             let letter = page[4];
@@ -414,10 +428,11 @@ async fn a_page_of_events_reads_no_event_past_its_end() {
         assert_eq!(cut, past_letters);
         std::fs::write(&path, file).unwrap();
         assert_eq!(list(None).unwrap(), (first, next.clone()));
-        assert!(matches!(
-            list(next.as_deref()),
-            Err(ironflowx_events::Error::Store(_))
-        ));
+        let err = list(next.as_deref()).unwrap_err();
+        assert_eq!(
+            store_message(err),
+            "read store: database disk image is malformed"
+        );
     }
 }
 
@@ -440,7 +455,7 @@ fn a_page_fails_when_the_read_store_cannot_read_an_event_on_it() {
         (
             "CREATE VIEW events AS SELECT 1 AS sequence, 'x' AS id, 'x' AS name, NULL AS data,
              NULL AS metadata, 1 AS version, NULL AS idempotency_key, 0 AS time, '' AS emitted_by",
-            "Invalid column type Null at index: 1",
+            "Invalid column type Null at index: 1,",
         ),
         (
             "CREATE VIEW events AS SELECT 1 AS sequence, 'x' AS id, 'x' AS name,
@@ -451,13 +466,34 @@ fn a_page_fails_when_the_read_store_cannot_read_an_event_on_it() {
     ] {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(schema).unwrap();
-        match ironflowx_events::list_events(&ReadStore(&conn), token, None, None) {
-            Err(ironflowx_events::Error::Store(e)) => {
-                assert!(e.to_string().contains(failed), "{e}");
-            }
-            other => panic!("expected {failed:?}, got {other:?}"),
-        }
+        let page = ironflowx_events::list_events(&ReadStore(&conn), token, None, None);
+        let message = store_message(page.unwrap_err());
+        let expected = format!("read store: {failed}");
+        assert!(message.starts_with(&expected), "{message}");
     }
+}
+
+#[test]
+fn a_page_looks_at_no_event_older_than_the_one_that_ends_it() {
+    let token = new_env_ref().token();
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    // Event 1 has no size.
+    conn.execute_batch(
+        "CREATE TABLE events (sequence INTEGER PRIMARY KEY, id, name, data, metadata, version,
+                              idempotency_key, time, emitted_by);
+         INSERT INTO events SELECT column1, '019a8f3c-7e21-7b4a-9c3d-00000000000' || column1,
+             'x', column2, NULL, 1, NULL, 0, 'embedder:x'
+             FROM (VALUES (1, NULL), (2, x'31'), (3, x'31'));",
+    )
+    .unwrap();
+    let list = |cursor: Option<&str>| {
+        ironflowx_events::list_events(&ReadStore(&conn), token, 1.try_into().ok(), cursor)
+    };
+    let page = list(None).unwrap();
+    assert_eq!(page.events.len(), 1);
+    assert_eq!(page.next, Some(format!("{token}.3")));
+    let err = list(page.next.as_deref()).unwrap_err();
+    assert!(store_message(err).starts_with("read store: Invalid column type Null at index: 1,"));
 }
 
 #[tokio::test]

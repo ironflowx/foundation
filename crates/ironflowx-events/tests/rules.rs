@@ -10,7 +10,7 @@ use std::num::NonZeroU32;
 use ironflowx_core::{Emitter, ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
 use ironflowx_events::{
     Decision, Emit, Error, Event, EventPage, EventTables, EventsView, ItemOutcome, NewEvent,
-    Record, Submission, decide, fold, get_event, list_events,
+    PageBudget, Record, Submission, decide, fold, get_event, list_events,
 };
 
 /// The read tables, in memory: the one seam.
@@ -37,14 +37,14 @@ impl EventsView for Store {
     fn events_before(
         &self,
         before: Option<u64>,
-        take: &mut dyn FnMut(usize) -> bool,
+        budget: &mut PageBudget,
     ) -> Result<Vec<Event>, Infallible> {
         Ok(self
             .events
             .range((Unbounded, before.map_or(Unbounded, Excluded)))
             .rev()
             .map(|(_, e)| e)
-            .take_while(|e| take(size(e)))
+            .take_while(|e| budget.take(size(e)))
             .cloned()
             .collect())
     }
@@ -607,7 +607,7 @@ impl EventsView for Failing<'_> {
     fn events_before(
         &self,
         _: Option<u64>,
-        _: &mut dyn FnMut(usize) -> bool,
+        _: &mut PageBudget,
     ) -> Result<Vec<Event>, &'static str> {
         unreachable!()
     }
@@ -916,8 +916,9 @@ fn walk(env: &Env, mut limit: impl FnMut(usize) -> Option<u32>) -> Vec<Vec<u64>>
     let mut cursor = None;
     loop {
         let page = list(env, limit(pages.len()), cursor.as_deref());
+        // So the page of the oldest event is the last one.
+        assert_eq!(page.events.is_empty(), env.store.events.is_empty());
         pages.push(page.events.iter().map(|e| e.sequence).collect());
-        // Every page but an empty environment's holds an event, so a walk this long repeats one.
         assert!(pages.len() <= env.store.events.len().max(1), "{pages:?}");
         cursor = page.next;
         if cursor.is_none() {
@@ -1072,7 +1073,7 @@ impl EventsView for FailsPast<'_> {
     fn events_before(
         &self,
         before: Option<u64>,
-        take: &mut dyn FnMut(usize) -> bool,
+        budget: &mut PageBudget,
     ) -> Result<Vec<Event>, u64> {
         let mut events = Vec::new();
         for (&sequence, event) in self.store.events.iter().rev() {
@@ -1082,7 +1083,7 @@ impl EventsView for FailsPast<'_> {
             if sequence < self.past {
                 return Err(sequence);
             }
-            if !take(size(event)) {
+            if !budget.take(size(event)) {
                 break;
             }
             if sequence == self.past {
@@ -1108,6 +1109,57 @@ fn a_view_that_fails_past_a_page_does_not_fail_it() {
         assert_eq!(listed, (past + 1..=10).rev().collect::<Vec<_>>());
         let next = list_events(&view, token(1), limit, page.next.as_deref());
         assert_eq!(next, Err(Error::Store(past)));
+    }
+}
+
+/// A view that asks on after a refusal, about every event there is, by the sizes it is given.
+struct AsksOn<'a> {
+    store: &'a Store,
+    newest_first: &'a [usize],
+}
+
+impl EventsView for AsksOn<'_> {
+    type Error = Infallible;
+    fn event_by_key(&self, _: &str) -> Result<Option<EventId>, Infallible> {
+        unreachable!()
+    }
+    fn last_sequence(&self) -> Result<u64, Infallible> {
+        unreachable!()
+    }
+    fn event(&self, _: EventId) -> Result<Option<Event>, Infallible> {
+        unreachable!()
+    }
+    fn events_before(
+        &self,
+        _: Option<u64>,
+        budget: &mut PageBudget,
+    ) -> Result<Vec<Event>, Infallible> {
+        let events = self.store.events.values().rev().zip(self.newest_first);
+        Ok(events
+            .filter(|&(_, &size)| budget.take(size))
+            .map(|(e, _)| e.clone())
+            .collect())
+    }
+}
+
+#[test]
+fn a_refused_event_ends_the_page_for_every_older_one() {
+    let env = with_events(3);
+    for (newest_first, limit) in [
+        // By its count, then by its bytes, with a small event after the one that does not fit.
+        ([1, 1, 1], NonZeroU32::new(1)),
+        ([1, 3 * MIB, 1], None),
+        // Their sum overflows.
+        ([1, usize::MAX, 1], None),
+        ([usize::MAX, 1, 1], None),
+    ] {
+        let view = AsksOn {
+            store: &env.store,
+            newest_first: &newest_first,
+        };
+        let page = list_events(&view, token(1), limit, None).expect("listed");
+        assert_eq!(names(&page), ["e.3"], "{newest_first:?}");
+        assert_eq!(page.next, Some(format!("{}.3", token(1))));
     }
 }
 

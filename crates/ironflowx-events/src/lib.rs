@@ -146,14 +146,34 @@ pub trait EventsView {
     fn last_sequence(&self) -> Result<u64, Self::Error>;
     fn event(&self, id: EventId) -> Result<Option<Event>, Self::Error>;
     /// The events with a sequence below `before`, or any when `None`, newest first, up to the
-    /// first that `take` refuses. `take` is asked about each in turn, by the bytes of its data
-    /// and metadata together, before they are read; nothing older than a refused event is
-    /// looked at.
+    /// first that `budget` refuses. It is asked about each in turn, before that event is loaded;
+    /// nothing older than a refused event is looked at.
     fn events_before(
         &self,
         before: Option<u64>,
-        take: &mut dyn FnMut(usize) -> bool,
+        budget: &mut PageBudget,
     ) -> Result<Vec<Event>, Self::Error>;
+}
+
+/// What a page of events may still hold (D73). Only [`list_events`] makes one, so no read is
+/// unbounded.
+#[derive(Debug)]
+pub struct PageBudget {
+    limit: u32,
+    count: u32,
+    bytes: usize,
+    refused: bool,
+}
+
+impl PageBudget {
+    /// Whether the page holds the next event too, `bytes` of data and metadata together. Once
+    /// one is refused, so is every later one.
+    pub fn take(&mut self, bytes: usize) -> bool {
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.refused = self.count == self.limit || (self.count > 0 && self.bytes > MAX_PAGE_BYTES);
+        self.count += u32::from(!self.refused);
+        !self.refused
+    }
 }
 
 /// The read store, as `fold` writes it.
@@ -380,19 +400,17 @@ pub fn list_events<V: EventsView>(
                 .ok_or_else(|| Error::Refused(Refusal::invalid("invalid cursor")))
         })
         .transpose()?;
-    let limit = limit.map_or(20, |l| l.get().min(200));
-    let (mut count, mut bytes) = (0, 0);
-    // Set when an event is refused: one is left, so a full last page carries no cursor.
-    let mut more = false;
+    let mut budget = PageBudget {
+        limit: limit.map_or(20, |l| l.get().min(200)),
+        count: 0,
+        bytes: 0,
+        refused: false,
+    };
     let events = view
-        .events_before(before, &mut |size| {
-            more = count == limit || (count > 0 && bytes + size > MAX_PAGE_BYTES);
-            count += 1;
-            bytes += size;
-            !more
-        })
+        .events_before(before, &mut budget)
         .map_err(Error::Store)?;
-    let last = events.last().filter(|_| more);
+    // Refused: an event is left. So a full last page carries no cursor.
+    let last = events.last().filter(|_| budget.refused);
     let next = last.map(|e| format!("{token}.{}", e.sequence));
     Ok(EventPage { events, next })
 }
