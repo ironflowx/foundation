@@ -378,6 +378,8 @@ async fn bootstrap(
                 if !ledger_dir(&dir, env).try_exists()? {
                     control.undo_bootstrap(&env)?;
                 }
+                #[cfg(feature = "__fault-points")]
+                ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterUndo);
                 Ok(())
             });
             // What an undo that fails leaves, the next open finishes.

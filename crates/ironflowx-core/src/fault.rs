@@ -41,8 +41,8 @@ pub enum FaultPoint {
     BeforeUndo,
     /// Inside the undo's transaction: staging is gone and the rows' deletion not committed.
     BeforeUndoCommit,
-    /// The undo is durable and `open` has not returned.
-    AfterUndoCommit,
+    /// The undo is done, or has left a ledger in place and its rows, and `open` has not returned.
+    AfterUndo,
     /// Inside the transaction that applies a new seed, the rotation written.
     BeforeSeedCommit,
     /// The new seed is durable and `open` has not returned.
@@ -69,7 +69,7 @@ impl FaultPoint {
             Self::AfterMarkCommit => "after-mark-commit",
             Self::BeforeUndo => "before-undo",
             Self::BeforeUndoCommit => "before-undo-commit",
-            Self::AfterUndoCommit => "after-undo-commit",
+            Self::AfterUndo => "after-undo",
             Self::BeforeSeedCommit => "before-seed-commit",
             Self::AfterSeedCommit => "after-seed-commit",
         }
@@ -97,7 +97,8 @@ static IDENTITY: OnceLock<Identity> = OnceLock::new();
 
 /// Calls `hook` with each key an open is about to store, its environment, and its secret if the
 /// engine minted it: the crash test learns which key to check before any point the key's storing
-/// reaches. The first hook set stays.
+/// reaches. A finishing open's replacement is told before it is known to be needed. The first hook
+/// set stays.
 pub fn set_identity_hook(hook: Identity) {
     let _ = IDENTITY.set(hook);
 }

@@ -391,8 +391,6 @@ impl ControlPlane {
             #[cfg(feature = "__fault-points")]
             ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeUndoCommit);
             tx.commit()?;
-            #[cfg(feature = "__fault-points")]
-            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterUndoCommit);
             Ok(())
         })
     }
@@ -484,6 +482,8 @@ impl ControlPlane {
                 Err(conflict) => return Ok(Err(conflict)),
                 Ok(None) => {}
             }
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::tell_identity(*env, seed.id, None);
             revoke_all(&tx, env, SEED, now)?;
             insert_admin(&tx, seed, env, SEED, None, now)?;
             #[cfg(feature = "__fault-points")]

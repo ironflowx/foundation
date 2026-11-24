@@ -16,5 +16,6 @@ ironflowx-store = { workspace = true, features = ["__fault-points"] }
 tokio = { version = "1.54.1", default-features = false, features = ["rt", "sync"] }
 
 [dev-dependencies]
+ironflowx-authz.workspace = true
 rusqlite = { version = "0.43.0", default-features = false, features = ["bundled"] }
 tempfile = "3.27.0"

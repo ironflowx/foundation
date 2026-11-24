@@ -1,5 +1,5 @@
 //! The child side of the crash test (#6). Usage: `crash-child <root> <point> <crossing>
-//! [obstruct]`, its stdin a socket.
+//! [staged|renamed]`, its stdin a socket.
 //!
 //! The first stdin line is the seed to open with, or `-` for none. Secrets pass only over that
 //! socket, never in an argument or over stdout: as an open comes to store a key, before any point
@@ -7,9 +7,10 @@
 //! only if the engine minted it.
 //!
 //! The child opens an engine on `<root>` with the seed and a manual clock, creates a second key
-//! with it, and prints `ready`, then `<env-ref> <second-key-id>`. With `obstruct`, the first ledger
+//! with it, and prints `ready`, then `<env-ref> <second-key-id>`. With `staged`, the first ledger
 //! to append its genesis record finds its read store's place taken, so that a bootstrapping open
-//! fails in staging and undoes itself.
+//! fails in staging. With `renamed`, a ledger that has reached its final name finds its lock held,
+//! by the child, so that the open fails then.
 //!
 //! Then, per stdin line, `<caller>` being `1` for the seed or `2` for the second key:
 //!
@@ -32,6 +33,7 @@
 //! point (D23). A point inside an open is before `ready`, which it then never prints.
 
 use std::collections::BTreeSet;
+use std::fs::File;
 use std::future::{Future, poll_fn};
 use std::io::{BufRead, Write};
 use std::num::NonZeroU32;
@@ -57,8 +59,31 @@ use tokio::sync::mpsc::{self, UnboundedReceiver};
 /// The point to stop at, and on which pass of it.
 static STOP: OnceLock<(String, u64)> = OnceLock::new();
 static CROSSINGS: AtomicU64 = AtomicU64::new(0);
-/// Where to put a directory in a new ledger's way.
-static OBSTRUCT: OnceLock<PathBuf> = OnceLock::new();
+/// What makes the open fail: `staged` or `renamed`, and `ledgers/`.
+static OBSTRUCT: OnceLock<(String, PathBuf)> = OnceLock::new();
+/// Held until the kill.
+static LOCK: OnceLock<File> = OnceLock::new();
+
+/// Puts what the engine's open trips over in its way.
+fn obstruct(point: FaultPoint) {
+    let Some((how, ledgers)) = OBSTRUCT.get() else {
+        return;
+    };
+    match (how.as_str(), point) {
+        ("staged", FaultPoint::AfterGenesis) => {
+            let path = ledgers.join(".staging/read.db");
+            std::fs::create_dir(path).expect("the read store's place is free");
+        }
+        ("renamed", FaultPoint::AfterRename) => {
+            let mut entries = std::fs::read_dir(ledgers).expect("ledgers/ reads");
+            let ledger = entries.next().expect("a ledger").expect("an entry").path();
+            let lock = File::open(ledger.join("ledger.lock")).expect("the ledger's lock file");
+            lock.try_lock().expect("the lock is free");
+            LOCK.set(lock).expect("set once");
+        }
+        _ => {}
+    }
+}
 
 /// Tells the parent, over the socket, which key is about to be stored.
 fn tell(env: EnvRef, key: KeyId, secret: Option<&Secret>) {
@@ -70,11 +95,7 @@ fn tell(env: EnvRef, key: KeyId, secret: Option<&Secret>) {
 }
 
 fn at_point(point: FaultPoint) {
-    if point == FaultPoint::AfterGenesis
-        && let Some(path) = OBSTRUCT.get()
-    {
-        std::fs::create_dir(path).expect("the read store's place is free");
-    }
+    obstruct(point);
     let (name, crossing) = STOP.get().expect("set before the engine opens");
     if point.name() != name || CROSSINGS.fetch_add(1, Ordering::SeqCst) + 1 != *crossing {
         return;
@@ -145,13 +166,13 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (root, point, crossing) = match &args[..] {
         [root, point, crossing] => (PathBuf::from(root), point, crossing),
-        [root, point, crossing, obstruct] if obstruct == "obstruct" => {
+        [root, point, crossing, how] if how == "staged" || how == "renamed" => {
             let root = PathBuf::from(root);
-            let path = root.join("ledgers/.staging/read.db");
-            OBSTRUCT.set(path).expect("set once");
+            let set = OBSTRUCT.set((how.clone(), root.join("ledgers")));
+            set.expect("set once");
             (root, point, crossing)
         }
-        _ => panic!("usage: crash-child <root> <point> <crossing> [obstruct]"),
+        _ => panic!("usage: crash-child <root> <point> <crossing> [staged|renamed]"),
     };
     let crossing = crossing.parse().expect("a crossing number");
     STOP.set((point.clone(), crossing)).expect("set once");

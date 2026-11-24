@@ -1,10 +1,12 @@
 //! Kills inside an open: while it bootstraps, undoes a failed bootstrap, finishes one, or rotates
 //! a seed (invariants.md "Crash test"). `Root` is what each kill and open should have left, by the
-//! Open tables of architecture.md; the tests name each row's outcome beside it.
+//! Open tables of architecture.md, checked against the directory after each; the tests name each
+//! row's outcome beside it, over what was seen there, not over what `Root` expects.
 
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 
+use ironflowx_authz::parse;
 use ironflowx_core::{EnvRef, ErrorKind, FaultPoint, KeyId, KeyOrigin, Scope, Secret};
 use ironflowx_operations::{Engine, SeedState, recover_admin_key};
 use ironflowx_proto::{Call, EmitRequest, ListEventsRequest, Operations, WhoamiRequest};
@@ -34,13 +36,18 @@ const STAGED: [FaultPoint; 4] = [
 ];
 /// Then those before the mark.
 const RENAMED: [FaultPoint; 2] = [FaultPoint::AfterRename, FaultPoint::BeforeMarkCommit];
-/// Those of the undo of a bootstrapping open that failed.
-const UNDO: [FaultPoint; 3] = [
-    FaultPoint::BeforeUndo,
-    FaultPoint::BeforeUndoCommit,
-    FaultPoint::AfterUndoCommit,
-];
 const ROTATION: [FaultPoint; 2] = [FaultPoint::BeforeSeedCommit, FaultPoint::AfterSeedCommit];
+
+/// A point, and what makes the child's open fail, if anything does.
+type At = (FaultPoint, Option<&'static str>);
+/// The undo after a failure in staging, then after one past the rename, which undoes nothing.
+const UNDO_AT: [At; 5] = [
+    (FaultPoint::BeforeUndo, Some("staged")),
+    (FaultPoint::BeforeUndoCommit, Some("staged")),
+    (FaultPoint::AfterUndo, Some("staged")),
+    (FaultPoint::BeforeUndo, Some("renamed")),
+    (FaultPoint::AfterUndo, Some("renamed")),
+];
 
 fn unmarked_points() -> impl Iterator<Item = FaultPoint> {
     STAGED.into_iter().chain(RENAMED)
@@ -128,6 +135,12 @@ struct Root {
     boot: Option<Boot>,
     /// The text of every key the parent was ever told of, stored or not.
     known: Vec<String>,
+    /// Where the bootstrap stood, as last read from the directory.
+    state: BootstrapState,
+    /// Each key's origin and whether it is revoked, oldest first, as last read from the directory.
+    keys: Vec<(KeyOrigin, bool)>,
+    /// The text of every known key the last open accepted.
+    accepted: Vec<String>,
     /// Every event the parent emitted, oldest first: its ID, and the emitter it names.
     events: Vec<(String, String)>,
 }
@@ -139,6 +152,9 @@ impl Root {
             schema: false,
             boot: None,
             known: [A, B, C].map(str::to_owned).to_vec(),
+            state: BootstrapState::NoFile,
+            keys: Vec::new(),
+            accepted: Vec::new(),
             events: Vec::new(),
         }
     }
@@ -146,19 +162,19 @@ impl Root {
     /// A root whose child was killed bootstrapping it, at `point`.
     fn killed(seed: Option<&str>, point: FaultPoint) -> Self {
         let mut root = Self::fresh();
-        root.kill(seed, point);
+        root.kill(seed, (point, None));
         root
     }
 
     /// The points an open with `seed` reaches now.
-    fn points(&self, seed: Option<&str>) -> Vec<FaultPoint> {
+    fn points(&self, seed: Option<&str>) -> Vec<At> {
         let Some(boot) = &self.boot else {
             let schema = usize::from(self.schema);
             let mut points = BEFORE_BOOTSTRAP[schema..].to_vec();
             points.extend(unmarked_points());
             points.push(FaultPoint::AfterMarkCommit);
-            points.extend(UNDO);
-            return points;
+            let points = points.into_iter().map(|p| (p, None));
+            return points.chain(UNDO_AT).collect();
         };
         let mut points = Vec::new();
         if !boot.placed {
@@ -171,19 +187,19 @@ impl Root {
         if seed.is_some_and(|s| boot.rotates(s)) {
             points.extend(ROTATION);
         }
-        points
+        points.into_iter().map(|p| (p, None)).collect()
     }
 
     /// Kills the child inside an open with `seed`, at `point`, and checks what that leaves.
-    fn kill(&mut self, seed: Option<&str>, point: FaultPoint) {
-        // Only a bootstrapping open that fails undoes anything.
-        let obstruct = UNDO.contains(&point);
+    fn kill(&mut self, seed: Option<&str>, (point, obstruct): At) {
+        let renamed = obstruct == Some("renamed");
+        let kept = self.boot.as_ref().is_some_and(|b| b.placed);
         let told = kill_inside_open(self.dir.path(), point, seed, obstruct);
         let name = point.name();
         let at_mark = [FaultPoint::BeforeMarkCommit, FaultPoint::AfterMarkCommit].contains(&point);
         let makes_key = match &self.boot {
             None => point != FaultPoint::BeforeSchemaCommit,
-            Some(boot) => !boot.marked && seed.is_none() && at_mark,
+            Some(boot) => ROTATION.contains(&point) || !boot.marked && seed.is_none() && at_mark,
         };
         assert_eq!(
             told.len(),
@@ -213,11 +229,11 @@ impl Root {
         self.schema |= point != FaultPoint::BeforeSchemaCommit;
         match &mut self.boot {
             None => {
-                let nothing = BEFORE_BOOTSTRAP.contains(&point);
-                if !nothing && point != FaultPoint::AfterUndoCommit {
+                let undone = point == FaultPoint::AfterUndo && !renamed;
+                if !undone && !BEFORE_BOOTSTRAP.contains(&point) {
                     let mut boot = Boot {
                         env: told.as_ref().expect("told above").env,
-                        placed: marked || RENAMED.contains(&point),
+                        placed: marked || renamed || RENAMED.contains(&point),
                         marked,
                         keys: Vec::new(),
                     };
@@ -241,14 +257,38 @@ impl Root {
         let staging = match point {
             FaultPoint::BeforeGenesis => Some((false, false)),
             FaultPoint::AfterGenesis => Some((true, false)),
-            FaultPoint::BeforeRename | FaultPoint::BeforeUndo => Some((true, true)),
+            FaultPoint::BeforeRename => Some((true, true)),
+            FaultPoint::BeforeUndo if !renamed => Some((true, true)),
             _ => None,
         };
         self.check_rows(&format!("killed at {name}"));
         self.check_ledgers(staging, &format!("killed at {name}"));
-        if self.boot.as_ref().is_some_and(|b| b.placed) {
-            // Gone if an open ever replaces the directory (TEN-12).
-            std::fs::write(self.ledger().join("kept"), "").expect("the ledger's directory");
+        self.check_marks(kept, &format!("killed at {name}"));
+    }
+
+    /// Checks that the ledger is still the directory it was, if it was `kept`, and that neither it
+    /// nor staging is one an earlier kill left in staging; then marks what is there now.
+    fn check_marks(&self, kept: bool, when: &str) {
+        let staging = self.dir.path().join("ledgers/.staging");
+        let ledger = self
+            .boot
+            .as_ref()
+            .filter(|b| b.placed)
+            .map(|_| self.ledger());
+        if let Some(ledger) = &ledger {
+            let is_kept = ledger.join("kept").exists();
+            assert_eq!(is_kept, kept, "{when}: a ledger in place is never replaced");
+            let built_again = !ledger.join("staged").exists();
+            assert!(
+                built_again,
+                "{when}: a ledger left in staging is never used"
+            );
+            std::fs::write(ledger.join("kept"), "").expect("the ledger's directory");
+        }
+        if staging.exists() {
+            let built_again = !staging.join("staged").exists();
+            assert!(built_again, "{when}: a leftover staging is deleted first");
+            std::fs::write(staging.join("staged"), "").expect("the staging directory");
         }
     }
 
@@ -257,9 +297,10 @@ impl Root {
         self.dir.path().join("ledgers").join(env.id().to_string())
     }
 
-    /// Checks every control-plane row, on a copy: reading a WAL in place would recover it before
+    /// Checks the bootstrap state, how many rows each table holds, and each key's ID, origin,
+    /// digest and whether it is revoked, on a copy: reading a WAL in place would recover it before
     /// the next open does.
-    fn check_rows(&self, when: &str) {
+    fn check_rows(&mut self, when: &str) {
         let copy = tempfile::tempdir().expect("a temporary directory");
         for name in ["control.db", "control.db-wal"] {
             let from = self.dir.path().join(name);
@@ -275,6 +316,8 @@ impl Root {
             Some(b) => BootstrapState::Unmarked { env: b.env },
         };
         assert_eq!(state, want, "{when}: the bootstrap");
+        self.state = state;
+        self.keys = Vec::new();
         let db = rusqlite::Connection::open(&path).expect("the copy opens");
         let count = |table: &str| -> rusqlite::Result<usize> {
             db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
@@ -296,10 +339,10 @@ impl Root {
         if let Some(boot) = &self.boot {
             let control = ControlPlane::open(&path).expect("the copy opens");
             let rows = control.list_keys(&boot.env, None, 100);
-            let rows: Vec<(KeyId, KeyOrigin, bool)> = rows
-                .expect("the keys list")
-                .into_iter()
-                .rev()
+            let mut rows = rows.expect("the keys list");
+            rows.reverse();
+            let seen: Vec<(KeyId, KeyOrigin, bool)> = rows
+                .iter()
                 .map(|r| (r.record.id, r.origin, r.record.revoked_at.is_some()))
                 .collect();
             let want: Vec<(KeyId, KeyOrigin, bool)> = boot
@@ -308,9 +351,18 @@ impl Root {
                 .map(|k| (key_id(&k.text), k.origin, k.revoked))
                 .collect();
             assert_eq!(
-                rows, want,
+                seen, want,
                 "{when}: each key, its origin and whether revoked"
             );
+            // The very secret the parent was told or chose, whether or not the key still works.
+            for (row, key) in rows.iter().zip(&boot.keys) {
+                let Ok(told) = parse(&Secret::new(key.text.clone())) else {
+                    panic!("{when}: {} is told malformed", row.record.id);
+                };
+                let same = row.record.digest.ct_eq(&told.digest);
+                assert!(same, "{when}: {} holds another secret", row.record.id);
+            }
+            self.keys = seen.into_iter().map(|(_, o, r)| (o, r)).collect();
         }
     }
 
@@ -370,8 +422,11 @@ impl Root {
             self.known.extend(minted.map(str::to_owned));
             let want = self.opened(seed, minted);
             assert_eq!(returned, want, "what the open returned");
+            self.accepted.clear();
             for text in self.known.clone() {
-                self.check_key(&opened.engine, &text).await;
+                if self.check_key(&opened.engine, &text).await {
+                    self.accepted.push(text);
+                }
             }
             self.check_events(&opened.engine).await;
             opened.engine.close().await;
@@ -379,13 +434,7 @@ impl Root {
         });
         self.check_rows("after an open");
         self.check_ledgers(None, "after an open");
-        if kept {
-            assert!(
-                self.ledger().join("kept").exists(),
-                "a ledger at its final name is opened, never replaced"
-            );
-        }
-        std::fs::write(self.ledger().join("kept"), "").expect("the ledger's directory");
+        self.check_marks(kept, "after an open");
         returned
     }
 
@@ -432,8 +481,8 @@ impl Root {
         keys.any(|k| k.text == text && !k.revoked)
     }
 
-    /// Checks that a key that should work does, as an admin key, and any other is refused.
-    async fn check_key(&self, engine: &Engine, text: &str) {
+    /// Checks that a key that should work does, as an admin key, and any other is refused; which.
+    async fn check_key(&self, engine: &Engine, text: &str) -> bool {
         let id = key_id(text);
         let me = engine.whoami(&call(text), WhoamiRequest {}).await;
         match me {
@@ -442,11 +491,15 @@ impl Root {
                 assert_eq!(me.key_id, id);
                 let every = [Scope::Read, Scope::Write, Scope::Admin];
                 assert_eq!(me.scopes, every.into(), "{id} is an admin key");
+                true
             }
             Err(e) => {
-                assert!(!self.works(text), "{id} is refused: {e}");
-                assert_eq!(e.kind, ErrorKind::Unauthenticated);
-                assert_eq!(e.message, "invalid API key");
+                // Not the error's text: no failure prints what the engine made of a secret.
+                assert!(!self.works(text), "{id} is refused: {:?}", e.kind);
+                assert_eq!(e.kind, ErrorKind::Unauthenticated, "{id}");
+                let uniform = e.message == "invalid API key" && e.hint.is_none();
+                assert!(uniform, "{id} is refused in other words");
+                false
             }
         }
     }
@@ -500,11 +553,9 @@ impl Root {
         text
     }
 
-    /// Each key's origin and whether it is revoked, oldest first: `check_rows` and `check_key`
-    /// have compared them with the directory.
-    fn keys(&self) -> Vec<(KeyOrigin, bool)> {
-        let keys = self.boot.iter().flat_map(|b| &b.keys);
-        keys.map(|k| (k.origin, k.revoked)).collect()
+    /// Whether the last open accepted the key whose text is `text`.
+    fn accepts(&self, text: &str) -> bool {
+        self.accepted.iter().any(|k| k == text)
     }
 }
 
@@ -518,7 +569,7 @@ fn killed_before_the_bootstrap_commits() {
     let _alone = alone();
     for point in BEFORE_BOOTSTRAP {
         let mut root = Root::killed(Some(A), point);
-        assert!(root.boot.is_none());
+        assert_eq!(root.state, BootstrapState::Unbootstrapped);
         let returned = root.open(None);
         let bootstrapped = Returned {
             minted: true,
@@ -526,7 +577,7 @@ fn killed_before_the_bootstrap_commits() {
             seed: None,
         };
         assert_eq!(returned, bootstrapped, "{}", point.name());
-        assert!(!root.works(A), "{}", point.name());
+        assert!(!root.accepts(A), "{}", point.name());
         assert_eq!(root.open(None), NOTHING_NEW);
     }
 }
@@ -539,8 +590,8 @@ fn killed_before_the_mark_with_a_seed() {
     for point in unmarked_points() {
         let mut root = Root::killed(Some(A), point);
         assert_eq!(root.open(None), NOTHING_NEW, "{}", point.name());
-        assert!(root.works(A), "{}", point.name());
-        assert_eq!(root.keys(), [(KeyOrigin::Seed, false)]);
+        assert!(root.accepts(A), "{}", point.name());
+        assert_eq!(root.keys, [(KeyOrigin::Seed, false)]);
         assert_eq!(root.open(None), NOTHING_NEW);
     }
 }
@@ -551,18 +602,20 @@ fn killed_before_the_mark_with_a_seed() {
 fn killed_during_the_undo() {
     let _alone = alone();
     for seed in [Some(A), None] {
-        for point in UNDO {
-            let mut root = Root::killed(seed, point);
-            let left = root.boot.is_some();
-            assert_eq!(left, point != FaultPoint::AfterUndoCommit);
+        for at in UNDO_AT {
+            let mut root = Root::fresh();
+            root.kill(seed, at);
+            let left = at != (FaultPoint::AfterUndo, Some("staged"));
+            let unmarked = matches!(root.state, BootstrapState::Unmarked { .. });
+            assert_eq!(unmarked, left, "{at:?}");
             let returned = root.open(None);
             let want = Returned {
                 minted: !left || seed.is_none(),
                 lost_secret: left && seed.is_none(),
                 seed: None,
             };
-            assert_eq!(returned, want, "{}", point.name());
-            assert_eq!(root.works(A), left && seed.is_some(), "{}", point.name());
+            assert_eq!(returned, want, "{at:?}");
+            assert_eq!(root.accepts(A), left && seed.is_some(), "{at:?}");
             assert_eq!(root.open(None), NOTHING_NEW);
         }
     }
@@ -582,10 +635,10 @@ fn killed_before_the_mark_without_a_seed() {
             seed: None,
         };
         assert_eq!(root.open(None), replaced, "{}", point.name());
-        assert!(!root.works(&told), "{}", point.name());
-        assert!(root.works(root.known.last().expect("minted")));
+        assert!(!root.accepts(&told), "{}", point.name());
+        assert!(root.accepts(root.known.last().expect("minted")));
         let keys = [(KeyOrigin::Minted, true), (KeyOrigin::Minted, false)];
-        assert_eq!(root.keys(), keys);
+        assert_eq!(root.keys, keys);
         assert_eq!(root.open(None), NOTHING_NEW);
     }
 }
@@ -598,9 +651,9 @@ fn killed_after_the_mark_without_a_seed() {
     assert_eq!(root.open(None), NOTHING_NEW);
     let recovered = root.recover();
     assert_eq!(root.open(None), NOTHING_NEW);
-    assert!(root.works(&recovered));
+    assert!(root.accepts(&recovered));
     let keys = [(KeyOrigin::Minted, false), (KeyOrigin::Recovered, false)];
-    assert_eq!(root.keys(), keys);
+    assert_eq!(root.keys, keys);
 }
 
 #[test]
@@ -608,7 +661,8 @@ fn killed_after_the_mark_with_a_seed() {
     let _alone = alone();
     let mut root = Root::killed(Some(A), FaultPoint::AfterMarkCommit);
     assert_eq!(root.open(None), NOTHING_NEW);
-    assert_eq!(root.keys(), [(KeyOrigin::Seed, false)]);
+    assert_eq!(root.keys, [(KeyOrigin::Seed, false)]);
+    assert_eq!(root.open(None), NOTHING_NEW);
 }
 
 /// The finishing open marks, then rotates to the other seed.
@@ -622,9 +676,9 @@ fn killed_before_the_mark_then_opened_with_another_seed() {
             ..NOTHING_NEW
         };
         assert_eq!(root.open(Some(B)), rotated, "{}", point.name());
-        assert!(root.works(B) && !root.works(A), "{}", point.name());
+        assert!(root.accepts(B) && !root.accepts(A), "{}", point.name());
         let keys = [(KeyOrigin::Seed, true), (KeyOrigin::Seed, false)];
-        assert_eq!(root.keys(), keys);
+        assert_eq!(root.keys, keys);
         assert_eq!(root.open(None), NOTHING_NEW);
     }
 }
@@ -637,11 +691,11 @@ fn killed_while_a_later_open_rotates_the_seed() {
     for point in ROTATION {
         let mut root = Root::fresh();
         root.open(Some(A));
-        root.kill(Some(B), point);
+        root.kill(Some(B), (point, None));
         assert_eq!(root.open(None), NOTHING_NEW, "{}", point.name());
         let committed = point == FaultPoint::AfterSeedCommit;
-        assert_eq!(root.works(B), committed, "{}", point.name());
-        assert_eq!(root.works(A), !committed, "{}", point.name());
+        assert_eq!(root.accepts(B), committed, "{}", point.name());
+        assert_eq!(root.accepts(A), !committed, "{}", point.name());
         assert_eq!(root.open(None), NOTHING_NEW);
     }
 }
@@ -651,22 +705,26 @@ fn killed_while_a_later_open_rotates_the_seed() {
 #[test]
 fn killed_while_a_finishing_open_runs() {
     let _alone = alone();
-    for bootstrapped in [Some(A), None] {
+    let [staged, renamed] = [FaultPoint::AfterBootstrapCommit, FaultPoint::AfterRename];
+    let starts = [
+        (Some(A), staged),
+        (None, staged),
+        (Some(A), renamed),
+        (None, renamed),
+    ];
+    for (bootstrapped, first) in starts {
         for seed in [None, Some(B)] {
-            let first = FaultPoint::AfterBootstrapCommit;
-            for point in Root::killed(bootstrapped, first).points(seed) {
+            for (point, _) in Root::killed(bootstrapped, first).points(seed) {
                 let mut root = Root::killed(bootstrapped, first);
-                root.kill(seed, point);
-                let boot = root.boot.as_ref().expect("a bootstrap");
-                let finished = boot.marked;
-                let marks = point == FaultPoint::AfterMarkCommit || ROTATION.contains(&point);
-                assert_eq!(finished, marks, "{}", point.name());
+                root.kill(seed, (point, None));
+                let finished = point == FaultPoint::AfterMarkCommit || ROTATION.contains(&point);
+                let marked = matches!(root.state, BootstrapState::Marked { .. });
+                assert_eq!(marked, finished, "{}", point.name());
                 let replaced = Returned {
                     minted: !finished && bootstrapped.is_none(),
                     lost_secret: !finished && bootstrapped.is_none(),
                     seed: None,
                 };
-                assert_eq!(root.points(None).is_empty(), finished);
                 assert_eq!(root.open(None), replaced, "{}", point.name());
                 assert_eq!(root.open(None), NOTHING_NEW);
             }
@@ -675,7 +733,8 @@ fn killed_while_a_finishing_open_runs() {
 }
 
 /// Kills up to three opens the seed picks, each with a seed or without and at any point it
-/// reaches, opens between them, then opens twice, with a recovered key between.
+/// reaches, opens between them, then inspects the root without a seed, with one the seed picks, and
+/// with a recovered key.
 pub fn kill_seeded(rng: &mut Rng) {
     let mut root = Root::fresh();
     for i in 0..1 + rng.below(3) {
@@ -685,9 +744,10 @@ pub fn kill_seeded(rng: &mut Rng) {
             root.open(seed);
             continue;
         }
-        let point = points[rng.below(points.len() as u64) as usize];
-        root.kill(seed, point);
+        let at = points[rng.below(points.len() as u64) as usize];
+        root.kill(seed, at);
     }
+    root.open(None);
     root.open(pick_seed(rng));
     root.recover();
     root.open(None);

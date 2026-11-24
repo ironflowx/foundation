@@ -117,7 +117,7 @@ impl Home {
 impl Driver {
     /// The child, its engine open on the fresh `root`, and what it bootstrapped.
     fn spawn(root: &Path, point: &str, crossing: u64) -> (Self, Home) {
-        let driver = Self::start(root, point, crossing, Some(SEED), false);
+        let driver = Self::start(root, point, crossing, Some(SEED), None);
         assert_eq!(driver.line("ready"), "ready", "the child opens its engine");
         let line = driver.line("the environment and the second key");
         let (env, second) = line.split_once(' ').expect("<env-ref> <key-id>");
@@ -129,14 +129,20 @@ impl Driver {
         (driver, home)
     }
 
-    /// The child, before its engine has opened with `seed`; obstructed, its ledger cannot be built.
-    fn start(root: &Path, point: &str, crossing: u64, seed: Option<&str>, obstruct: bool) -> Self {
+    /// The child, before its engine has opened with `seed`; obstructed, it is made to fail.
+    fn start(
+        root: &Path,
+        point: &str,
+        crossing: u64,
+        seed: Option<&str>,
+        obstruct: Option<&str>,
+    ) -> Self {
         let (mut socket, theirs) = UnixStream::pair().expect("a socket pair");
         let mut child = Command::new(env!("CARGO_BIN_EXE_crash-child"))
             .arg(root)
             .arg(point)
             .arg(crossing.to_string())
-            .args(obstruct.then_some("obstruct"))
+            .args(obstruct)
             .stdin(OwnedFd::from(theirs))
             .stdout(Stdio::piped())
             .spawn()
@@ -609,6 +615,13 @@ async fn check(engine: &Engine, cx: &Call, seen: &Seen) -> Result<Vec<Event>, St
         if marker(&event) != Some(&item.marker) {
             return Err(format!("{}: {id} reads back another event", item.request));
         }
+        let want = &seen.emitters[&item.marker];
+        if event.emitted_by.to_string() != *want {
+            return Err(format!(
+                "{}: {id} reads back emitted by {}, not {want}",
+                item.request, event.emitted_by
+            ));
+        }
     }
     let page = engine
         .list_events(
@@ -877,7 +890,7 @@ fn kill_at(
 /// Kills a reopen of `root` inside its fold of the record the last kill left unfolded, its rows
 /// written and nothing committed.
 fn kill_during_open(root: &Path) {
-    let told = kill_inside_open(root, FaultPoint::DuringOpen, Some(SEED), false);
+    let told = kill_inside_open(root, FaultPoint::DuringOpen, None, None);
     assert!(told.is_empty(), "a later open makes no key");
 }
 
@@ -886,7 +899,7 @@ fn kill_inside_open(
     root: &Path,
     point: FaultPoint,
     seed: Option<&str>,
-    obstruct: bool,
+    obstruct: Option<&str>,
 ) -> Vec<Told> {
     let name = point.name();
     let child = Driver::start(root, name, 1, seed, obstruct);
@@ -994,7 +1007,7 @@ const _: fn(FaultPoint) = |p| match p {
     | FaultPoint::AfterMarkCommit
     | FaultPoint::BeforeUndo
     | FaultPoint::BeforeUndoCommit
-    | FaultPoint::AfterUndoCommit
+    | FaultPoint::AfterUndo
     | FaultPoint::BeforeSeedCommit
     | FaultPoint::AfterSeedCommit => {}
 };
