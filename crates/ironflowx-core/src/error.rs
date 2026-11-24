@@ -27,8 +27,9 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     /// True only when the same request, sent again unchanged, may succeed and stores no second
-    /// event. The error's hint says what to do, retryable or not; [`Self::Unavailable`] says when
-    /// "at once" is not enough.
+    /// event. The error's hint, when there is one, says what to do, retryable or not;
+    /// [`Self::Unknown`]'s assumes an idempotency key on every item, and [`Self::Unavailable`]
+    /// says when "at once" is not enough.
     ///
     /// It promises no second event, not no second key: a `create_key` that answered `Unavailable`
     /// may have stored its key, whose secret is then lost. List the keys before sending it again,
