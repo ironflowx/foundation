@@ -1126,6 +1126,51 @@ fn nothing_is_recovered_until_the_bootstrap_is_marked() {
     cp.insert_recovered(&key, &Fixed(T)).expect("marked");
 }
 
+fn recovery_failed(got: Result<(), RecoverError>, why: &str) {
+    let failed = matches!(&got, Err(RecoverError::Store(StoreError::Failed(w))) if w == why);
+    assert!(failed, "{why}: {got:?}");
+}
+
+/// A recovery that cannot read whether the bootstrap is marked, or come to, fails as that, not as
+/// not ready, and stores nothing.
+#[test]
+fn a_recovery_that_cannot_decide_is_a_store_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let cp = ControlPlane::open(&path(dir.path())).unwrap();
+    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
+        .unwrap();
+    cp.mark_ledger_created(&env(1), &Fixed(T)).unwrap();
+    let before = whole_rows(dir.path());
+    let db = rusqlite::Connection::open(path(dir.path())).unwrap();
+    let key = seed(182, 2);
+    let recover = || cp.insert_recovered(&key, &Fixed(T));
+
+    let token = |t: &str| {
+        let sql = "UPDATE environments SET token = ?1";
+        assert_eq!(db.execute(sql, [t]).unwrap(), 1);
+    };
+    token("not a token");
+    recovery_failed(recover(), "bad environment reference");
+    token(&env(1).token().to_string());
+
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    recovery_failed(recover(), "database is locked");
+    db.execute_batch("COMMIT").unwrap();
+
+    struct Panics;
+    impl Clock for Panics {
+        fn now(&self) -> Timestamp {
+            panic!("injected");
+        }
+    }
+    std::thread::scope(|s| {
+        let panicked = s.spawn(|| cp.insert_recovered(&key, &Panics)).join();
+        panicked.expect_err("it holds the connection as it panics");
+    });
+    recovery_failed(recover(), "poisoned");
+    assert_eq!(whole_rows(dir.path()), before);
+}
+
 /// A recovery that fails leaves no row: at its insert, or at its commit, the row inserted by then
 /// (TEN-11). Failed, the same key is recovered by a later call.
 #[test]
@@ -1136,7 +1181,10 @@ fn a_recovery_that_fails_leaves_no_row() {
     let commit = "CREATE TABLE late (t TEXT REFERENCES tenants(id) DEFERRABLE INITIALLY DEFERRED);
                   CREATE TRIGGER fail AFTER INSERT ON keys BEGIN \
                   INSERT INTO late VALUES ('no such tenant'); END;";
-    for (point, sql) in [("insert", insert), ("commit", commit)] {
+    for (point, sql, why) in [
+        ("insert", insert, "injected"),
+        ("commit", commit, "FOREIGN KEY constraint failed"),
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let cp = ControlPlane::open(&path(dir.path())).unwrap();
         cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
@@ -1146,11 +1194,7 @@ fn a_recovery_that_fails_leaves_no_row() {
         let db = rusqlite::Connection::open(path(dir.path())).unwrap();
         db.execute_batch(sql).unwrap();
         let key = seed(183, 1);
-        let got = cp.insert_recovered(&key, &Fixed(T));
-        assert!(
-            matches!(got, Err(RecoverError::Store(StoreError::Failed(_)))),
-            "{point}: {got:?}"
-        );
+        recovery_failed(cp.insert_recovered(&key, &Fixed(T)), why);
         assert_eq!(everything(dir.path()), before, "{point}");
         db.execute_batch("DROP TRIGGER fail").unwrap();
         cp.insert_recovered(&key, &Fixed(T)).expect(point);
@@ -1180,7 +1224,8 @@ fn a_key_is_recovered_at_a_now_read_after_the_write_lock() {
         // One-sided: with the lock held, a reading can only come from the defect.
         let early = told.recv_timeout(std::time::Duration::from_millis(200));
         db.execute_batch("COMMIT").unwrap();
-        assert!(early.is_err(), "the clock was read before the lock");
+        let waiting = std::sync::mpsc::RecvTimeoutError::Timeout;
+        assert_eq!(early, Err(waiting), "the clock was read before the lock");
         recovered.join().unwrap().unwrap();
         told.recv().expect("read once the lock is free");
     });
