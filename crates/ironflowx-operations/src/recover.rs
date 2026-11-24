@@ -17,7 +17,9 @@ use crate::open::new_admin_key;
 /// # Errors
 ///
 /// `NotReady` until an open has finished bootstrapping `root`: a missing or empty directory stays
-/// so. `Store` if `control.db` is in another format or SQLite fails. No key is stored then.
+/// so. `Store` if `control.db` is in another format or SQLite fails. No key is stored then, but a
+/// write that failed may still land when `control.db` is next opened: revoke the `Recovered` key
+/// nobody holds.
 ///
 /// # Panics
 ///
