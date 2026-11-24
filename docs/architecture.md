@@ -32,6 +32,8 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 
 ## Modules
 
+![Foundation's layers: a host calls the engine with a key; the engine checks the key against the control plane, then runs event calls on the ledger, which commits events durably and reads them back; an embedder without keys calls the ledger directly; beneath them are the pure credentials, event rules and core types](img/layers.svg)
+
 | Module | Does | Interface | Crate |
 |---|---|---|---|
 | Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time | `open`, `open_blocking`, `open_existing_blocking`, `submit`, `read`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
