@@ -19,7 +19,7 @@ This repo is single-context:
 ├── GLOSSARY.md
 └── docs/
     ├── architecture.md
-    ├── decisions.md      ← every decision, D1, D2, …; the next one takes the next number no PRD has assigned, or its PRD's
+    ├── decisions.md      ← every decision, D1, D2, …; the next one takes the next number, or its milestone PRD's
     └── invariants.md
 ```
 

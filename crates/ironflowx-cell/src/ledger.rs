@@ -74,7 +74,7 @@ pub enum OpenError {
     /// The log is damaged, holds a foreign record, or lost records the read store already
     /// folded. Needs a person: architecture.md, "When open answers `Corrupt`".
     Corrupt,
-    /// An open of an existing ledger found none, or one without a genesis record.
+    /// An open of an existing ledger found none, or one that begins with a record of events.
     Missing,
     Io(std::io::Error),
 }
@@ -169,8 +169,9 @@ impl Ledger {
         Self::start(recover(dir, env, false)?, env, clock)
     }
 
-    /// As [`Ledger::open_blocking`], but refuses a directory that is missing, or holds no genesis
-    /// record, as `Missing`: it creates neither. A log that has a segment is opened to find out.
+    /// As [`Ledger::open_blocking`], but refuses as `Missing` a directory that is missing, or whose
+    /// log is missing, empty or begins with a record of events: it creates neither a directory nor
+    /// a genesis record. A log that has a segment is opened to find out.
     pub fn open_existing_blocking(
         dir: &Path,
         env: EnvRef,

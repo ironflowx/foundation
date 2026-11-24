@@ -46,7 +46,8 @@ pub use recover::recover_admin_key;
 
 /// An open data directory: its control plane, its environment's ledger and the root's lock.
 ///
-/// Its operations, `open` and `close` run on tokio and panic outside a runtime. Dropping it
+/// Its operations, `open` and `close` need a tokio runtime: outside one, they panic at the first
+/// step that runs on it, if they are not refused before. Dropping it
 /// without `close` blocks until the emit in hand is done, ends queued ones `Unavailable` and
 /// releases the root; async code calls `close`.
 pub struct Engine {

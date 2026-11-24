@@ -27,8 +27,8 @@ pub enum EngineError {
     Format,
     /// A ledger without its control plane: the control plane was lost.
     Orphaned,
-    /// The control plane without its environment's ledger: the ledger was lost, emptied, or holds
-    /// no genesis record.
+    /// The control plane without its environment's ledger: the ledger was lost, emptied, or begins
+    /// with a record of events.
     LedgerMissing,
     /// The seed's key ID is already a key, and not this seed.
     SeedConflict,
@@ -188,8 +188,9 @@ impl Engine {
     ///
     /// `MalformedSeed` before anything is read. `NotAnEngineRoot`, `Locked`, `Format` and
     /// `Orphaned` change nothing but the lock file and a leftover staging directory, nor does
-    /// `LedgerMissing`, but for `control.db-shm`, which reading a WAL a crash left rebuilds, and
-    /// what a log that has a segment recovers as it opens. `SeedConflict`
+    /// `LedgerMissing`, but for what is recovered to find them: `control.db-shm`, which reading a
+    /// WAL a crash left rebuilds, and, for `LedgerMissing`, what a log that has a segment, and the
+    /// `read.db` beside it, recover as they open. `SeedConflict`
     /// if the seed's key ID is already another key, with no key changed; a store, ledger or I/O
     /// failure otherwise.
     ///

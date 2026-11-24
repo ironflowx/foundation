@@ -129,7 +129,7 @@ The `ironflowx` crate, which re-exports the foundation crates.
 A way in from outside the process, such as an HTTP server.
 
 **Embedder**:
-An app that links foundation. One that calls the ledger directly, without keys, is trusted by it and named in what it emits.
+An app that links foundation. One that calls the ledger directly, without keys, is trusted by it, the attribution it supplies included.
 
 **Host**:
 An embedder that opens an engine on a data directory.
