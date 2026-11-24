@@ -1,5 +1,6 @@
-//! The three kinds of open (D41): a bootstrapping open that fails undoes itself before its
-//! rename and nothing after it, and a finishing open completes what an earlier one left (TEN-9).
+//! The three kinds of open (D41): a bootstrapping open that fails tries to undo itself
+//! before its rename and undoes nothing after it, and a finishing open completes what an earlier
+//! one left (TEN-9).
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -157,8 +158,8 @@ impl Clock for OnFirstReading {
     }
 }
 
-/// What a bootstrapping open that failed before its rename must leave: nothing of the bootstrap,
-/// so that a next open with another seed, or none, bootstraps.
+/// What a bootstrapping open that failed before its rename, and undid itself, must leave: nothing
+/// of the bootstrap, so that a next open with another seed, or none, bootstraps.
 async fn nothing_remains(root: &Path, seed: &str, case: &str) {
     assert_eq!(state(root), BootstrapState::Unbootstrapped, "{case}");
     let db = rusqlite::Connection::open(control(root)).unwrap();
@@ -222,8 +223,8 @@ async fn a_bootstrapping_open_that_fails_before_its_rename_leaves_nothing() {
     }
 }
 
-/// An undo that fails leaves the bootstrap unmarked: the open returns what failed it, not the
-/// undo's failure, and the next open finishes the bootstrap, in the same environment.
+/// An undo that fails leaves a committed bootstrap unmarked: the open returns what failed it, not
+/// the undo's failure, and the next open finishes the bootstrap, in the same environment.
 #[tokio::test]
 async fn a_bootstrapping_open_whose_undo_fails_is_finished_by_the_next() {
     let a = key(1, 1);
@@ -239,11 +240,17 @@ async fn a_bootstrapping_open_whose_undo_fails_is_finished_by_the_next() {
         });
         let err = Engine::open(dir.path(), block, given.map(secret)).await;
         let err = err.err().expect("refused");
-        assert!(matches!(err, EngineError::Io(_)), "{given:?}: {err:?}");
+        let renaming =
+            matches!(&err, EngineError::Io(e) if e.kind() == std::io::ErrorKind::NotFound);
+        assert!(renaming, "{given:?}: {err:?}");
         let env = unmarked(dir.path());
         assert_eq!(ledgers(dir.path()), [""; 0], "{given:?}");
-        let left = keys(dir.path(), env);
-        assert!(matches!(left[..], [(_, _, false)]), "{given:?}: {left:?}");
+        let mut rows = keys(dir.path(), env);
+        let (origin, id) = match given {
+            Some(seed) => (KeyOrigin::Seed, parts(seed).id.to_string()),
+            None => (KeyOrigin::Minted, rows[0].0.clone()),
+        };
+        assert_eq!(rows, [(id, origin, false)]);
         sql(dir.path(), "DROP TRIGGER fail");
 
         let opened = open(dir.path(), None).await.unwrap();
@@ -253,6 +260,11 @@ async fn a_bootstrapping_open_whose_undo_fails_is_finished_by_the_next() {
         let works = opened.minted.map_or(a.clone(), |m| m.expose().to_owned());
         assert!(admits(&opened.engine, &works).await, "{given:?}");
         opened.engine.close().await;
+        if given.is_none() {
+            rows[0].2 = true;
+            rows.push((parts(&works).id.to_string(), KeyOrigin::Minted, false));
+        }
+        assert_eq!(keys(dir.path(), env), rows);
     }
 }
 

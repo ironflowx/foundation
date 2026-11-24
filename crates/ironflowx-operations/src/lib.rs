@@ -61,8 +61,8 @@ pub struct Opened {
     /// The bootstrap key's secret, returned once: only by an open without a seed that
     /// bootstrapped, or that replaced a key whose secret was lost.
     pub minted: Option<Secret>,
-    /// This open finished a bootstrap and revoked the key it had minted, whose secret no open
-    /// returned.
+    /// This open finished an earlier one's bootstrap and revoked the key that one minted, whose
+    /// secret no open returned.
     pub lost_secret: bool,
     /// Whether the seed the open was given still works: a host should warn of a revoked one.
     /// `None` when it was given none.

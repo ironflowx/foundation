@@ -195,7 +195,7 @@ impl Engine {
     /// An open that fails while it bootstraps tries to undo it, unless its ledger is already in
     /// place, and returns the failure, not the undo's. A bootstrap left in place, its ledger built
     /// or its undo failed, is for a later open to finish. No other open undoes anything, and one
-    /// that fails changes no seed. A cancelled open may still finish the step it was in, and
+    /// that fails rotates no seed. A cancelled open may still finish the step it was in, and
     /// starts no undo: `root` stays locked until that step ends.
     ///
     /// # Panics
@@ -391,7 +391,7 @@ async fn bootstrap(
     }
 }
 
-/// The steps of a bootstrapping open that a failure undoes.
+/// The steps of a bootstrapping open whose failure it tries to undo.
 async fn create(
     root: &Root,
     control: &Arc<ControlPlane>,
