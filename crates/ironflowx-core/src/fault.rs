@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 
 use crate::{EnvRef, KeyId, Secret};
 
-/// A place in the commit, recovery, bootstrap or seed path where the crash test kills the process.
+/// A place in the commit, recovery, bootstrap, seed or key-change path where the crash test kills the process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FaultPoint {
     /// The writer has decided a record and not yet appended it.
@@ -47,6 +47,19 @@ pub enum FaultPoint {
     BeforeSeedCommit,
     /// The new seed is durable and `open` has not returned.
     AfterSeedCommit,
+    /// Inside `create_key`'s transaction, its row written.
+    BeforeCreateCommit,
+    /// The created key is durable and `create_key` not yet answered.
+    AfterCreateCommit,
+    /// Inside `revoke_key`'s transaction, the revoke written.
+    BeforeRevokeCommit,
+    /// The revoke is durable and `revoke_key` not yet answered.
+    AfterRevokeCommit,
+    /// Inside the transaction that records an expiry, admission's or a key change's, the flag
+    /// written.
+    BeforeExpiryCommit,
+    /// The recorded expiry is durable and its refusal not yet answered.
+    AfterExpiryCommit,
 }
 
 impl FaultPoint {
@@ -72,6 +85,12 @@ impl FaultPoint {
             Self::AfterUndo => "after-undo",
             Self::BeforeSeedCommit => "before-seed-commit",
             Self::AfterSeedCommit => "after-seed-commit",
+            Self::BeforeCreateCommit => "before-create-commit",
+            Self::AfterCreateCommit => "after-create-commit",
+            Self::BeforeRevokeCommit => "before-revoke-commit",
+            Self::AfterRevokeCommit => "after-revoke-commit",
+            Self::BeforeExpiryCommit => "before-expiry-commit",
+            Self::AfterExpiryCommit => "after-expiry-commit",
         }
     }
 }
@@ -95,10 +114,10 @@ type KeyHook = fn(EnvRef, KeyId, Option<&Secret>);
 
 static KEY_HOOK: OnceLock<KeyHook> = OnceLock::new();
 
-/// Calls `hook` with each key an open is about to store, its environment, and its secret if the
-/// engine minted it: the crash test learns which key to check before any point the key's storing
-/// reaches. A finishing open's replacement is told before it is known to be needed. The first hook
-/// set stays.
+/// Calls `hook` with each key an open or `create_key` is about to store, its environment, and its
+/// secret unless the key is a seed: the crash test learns which key to check before any point the
+/// key's storing reaches. A finishing open's replacement is told before it is known to be needed,
+/// and a created key before its transaction checks the request. The first hook set stays.
 pub fn set_key_hook(hook: KeyHook) {
     let _ = KEY_HOOK.set(hook);
 }

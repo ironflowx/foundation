@@ -550,7 +550,11 @@ impl ControlPlane {
             let mut conn = self.lock()?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             set_expiry_recorded(&tx, id, env)?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeExpiryCommit);
             tx.commit()?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterExpiryCommit);
             Ok(())
         })
     }
@@ -612,7 +616,11 @@ impl ControlPlane {
                 ],
             )?;
             let seq = u64::try_from(tx.last_insert_rowid()).map_err(|_| refused("bad seq"))?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeCreateCommit);
             tx.commit()?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterCreateCommit);
             Ok(Ok(KeyRow {
                 seq,
                 record: KeyRecord {
@@ -663,7 +671,11 @@ impl ControlPlane {
                 "UPDATE keys SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL",
                 params![now.as_millis(), id.to_string()],
             )?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeRevokeCommit);
             tx.commit()?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterRevokeCommit);
             Ok(Ok(()))
         })
         .map_err(KeyChangeError::Store)?
@@ -962,7 +974,11 @@ fn caller<'c>(
         Err(refused) => {
             if refused.newly_expired() && set_expiry_recorded(&tx, id, env).is_ok() {
                 // Refused alike whether or not the expiry was recorded (TEN-7).
+                #[cfg(feature = "__fault-points")]
+                ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeExpiryCommit);
                 let _ = tx.commit();
+                #[cfg(feature = "__fault-points")]
+                ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterExpiryCommit);
             }
             Ok(None)
         }
