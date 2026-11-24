@@ -25,6 +25,10 @@ pub ironflowx_proto::Operation::ListEvents
 pub ironflowx_proto::Operation::ListKeys
 pub ironflowx_proto::Operation::RevokeKey
 pub ironflowx_proto::Operation::Whoami
+impl ironflowx_proto::Operation
+pub const ironflowx_proto::Operation::ALL: &'static [Self]
+pub const fn ironflowx_proto::Operation::changes_state(self) -> bool
+pub const fn ironflowx_proto::Operation::rpc(self) -> &'static str
 impl core::clone::Clone for ironflowx_proto::Operation
 pub fn ironflowx_proto::Operation::clone(&self) -> Self
 impl core::clone::TrivialClone for ironflowx_proto::Operation

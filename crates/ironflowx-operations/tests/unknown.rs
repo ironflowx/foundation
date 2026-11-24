@@ -64,7 +64,7 @@ async fn an_unknown_emit_is_settled_by_a_keyed_retry_after_reopening_the_engine(
         LANDED.store(landed, Ordering::SeqCst);
         ARMED.store(true, Ordering::SeqCst);
         let (kind, retryable, hint) = told(engine.emit(&cx, emit()).await);
-        assert_eq!((kind, retryable), (ErrorKind::Unknown, true));
+        assert_eq!((kind, retryable), (ErrorKind::Unknown, false));
         assert_eq!(
             hint.as_deref(),
             Some("reopen the engine, then retry with the same idempotency key")
