@@ -10,7 +10,9 @@ pub enum ErrorKind {
     NotFound,
     /// The outcome is unknown; the ledger is now unavailable until reopened.
     Unknown,
-    /// The ledger failed and refuses every call until it is reopened.
+    /// The ledger failed and refuses every call until it is reopened; or the control plane failed
+    /// this call, which can be retried at once, unless a call has panicked under its lock: then
+    /// only after a reopen.
     Unavailable,
     /// No key, or a key that is not valid for this environment.
     Unauthenticated,

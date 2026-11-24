@@ -49,7 +49,7 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 |---|---|
 | `Timestamp` | A UTC instant in whole milliseconds since the Unix epoch. Private fields; `from_millis` and `as_millis` (`i64`) are the only conversions (D18) |
 | `SequencedTime` | A reading of the event clock. Its one constructor is `#[doc(hidden)]`, and a lint allows it only in `ironflowx-cell` (D17); it compares with itself, never with `Timestamp` or `std::time` |
-| `Clock` | A trait in core: `fn now(&self) -> Timestamp`. Core declares it and never calls it |
+| `Clock` | A trait in core: `fn now(&self) -> Timestamp`. Core declares it and never calls it. `now` must not panic: it runs on the ledger's writer and under the control plane's lock |
 | `EnvRef` | `{ id: EnvironmentId, token: IncarnationToken }`. Text form `<uuid>.<32 hex digits>` via `Display` and `FromStr`, so an embedder can store it. Only the canonical spelling parses: a lowercase, hyphenated UUIDv7 and 32 lowercase hex digits; `EnvironmentId`, `EventId`, `TenantId`, `ProjectId`, `KeyId` and `IncarnationToken` parse the same way |
 | `Emitter` | Who emitted an event, as read back: text `key:<key-id>` or `embedder:<name>` via `Display` and `FromStr`. Read-only: nothing converts it into a `SubmitAs` (D36) |
 | `SubmitAs` | Who a submission is attributed to, as written: `SubmitAs::embedder(name)`, where the name is 1–128 bytes with no control (Cc), format (Cf) or line or paragraph separator (Zl, Zp) character, so what a reader sees is what was stored, or `SubmitAs::key(KeyId)`, which a lint confines to the credentials crate (D36). Every event of a submission carries its one emitter |
@@ -187,7 +187,7 @@ impl Ledger {
     async fn open(dir: &Path, env: EnvRef, clock: impl Clock + Send + 'static) -> Result<Ledger, OpenError>;
     // As open, on the calling thread, outside a runtime too
     fn open_blocking(dir: &Path, env: EnvRef, clock: impl Clock + Send + 'static) -> Result<Ledger, OpenError>;
-    // As open_blocking, but Missing for a directory that is missing or holds no genesis record; creates neither
+    // As open_blocking, but Missing for a directory that is missing, or whose log is missing, empty or begins with a record of events; creates neither
     fn open_existing_blocking(dir: &Path, env: EnvRef, clock: impl Clock + Send + 'static) -> Result<Ledger, OpenError>;
     async fn submit(&self, sub: Submission, by: SubmitAs) -> Result<Committed, SubmitError>;   // trusts `by` (D36)
     // q is a query from event rules (get_event, list_events) over the read store; a q that panics fails the ledger
@@ -211,7 +211,7 @@ fn fold<T: EventTables>(tx: &mut T, record: &Record, emitted_by: &Emitter) -> Re
 
 ## Event rules
 
-`decide` runs in this order, and every step runs before the idempotency lookup (D5):
+`decide` runs in this order; steps 1 to 3, every check on the request, run before the idempotency lookup (D5):
 
 1. **Batch count:** more than 100 items refuses the whole batch.
 2. **Item rules**, below, per item. A breach refuses the emit, or that batch item, as `Invalid`.
@@ -243,7 +243,7 @@ A list query, not `decide`, checks the cursor: a token that does not decode, or 
 | Text | `ixk_` + the key ID's 36-character text form + `_` + 43 base64url characters without padding (256 random bits): always 84 characters, parsed by position, since the secret may hold `_` and `-` (D46). Anything else is malformed, including an uppercase or non-v7 key ID and a non-canonical last character |
 | Key ID | The key's UUIDv7. Not a secret |
 | Stored | The `KeyDigest` of the whole key text, and the environment ID and token current when the key was made. The secret is never stored, logged or returned after creation |
-| Valid | Parses; a record exists for the engine's environment ID and token; digests match, compared in constant time; not revoked; not expired: `now < expires_at` when an expiry is set, by the ledger's clock, and `expiry_recorded` unset |
+| Valid | Parses; a record exists for the engine's environment ID and token; digests match, compared in constant time; not revoked; not expired: `now < expires_at` when an expiry is set, by the clock the engine was opened with, and `expiry_recorded` unset |
 | Scopes | A non-empty set of `read`, `write`, `admin`, none implying another (D27). The bootstrap key holds all three |
 | Created | By a key holding `admin`. Scopes default to `{read}` when none are asked for, and must be a subset of the creator's. The expiry must be after now and no later than the creator's; no expiry only when the creator has none (D28). A label is 0–128 bytes of UTF-8 with no control character (Unicode Cc). At most 1,000 created keys per environment hold a slot: a key holds one until it is revoked or its expiry is recorded, whatever the clock reads. All checked inside the transaction, with now read after the write lock, the creator's record read again there |
 | Origin | `Minted` for a bootstrap key the engine minted; `Seed` for a key the host supplied; `Recovered` for one recovered from the data directory, which is labelled `recovered`; none of these has a creator or holds a slot. `Created` keys name their creator in `created_by` (D35) |
@@ -255,7 +255,7 @@ A list query, not `decide`, checks the cursor: a token that does not decode, or 
 
 **Recorded expiry sticks.** A key is expired when `now ≥ expires_at` or its `expiry_recorded` flag is set (D42). The flag is set, once, when the key is refused as expired with a matching digest and not revoked (`record_expiry`), or when a key change finds its calling key newly expired, in that change's transaction. A key whose expiry was recorded is never accepted again, whatever the clock does later, across restarts too. If recording fails, the call still gets the one uniform refusal, but nothing is recorded, unless its commit is unsettled and lands (D48): until the unsettled commit lands or a later refusal records it, a clock set back can accept that key again. A clock that runs ahead and is corrected expires for good only the keys refused while it ran ahead; a recorded expiry does not spread to the keys a key created, so a child can stay usable until its own expiry. `list_keys` reports status by the clock and the flag and records nothing, so a key listed as expired can list as active again after the clock is set back. Event time is never compared with key time (LED-1).
 
-**Revocation and calls in flight.** A revoke, or the revoke a seed's rotation makes, which has no calling key, takes effect when its transaction commits: a call whose `lookup_key` runs after it is refused; a call that read the key before may finish. `insert_key` and `revoke_key` take the write lock, read now, then read their calling key's record again and `recheck` it: a key revoked or expired by then changes no key, except that a newly expired one has its own expiry recorded, and the call is `Unauthenticated` (D43). No lock spans the control plane and the ledger, so an emit admitted before a revoke may still commit after it. Key and identity operations do not touch the ledger, so they keep working while it is `Unavailable`.
+**Revocation and calls in flight.** A revoke, or the revoke a seed's rotation makes, which has no calling key, takes effect when its transaction commits: a call whose `lookup_key` runs after it is refused; a call that read the key before may finish. `insert_key` and `revoke_key` take the write lock, read now, then read their calling key's record again and `recheck` it: a key revoked or expired by then changes no key, except that a newly expired one has its own expiry recorded, and the call is `Unauthenticated` (D43). No lock spans the control plane and the ledger, so an emit admitted before a revoke may still commit after it. Key and identity operations do not touch the ledger, so they keep working while it is `Unavailable`. Cancelling a key change only drops its answer: once it is admitted it can still commit, even after `close`. A created key's secret is then lost and its slot held: list the keys and revoke it.
 
 | Operation | Scope |
 |---|---|
@@ -275,7 +275,7 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 | `NotFound` | `revoke_key` with an ID that does not parse or names no key in the environment: `key not found` | No |
 | `Unknown` | The append's outcome is unknown; the ledger is now `Unavailable` | After reopen. With a key, the retry returns the original event if it landed. Without one it may store a second event |
 | `Unavailable` | The ledger failed (append, fold, read store, or a `read` query that panicked) and refuses every call until it is reopened. Reads waiting at the gate end with it | After reopen |
-| `Unavailable` | A control-plane read or write failed during admission or a handler: `lookup_key`, `environment`, `list_keys` or a key change. The call fails closed and changes nothing, but for an [unsettled commit](#after-a-failed-open-or-change) (D48); the engine stays open (D44). A failure to record an expiry is not this: the call keeps its uniform refusal. A `create_key` whose answer was lost may have committed | Yes, at once |
+| `Unavailable` | A control-plane read or write failed during admission or a handler: `lookup_key`, `environment`, `list_keys` or a key change. The call fails closed and changes nothing, but for an [unsettled commit](#after-a-failed-open-or-change) (D48); the engine stays open (D44). A failure to record an expiry is not this: the call keeps its uniform refusal. A `create_key` whose answer was lost may have committed. Once a call has panicked under the control plane's lock (a host `Clock` that panics), every later call that reaches the control plane answers so until the engine is reopened, though its hint still says at once | Yes, at once; after such a panic, after reopen |
 | `Unauthenticated` | No key, or an empty one: `authentication required` | No |
 | `Unauthenticated` | A malformed key: `invalid API key`, with the key format in `hint` | No |
 | `Unauthenticated` | An unknown key ID, a wrong secret, a revoked or expired key, or a key of another environment or incarnation: `invalid API key`, the same answer for each, with no hint, whether or not recording an expiry failed (D29, D30). Also a key change whose calling key was revoked or expired before its transaction (D43) | No |
@@ -302,8 +302,8 @@ The committed head and the applied position are exclusive positions: one past th
 
 | Directory state | Result |
 |---|---|
-| Empty or missing | Creates the log and appends the genesis record (format version, environment ID, incarnation token) at position 0, then creates `read.db` and folds it; ready |
-| Log, genesis matches the `EnvRef` and format | Checks that the newest stored event ID and sequence match the last applied record, rebuilding on mismatch. Replays one record at a time from the applied position |
+| Empty or missing, or holding neither a log nor `read.db`, whatever else it holds | Creates the log and appends the genesis record (format version, environment ID, incarnation token) at position 0, then creates `read.db` and folds it; ready |
+| Log, genesis matches the `EnvRef` and format | Runs SQLite's `quick_check` over `read.db`, so open takes longer as it grows, and checks that the newest stored event ID and sequence match the last applied record, rebuilding on either failure. Replays one record at a time from the applied position |
 | Log, genesis differs in environment ID or token | `OpenError::WrongIncarnation` |
 | Log, genesis differs in format version, or the log's own format is unsupported | `OpenError::Format` |
 | `read.db` missing, without `meta`, unreadable, its tables damaged, or `meta` disagrees with the genesis record | Deletes `read.db` and its `-wal` and `-shm` files, rebuilds from position 0 |
@@ -317,11 +317,13 @@ The committed head and the applied position are exclusive positions: one past th
 | Another process or `Ledger` holds the directory | `OpenError::Locked`, including on sealed logs. The OS releases the ledger lock when the process exits |
 | Any other I/O failure | `OpenError::Io` |
 
-`open_existing_blocking` answers `OpenError::Missing` for a directory that is missing, or whose log is missing, has no segment, holds no record or does not begin with a genesis record, whatever `read.db` beside it holds; it creates neither the directory nor a genesis record. For any other directory the table above applies.
+`open_existing_blocking` answers `OpenError::Missing` for a directory that is missing, or whose log is missing, has no segment or holds no record, whatever `read.db` beside it holds, and for a log that begins with a record of events instead of a genesis record, unless the `read.db` beside it is ahead of it, which is `Corrupt`. It creates neither the directory nor a genesis record. For any other directory the table above applies.
+
+`Ledger::open` does not recognise an engine's root: opened there, it makes a ledger, and the engine answers `NotAnEngineRoot` while that ledger's `log/` is there.
 
 The genesis record is the directory's identity; `read.db` is derived state and never trusted over it. The log binds every segment to one log ID, so a segment from another log does not open.
 
-Dropping a `Ledger` without `close` stops the writer after the submission in hand; queued submits, never decided, end `Unavailable`. The drop joins the writer, so it blocks, and the lock is released before it returns; async code calls `close`.
+Dropping a `Ledger` without `close` stops the writer after the submission in hand; queued submits, never decided, end `Unavailable`. The drop joins the writer, so it blocks, and the lock is released before it returns; async code calls `close`. Dropping an `Engine`, or an `Opened`, without `close` drops its `Ledger` the same way, then releases the root.
 
 ### When open answers `Corrupt`
 
@@ -342,6 +344,8 @@ Steps, with the embedder stopped:
    - **Other damage** (an older segment, the headers) is not repairable: restore the directory from a backup.
 4. **If verify is clean**, or after a lossy repair, the ledger refused. Prefer restoring the directory from a backup at least as new as the last acknowledged emit. To accept the loss instead (if the log was empty, the step 1 copy of `read.db` is the only copy of those events: keep it), delete `<dir>/read.db` and its `-wal` and `-shm` files and reopen: the ledger rebuilds the read store from the log as it now is. This deletion is the one step that accepts lost events.
 5. **If it still answers `Corrupt`** after the deletion, the ledger refused a record: rebuilding cannot get past it. Restore the directory from a backup taken before that record was written. The step 1 copy holds the same record and will not open; keep it for inspection.
+
+A backup is a copy of the whole directory (of an engine, its whole `<root>`), `-wal` files included, taken while it is closed. Restoring an older `control.db` undoes the revokes and recorded expiries made since, so a key that was valid in the backup and revoked since may work again: revoke it again.
 
 After accepting a loss, the lost events are gone for good, and so are their idempotency keys: a client's keyed retry stores a new event instead of returning the original. New events reuse the lost event sequences, so a cursor issued before the loss can page into events stored after it.
 
@@ -366,7 +370,7 @@ A sealed log, after a lossy repair, opens and reads until the first emit that ap
 | Missing, with nothing in it, or never bootstrapped | Missing, or empty but for staging and plain files | A bootstrapping open |
 | Missing, with nothing in it, or never bootstrapped | Holds anything else: a ledger directory, or a symbolic link | `Orphaned`: the control plane was lost |
 | An unmarked bootstrap | Anything | A finishing open |
-| A marked bootstrap | The environment's ledger missing, emptied or without a genesis record | `LedgerMissing`, from `open_existing_blocking`: the ledger was lost |
+| A marked bootstrap | The environment's ledger missing, emptied or beginning with a record of events, as `open_existing_blocking` judges it ([Open](#open)) | `LedgerMissing`: the ledger was lost |
 | A marked bootstrap | The environment's ledger present | A later open; the ledger's [Open](#open) table applies, the `read.db` rebuild included, and its refusals are `Ledger` (a ledger of another environment or incarnation: `WrongIncarnation`) |
 
 An open is one of three kinds (D41):
@@ -379,7 +383,7 @@ An open is one of three kinds (D41):
 
 **Before the mark, a bootstrapping open that fails tries to undo itself:** it deletes the staging directory, if it can, and, unless something is at the ledger's final name, the rows it inserted, in a transaction that checks they are unmarked. If the ledger is there already, the rows stay; if the undo fails, so do any it did not delete. Rows that stay are an unmarked bootstrap, whose seed, if it was given one, is current; a finishing open completes it. **A finishing or later open undoes nothing:** a failure leaves what it did before failing: on a finishing open, the ledger if it built it, and, if the mark committed, the mark, with the minted key revoked and any replacement stored. The previous seed stays current, unless the failure is an unsettled commit that lands (D48). The engine never deletes a directory at a ledger's final name.
 
-**What a refused open may change:** a layout refusal (steps 1–4, `LedgerMissing`, a ledger of another incarnation) changes nothing but the lock file and the removal of a leftover staging directory. `SeedConflict` changes no key and writes nothing to `control.db` or its WAL, but the ledger opened before it may have rebuilt its `read.db`, or, on a finishing open, been built. A finishing open checks its seed before the mark, so a conflict leaves the bootstrap unmarked. After a crash, or with a damaged ledger, two things are recovered before they can be refused: reading a WAL rebuilds `control.db-shm`, which SQLite derives from it; and a log that has a segment is opened, making its lock files, before its genesis record can be read, and drops a torn tail or a torn segment header as it opens, which hold nothing acknowledged. No refusal writes a genesis record, but for the ledger a finishing open builds before its `SeedConflict`.
+**What a refused open may change:** a layout refusal (steps 1–4, `LedgerMissing`, a ledger of another incarnation) changes nothing but the lock file and the removal of a leftover staging directory. `SeedConflict` changes no key and writes nothing to `control.db` or its WAL, but the ledger opened before it may have rebuilt its `read.db`, or, on a finishing open, been built. A finishing open checks its seed before the mark, so a conflict leaves the bootstrap unmarked. After a crash, or with a damaged ledger, some recovery comes before a refusal can: reading a WAL rebuilds `control.db-shm`, which SQLite derives from it; and a log that has a segment is opened, making its lock files, before its genesis record can be read. As it opens, it drops a torn tail or a torn segment header, which hold nothing acknowledged but for the bad last frame the [Open](#open) table names, and finishes an interrupted roll; closed by the refusal, it may get a close frame. If it holds a record, its `read.db`, if there is one, is opened too, which may checkpoint that file's WAL. No refusal writes a genesis record, but for the ledger a finishing open builds before its `SeedConflict`.
 
 **A cancelled open** may still finish the step it was in. Each step, the ledger's own open and the staging build included, holds the root's lock until it ends and what it made is closed, so no later open runs beside it. It starts no undo: it leaves no bootstrap, an unmarked one or a marked one, as its last commit left it.
 
@@ -421,6 +425,8 @@ Seen with a fault-injecting VFS that fails the WAL's sync (macOS, [#135](https:/
 
 ## What is stored
 
+The engine and the ledger set no file modes, so the process umask applies, and encrypt nothing: the host keeps the directory private. Who can read it reads every event; who can write it has an admin's authority. A ledger has no delete and no retention.
+
 An engine's data directory, `<root>`:
 
 | Where | Holds |
@@ -445,14 +451,14 @@ A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 
 | Crate | Version | Used | Relied on |
 |---|---|---|---|
 | `segment-log-core` | Pinned exactly (D16), from crates.io (MIT) | `SegmentLog::open`, `append` → `Pending::wait`, `read(from, max)`, `watermark`, `stream_head` | See below |
-| `rusqlite` | A caret range (0.43.x), `bundled` (D26) | Read store; the control plane | One transaction per folded record; one per control-plane change |
+| `rusqlite` | A caret range (0.43.x), `bundled` (D26), which compiles SQLite with a C compiler; its `libsqlite3-sys` links `sqlite3`, so an embedder's graph can hold no other version of it | Read store; the control plane | One transaction per folded record; one per control-plane change |
 | `serde_json` | Pinned exactly (D26); the 127 depth limit is checked against it | Event rules | D12 |
 | `serde_core` | A caret range | Event rules' JSON visitor | D12 |
 | `uuid` | A caret range; `v7` in `ironflowx-cell` and `ironflowx-operations` only | Event, environment, tenant, project and key IDs | |
 | `getrandom` | A caret range (D26) | `new_env_ref`; a key's secret | OS random source |
 | `sha2`, `subtle`, `base64` | Caret ranges | Credentials: the key digest, its constant-time comparison, the key text | Pure: `ci/purity/ironflowx-authz.allow` names everything they pull in, `libc` included (only `cpufeatures`' CPU detection on AArch64 uses it) |
 | `zeroize` | A caret range | `Secret` is zeroed on drop | In `ironflowx-core.allow` |
-| `tokio` | A caret range (D26) | `spawn_blocking` for open, reads and close; the read gate; the answer to a submission | |
+| `tokio` | A caret range (D26) | `spawn_blocking` for open, reads, close, admission and control-plane calls; the submission queue; the read gate; the answer to a submission | |
 
 How the ledger uses the log:
 
@@ -461,7 +467,7 @@ How the ledger uses the log:
 - **Errors:** `CommitError::Indeterminate` is `Unknown`. `CommitError::Poisoned` and `AppendError::Poisoned` are `Unavailable`. Every other append or commit error (`Full`, `TooLarge`, `Invalid`, `Sealed`, `WrongRevision`, `KeyConflict`, `PartialRetry`, `Exhausted`) cannot happen by construction; if one does, the ledger treats it as a fault: `Unavailable` until reopened.
 - **A sealed log:** the ledger never seals one; only the log's operator repair tool does. The library opens it without an error and cannot say it is sealed until an append, so `open` succeeds, reads work, and the first append is the fault above, after which reads answer `Unavailable` too (D19).
 - **Names:** the log's `Record`, `Position` and `Committed` types stay private to `ironflowx-cell`. This repo calls them the log record and the log offset; the ledger's own terms are in [`GLOSSARY.md`](../GLOSSARY.md).
-- **Durability:** `wait` returns after the record's `sync_data`, which is a full flush on Linux and macOS. Crash durability is claimed on both. Power-loss durability is unclaimed until the simulator proves it.
+- **Durability:** `wait` returns after the record's `sync_data`, which is a full flush on Linux and macOS. Crash durability is claimed on both, the two platforms CI tests. Power-loss durability is unclaimed until the simulator proves it.
 - **Close:** `close`, and dropping a `Ledger`, drop the log cleanly, so it writes a close frame after the last record (segment-log format version 4, [ADR 0071](https://github.com/ironflowx/segment-log/blob/v0.2.0/docs/decisions/0071-a-clean-drop-writes-a-close-frame.md)). The upgrade is one-way: once a build on `segment-log-core` 0.2 has opened a directory, a build on 0.1 answers `Format` for it.
 
 The decisions behind this design: [`decisions.md`](decisions.md).

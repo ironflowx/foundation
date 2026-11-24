@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Usage: ci/check.sh
-# Runs every CI job locally, in .github/workflows/ci.yml's order, and stops at the first failure.
+# Runs every CI job but `soak` locally, in .github/workflows/ci.yml's order, and stops at the
+# first failure.
 # The tools come from ci/install-tools.sh; actionlint, shellcheck and gh (logged in) from your
 # package manager.
 # Commit first: public-api compares the snapshots with git.

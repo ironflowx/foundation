@@ -17,7 +17,7 @@ An environment's ID with its incarnation token. A ledger is opened with one, and
 _Avoid_: Environment ID, where the reference (ID and token) is meant
 
 **Tenant**:
-The top isolation and quota boundary. One default tenant on a single node, hidden from keys and addresses.
+The top isolation boundary, and the quota boundary once there are quotas. One default tenant on a single node, hidden from keys and addresses.
 
 **Project**:
 A group of environments inside a tenant.
@@ -112,7 +112,7 @@ The segment log library's own record and offset. They stay inside the ledger and
 An event's place in commit order, counted from 1. Each event has one, so a record that holds a batch holds several.
 
 **Event clock**:
-The ledger's clock. It never goes back, and it stamps every record after the genesis record.
+What a ledger's writer stamps records with: the clock the ledger was opened with, held from going back. It stamps every record after the genesis record.
 
 **Idempotency key**:
 An optional client value on an emit. A second emit with a key already used in the environment returns the original event's ID, marked a duplicate, instead of storing another.
@@ -129,7 +129,10 @@ The `ironflowx` crate, which re-exports the foundation crates.
 A way in from outside the process, such as an HTTP server.
 
 **Embedder**:
-An app that links foundation and calls the ledger directly, without keys; the ledger trusts it.
+An app that links foundation. One that calls the ledger directly, without keys, is trusted by it, the attribution it supplies included.
+
+**Host**:
+An embedder that opens an engine on a data directory.
 
 ### Testing
 
