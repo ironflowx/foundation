@@ -20,15 +20,34 @@ pub enum ErrorKind {
     PermissionDenied,
     /// A limit is reached; the hint says what frees room.
     ResourceExhausted,
+    /// A fault of the server, not of the request.
+    Internal,
 }
 
 impl ErrorKind {
-    /// True when the same request, unchanged, may succeed later; the error's hint says when.
+    /// True when the same request, sent again unchanged, may succeed and stores no second event;
+    /// the error's hint says when. A kind that is not retryable may still have a hint that says
+    /// what to do first.
+    ///
+    /// It promises no second event, not no second key: a `create_key` that answered `Unavailable`
+    /// may have stored its key. List the keys before sending it again; a key whose commit is
+    /// unsettled (D48) is listed only after a reopen, if it lands.
     pub const fn retryable(self) -> bool {
-        matches!(
-            self,
-            Self::Unavailable | Self::Unknown | Self::ResourceExhausted
-        )
+        matches!(self, Self::Unavailable)
+    }
+
+    /// The exit code of a process that ends with this kind. 0 is success.
+    pub const fn exit_code(self) -> u8 {
+        match self {
+            Self::Internal => 1,
+            Self::Invalid => 2,
+            Self::Unauthenticated => 3,
+            Self::PermissionDenied => 4,
+            Self::NotFound => 5,
+            Self::Unknown => 6,
+            Self::ResourceExhausted => 7,
+            Self::Unavailable => 8,
+        }
     }
 }
 

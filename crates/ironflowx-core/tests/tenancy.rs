@@ -24,17 +24,20 @@ fn scopes_have_one_text_form_each() {
     }
 }
 
+/// The kind table (architecture.md, "Errors").
 #[test]
-fn only_unavailable_unknown_and_exhausted_are_retryable() {
-    for (kind, retryable) in [
-        (ErrorKind::Invalid, false),
-        (ErrorKind::NotFound, false),
-        (ErrorKind::Unauthenticated, false),
-        (ErrorKind::PermissionDenied, false),
-        (ErrorKind::Unavailable, true),
-        (ErrorKind::Unknown, true),
-        (ErrorKind::ResourceExhausted, true),
+fn each_kind_has_its_exit_code_and_only_unavailable_is_retryable() {
+    for (kind, retryable, exit) in [
+        (ErrorKind::Internal, false, 1),
+        (ErrorKind::Invalid, false, 2),
+        (ErrorKind::Unauthenticated, false, 3),
+        (ErrorKind::PermissionDenied, false, 4),
+        (ErrorKind::NotFound, false, 5),
+        (ErrorKind::Unknown, false, 6),
+        (ErrorKind::ResourceExhausted, false, 7),
+        (ErrorKind::Unavailable, true, 8),
     ] {
         assert_eq!(kind.retryable(), retryable, "{kind:?}");
+        assert_eq!(kind.exit_code(), exit, "{kind:?}");
     }
 }

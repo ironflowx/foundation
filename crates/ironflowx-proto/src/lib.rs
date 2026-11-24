@@ -83,7 +83,8 @@ pub trait Operations: Send + Sync {
     ) -> impl Future<Output = Result<(), OpError>> + Send;
 }
 
-/// Every operation, for [`required_scope`]. Each operation that lands joins it.
+/// Every operation, one per method of [`Operations`]. Each operation that lands joins it, and
+/// [`Operation::ALL`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Operation {
     Emit,
@@ -95,6 +96,49 @@ pub enum Operation {
     CreateKey,
     ListKeys,
     RevokeKey,
+}
+
+impl Operation {
+    /// Every operation, in the order of the trait's methods.
+    pub const ALL: &'static [Self] = &[
+        Self::Emit,
+        Self::EmitBatch,
+        Self::GetEvent,
+        Self::ListEvents,
+        Self::Whoami,
+        Self::ListEnvironments,
+        Self::CreateKey,
+        Self::ListKeys,
+        Self::RevokeKey,
+    ];
+
+    /// The RPC that carries it on the wire, `<package>.<Service>/<Method>`.
+    pub const fn rpc(self) -> &'static str {
+        match self {
+            Self::Emit => "ironflowx.v1.EventService/Emit",
+            Self::EmitBatch => "ironflowx.v1.EventService/EmitBatch",
+            Self::GetEvent => "ironflowx.v1.EventService/GetEvent",
+            Self::ListEvents => "ironflowx.v1.EventService/ListEvents",
+            Self::Whoami => "ironflowx.v1.IdentityService/Whoami",
+            Self::ListEnvironments => "ironflowx.v1.EnvironmentService/ListEnvironments",
+            Self::CreateKey => "ironflowx.v1.KeyService/CreateKey",
+            Self::ListKeys => "ironflowx.v1.KeyService/ListKeys",
+            Self::RevokeKey => "ironflowx.v1.KeyService/RevokeKey",
+        }
+    }
+
+    /// True when the operation stores events or changes keys. Any call may still record its own
+    /// key's expiry as it is refused (D42).
+    pub const fn changes_state(self) -> bool {
+        match self {
+            Self::Emit | Self::EmitBatch | Self::CreateKey | Self::RevokeKey => true,
+            Self::GetEvent
+            | Self::ListEvents
+            | Self::Whoami
+            | Self::ListEnvironments
+            | Self::ListKeys => false,
+        }
+    }
 }
 
 /// The scope each operation requires; `None`: any valid key. An exhaustive match, so an
@@ -145,8 +189,8 @@ impl Call {
     }
 }
 
-/// A failed call: the kind decides whether to retry (`kind.retryable()`), the message explains,
-/// and the hint, when there is one, says what to do or when to retry.
+/// A failed call: the kind decides whether to send it again unchanged (`kind.retryable()`), the
+/// message explains, and the hint, when there is one, says what to do or when to retry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpError {
     pub kind: ErrorKind,
