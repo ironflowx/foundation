@@ -5,6 +5,7 @@ Each release lists what it adds and changes. All published crates share one vers
 ## Unreleased
 
 - **Docs** ([#134](https://github.com/ironflowx/foundation/issues/134)): corrects 0.2.0's #97 entry and `Engine::open`'s page. A bootstrapping open that fails before its ledger is in place tries to undo itself; if the undo fails, a bootstrap it did not delete stays unmarked, for a later open to finish. If an open's mark commits but it does not return, no later open reports its lost secret. No behavior change.
+- **Docs** ([#135](https://github.com/ironflowx/foundation/issues/135)): qualifies 0.2.0's #93, #94, #96, #97 and #98 entries. A control-plane commit that SQLite fails after writing it to the WAL, such as at a failed fsync, is unsettled: the next open of `control.db` may find it landed, with or without a crash (D48). An open that failed may so have finished its bootstrap, losing a minted secret, or have rotated its seed, against its answer, and a `create_key`, `revoke_key`, `recover_admin_key` or recorded expiry that failed may have taken effect. A failed creation or recovery can therefore leave a key in `control.db` whose secret the call never returned. `architecture.md` says what a host does about each. No behavior change.
 
 ## 0.2.0 - 2026-11-24
 
