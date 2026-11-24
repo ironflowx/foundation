@@ -67,12 +67,21 @@ async fn the_bootstrap_key_emits_and_reads_its_own_events() {
     assert_eq!(ids.len(), names.len());
     for (event_id, name) in ids.into_iter().zip(names) {
         let read = engine
-            .get_event(&cx, GetEventRequest { event_id })
+            .get_event(
+                &cx,
+                GetEventRequest {
+                    event_id: event_id.clone(),
+                },
+            )
             .await
             .unwrap();
         assert_eq!(
-            (read.name.as_str(), read.emitted_by.to_string()),
-            (name, by.clone())
+            (
+                read.event_id.to_string(),
+                read.name.as_str(),
+                read.emitted_by.to_string()
+            ),
+            (event_id, name, by.clone())
         );
     }
 

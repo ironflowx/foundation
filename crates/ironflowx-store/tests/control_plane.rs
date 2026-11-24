@@ -954,10 +954,14 @@ fn an_undo_that_fails_deletes_nothing() {
     for table in ["keys", "environments", "projects", "tenants"] {
         db.execute_batch(&format!(
             "CREATE TRIGGER fail BEFORE DELETE ON {table} \
-             BEGIN SELECT RAISE(ABORT, 'injected'); END;"
+             BEGIN SELECT RAISE(ABORT, 'injected: {table}'); END;"
         ))
         .unwrap();
-        cp.undo_bootstrap(&env(1)).expect_err(table);
+        // The trigger's own error: a missing delete would fail at a later foreign key instead.
+        match cp.undo_bootstrap(&env(1)).expect_err(table) {
+            StoreError::Failed(why) => assert_eq!(why, format!("injected: {table}")),
+            err => panic!("{table}: {err:?}"),
+        }
         assert_eq!(everything(dir.path()), before, "{table}");
         db.execute_batch("DROP TRIGGER fail").unwrap();
     }

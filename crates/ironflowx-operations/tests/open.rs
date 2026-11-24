@@ -47,8 +47,8 @@ async fn a_never_bootstrapped_control_plane_is_bootstrapped() {
     }
 }
 
-/// The listed environment's IDs are the stored ones; ACC-010 shows only that two keys agree on
-/// them.
+/// The listed environment's reference and project ID are the stored ones; ACC-010 shows only that
+/// two keys agree on them.
 #[tokio::test]
 async fn the_listed_environment_has_the_ids_the_control_plane_stores() {
     let dir = tempfile::tempdir().unwrap();
@@ -61,14 +61,13 @@ async fn the_listed_environment_has_the_ids_the_control_plane_stores() {
         .unwrap();
     let ids: Vec<_> = listed
         .iter()
-        .map(|e| (e.env.id().to_string(), e.project_id.to_string()))
+        .map(|e| (e.env.to_string(), e.project_id.to_string()))
         .collect();
     let db = rusqlite::Connection::open(dir.path().join("control.db")).unwrap();
-    let sql = "SELECT e.id, p.id FROM environments e, projects p";
+    let sql = "SELECT id || '.' || token, project_id FROM environments";
     let mut stmt = db.prepare(sql).unwrap();
     let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
     let stored: Vec<(String, String)> = rows.map(Result::unwrap).collect();
-    assert_eq!(stored.len(), 1);
     assert_eq!(ids, stored);
     opened.engine.close().await;
 }
