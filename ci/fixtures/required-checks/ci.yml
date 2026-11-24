@@ -1,0 +1,43 @@
+on: pull_request
+jobs:
+  kept:
+    runs-on: ubuntu-latest
+  forgotten:
+    runs-on: ubuntu-latest
+  split:
+    strategy:
+      matrix:
+        os: [a, b]
+  pair:
+    strategy:
+      matrix:
+        os: [a]
+        kind: [c, d]
+  included:
+    strategy:
+      matrix:
+        os: [a]
+        include: [{ os: z }]
+  excluded:
+    strategy:
+      matrix:
+        os: [a, b]
+        exclude: [{ os: b }]
+  computed:
+    strategy:
+      matrix: ${{ fromJSON('{}') }}
+  reused:
+    uses: ./.github/workflows/other.yml
+  skipped:
+    if: false
+  let-go:
+    continue-on-error: true
+  named:
+    name: named
+    strategy:
+      matrix:
+        os: [a]
+  titled:
+    name: titled on ${{ github.ref }}
+  by-hand:
+    if: github.event_name == 'workflow_dispatch'

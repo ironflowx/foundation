@@ -134,6 +134,9 @@ jobs:
       - run: go install "github.com/rhysd/actionlint/cmd/actionlint@v$ACTIONLINT"
       - run: '"$(go env GOPATH)/bin/actionlint"'
       - run: shellcheck -x ci/*.sh .githooks/*
+      - run: ci/required-checks.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   # The longer crash-test soak run by hand before publishing (docs/invariants.md); not a required check.
   soak:

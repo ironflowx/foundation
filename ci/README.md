@@ -1,6 +1,6 @@
 # CI checks
 
-`.github/workflows/ci.yml` runs these on every PR; the `main` ruleset requires each job. Every
+`.github/workflows/ci.yml` runs these on every PR; the `main` ruleset requires each job but `soak`. Every
 check is proven by a fixture in `fixtures/` that it must reject (`must-reject.sh`), so a check
 that silently stops working fails CI.
 
@@ -24,7 +24,7 @@ skips what is already done. Rehearse it first with
 | `public-api` | D21: each crate's public API matches `public-api/<crate>.txt`; LED-9: nothing public takes a bare `EnvironmentId`; no public API names a dependency's type (`rusqlite`, `segment_log_core`, `tokio`, `uuid`, `getrandom`); `ci/api-rules.sh`: no error type holds a `Secret` (TEN-3), nothing turns an `Address` into an ID (TEN-8), `KeyDigest` exposes nothing but `ct_eq` and its codec (TEN-4) | `ci/public-api.sh` | Review the printed diff, then `ci/public-api.sh --bless` and commit the snapshot |
 | `doc-pins` | D16: docs name only the `segment-log-core` version `crates/ironflowx-cell/Cargo.toml` pins (tag-pinned links) | `ci/doc-pins.sh` | Re-pin the printed links to the new tag, or drop the version from the line |
 | `soak` | The crash test's longer soak before publishing: `inputs.kills` seeded kills (10000 by default) on Linux and macOS. Runs only when started by hand, with every other job, and is not required | `gh workflow run ci --ref <branch> -f kills=10000`; on your machine, `env -u CRASH_SEED CRASH_KILLS=10000 cargo test -p ironflowx-crash-test --locked --test crash seeded_random_kills` | Replay the printed `CRASH_SEED=<seed> CRASH_KILLS=1` and fix the ledger |
-| `lint-ci` | actionlint and shellcheck over the workflow, `ci/*.sh` and `.githooks/*` | `actionlint && shellcheck -x ci/*.sh .githooks/*` | Fix the script |
+| `lint-ci` | actionlint and shellcheck over the workflow, `ci/*.sh` and `.githooks/*`; the `main` ruleset requires exactly the jobs of `ci.yml` but `soak` (`ci/required-checks.sh`, which reads the live ruleset) | `actionlint && shellcheck -x ci/*.sh .githooks/* && ci/required-checks.sh` | Fix the script; for a job, add it to the ruleset's required checks, or remove it there |
 
 ## Pure crates
 
@@ -51,4 +51,5 @@ its lint.
 
 `ci/tools.env` pins every tool version; CI reads it, and `ci/install-tools.sh` installs the nightly,
 cargo-public-api and cargo-deny locally at those pins. `jq`, which `ci/no-fault-points.sh` needs, is
-not pinned: it comes with the GitHub runners and macOS.
+not pinned: it comes with the GitHub runners and macOS. So do `ruby` and, on the runners, `gh`, which
+`ci/required-checks.sh` needs.

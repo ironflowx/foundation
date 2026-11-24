@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Usage: ci/check.sh
 # Runs every CI job locally, in .github/workflows/ci.yml's order, and stops at the first failure.
-# The tools come from ci/install-tools.sh; actionlint and shellcheck from your package manager.
+# The tools come from ci/install-tools.sh; actionlint, shellcheck and gh (logged in) from your
+# package manager.
 # Commit first: public-api compares the snapshots with git.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -34,4 +35,5 @@ step ci/public-api.sh
 step ci/doc-pins.sh
 step actionlint
 step shellcheck -x ci/*.sh .githooks/*
+step ci/required-checks.sh
 echo "== all CI checks passed"

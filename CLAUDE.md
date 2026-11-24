@@ -22,4 +22,4 @@ Changing a crate's dependencies or public API, or adding a crate: read `ci/READM
 
 ## Review
 
-Reviewing a change: apply `CODING_STANDARDS.md`. Diff against `origin/main` after `git fetch`; a local `main` may be stale.
+Reviewing a change: apply `CODING_STANDARDS.md`. Diff against `origin/main` after `git fetch`; a local `main` may be stale. Each reviewer runs in its own worktree: `ci/red.sh` mutates source. The reviewers of a PR are the latest Fable and the latest Astra, both at high effort, each on every axis.

@@ -1,11 +1,13 @@
 //! `recover_admin_key` (D34): whoever holds the data directory gets back in, and a key recovered
 //! while an engine opens, finishes or fails is never undone (TEN-14).
 
+#[path = "../../ironflowx-store/tests/writes/mod.rs"]
+mod writes;
+
 use std::collections::BTreeSet;
-use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -228,56 +230,9 @@ async fn a_recovery_that_cannot_write_is_a_store_error_and_stores_nothing() {
     assert_eq!(keys(dir.path()), before);
 }
 
-/// The control plane of each `BEGIN IMMEDIATE` this process began, on any connection, whether or
-/// not it has the lock yet: how a test knows that a writer it cannot stop has come to its write.
-static BEGUN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
-
-/// SQLite calls it as a statement starts, before the statement takes a lock.
-unsafe extern "C" fn on_statement(
-    _: c_uint,
-    _: *mut c_void,
-    statement: *mut c_void,
-    sql: *mut c_void,
-) -> c_int {
-    // SAFETY: for `SQLITE_TRACE_STMT`, the running statement and its text; its connection's file
-    // name is a C string too.
-    let (sql, file) = unsafe {
-        let db = rusqlite::ffi::sqlite3_db_handle(statement.cast());
-        let file = rusqlite::ffi::sqlite3_db_filename(db, c"main".as_ptr());
-        (CStr::from_ptr(sql.cast()), CStr::from_ptr(file))
-    };
-    if sql == c"BEGIN IMMEDIATE" {
-        let file = PathBuf::from(file.to_str().unwrap());
-        BEGUN.lock().unwrap().push(file);
-    }
-    0
-}
-
-/// SQLite calls it for each connection it opens.
-unsafe extern "C" fn on_connection(
-    db: *mut rusqlite::ffi::sqlite3,
-    _: *mut *mut c_char,
-    _: *const rusqlite::ffi::sqlite3_api_routines,
-) -> c_int {
-    let mask = rusqlite::ffi::SQLITE_TRACE_STMT;
-    // SAFETY: `db` is the connection being opened; the callback uses no context.
-    unsafe { rusqlite::ffi::sqlite3_trace_v2(db, mask, Some(on_statement), std::ptr::null_mut()) }
-}
-
-/// Traces each connection opened from here on.
-fn trace_writes() {
-    static TRACED: Once = Once::new();
-    TRACED.call_once(|| {
-        // SAFETY: `on_connection` has the signature SQLite calls.
-        let code = unsafe { rusqlite::ffi::sqlite3_auto_extension(Some(on_connection)) };
-        assert_eq!(code, rusqlite::ffi::SQLITE_OK);
-    });
-}
-
 /// How many `BEGIN IMMEDIATE`s began on `root`'s control plane.
 fn begun(root: &Path) -> usize {
-    let file = control(root).canonicalize().unwrap();
-    BEGUN.lock().unwrap().iter().filter(|f| **f == file).count()
+    writes::begun(&control(root))
 }
 
 /// Waits until `count` began on `root`'s control plane.
@@ -426,7 +381,7 @@ async fn a_recovery_before_the_mark_is_refused_and_stores_nothing() {
 /// waits for it. It saw no mark, so it is refused, and stores nothing.
 #[tokio::test]
 async fn a_recovery_whose_transaction_precedes_the_mark_or_the_undo_is_refused() {
-    trace_writes();
+    writes::trace();
     let a = key(1);
     for fails in [false, true] {
         let dir = tempfile::tempdir().unwrap();
@@ -468,7 +423,7 @@ async fn a_recovery_whose_transaction_precedes_the_mark_or_the_undo_is_refused()
 /// transaction waits for it, lands after it, and its row survives.
 #[tokio::test]
 async fn a_recovery_inside_the_marks_transaction_lands_after_it_and_survives() {
-    trace_writes();
+    writes::trace();
     let a = key(1);
     // The mark is a bootstrapping open's second control-plane write, a finishing one's first.
     for (finishing, skip) in [(false, 1), (true, 0)] {
