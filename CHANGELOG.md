@@ -2,6 +2,10 @@
 
 Each release lists what it adds and changes. All published crates share one version. Foundation crates are 0.x with no semver-stability promise.
 
+## Unreleased
+
+- **Docs** ([#134](https://github.com/ironflowx/foundation/issues/134)): corrects 0.2.0's #97 entry and `Engine::open`'s page. A bootstrapping open that fails before its ledger is in place tries to undo itself; if the undo fails, a bootstrap it did not delete stays unmarked, for a later open to finish. If an open's mark commits but it does not return, no later open reports its lost secret. No behavior change.
+
 ## 0.2.0 - 2026-11-24
 
 The second release, 0.2 Tenancy ([#64](https://github.com/ironflowx/foundation/issues/64)): every call carries a scoped key, and the engine knows who exists. It adds three crates, `ironflowx-operations`, `ironflowx-authz` and `ironflowx-store`, and the facade re-exports them as `operations`, `authz` and `store`. [`examples/embed`](https://github.com/ironflowx/foundation/blob/v0.2.0/examples/embed/src/main.rs) bootstraps an engine, emits an event, reads it back with a `read` key and sees that key's emit refused. A 0.1 ledger directory is refused, not migrated (D39).

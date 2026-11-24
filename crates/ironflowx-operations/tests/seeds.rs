@@ -1,5 +1,5 @@
 //! Seeds through `Engine::open` (D33): what each open reports, and that an open that fails
-//! changes no seed (TEN-9). ACC-004–008, 013 and 014 cover the same rules as a host sees them.
+//! rotates no seed (TEN-9). ACC-004–008, 013 and 014 cover the same rules as a host sees them.
 
 use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender, channel};

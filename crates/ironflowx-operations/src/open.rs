@@ -180,8 +180,9 @@ impl Engine {
     /// is a key the host supplies: the first open makes it the bootstrap key, and returns the
     /// secret of the one it mints when there is none (`Opened::minted`); a later open applies it
     /// once the ledger is open, rotating to it if its key ID is new (D33). An open that finds a
-    /// bootstrap an earlier one did not finish finishes it: a minted key whose secret that one
-    /// never returned is revoked (`Opened::lost_secret`), and replaced if there is no seed.
+    /// bootstrap an earlier one did not finish, and succeeds, finishes it: a minted key whose
+    /// secret that one never returned is revoked (`Opened::lost_secret`), and replaced if there is
+    /// no seed.
     ///
     /// # Errors
     ///
@@ -191,10 +192,11 @@ impl Engine {
     /// if the seed's key ID is already another key, with no key changed; a store, ledger or I/O
     /// failure otherwise.
     ///
-    /// An open that fails while it bootstraps undoes it, unless its ledger is already in place:
-    /// the next open then finishes it. No other open undoes anything, and one that fails changes
-    /// no seed. A cancelled open may still finish the step it was in, and undoes nothing: `root`
-    /// stays locked until that step ends.
+    /// An open that fails while it bootstraps tries to undo it, unless its ledger is already in
+    /// place, and returns the failure, not the undo's. A bootstrap left in place, its ledger built
+    /// or its undo failed, is for a later open to finish. No other open undoes anything, and one
+    /// that fails rotates no seed. A cancelled open may still finish the step it was in, and
+    /// starts no undo: `root` stays locked until that step ends.
     ///
     /// # Panics
     ///
@@ -334,7 +336,7 @@ pub(crate) fn new_admin_key() -> (KeyParts, Secret) {
 /// A bootstrapping open: mint the environment, and its admin key unless it is the seed;
 /// bootstrap the control plane in one transaction; build the ledger; then mark it (D41). The mark
 /// is the last fallible step, so no failure after it can lose the secret. A failure before it
-/// undoes the bootstrap, unless the ledger is already in place.
+/// tries to undo the bootstrap, unless the ledger is already in place.
 async fn bootstrap(
     root: &Root,
     clock: impl Clock + Clone + Send + Sync + 'static,
@@ -382,14 +384,14 @@ async fn bootstrap(
                 ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterUndo);
                 Ok(())
             });
-            // What an undo that fails leaves, the next open finishes.
+            // What an undo that fails leaves is for a later open to finish.
             let _ = undone.await;
             Err(e)
         }
     }
 }
 
-/// The steps of a bootstrapping open that a failure undoes.
+/// The steps of a bootstrapping open whose failure it tries to undo.
 async fn create(
     root: &Root,
     control: &Arc<ControlPlane>,
