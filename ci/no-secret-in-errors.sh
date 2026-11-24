@@ -19,7 +19,8 @@
 # - a re-export under a new name that alone gives a type an error's name;
 # - a Secret a generic error is used with only in a body, or by way of a parameter of a function, a
 #   trait (its `Self` too), an associated type or an alias of a dependency, or of one an impl names
-#   inside another type (`impl A<Vec<T>>`, `impl Tr for &A<T>`).
+#   inside another type (`impl A<Vec<T>>`, `impl Tr for &A<T>`), or in a trait's impl for an alias,
+#   where the type goes by its own name.
 # shortcut: what a `dyn Trait` field hides is not seen; upgrade if an error ever stores one.
 set -euo pipefail
 # shellcheck disable=SC2016 # ruby's own `#{}`
