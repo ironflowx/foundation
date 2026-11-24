@@ -403,7 +403,7 @@ struct Writer {
     faults: Arc<faults::Faults>,
 }
 
-/// A panic while this is held fails the ledger, so no read waits forever and the fault is signalled.
+/// A panic while this is held fails the ledger: no read waits forever, and the fault is signalled.
 struct FailOnPanic(Weak<watch::Sender<Progress>>);
 
 impl FailOnPanic {
