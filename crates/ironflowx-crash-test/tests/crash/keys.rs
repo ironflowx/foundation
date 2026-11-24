@@ -219,11 +219,15 @@ impl Work {
         }
     }
 
-    /// Sends the request and checks its answer.
     fn send(&mut self, step: &Step) {
+        self.request(step, true);
+    }
+
+    /// Sends the request, whose commit `lands` or fails, and checks its answer.
+    fn request(&mut self, step: &Step, lands: bool) {
         let (label, line) = self.line(step);
         self.child.send(&line);
-        let want = self.apply(step, true);
+        let want = self.apply(step, lands);
         let answer = self.child.answer(&label);
         match want {
             Answer::Ok => assert_eq!(answer, "ok", "{label}"),
@@ -253,6 +257,12 @@ impl Work {
         SECOND + rng.below(self.keys.len() as u64 - 1) as usize
     }
 
+    /// The child stops at its next pass of `point`.
+    fn arm(&mut self, point: FaultPoint) {
+        self.child.send(&format!("arm {}", point.name()));
+        assert_eq!(self.child.answer("arm"), "ok");
+    }
+
     /// Sends the request, kills the child at the one of its points that `at` says or once it is
     /// answered, and checks what that leaves in the directory.
     fn kill(mut self, step: &Step, points: Around, at: At) -> Killed {
@@ -262,8 +272,7 @@ impl Work {
             At::Answered => None,
         };
         if let Some(point) = point {
-            self.child.send(&format!("arm {}", point.name()));
-            assert_eq!(self.child.answer("arm"), "ok");
+            self.arm(point);
             let (label, line) = self.line(step);
             self.child.send(&line);
             self.child.stop(&label, point);
@@ -271,6 +280,11 @@ impl Work {
         } else {
             self.send(step);
         }
+        self.finish()
+    }
+
+    /// Kills the child and checks what that leaves in the directory.
+    fn finish(self) -> Killed {
         let told = self.child.kill();
         let env = self.home.env;
         assert!(told.iter().all(|t| t.env == env), "the same environment");
@@ -512,6 +526,42 @@ fn killed_around_a_key_changes_expiry_refusal() {
         assert_eq!(killed.accepts(key), !recorded, "{at:?}");
         assert!(killed.accepts(unused), "{at:?}");
         assert!(!killed.lists(unused + 1), "{at:?}");
+    }
+}
+
+/// An expiry whose commit fails is refused alike, reaches no point that says it is durable, and,
+/// not recorded, leaves a key that works with the clock stepped back (TEN-13's stated exception).
+#[test]
+fn killed_after_an_expiry_that_failed_to_commit() {
+    let _alone = alone();
+    for in_create in [false, true] {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let mut work = Work::start(dir.path());
+        let key = work.create(Some(work.now + 1_000));
+        let db = rusqlite::Connection::open(dir.path().join("control.db"));
+        // The update works, and breaks a constraint SQLite checks at the commit.
+        db.expect("the control plane opens")
+            .execute_batch(
+                "CREATE TABLE late (t REFERENCES tenants(id) DEFERRABLE INITIALLY DEFERRED);
+                 CREATE TRIGGER fail AFTER UPDATE ON keys
+                 BEGIN INSERT INTO late VALUES ('none'); END;",
+            )
+            .expect("the trigger is made");
+        work.arm(FaultPoint::AfterExpiryCommit);
+        let step = if in_create {
+            Step::Create {
+                by: key,
+                expires: None,
+                step: 1_000,
+            }
+        } else {
+            work.send(&Step::Clock(1_000));
+            Step::Use(key)
+        };
+        work.request(&step, false);
+        let mut killed = work.finish();
+        killed.open_stepped_back();
+        assert!(killed.accepts(key), "in a create: {in_create}");
     }
 }
 

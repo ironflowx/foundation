@@ -94,6 +94,7 @@ After each kill the parent compares, on a copy, so that the next open recovers t
 | `create_key`: before its commit, after it, or once answered | The very key the parent was told of is listed, and works, only if the commit landed |
 | `revoke_key`: before its commit, after it, or once answered | An unrevoked key is refused only if the commit landed; it stays listed |
 | A refusal as expired, by admission or inside the transaction of the key's own `create_key`, whose re-check `revoke_key` shares: before the expiry's commit, after it, or once answered | With the clock stepped back, the key stays refused only if the commit landed, as it has once the refusal is answered; a key with the same expiry that was not refused works |
+| A refusal as expired whose recording fails at its commit: once answered | It is refused alike, and the point after the commit is not reached; with the clock stepped back, the key works |
 
 After each kill, and each open after it, the parent compares, on a copy, each stored key's ID, digest, recorded expiry and revoke. It opens twice with the clock stepped back before every expiry, and each time checks every field of every listed key, and that each key it was ever told of, stored or not, is accepted with its scopes or refused as every invalid key is.
 
