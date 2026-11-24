@@ -592,8 +592,12 @@ fn recover(dir: &Path, env: EnvRef, existing: bool) -> Result<Recovered, OpenErr
         return Err(OpenError::Corrupt);
     }
     if log.watermark() == 0 {
+        #[cfg(feature = "__fault-points")]
+        ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeGenesis);
         append(&log, ExpectedRevision::Empty, record::genesis(env))
             .map_err(|e| OpenError::Io(std::io::Error::other(format!("genesis: {e:?}"))))?;
+        #[cfg(feature = "__fault-points")]
+        ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterGenesis);
     }
     match read_record(&log, 0)? {
         record::Decoded::Genesis { format, .. } if format != FORMAT => {

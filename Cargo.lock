@@ -734,6 +734,7 @@ dependencies = [
  "ironflowx-core",
  "ironflowx-operations",
  "ironflowx-proto",
+ "ironflowx-store",
  "rusqlite",
  "tempfile",
  "tokio",

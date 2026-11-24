@@ -271,6 +271,8 @@ impl ControlPlane {
             if !has_schema(&tx)? {
                 tx.execute_batch(SCHEMA)?;
                 tx.execute("INSERT INTO meta VALUES (?1)", [FORMAT])?;
+                #[cfg(feature = "__fault-points")]
+                ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeSchemaCommit);
             }
             tx.commit()?;
             Ok(Self {
@@ -341,7 +343,11 @@ impl ControlPlane {
             )?;
             let origin = if b.by_seed { SEED } else { MINTED };
             insert_admin(&tx, &b.key, &env, origin, None, at)?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeBootstrapCommit);
             tx.commit()?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterBootstrapCommit);
             Ok(())
         })
     }
@@ -382,7 +388,11 @@ impl ControlPlane {
             tx.execute("DELETE FROM environments WHERE id = ?1", [&id])?;
             tx.execute("DELETE FROM projects WHERE id = ?1", [project])?;
             tx.execute("DELETE FROM tenants WHERE id = ?1", [tenant])?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeUndoCommit);
             tx.commit()?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterUndoCommit);
             Ok(())
         })
     }
@@ -398,7 +408,11 @@ impl ControlPlane {
             let mut conn = self.lock()?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             mark(&tx, env, clock.now())?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeMarkCommit);
             tx.commit()?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterMarkCommit);
             Ok(())
         })
     }
@@ -425,7 +439,11 @@ impl ControlPlane {
             if lost && let Some(key) = replacement {
                 insert_admin(&tx, key, env, MINTED, None, now)?;
             }
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeMarkCommit);
             tx.commit()?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterMarkCommit);
             Ok(lost)
         })
     }
@@ -468,7 +486,11 @@ impl ControlPlane {
             }
             revoke_all(&tx, env, SEED, now)?;
             insert_admin(&tx, seed, env, SEED, None, now)?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeSeedCommit);
             tx.commit()?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterSeedCommit);
             Ok(Ok(SeedState::Current))
         })
         .map_err(SeedError::Store)?
