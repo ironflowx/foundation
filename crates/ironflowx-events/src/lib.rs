@@ -17,13 +17,14 @@ use std::num::NonZeroU32;
 
 use ironflowx_core::{Emitter, ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
 
-// The limits of the rules table (architecture.md, "Event rules").
+// The limits of architecture.md, "Event rules".
 const MAX_BATCH_ITEMS: usize = 100;
 const MAX_BATCH_BYTES: usize = 4 * 1024 * 1024;
 const MAX_NAME_BYTES: usize = 256;
 const MAX_DATA_BYTES: usize = 524_288;
 const MAX_METADATA_BYTES: usize = 65_536;
 const MAX_KEY_BYTES: usize = 256;
+const MAX_PAGE_BYTES: usize = 3 * 1024 * 1024;
 
 /// One emit as a client sent it. Data and metadata are bytes that must hold JSON (D22).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -144,8 +145,15 @@ pub trait EventsView {
     /// The highest event sequence stored; 0 when none is.
     fn last_sequence(&self) -> Result<u64, Self::Error>;
     fn event(&self, id: EventId) -> Result<Option<Event>, Self::Error>;
-    /// Up to `limit` events with a sequence below `before`, or any when `None`, newest first.
-    fn events_before(&self, before: Option<u64>, limit: usize) -> Result<Vec<Event>, Self::Error>;
+    /// The events with a sequence below `before`, or any when `None`, newest first, up to the
+    /// first that `take` refuses. `take` is asked about each in turn, by the bytes of its data
+    /// and metadata together, before they are read; nothing older than a refused event is
+    /// looked at.
+    fn events_before(
+        &self,
+        before: Option<u64>,
+        take: &mut dyn FnMut(usize) -> bool,
+    ) -> Result<Vec<Event>, Self::Error>;
 }
 
 /// The read store, as `fold` writes it.
@@ -357,7 +365,9 @@ pub struct EventPage {
 }
 
 /// Lists events newest first by event sequence. `limit` is 20 when `None` and at most 200. A
-/// cursor that does not decode, or names an incarnation other than `token`, is `Invalid`.
+/// page, and the read behind it, stops before its data and metadata pass 3 MiB, but holds at
+/// least one event if any is left (D73). A cursor that does not decode, or names an incarnation
+/// other than `token`, is `Invalid`.
 pub fn list_events<V: EventsView>(
     view: &V,
     token: IncarnationToken,
@@ -370,15 +380,20 @@ pub fn list_events<V: EventsView>(
                 .ok_or_else(|| Error::Refused(Refusal::invalid("invalid cursor")))
         })
         .transpose()?;
-    let limit = limit.map_or(20, |l| l.get().min(200)) as usize;
-    // One more than the page, so a full last page carries no cursor.
-    let mut events = view
-        .events_before(before, limit + 1)
+    let limit = limit.map_or(20, |l| l.get().min(200));
+    let (mut count, mut bytes) = (0, 0);
+    // Set when an event is refused: one is left, so a full last page carries no cursor.
+    let mut more = false;
+    let events = view
+        .events_before(before, &mut |size| {
+            more = count == limit || (count > 0 && bytes + size > MAX_PAGE_BYTES);
+            count += 1;
+            bytes += size;
+            !more
+        })
         .map_err(Error::Store)?;
-    let next = (events.len() > limit).then(|| {
-        events.truncate(limit);
-        format!("{token}.{}", events[limit - 1].sequence)
-    });
+    let last = events.last().filter(|_| more);
+    let next = last.map(|e| format!("{token}.{}", e.sequence));
     Ok(EventPage { events, next })
 }
 

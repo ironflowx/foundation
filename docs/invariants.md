@@ -54,6 +54,7 @@ A public-API check compares `cargo-public-api` output for every workspace crate 
 | Submit a batch of three as one embedder and an emit as another: `get_event` and `list_events` show each event's emitter, the batch's three the same. Close and reopen, then delete `read.db` and reopen: unchanged. Open a directory whose genesis is format 1 | TEN-6, D39 |
 | Through the engine with the bootstrap key, emit one event and a batch of three: `get_event` and `list_events` show `key:<bootstrap-key-id>` on all four. Each of the four event operations refuses an anonymous call, and the refused emits write nothing | TEN-1, TEN-6 |
 | Two engines in one process, emits interleaved: each event records its own engine's bootstrap key | TEN-6 |
+| 10 events of 512 KiB with no metadata list as 6, then 4. Pages exactly at 3 MiB and a byte over, and an event over 3 MiB by itself. Over random sizes and limits, following `next` lists every event once, and each page ends only at a limit. A view, and a read store, in which no event past the page can be read: the page lists all the same | D73 |
 
 ## Crash test
 

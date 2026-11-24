@@ -266,17 +266,31 @@ impl EventsView for ReadStore<'_> {
         )
     }
 
-    fn events_before(&self, before: Option<u64>, limit: usize) -> Result<Vec<Event>, StoreError> {
-        let sql =
-            format!("SELECT {EVENT_COLUMNS} WHERE sequence < ?1 ORDER BY sequence DESC LIMIT ?2");
+    fn events_before(
+        &self,
+        before: Option<u64>,
+        take: &mut dyn FnMut(usize) -> bool,
+    ) -> Result<Vec<Event>, StoreError> {
         // A cursor past every sequence lists from the newest.
         let before = before.map_or(i64::MAX, |b| i64::try_from(b).unwrap_or(i64::MAX));
-        store_err(self.0.prepare(&sql).and_then(|mut stmt| {
-            stmt.query_map(
-                params![before, i64::try_from(limit).unwrap_or(i64::MAX)],
-                row_event,
-            )?
-            .collect()
-        }))
+        store_err((|| {
+            // SQLite takes a blob's length from its row's header, without reading the blob.
+            let mut sizes = self.0.prepare(
+                "SELECT sequence, length(data) + ifnull(length(metadata), 0) FROM events
+                 WHERE sequence < ?1 ORDER BY sequence DESC",
+            )?;
+            let sql = format!("SELECT {EVENT_COLUMNS} WHERE sequence = ?1");
+            let mut event = self.0.prepare(&sql)?;
+            let mut events = Vec::new();
+            // Both statements read one snapshot, the open query's.
+            let mut rows = sizes.query([before])?;
+            while let Some(row) = rows.next()? {
+                if !take(row.get(1)?) {
+                    break;
+                }
+                events.push(event.query_row([row.get::<_, u64>(0)?], row_event)?);
+            }
+            Ok(events)
+        })())
     }
 }

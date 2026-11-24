@@ -273,7 +273,8 @@ pub struct ListEventsRequest {
     pub cursor: Option<String>,
 }
 
-/// A page of events.
+/// A page of events. It can hold fewer than the limit and not be the last: it stops before its
+/// data and metadata pass 3 MiB, though a page holds at least one event if any is left.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventPage {
     /// Newest first.
