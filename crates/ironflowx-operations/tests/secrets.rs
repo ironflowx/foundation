@@ -572,8 +572,8 @@ fn no_secret_is_stored_or_logged() {
         "searched: closed, bootstrapped by a seed",
         "searched: closed, finished",
         "invalid API key",
-        "recover: control plane: injected",
-        "recover: the bootstrap is not finished",
+        r#"recover: control plane: injected Store(Failed("injected"))"#,
+        "recover: the bootstrap is not finished NotReady",
         "malformed seed",
         "the seed's key ID is already another key",
     ] {

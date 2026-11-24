@@ -4,8 +4,17 @@
 //! let n: u32 = "E0308";
 //! ```
 //!
-//! And one that names none:
+//! And some that name none: rustdoc takes only an `E` and four digits as a code.
 //!
 //! ```compile_fail
 //! let n: u32 = "E0308";
 //! ```
+//!
+//! ~~~compile_fail,E03080
+//! let n: u32 = "E0308";
+//! ~~~
+//!
+//! ```compile_fail,fooE0308
+//! let n: u32 = "E0308";
+//! ```
+#![doc = include_str!("included.md")]

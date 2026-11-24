@@ -157,6 +157,35 @@ impl<R> Keyed<u8, R> {
     }
 }
 pub fn bad_mixed(_: Keyed<u8, Call>) {}
+pub struct BadDefaultMethodError<T>(pub T);
+pub struct DefaultClient<T = Call>(pub Option<T>);
+impl<R> DefaultClient<R> {
+    pub fn send(&self) -> Result<(), BadDefaultMethodError<R>> {
+        Ok(())
+    }
+}
+pub fn bad_default_method() -> DefaultClient {
+    DefaultClient(None)
+}
+pub struct BadForeignMethodError<T>(pub T);
+pub trait Ext<T> {
+    fn try_next(&self) -> Result<(), BadForeignMethodError<T>>;
+}
+impl<T> Ext<T> for std::sync::mpsc::Receiver<T> {
+    fn try_next(&self) -> Result<(), BadForeignMethodError<T>> {
+        Ok(())
+    }
+}
+pub struct Inbox {
+    _keys: std::sync::mpsc::Receiver<Call>,
+}
+pub struct BadPlacedError<T>(pub T);
+pub struct Placed<'a, A, const N: usize, B> {
+    _a: Option<&'a [A; N]>,
+    _last: Option<BadPlacedError<B>>,
+}
+pub fn bad_placed(_: Placed<'static, u8, 1, Call>) {}
+pub type BadNamedAliasError = FineHolder;
 pub struct BadSelfError<T>(pub T);
 pub struct Carrier(pub Secret);
 impl Carrier {
@@ -227,6 +256,12 @@ pub fn fine_split() -> FineSplit<Secret, u8> {
 }
 pub type FineCallback<T> = FineParamError<fn(T)>;
 pub fn fine_callback(_: FineCallback<Secret>) {}
+pub struct FinePlacedError<T>(pub T);
+pub struct FinePlaced<'a, A, const N: usize, B> {
+    _a: Option<&'a [A; N]>,
+    _last: Option<FinePlacedError<B>>,
+}
+pub fn fine_placed(_: FinePlaced<'static, Call, 1, u8>) {}
 pub struct FineNode<T> {
     _own: Option<T>,
     _next: Option<Box<FineNode<Option<T>>>>,

@@ -2,8 +2,9 @@
 # Usage: ci/must-reject.sh <pattern>... -- <command...>
 # Proves a check still works: the command must fail, and each pattern must be in exactly one line
 # of its output, and no two in the same line, so a fixture that fails for an unrelated reason (a
-# typo, a missing tool) does not count, a longer name does not stand in for a missing one, and one
-# fixture can prove several bans in a single run.
+# typo, a missing tool) does not count, a longer name one pattern is for does not stand in for
+# another's, and one fixture can prove several bans in a single run. A longer name no pattern is for
+# does: end a name's pattern with what follows it.
 set -uo pipefail
 patterns=()
 while [ $# -gt 0 ] && [ "$1" != "--" ]; do

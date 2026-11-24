@@ -11,13 +11,15 @@
 # It refuses too much, so fails closed, for PhantomData<Secret>, a `dyn` callable that takes a
 # Secret, a generic type one of whose defaults holds one, whatever it is used with, an associated
 # type of a trait any type implements with one, a generic error used with one it does not store,
-# and one that only an impl for other arguments uses.
+# one that only an impl for other arguments uses, one used with an alias of a function pointer that
+# takes one, and an alias of another type, so named, used with one.
 # It does not see:
 # - a type declared in the body of a function, a constant or a static;
 # - a generic parameter's default on a trait;
-# - an alias, or a re-export under a new name, that alone gives a type an error's name;
-# - a Secret a generic error is used with only in a body, or by way of a parameter of a function or
-#   a trait (a trait's `Self` too), or of one an impl names inside another type (`impl A<Vec<T>>`).
+# - a re-export under a new name that alone gives a type an error's name;
+# - a Secret a generic error is used with only in a body, or by way of a parameter of a function, a
+#   trait (its `Self` too), an associated type or an alias of a dependency, or of one an impl names
+#   inside another type (`impl A<Vec<T>>`, `impl Tr for &A<T>`).
 # shortcut: what a `dyn Trait` field hides is not seen; upgrade if an error ever stores one.
 set -euo pipefail
 # shellcheck disable=SC2016 # ruby's own `#{}`
@@ -56,7 +58,7 @@ exec ruby -rjson -e '
     end
   end
   # The types among the arguments.
-  given = ->(args) { (args&.dig("angle_bracketed", "args") || []).grep(Hash).map { |a| a["type"] }.compact }
+  given = ->(args) { (args&.dig("angle_bracketed", "args") || []).map { |a| a["type"] }.compact }
   # A type with each generic parameter in `by` replaced.
   put = lambda do |node, by|
     case node
@@ -115,7 +117,7 @@ exec ruby -rjson -e '
         params = params.map { |p| [p["name"], p["kind"]["type"]["default"]] }
         generics[type] = [params, nodes]
         holds[type].concat(types.(nodes) + types.(params))
-        errors[type] ||= [] if kind != "type_alias" && item["name"] =~ ERROR
+        errors[type] ||= [] if item["name"] =~ ERROR
       when "impl"
         items = body["items"].map(&inner).compact
         uses.concat(applied.(put.(items, "Self" => body["for"])))
@@ -141,14 +143,15 @@ exec ruby -rjson -e '
     seen[key] = true
     (errors[type] ||= []).concat(types.(args)) if errors.key?(type) || type =~ ERROR
     params, nodes = generics[type]
-    next unless params
     itself = { "Self" => { "resolved_path" => { "id" => type, "args" => args } } }
     # A default may name the parameters before it.
-    by = params.each_with_index.inject(itself) do |before, ((param, default), i)|
+    by = (params || []).each_with_index.inject(itself) do |before, ((param, default), i)|
       arg = args_given[i] || put.(default, before)
       arg ? before.merge(param => arg) : before
     end
     uses.concat(applied.(put.(nodes, by)))
+    # A type of a dependency has no parameters here.
+    args_given = params.map { |param, _| by[param] } if params
     impls[type].each do |impl_args, items|
       by = impl_args.zip(args_given).map { |own, arg| [own["generic"], arg] }.to_h
       uses.concat(applied.(put.(items, itself.merge(by))))

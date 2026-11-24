@@ -29,8 +29,9 @@ if ! git diff --quiet -- public-api/ || [ -n "$untracked" ]; then
   exit 1
 fi
 
-ci/compile-fail-codes.sh crates
-ci/must-reject.sh 'ci/fixtures/wrong-error-code/src/lib.rs:9:' -- \
+ci/compile-fail-codes.sh crates docs README.md
+ci/must-reject.sh wrong-error-code/src/lib.rs:9: wrong-error-code/src/lib.rs:13: \
+  wrong-error-code/src/lib.rs:17: wrong-error-code/src/included.md:1: -- \
   ci/compile-fail-codes.sh ci/fixtures/wrong-error-code
 cargo "+$NIGHTLY" test -q --locked --doc --workspace
 ci/must-reject.sh 'Some expected error codes were not found: ["E0599"]' -- \
@@ -92,7 +93,8 @@ docs+=("$bad/target/doc/secret_in_error.json")
 ci/must-reject.sh BadField BadPrivate BadCall BadVariant BadTuple BadDeep BadAssociated BadWrapper \
   BadUnion BadMacro BadHiddenField BadHiddenVariant BadHiddenType BadHiddenModule 'BadDefault is' \
   BadDefaultHolder BadDefaultAlias BadGeneric BadAliasedError BadDefaultedError \
-  BadEnvelopeError BadMethodError BadMixedError BadSelfError BadSelfForeignError BadSelfMethodError \
+  BadEnvelopeError BadMethodError BadMixedError BadDefaultMethodError \
+  BadForeignMethodError BadPlacedError BadNamedAliasError BadSelfError BadSelfForeignError BadSelfMethodError \
   BadSelfPlainError BadSelfFieldError mpsc::SendError NamedGenericError \
   NamedError NamedRefused NamedMalformed -- ci/no-secret-in-errors.sh "${docs[@]}"
 found=$(ci/no-secret-in-errors.sh "${docs[@]}" || true)
