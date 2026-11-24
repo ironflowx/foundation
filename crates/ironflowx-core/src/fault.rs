@@ -5,7 +5,8 @@ use std::sync::OnceLock;
 
 use crate::{EnvRef, KeyId, Secret};
 
-/// A place in the commit, recovery, bootstrap, seed or key-change path where the crash test kills the process.
+/// A place in the commit, recovery, bootstrap, seed or key-change path where the crash test kills
+/// the process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FaultPoint {
     /// The writer has decided a record and not yet appended it.

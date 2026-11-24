@@ -35,9 +35,10 @@
 //!
 //! While a request runs, a `probe` line is answered `pending`; see `probing`.
 //!
-//! On its `<crossing>`-th pass of the fault point named `<point>`, `-` for none, it prints `at <point>` and
-//! waits there for the parent to kill it: the barrier that makes the kill land exactly at the
-//! point (D23). A point inside an open is before `ready`, which it then never prints.
+//! On its `<crossing>`-th pass of the fault point named `<point>`, `-` for none, it prints
+//! `at <point>` and waits there for the parent to kill it: the barrier that makes the kill land
+//! exactly at the point (D23). A point inside an open is before `ready`, which it then never
+//! prints.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
