@@ -7,8 +7,8 @@
 //!
 //! One whose commit SQLite fails after writing it to the WAL is unsettled (D48): no open
 //! connection sees it, but the next open of the file may find it landed, whole, unless a write
-//! after it, or the last connection's close, clears it. Where an error below says nothing was written, or no key
-//! changed, that is the one exception.
+//! after it, or the last connection's close, clears it. Where an error below says nothing was
+//! written, or no key changed, that is the one exception.
 
 #![forbid(unsafe_code)]
 

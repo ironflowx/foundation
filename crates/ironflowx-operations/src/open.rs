@@ -195,8 +195,8 @@ impl Engine {
     /// An open that fails while it bootstraps tries to undo it, unless its ledger is already in
     /// place, and returns the failure, not the undo's. A bootstrap left in place, its ledger built
     /// or its undo failed, is for a later open to finish. No other open undoes anything, and one
-    /// that fails rotates no seed, but as below. A cancelled open may still finish the step it was in, and
-    /// starts no undo: `root` stays locked until that step ends.
+    /// that fails rotates no seed, but as below. A cancelled open may still finish the step it was
+    /// in, and starts no undo: `root` stays locked until that step ends.
     ///
     /// If it failed because a write to the control plane failed (`Store`), that write may still
     /// land when `root` is next opened. A later open may then return no key for a bootstrap this
