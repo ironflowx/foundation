@@ -61,11 +61,20 @@ async fn the_bootstrap_key_emits_and_reads_its_own_events() {
     let get = || GetEventRequest {
         event_id: one.event_id.to_string(),
     };
-    let read = engine.get_event(&cx, get()).await.unwrap();
-    assert_eq!(
-        (read.name.as_str(), read.emitted_by.to_string()),
-        ("order.placed", by.clone())
-    );
+    let mut ids = vec![one.event_id.to_string()];
+    ids.extend(batch.items.iter().flatten().map(|e| e.event_id.to_string()));
+    let names = ["order.placed", "a.one", "a.two", "a.three"];
+    assert_eq!(ids.len(), names.len());
+    for (event_id, name) in ids.into_iter().zip(names) {
+        let read = engine
+            .get_event(&cx, GetEventRequest { event_id })
+            .await
+            .unwrap();
+        assert_eq!(
+            (read.name.as_str(), read.emitted_by.to_string()),
+            (name, by.clone())
+        );
+    }
 
     let listed = events(&engine, &cx).await;
     let names: Vec<_> = listed.iter().map(|e| e.name.as_str()).collect();

@@ -148,14 +148,24 @@ async fn replaying_folds_each_record_exactly_once() {
     {
         let mut conn = ledger.store.lock().unwrap();
         let applied = crate::store::applied(&conn).unwrap();
-        let record = ironflowx_events::Record {
+        let mut record = ironflowx_events::Record {
             time: Timestamp::from_millis(T),
             events: vec![],
         };
         for offset in 0..applied {
+            // An event no row holds: folding it would add one.
+            record.events = vec![ironflowx_events::NewEvent {
+                sequence: 100 + offset,
+                id: uuid::Uuid::now_v7().to_string().parse().unwrap(),
+                name: "again".into(),
+                data: b"null".to_vec(),
+                metadata: None,
+                version: 1,
+                idempotency_key: None,
+            }];
             crate::store::apply(&mut conn, offset, Some((&record, &emitter())), false).unwrap();
+            assert_eq!(crate::store::applied(&conn).unwrap(), applied);
         }
-        assert_eq!(crate::store::applied(&conn).unwrap(), applied);
     }
     assert_eq!(all(&ledger).await.unwrap(), before);
     ledger.close().await;

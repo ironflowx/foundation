@@ -429,7 +429,8 @@ async fn a_finishing_open_with_a_conflicting_seed_leaves_the_bootstrap_unmarked(
         (false, key(1, 2), "the minted key's ID, another secret"),
         (true, key(1, 2), "the seed's ID, another secret"),
     ] {
-        for at in [Died::BeforeStaging, Died::AfterRename] {
+        for at in [Died::BeforeStaging, Died::InStaging, Died::AfterRename] {
+            let case = format!("{at:?}, {case}");
             let dir = tempfile::tempdir().unwrap();
             let (env, _) = died(dir.path(), at, by_seed);
             let before = keys(dir.path(), env);

@@ -4,7 +4,7 @@ use ironflowx_authz::mint;
 use ironflowx_cell::ManualClock;
 use ironflowx_core::{ErrorKind, Secret, Timestamp};
 use ironflowx_operations::{Engine, SeedState};
-use ironflowx_proto::{Call, Operations, WhoamiRequest};
+use ironflowx_proto::{Call, ListEnvironmentsRequest, Operations, WhoamiRequest};
 use ironflowx_store::ControlPlane;
 
 fn clock() -> ManualClock {
@@ -45,6 +45,32 @@ async fn a_never_bootstrapped_control_plane_is_bootstrapped() {
         whoami.expect("the bootstrap key");
         opened.engine.close().await;
     }
+}
+
+/// The listed environment's IDs are the stored ones; ACC-010 shows only that two keys agree on
+/// them.
+#[tokio::test]
+async fn the_listed_environment_has_the_ids_the_control_plane_stores() {
+    let dir = tempfile::tempdir().unwrap();
+    let opened = Engine::open(dir.path(), clock(), None).await.unwrap();
+    let cx = Call::with_key(opened.minted.unwrap());
+    let listed = opened
+        .engine
+        .list_environments(&cx, ListEnvironmentsRequest {})
+        .await
+        .unwrap();
+    let ids: Vec<_> = listed
+        .iter()
+        .map(|e| (e.env.id().to_string(), e.project_id.to_string()))
+        .collect();
+    let db = rusqlite::Connection::open(dir.path().join("control.db")).unwrap();
+    let sql = "SELECT e.id, p.id FROM environments e, projects p";
+    let mut stmt = db.prepare(sql).unwrap();
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    let stored: Vec<(String, String)> = rows.map(Result::unwrap).collect();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(ids, stored);
+    opened.engine.close().await;
 }
 
 #[tokio::test]

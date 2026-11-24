@@ -590,7 +590,9 @@ async fn lists_environments(w: &mut Tenancy) {
 async fn the_list_holds(w: &mut Tenancy, name: String, address: String) {
     let listed = w.listed.clone().unwrap();
     // The same environment as the bootstrap key's, created when the engine first opened.
-    assert_eq!(listed, w.environments().await);
+    let req = ListEnvironmentsRequest {};
+    let bootstrap = w.engine().list_environments(&w.bootstrap(), req).await;
+    assert_eq!(listed, bootstrap.expect("the bootstrap key lists them"));
     assert_eq!(listed.len(), 1, "{listed:?}");
     let env = &listed[0];
     assert_eq!(
