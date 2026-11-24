@@ -1,5 +1,11 @@
 # foundation
 
+[![crates.io](https://img.shields.io/crates/v/ironflowx)](https://crates.io/crates/ironflowx)
+[![docs.rs](https://img.shields.io/docsrs/ironflowx)](https://docs.rs/ironflowx)
+[![CI](https://github.com/ironflowx/foundation/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/ironflowx/foundation/actions/workflows/ci.yml?query=branch%3Amain)
+[![MSRV](https://img.shields.io/crates/msrv/ironflowx)](https://github.com/ironflowx/foundation/blob/main/Cargo.toml)
+[![License: MIT](https://img.shields.io/crates/l/ironflowx)](https://github.com/ironflowx/foundation/blob/main/LICENSE)
+
 An experimental MIT-licensed rewrite of the Ironflow engine. Not the shipping product; Ironflow 1.x is under the Ironflow License.
 
 Foundation crates are 0.x with no semver-stability promise.
