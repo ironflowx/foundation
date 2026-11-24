@@ -10,12 +10,12 @@ Every part of the engine writes through one commit path. Foundation is that path
 
 ## What 0.2 is
 
-Released as `0.2.0`: an engine that admits every call by its key, in front of one environment's ledger, linked into your process.
+In `0.2.0`: an engine that admits every call by its key, in front of one environment's ledger, linked into your process.
 
 - Open an engine in a directory. The first open bootstraps it and returns an admin key, or takes the one you supply.
 - Create keys scoped `read`, `write` or `admin`, read-only unless asked otherwise, with an optional expiry; list them, and revoke one.
 - Emit an event, or a batch of up to 100, with data, metadata, a version and an idempotency key; each records the key that emitted it.
-- Repeat an idempotency key and get the original event's ID back, with nothing new stored.
+- Repeat an emit with its idempotency key and get the original event's ID back, with nothing new stored.
 - Read an event by ID, or list events newest first, as soon as any emit returns.
 - Reopen after a crash with nothing acknowledged lost, and recover an admin key from the data directory when the last one is lost.
 
@@ -54,4 +54,4 @@ ironflowx = "0.2"
 tokio = { version = "1", default-features = false, features = ["rt"] }
 ```
 
-[`examples/embed`](https://github.com/ironflowx/foundation/blob/main/examples/embed/src/main.rs) bootstraps an engine, emits an event, reads it back with a read-only key and sees that key's emit refused. A 0.1 ledger directory does not open in 0.2 ([changelog](https://github.com/ironflowx/foundation/blob/main/CHANGELOG.md)).
+[`examples/embed`](https://github.com/ironflowx/foundation/blob/v0.2.0/examples/embed/src/main.rs) bootstraps an engine, emits an event, reads it back with a read-only key and sees that key's emit refused. A 0.1 ledger directory does not open in 0.2 ([changelog](https://github.com/ironflowx/foundation/blob/main/CHANGELOG.md)).

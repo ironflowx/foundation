@@ -1,8 +1,10 @@
 //! Bootstraps an engine, emits one event with the bootstrap key, creates a read-only key, reads
 //! the event back with it and sees its emit refused, using only `ironflowx` and `tokio`.
 
+use std::collections::BTreeSet;
+
 use ironflowx::cell::{HostClock, new_env_ref};
-use ironflowx::core::{Clock, ErrorKind};
+use ironflowx::core::{Clock, ErrorKind, Scope};
 use ironflowx::operations::Engine;
 use ironflowx::proto::{
     Call, CreateKeyRequest, EmitRequest, Event, GetEventRequest, OpError, Operations,
@@ -34,11 +36,12 @@ fn main() {
             .expect("the emit is acknowledged");
         let after = HostClock.now();
         assert!(!emitted.duplicate, "a new key stores a new event");
-        // No scopes asked for: the key holds `read`.
+        // No scopes asked for: the key holds `read` alone.
         let created = engine
             .create_key(&admin, CreateKeyRequest::default())
             .await
             .expect("the bootstrap key creates a key");
+        assert_eq!(created.info.scopes, BTreeSet::from([Scope::Read]));
         let reader = Call::with_key(created.key);
         let event = engine
             .get_event(

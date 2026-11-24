@@ -1,7 +1,8 @@
 //! The Ironflow X Operations interface and its request and answer types.
 //!
-//! Types and a trait only: defaults, limits and every check belong to event rules (D1).
-//! No operation takes an environment: an adapter serves exactly one (LED-7).
+//! Types, a trait and each operation's required scope (D37). An event's defaults, limits and
+//! checks belong to event rules (D1), a key's to the engine and credentials. No operation takes
+//! an environment: it runs on the one its key is bound to (LED-7).
 
 use std::fmt;
 use std::future::Future;
