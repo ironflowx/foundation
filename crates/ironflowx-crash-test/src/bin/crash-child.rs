@@ -25,7 +25,8 @@
 //!   `ok`;
 //! - `create <caller> <expiry>|- <millis>` creates a key with every scope and that expiry,
 //!   stepping the clock by `<millis>` as the key is told: after the caller is admitted and before
-//!   the key's transaction. It prints `key <key-id>` or `err:<kind>`;
+//!   the key's transaction. It prints `key <key-id>` or `err:<kind>`, and dies if the
+//!   secret returned is not the one told;
 //! - `revoke <caller> <key-id>` revokes a key and prints `ok` or `err:<kind>`;
 //! - `whoami <caller>` prints `ok` or `err:<kind>`;
 //! - `arm <point>` prints `ok`; the next pass of `<point>` then stops, as below.
