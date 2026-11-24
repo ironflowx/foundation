@@ -156,9 +156,9 @@ impl Host {
         Ok((engine, minted.map(|key| self.keep(&key, true))))
     }
 
-    /// No file of the root, or its path, holds a secret. The search does read what is stored: the key stored
-    /// last is found by its ID in the WAL while the engine runs, and every stored key's is in
-    /// `control.db` once it is closed, with no WAL left.
+    /// No file of the root, or its path, holds a secret. The search does read what is stored: the
+    /// key stored last is found by its ID in the WAL while the engine runs, and every stored key's
+    /// is in `control.db` once it is closed, with no WAL left.
     fn search(&self, running: bool, case: &str) {
         let files = files(self.root.path());
         let secrets = || self.secrets.iter().map(|(key, _)| key.as_str());
