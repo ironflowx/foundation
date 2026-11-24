@@ -1,10 +1,12 @@
-//! Bootstraps an engine, emits one event with the bootstrap key, creates a read-only key and
-//! reads the event back with it, using only `ironflowx` and `tokio`.
+//! Bootstraps an engine, emits one event with the bootstrap key, creates a read-only key, reads
+//! the event back with it and sees its emit refused, using only `ironflowx` and `tokio`.
 
 use ironflowx::cell::{HostClock, new_env_ref};
-use ironflowx::core::Clock;
+use ironflowx::core::{Clock, ErrorKind};
 use ironflowx::operations::Engine;
-use ironflowx::proto::{Call, CreateKeyRequest, EmitRequest, Event, GetEventRequest, Operations};
+use ironflowx::proto::{
+    Call, CreateKeyRequest, EmitRequest, Event, GetEventRequest, OpError, Operations,
+};
 
 fn main() {
     let root = std::env::temp_dir().join(format!("ironflowx-embed-{}", new_env_ref()));
@@ -18,18 +20,16 @@ fn main() {
         let engine = opened.engine;
         // The bootstrap key, returned only by this first open.
         let admin = Call::with_key(opened.minted.expect("the first open mints a key"));
+        let order = EmitRequest {
+            name: "order.placed".to_owned(),
+            data: Some(br#"{"total":42}"#.to_vec()),
+            metadata: Some(br#"{"source":"embed"}"#.to_vec()),
+            version: None,
+            idempotency_key: Some("order-1".to_owned()),
+        };
         let before = HostClock.now();
         let emitted = engine
-            .emit(
-                &admin,
-                EmitRequest {
-                    name: "order.placed".to_owned(),
-                    data: Some(br#"{"total":42}"#.to_vec()),
-                    metadata: Some(br#"{"source":"embed"}"#.to_vec()),
-                    version: None,
-                    idempotency_key: Some("order-1".to_owned()),
-                },
-            )
+            .emit(&admin, order.clone())
             .await
             .expect("the emit is acknowledged");
         let after = HostClock.now();
@@ -67,8 +67,23 @@ fn main() {
                 emitted_by: format!("key:{bootstrap}").parse().expect("an emitter"),
             }
         );
+        let refused = engine
+            .emit(&reader, order)
+            .await
+            .expect_err("a `read` key cannot emit");
+        assert_eq!(
+            refused,
+            OpError {
+                kind: ErrorKind::PermissionDenied,
+                message: "missing scope: write".to_owned(),
+                hint: Some("create a key with scope write, or use one that has it".to_owned()),
+            }
+        );
         engine.close().await;
     });
     std::fs::remove_dir_all(&root).expect("the data directory is removed");
-    println!("embed: bootstrapped an engine, emitted one event and read it back with a read key");
+    println!(
+        "embed: bootstrapped an engine, emitted one event, read it back with a read key and saw \
+         that key's emit refused"
+    );
 }

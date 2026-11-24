@@ -8,14 +8,18 @@ Foundation crates are 0.x with no semver-stability promise.
 
 Every part of the engine writes through one commit path. Foundation is that path, proven on its own: the crates any Ironflow X product links to commit one environment's events durably, in order, and read them back.
 
-## What 0.1 is
+## What 0.2 is
 
-Released as `0.1.0`: one environment's ledger, linked into your process.
+Released as `0.2.0`: an engine that admits every call by its key, in front of one environment's ledger, linked into your process.
 
-- Open it in a directory, and reopen it after a crash with nothing acknowledged lost.
-- Emit an event, or a batch of up to 100, with data, metadata, a version and an idempotency key.
-- Repeat a key and get the original event's ID back, with nothing new stored.
+- Open an engine in a directory. The first open bootstraps it and returns an admin key, or takes the one you supply.
+- Create keys scoped `read`, `write` or `admin`, read-only unless asked otherwise, with an optional expiry; list them, and revoke one.
+- Emit an event, or a batch of up to 100, with data, metadata, a version and an idempotency key; each records the key that emitted it.
+- Repeat an idempotency key and get the original event's ID back, with nothing new stored.
 - Read an event by ID, or list events newest first, as soon as any emit returns.
+- Reopen after a crash with nothing acknowledged lost, and recover an admin key from the data directory when the last one is lost.
+
+An app that needs no keys opens a ledger directly.
 
 ## Architecture
 
@@ -31,7 +35,7 @@ More diagrams (modules and seams, crash recovery) and the details are in [`docs/
 
 | Crate | Contents |
 | --- | --- |
-| ironflowx-core | IDs, the environment reference, stored and event-clock time, the clock trait, error kinds |
+| ironflowx-core | IDs, the environment reference, attribution, scopes, addresses, secrets, stored and event-clock time, the clock trait, error kinds |
 | ironflowx-events | event rules: what an event is and when an emit is refused |
 | ironflowx-proto | the Operations interface and its request and answer types |
 | ironflowx-cell | the ledger: one environment's durable commit log and read store |
@@ -46,8 +50,8 @@ Depend on the facade, with `tokio` for the runtime the engine and the ledger run
 
 ```toml
 [dependencies]
-ironflowx = "0.1"
+ironflowx = "0.2"
 tokio = { version = "1", default-features = false, features = ["rt"] }
 ```
 
-On `main`, [`examples/embed`](https://github.com/ironflowx/foundation/blob/main/examples/embed/src/main.rs) bootstraps an engine, emits an event and reads it back with a read-only key. 0.1 has no engine: [its example](https://github.com/ironflowx/foundation/blob/v0.1.0/examples/embed/src/main.rs) opens a ledger.
+[`examples/embed`](https://github.com/ironflowx/foundation/blob/main/examples/embed/src/main.rs) bootstraps an engine, emits an event, reads it back with a read-only key and sees that key's emit refused. A 0.1 ledger directory does not open in 0.2 ([changelog](https://github.com/ironflowx/foundation/blob/main/CHANGELOG.md)).

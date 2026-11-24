@@ -5,7 +5,7 @@ members = ["crates/*"]
 exclude = ["examples/embed"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.100"
 license = "MIT"
@@ -14,13 +14,13 @@ homepage = "https://github.com/ironflowx"
 authors = ["Ironflow contributors"]
 
 [workspace.dependencies]
-ironflowx-core = { path = "crates/ironflowx-core", version = "0.1.0" }
-ironflowx-events = { path = "crates/ironflowx-events", version = "0.1.0" }
-ironflowx-proto = { path = "crates/ironflowx-proto", version = "0.1.0" }
-ironflowx-cell = { path = "crates/ironflowx-cell", version = "0.1.0" }
-ironflowx-authz = { path = "crates/ironflowx-authz", version = "0.1.0" }
-ironflowx-store = { path = "crates/ironflowx-store", version = "0.1.0" }
-ironflowx-operations = { path = "crates/ironflowx-operations", version = "0.1.0" }
+ironflowx-core = { path = "crates/ironflowx-core", version = "0.2.0" }
+ironflowx-events = { path = "crates/ironflowx-events", version = "0.2.0" }
+ironflowx-proto = { path = "crates/ironflowx-proto", version = "0.2.0" }
+ironflowx-cell = { path = "crates/ironflowx-cell", version = "0.2.0" }
+ironflowx-authz = { path = "crates/ironflowx-authz", version = "0.2.0" }
+ironflowx-store = { path = "crates/ironflowx-store", version = "0.2.0" }
+ironflowx-operations = { path = "crates/ironflowx-operations", version = "0.2.0" }
 # Parsing and validation only: no generation feature in the pure crates.
 uuid = { version = "1.29.3", default-features = false, features = ["std"] }
 # Event rules parse JSON with a visitor (D12); no derive, no preserve_order.
