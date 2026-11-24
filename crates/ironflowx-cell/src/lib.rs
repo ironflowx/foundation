@@ -18,5 +18,7 @@ pub use clock::{HostClock, ManualClock};
 #[cfg(feature = "__fault-points")]
 #[doc(hidden)]
 pub use ironflowx_core::{FaultPoint, set_fault_hook};
-pub use ledger::{Committed, Ledger, OpenError, ReadError, SubmitError, new_env_ref};
+pub use ledger::{
+    Committed, Fault, Ledger, LedgerState, OpenError, ReadError, SubmitError, new_env_ref,
+};
 pub use store::{ReadStore, StoreError};

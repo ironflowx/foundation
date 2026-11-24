@@ -36,5 +36,5 @@ ironflowx-operations = { path = ".", features = ["__fault-points"] }
 ironflowx-core = { workspace = true, features = ["__fault-points"] }
 ironflowx-cell = { workspace = true, features = ["__fault-points"] }
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", default-features = false, features = ["rt", "macros"] }
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "macros", "time"] }
 rusqlite = { version = "0.43.0", default-features = false, features = ["bundled"] }

@@ -86,6 +86,9 @@ Writing one record's events and the new applied position to the read store, in o
 **Sealed log**:
 A commit log that takes no more appends, as a lossy repair leaves it. It still opens; its first append fails the ledger.
 
+**Ledger fault**:
+An open ledger becoming `Unavailable`, by a failed append, fold, read-store read, or a panic. It stays so until it is reopened. Closing a ledger is not one.
+
 **Record**:
 One entry in a ledger's commit log, holding everything one submission commits.
 _Avoid_: Log record (that is the segment log's own type)

@@ -40,13 +40,14 @@ const KEY_CAP: u32 = 1_000;
 
 pub use admission::Authorized;
 pub use ironflowx_authz::SeedState;
+pub use ironflowx_cell::{Fault, LedgerState};
 pub use ironflowx_store::RecoverError;
 pub use open::EngineError;
 pub use recover::recover_admin_key;
 
 /// An open data directory: its control plane, its environment's ledger and the root's lock.
 ///
-/// Its operations, `open` and `close` need a tokio runtime: outside one, they panic at the first
+/// Its operations, `open`, `health` and `close` need a tokio runtime: outside one, they panic at the first
 /// step that runs on it, if they are not refused before. Dropping it
 /// without `close` blocks until the emit in hand is done, ends queued ones `Unavailable` and
 /// releases the root; async code calls `close`.
@@ -74,8 +75,54 @@ pub struct Opened {
     pub seed: Option<SeedState>,
 }
 
+/// How an open engine is: each part alone, as it was when [`Engine::health`] read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Health {
+    pub control_plane: ControlPlaneState,
+    pub ledger: LedgerState,
+}
+
+/// Whether the control plane answered a read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlPlaneState {
+    Ok,
+    /// The read failed. The engine stays open, and a later read may succeed, unless a call has
+    /// panicked under the control plane's lock: then none does until the engine is reopened.
+    Failed,
+}
+
 impl Engine {
-    /// Closes the ledger, then releases the root.
+    /// Reads the control plane once, then whether the ledger has failed, for the host's readiness.
+    /// Not an operation: it takes no key, and reads no key record and no event (TEN-1).
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime.
+    pub async fn health(&self) -> Health {
+        let (control, env) = (self.control.clone(), self.env);
+        let read = blocking(move || control.environment(&env)).await;
+        Health {
+            control_plane: match read {
+                Ok(_) => ControlPlaneState::Ok,
+                Err(_) => ControlPlaneState::Failed,
+            },
+            ledger: self.ledger.state(),
+        }
+    }
+
+    /// Resolves once, when the ledger fails, with a call in flight or none; at once if it has
+    /// failed already. The engine stays open: the host closes it and opens it again. Not an
+    /// operation: it takes no key (TEN-1).
+    ///
+    /// A close is no fault. What is pending when [`Engine::close`] begins resolves only if the
+    /// ledger fails before `close` returns, as by the fold it finishes; after that it stays pending
+    /// for good, so a host stops waiting for it once it has closed the engine. The same for a drop.
+    pub fn faulted(&self) -> impl Future<Output = Fault> + Send + 'static + use<> {
+        self.ledger.faulted()
+    }
+
+    /// Closes the ledger, then releases the root. What [`Engine::faulted`] gave stays pending,
+    /// unless the ledger has failed or does before this returns.
     ///
     /// # Panics
     ///

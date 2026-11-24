@@ -36,10 +36,10 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 
 | Module | Does | Interface | Crate |
 |---|---|---|---|
-| Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time | `open`, `open_blocking`, `open_existing_blocking`, `submit`, `read`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
+| Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time; reports whether it has failed, and signals a ledger fault | `open`, `open_blocking`, `open_existing_blocking`, `submit`, `read`, `state`, `faulted`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
 | Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types; 0.3 maps a wire format onto them | `Operations` trait and messages | `ironflowx-proto` |
-| Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records | `Engine::open`, `close`, `Operations`, `recover_admin_key` | `ironflowx-operations` |
+| Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records; reports its health and a ledger fault to the host | `Engine::open`, `health`, `faulted`, `close`, `Operations`, `recover_admin_key` | `ironflowx-operations` |
 | Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create` | `ironflowx-authz` |
 | Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `undo_bootstrap`, `mark_ledger_created`, `finish_bootstrap`, `check_seed`, `apply_seed`, `lookup_key`, `record_expiry`, `insert_key`, `insert_recovered`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
 | Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Scope`, `KeyOrigin`, `Address`, `Secret`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
@@ -128,6 +128,8 @@ const fn required_scope(op: Operation) -> Option<Scope>;   // an exhaustive matc
 impl Engine {
     async fn open(root: &Path, clock: impl Clock + Clone + Send + Sync + 'static, seed: Option<Secret>)
         -> Result<Opened, EngineError>;
+    async fn health(&self) -> Health;   // reads the control plane once (no key record), then the ledger's state; no key, not an operation
+    fn faulted(&self) -> impl Future<Output = Fault> + Send + 'static;   // Ledger::faulted; no key, not an operation
     async fn close(self);
 }
 // Each call is admitted first, with no cache; each submission is attributed to the calling key,
@@ -137,6 +139,7 @@ impl Operations for Engine { .. }
 //               minted: Option<Secret>,      // a bootstrapping open without a seed, or a finishing open that replaced a lost minted key
 //               lost_secret: bool,           // a finishing open revoked a minted key whose secret no open returned
 //               seed: Option<SeedState> }    // Current | Revoked; None when no seed was given
+// Health      { control_plane: Ok | Failed, ledger: LedgerState }
 // EngineError MalformedSeed | NotAnEngineRoot | Locked | Format | Orphaned | LedgerMissing | SeedConflict
 //             | Ledger(OpenError) | Store(StoreError) | Io(io::Error)
 fn recover_admin_key(root: &Path, clock: impl Clock) -> Result<Secret, RecoverError>; // host-only, blocking; not an operation
@@ -202,6 +205,8 @@ impl Ledger {
     async fn read<R: Send + 'static>(&self, q: impl FnOnce(&ReadStore) -> Result<R, Error<StoreError>> + Send + 'static)
         -> Result<R, ReadError>;
     fn env(&self) -> EnvRef;
+    fn state(&self) -> LedgerState;   // Open | Unavailable
+    fn faulted(&self) -> impl Future<Output = Fault> + Send + 'static;   // resolves once, when the ledger fails; a close is no fault
     async fn close(self);   // drains in-flight submits and the fold, then releases the directory lock
 }
 fn new_env_ref() -> EnvRef;   // a fresh UUIDv7 ID and a 128-bit token from the OS random source
@@ -268,7 +273,7 @@ A page holds 20 events unless asked otherwise, at most 200, and stops before its
 | Revoked | `revoked_at` is set; the row stays, so every `key:` emitter names a row (D35). Revoking a revoked key succeeds and keeps the first time |
 | Order | Keys list newest first by `seq`, a counter assigned under the write lock, so keys made in the same millisecond never tie. A page holds 100 keys unless asked otherwise, 1,000 at most; its cursor is `<incarnation token>.<seq>`, as event cursors are |
 
-**Admission.** Every call runs, in order: no key, or an empty one → `Unauthenticated`; `parse`; `lookup_key(id, env)`, a read-only lookup with no cache (D45) that then reads now, both under the control plane's lock, so no recorded expiry falls between them; `verify` at that now, and `record_expiry` when `Refused::newly_expired()` is true; `admit` against `required_scope(op)` (D37). Only then does the handler run, and it reaches the ledger only through `ledger(&Authorized)` and the key records only through `keys(&Authorized)`. Admission's one write is that flag.
+**Admission.** Every call runs, in order: no key, or an empty one → `Unauthenticated`; `parse`; `lookup_key(id, env)`, a read-only lookup with no cache (D45) that then reads now, both under the control plane's lock, so no recorded expiry falls between them; `verify` at that now, and `record_expiry` when `Refused::newly_expired()` is true; `admit` against `required_scope(op)` (D37). Only then does the handler run, and it reaches the ledger only through `ledger(&Authorized)` and the key records only through `keys(&Authorized)`. Admission's one write is that flag. Besides opening and closing, the host's `health` and `faulted` alone reach either without a key: no event and no key record, and the caller of both is the host, not a client.
 
 **Recorded expiry sticks.** A key is expired when `now ≥ expires_at` or its `expiry_recorded` flag is set (D42). The flag is set, once, when the key is refused as expired with a matching digest and not revoked (`record_expiry`), or when a key change finds its calling key newly expired, in that change's transaction. A key whose expiry was recorded is never accepted again, whatever the clock does later, across restarts too. If recording fails, the call still gets the one uniform refusal, but nothing is recorded, unless its commit is unsettled and lands (D48): until the unsettled commit lands or a later refusal records it, a clock set back can accept that key again. A clock that runs ahead and is corrected expires for good only the keys refused while it ran ahead; a recorded expiry does not spread to the keys a key created, so a child can stay usable until its own expiry. `list_keys` reports status by the clock and the flag and records nothing, so a key listed as expired can list as active again after the clock is set back. Event time is never compared with key time (LED-1).
 
@@ -322,7 +327,11 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 4. It publishes the new committed head to the read gate, then acknowledges. Then it folds the record, before it takes the next submission, so the read store holds every earlier record when `decide` runs.
 5. A read snapshots the committed head when it arrives and waits until the applied position reaches it. So it sees every write acknowledged before it arrived, whoever made it.
 
-If the writer panics, submissions still queued or being decided return `Unavailable`. A submission whose append began and lost its reply returns `Unknown`.
+If the writer panics, submissions still queued or being decided return `Unavailable`. A submission whose append began and lost its reply returns `Unknown`. Cancelling a read only drops its answer: a query that has started runs on, and fails the ledger if it panics or the read store fails.
+
+**A ledger fault** is signalled, so a host needs no traffic to learn of it. `faulted` resolves once, when the ledger becomes `Unavailable`, whichever way it failed ([Errors](#errors)) and whether or not a call waits for an answer; at once if it has failed already. The future holds nothing of the ledger or the engine. It resolves for no refusal and no control-plane failure, and a close is no fault: what is pending when `close` begins resolves only if the ledger fails before `close` returns, as by the fold it finishes, and after that stays pending for good. A drop without `close` is the same. So once `faulted` resolves the ledger failed, and a host that closes its engine stops waiting for it. The engine does not reopen itself: the host closes it and opens it again.
+
+`Engine::health` reports each part alone, as it was when read: the control plane by one read of the environment, which reads no key record, and then the ledger's state, so a ledger that failed meanwhile shows. A failed control-plane read leaves the engine open, and a later one may succeed, unless a call panicked under the control plane's lock ([Errors](#errors)).
 
 The committed head and the applied position are exclusive positions: one past the last record, as the log's watermark is.
 

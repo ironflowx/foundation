@@ -5,7 +5,7 @@ use std::fmt;
 use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 
 use ironflowx_core::{Clock, Emitter, EnvRef, EventId, SequencedTime, SubmitAs, Timestamp};
@@ -61,6 +61,18 @@ pub enum ReadError {
     Refused(Refusal),
     Unavailable,
 }
+
+/// Whether an open ledger has failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LedgerState {
+    Open,
+    /// It failed and refuses every call until it is reopened.
+    Unavailable,
+}
+
+/// A ledger failed while it was open (a ledger fault): it refuses every call until it is reopened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fault;
 
 /// Why a directory did not open.
 #[derive(Debug)]
@@ -231,6 +243,32 @@ impl Ledger {
         self.env
     }
 
+    /// Whether the ledger has failed.
+    pub fn state(&self) -> LedgerState {
+        if self.progress.borrow().failed {
+            LedgerState::Unavailable
+        } else {
+            LedgerState::Open
+        }
+    }
+
+    /// Resolves once, when the ledger fails, with a call in flight or none; at once if it has
+    /// failed already.
+    ///
+    /// A close is no fault. What is pending when [`Ledger::close`] begins resolves only if the
+    /// ledger fails before `close` returns, as by the fold it finishes; after that it stays pending
+    /// for good. The same for a drop.
+    pub fn faulted(&self) -> impl Future<Output = Fault> + Send + 'static + use<> {
+        let mut gate = self.progress.subscribe();
+        async move {
+            if gate.wait_for(|p| p.failed).await.is_err() {
+                // Closed, and never failed.
+                std::future::pending::<()>().await;
+            }
+            Fault
+        }
+    }
+
     /// Commits a submission attributed to `by`. Answers once its record is durable, or at once
     /// when nothing is new. The ledger trusts its caller's attribution (D36).
     pub async fn submit(&self, sub: Submission, by: SubmitAs) -> Result<Committed, SubmitError> {
@@ -268,24 +306,32 @@ impl Ledger {
             return Err(ReadError::Unavailable);
         }
         let store = self.store.clone();
+        // Not the gate itself: a query abandoned by its caller may outlive the ledger.
+        let gate = Arc::downgrade(&self.progress);
         let answer = tokio::task::spawn_blocking(move || {
+            let on_panic = FailOnPanic(gate);
             // Poisoned: an earlier query panicked holding it.
-            let conn = store.lock().ok()?;
-            Some(q(&ReadStore(&conn)))
+            let answer = store.lock().ok().map(|conn| q(&ReadStore(&conn)));
+            match answer {
+                Some(Ok(r)) => Ok(r),
+                Some(Err(Error::Refused(r))) => Err(ReadError::Refused(r)),
+                // Here and not below, which an abandoned read never reaches.
+                Some(Err(Error::Store(_))) | None => {
+                    on_panic.fail();
+                    Err(ReadError::Unavailable)
+                }
+            }
         })
         .await;
-        match answer {
-            Ok(Some(Ok(r))) => Ok(r),
-            Ok(Some(Err(Error::Refused(r)))) => Err(ReadError::Refused(r)),
-            // A store error, a poisoned store or a panicking query.
-            _ => {
-                fail(&self.progress);
-                Err(ReadError::Unavailable)
-            }
-        }
+        answer.unwrap_or_else(|_| {
+            fail(&self.progress);
+            Err(ReadError::Unavailable)
+        })
     }
 
-    /// Finishes queued submissions and the fold, then releases the directory.
+    /// Finishes queued submissions and the fold, then releases the directory. What
+    /// [`Ledger::faulted`] gave stays pending, unless the ledger has failed or does before this
+    /// returns.
     ///
     /// # Panics
     ///
@@ -357,19 +403,29 @@ struct Writer {
     faults: Arc<faults::Faults>,
 }
 
-/// However the writer ends, a panic included, the ledger is failed, so no read waits forever.
-struct FailOnExit(Arc<watch::Sender<Progress>>);
+/// A panic while this is held fails the ledger, so no read waits forever and the fault is signalled.
+struct FailOnPanic(Weak<watch::Sender<Progress>>);
 
-impl Drop for FailOnExit {
+impl FailOnPanic {
+    fn fail(&self) {
+        if let Some(progress) = self.0.upgrade() {
+            fail(&progress);
+        }
+    }
+}
+
+impl Drop for FailOnPanic {
     fn drop(&mut self) {
-        fail(&self.0);
+        if thread::panicking() {
+            self.fail();
+        }
     }
 }
 
 impl Writer {
     /// One submission at a time: decide, append, fsync, publish, acknowledge, fold (D15).
     fn run(mut self, mut queue: mpsc::Receiver<Job>) {
-        let _exit = FailOnExit(self.progress.clone());
+        let _on_panic = FailOnPanic(Arc::downgrade(&self.progress));
         while let Some(job) = queue.blocking_recv() {
             if self.stopping.load(Ordering::SeqCst) || self.progress.borrow().failed {
                 let _ = job.reply.send(Err(SubmitError::Unavailable));
