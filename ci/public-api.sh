@@ -3,7 +3,8 @@
 # Compares each foundation crate's public API with its snapshot in public-api/ (D21); any
 # difference fails. --bless rewrites the snapshots after a reviewed change.
 # Then checks LED-9, that no dependency type is public, and TEN-8 and TEN-4's API rules over the
-# snapshots, TEN-3's over rustdoc's JSON, and each check rejecting its fixture.
+# snapshots, TEN-3's over rustdoc's JSON, that each doctest that must not compile names an error
+# code and fails with it, which stable does not check, and each check rejecting its fixture.
 # Needs cargo-public-api and the nightly pinned in ci/tools.env (ci/install-tools.sh).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -27,6 +28,15 @@ if ! git diff --quiet -- public-api/ || [ -n "$untracked" ]; then
   echo "public API changed: review the diff, then run ci/public-api.sh --bless and commit it"
   exit 1
 fi
+
+ci/compile-fail-codes.sh crates docs README.md
+ci/must-reject.sh wrong-error-code/src/lib.rs:9: wrong-error-code/src/lib.rs:13: \
+  wrong-error-code/src/lib.rs:17: wrong-error-code/src/lib.rs:21: wrong-error-code/src/lib.rs:25: \
+  wrong-error-code/src/included.md:1: -- \
+  ci/compile-fail-codes.sh ci/fixtures/wrong-error-code
+cargo "+$NIGHTLY" test -q --locked --doc --workspace
+ci/must-reject.sh 'Some expected error codes were not found: ["E0599"]' -- \
+  cargo "+$NIGHTLY" test -q --locked --doc --manifest-path ci/fixtures/wrong-error-code/Cargo.toml
 
 ci/no-bare-env-id.sh public-api/*.txt
 ci/no-dependency-types.sh public-api/*.txt
@@ -83,7 +93,11 @@ json --manifest-path "$bad/Cargo.toml"
 docs+=("$bad/target/doc/secret_in_error.json")
 ci/must-reject.sh BadField BadPrivate BadCall BadVariant BadTuple BadDeep BadAssociated BadWrapper \
   BadUnion BadMacro BadHiddenField BadHiddenVariant BadHiddenType BadHiddenModule 'BadDefault is' \
-  BadDefaultHolder BadDefaultAlias NamedError NamedRefused NamedMalformed -- ci/no-secret-in-errors.sh "${docs[@]}"
+  BadDefaultHolder BadDefaultAlias BadGeneric BadAliasedError BadDefaultedError \
+  BadEnvelopeError BadMethodError BadMixedError BadDefaultMethodError \
+  BadForeignMethodError BadPlacedError BadNamedAliasError BadSelfError BadSelfForeignError BadSelfMethodError \
+  BadSelfPlainError BadSelfFieldError mpsc::SendError NamedGenericError \
+  NamedError NamedRefused NamedMalformed -- ci/no-secret-in-errors.sh "${docs[@]}"
 found=$(ci/no-secret-in-errors.sh "${docs[@]}" || true)
 if grep Fine <<<"$found"; then
   echo "public-api: ci/no-secret-in-errors.sh rejects an error that holds no Secret"
