@@ -18,7 +18,7 @@ use zeroize::Zeroizing;
 ///
 /// ```compile_fail,E0599
 /// # use ironflowx_core::Secret;
-/// fn copy(s: &Secret) -> Secret { s.clone() }
+/// fn copy(s: Secret) -> (Secret, Secret) { (s.clone(), s) }
 /// ```
 ///
 /// ```compile_fail,E0277

@@ -1212,6 +1212,25 @@ fn a_key_is_recovered_at_a_now_read_after_the_write_lock() {
     recovered.unwrap();
 }
 
+/// A key is created, and one revoked, at a now read after the write lock, so a caller that expires
+/// while it waits for the lock is refused (D43); a bootstrap reads its own so too (TEN-11).
+#[test]
+fn a_key_is_created_and_revoked_at_a_now_read_after_the_write_lock() {
+    let admin = bootstrap(env(1), 0).1.id;
+    let created = under_a_held_lock(true, |cp, told| {
+        let new = new_key(196, &[Scope::Read], None, None);
+        cp.insert_key(&env(1), new, admin, &told, CAP).map(drop)
+    });
+    created.unwrap();
+    let revoked = under_a_held_lock(true, |cp, told| cp.revoke_key(&env(1), admin, admin, &told));
+    revoked.unwrap();
+    // Refused, the file being bootstrapped, but not before it read the clock.
+    let again = under_a_held_lock(false, |cp, told| {
+        cp.ensure_bootstrap(&bootstrap(env(2), 1).0, &told)
+    });
+    again.expect_err("bootstrapped");
+}
+
 /// Recovered keys hold no slot: at a full cap one is recovered and a seed then applies, and
 /// neither takes nor frees a slot (TEN-15).
 #[test]
@@ -1272,6 +1291,45 @@ fn a_file_is_opened_only_if_it_is_this_formats_control_plane_or_empty() {
         BootstrapState::Unbootstrapped
     );
     ControlPlane::open(&path).expect("an empty file takes the schema");
+}
+
+/// Format 1 is this schema (D47). To change it is to change `FORMAT` too, so that a file made
+/// before is refused, not misread.
+#[test]
+fn format_1_is_this_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    drop(ControlPlane::open(&path(dir.path())).unwrap());
+    let db = rusqlite::Connection::open(path(dir.path())).unwrap();
+    let mut stmt = db
+        .prepare("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY rowid")
+        .unwrap();
+    let sql = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+    let one_line = |s: String| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let schema: Vec<_> = sql.map(|s| one_line(s.unwrap())).collect();
+    assert_eq!(
+        schema,
+        [
+            "CREATE TABLE meta (format INTEGER NOT NULL)",
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, \
+             created_at INTEGER NOT NULL)",
+            "CREATE TABLE projects ( id TEXT PRIMARY KEY, \
+             tenant_id TEXT NOT NULL REFERENCES tenants(id), name TEXT NOT NULL, \
+             created_at INTEGER NOT NULL )",
+            "CREATE TABLE environments ( id TEXT PRIMARY KEY, \
+             project_id TEXT NOT NULL REFERENCES projects(id), name TEXT NOT NULL, \
+             token TEXT NOT NULL, created_at INTEGER NOT NULL, ledger_created_at INTEGER )",
+            "CREATE TABLE keys ( seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, \
+             environment_id TEXT NOT NULL REFERENCES environments(id), \
+             environment_token TEXT NOT NULL, scopes TEXT NOT NULL, digest BLOB NOT NULL, \
+             origin TEXT NOT NULL, created_by TEXT, label TEXT, expires_at INTEGER, \
+             expiry_recorded INTEGER NOT NULL DEFAULT 0, revoked_at INTEGER, \
+             created_at INTEGER NOT NULL )",
+        ]
+    );
+    let format: i64 = db
+        .query_row("SELECT format FROM meta", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(format, 1);
 }
 
 /// Reading the state leaves no file behind (the directory may be one the engine refuses).

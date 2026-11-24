@@ -1,6 +1,5 @@
 //! The behavior scenarios in `docs/behaviors/`, each file on its own World: an engine on a
-//! temporary directory with a `ManualClock` (D20). Steps call `Operations`, never a URL. All of
-//! `events.feature` runs; tenancy scenarios run as each lands (`tenancy::REGISTERED`).
+//! temporary directory with a `ManualClock` (D20). Steps call `Operations`, never a URL.
 
 #[path = "behaviors/tenancy.rs"]
 mod tenancy;

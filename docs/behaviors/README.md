@@ -22,7 +22,7 @@ The steps call `Operations`, never a URL or a status code. One set of steps, whi
 | The engine (`Engine`) | An engine in the test's process, on a temporary directory, with a `ManualClock` | Every PR |
 | Remote client | The server binary at `IRONFLOWX_URL` | From 0.3 |
 
-The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It runs the files in this folder in place; they are not copied. It fails unless the `.feature` files here are exactly those its `SCENARIOS` table names, each with that many scenario declarations (before outline expansion), so a new scenario updates its count and a new file is added there (`crates/ironflowx-behaviors/tests/behaviors.rs`). Each file runs on its own World, an engine each. Only the tenancy scenarios in `REGISTERED` (`tests/behaviors/tenancy.rs`) run: each lands with the work that makes it pass, with how many times it runs (an outline once per example), and the runner fails unless that many registered runs pass. Run them alone with `cargo test -p ironflowx-behaviors --test behaviors`.
+The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It runs the files in this folder in place; they are not copied. It fails unless the `.feature` files here are exactly those its `SCENARIOS` table names, each with that many scenario declarations (before outline expansion), so a new scenario updates its count and a new file is added there (`crates/ironflowx-behaviors/tests/behaviors.rs`). Each file runs on its own World, an engine each, and every scenario runs. The runner fails unless as many tenancy scenarios pass, an outline once per example, as `RUNS` says (`tests/behaviors/tenancy.rs`). Run them alone with `cargo test -p ironflowx-behaviors --test behaviors`.
 
 ## Conventions
 
