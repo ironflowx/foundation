@@ -198,6 +198,12 @@ impl Engine {
     /// that fails rotates no seed. A cancelled open may still finish the step it was in, and
     /// starts no undo: `root` stays locked until that step ends.
     ///
+    /// If it failed because a write to the control plane failed (`Store`), that write may still
+    /// land when `root` is next opened: a later open may then return no key for a bootstrap this
+    /// one began or was finishing, with `lost_secret` false, and [`crate::recover_admin_key`] is
+    /// the way in; or find this one's seed current and the one before it revoked, so open with the
+    /// same seed again.
+    ///
     /// # Panics
     ///
     /// Outside a tokio runtime, or if the OS random source fails.
@@ -335,8 +341,9 @@ pub(crate) fn new_admin_key() -> (KeyParts, Secret) {
 
 /// A bootstrapping open: mint the environment, and its admin key unless it is the seed;
 /// bootstrap the control plane in one transaction; build the ledger; then mark it (D41). The mark
-/// is the last fallible step, so no failure after it can lose the secret. A failure before it
-/// tries to undo the bootstrap, unless the ledger is already in place.
+/// is the last fallible step, so no failure after it can lose the secret; its own commit, if it
+/// fails, can (D48). A failure before it tries to undo the bootstrap, unless the ledger is already
+/// in place.
 async fn bootstrap(
     root: &Root,
     clock: impl Clock + Clone + Send + Sync + 'static,

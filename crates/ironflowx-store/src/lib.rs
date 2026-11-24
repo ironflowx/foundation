@@ -4,6 +4,11 @@
 //! Blocking: the engine calls it under `spawn_blocking`, a recovery on its caller's thread. Every
 //! change is one transaction that takes SQLite's write lock first, then reads now from the clock
 //! it is given (TEN-11).
+//!
+//! One that SQLite fails at its commit is unsettled (D48): no open connection sees it, but the
+//! next open of the file may find it landed, whole, unless a write after it, or the last
+//! connection's close, clears it. Where an error below says nothing was written, or no key
+//! changed, that is the one exception.
 
 #![forbid(unsafe_code)]
 
@@ -161,7 +166,7 @@ pub struct KeyRow {
 }
 
 /// Why a key change did not happen. Nothing was written, but for a calling key found newly
-/// expired: its expiry is recorded (D42).
+/// expired: its expiry is recorded (D42); or for an unsettled commit, if `Store` (D48).
 #[derive(Debug)]
 pub enum KeyChangeError {
     /// The calling key is unknown, revoked, expired, or of another environment, read again
@@ -190,7 +195,7 @@ impl fmt::Display for KeyChangeError {
 
 impl std::error::Error for KeyChangeError {}
 
-/// Why a seed was not applied. No key changed.
+/// Why a seed was not applied. No key changed, but for an unsettled commit, if `Store` (D48).
 #[derive(Debug)]
 pub enum SeedError {
     /// The seed's key ID is already a key, and not this seed.
@@ -209,7 +214,7 @@ impl fmt::Display for SeedError {
 
 impl std::error::Error for SeedError {}
 
-/// Why no key was recovered. No key changed.
+/// Why no key was recovered. No key changed, but for an unsettled commit, if `Store` (D48).
 #[derive(Debug)]
 pub enum RecoverError {
     /// The bootstrap is not finished: there is none, or its ledger was not marked created.
@@ -310,7 +315,8 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// If the file is already bootstrapped, or SQLite fails; nothing is written then.
+    /// If the file is already bootstrapped, or SQLite fails; nothing is written then, but for an
+    /// unsettled commit (D48).
     pub fn ensure_bootstrap(&self, b: &Bootstrap, clock: &dyn Clock) -> Result<(), StoreError> {
         run(|| {
             let mut conn = self.lock()?;
@@ -357,7 +363,8 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// If `env` is marked, or SQLite fails; nothing is deleted then.
+    /// If `env` is marked, or SQLite fails; nothing is deleted then, but for an unsettled commit
+    /// (D48).
     pub fn undo_bootstrap(&self, env: &EnvRef) -> Result<(), StoreError> {
         run(|| {
             let mut conn = self.lock()?;
@@ -400,7 +407,7 @@ impl ControlPlane {
     /// # Errors
     ///
     /// If `env` is not this file's environment or is marked already, or SQLite fails; nothing is
-    /// written then.
+    /// written then, but for an unsettled commit (D48).
     pub fn mark_ledger_created(&self, env: &EnvRef, clock: &dyn Clock) -> Result<(), StoreError> {
         run(|| {
             let mut conn = self.lock()?;
@@ -465,7 +472,8 @@ impl ControlPlane {
     /// # Errors
     ///
     /// `Conflict` if the seed's key ID is already a key and not this seed, `Store` if `env` is
-    /// not this file's environment or SQLite fails; no key changes.
+    /// not this file's environment or SQLite fails; no key changes, but for an unsettled commit
+    /// (D48).
     pub fn apply_seed(
         &self,
         env: &EnvRef,
@@ -503,7 +511,8 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// `NotReady` unless the bootstrap is marked, `Store` if SQLite fails; no key is inserted.
+    /// `NotReady` unless the bootstrap is marked, `Store` if SQLite fails; no key is inserted, but
+    /// for an unsettled commit (D48).
     pub fn insert_recovered(&self, key: &KeyParts, clock: &dyn Clock) -> Result<(), RecoverError> {
         // The outer error is SQLite's; the inner one, a check that refused.
         run(|| {
@@ -544,7 +553,7 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// If SQLite fails; nothing is recorded then.
+    /// If SQLite fails; nothing is recorded then, but for an unsettled commit (D48).
     pub fn record_expiry(&self, env: &EnvRef, id: KeyId) -> Result<(), StoreError> {
         run(|| {
             let mut conn = self.lock()?;
@@ -563,7 +572,8 @@ impl ControlPlane {
     /// # Errors
     ///
     /// `Caller`, `Refused` or `Full` as the checks find, `Store` if SQLite fails; no key is
-    /// created. A newly expired `creator` has its expiry recorded.
+    /// created, but for an unsettled commit (D48). A newly expired `creator` has its expiry
+    /// recorded.
     pub fn insert_key(
         &self,
         env: &EnvRef,
@@ -643,7 +653,8 @@ impl ControlPlane {
     /// # Errors
     ///
     /// `Caller` if `by` is no longer valid, `NotFound` if `env` holds no key `id`, `Store` if
-    /// SQLite fails; no key is revoked. A newly expired `by` has its expiry recorded.
+    /// SQLite fails; no key is revoked, but for an unsettled commit (D48). A newly expired `by`
+    /// has its expiry recorded.
     pub fn revoke_key(
         &self,
         env: &EnvRef,
