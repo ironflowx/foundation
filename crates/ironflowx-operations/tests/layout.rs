@@ -328,6 +328,19 @@ async fn a_bare_ledger_is_refused_with_nothing_created() {
     open(dir.path(), 1).await.unwrap().engine.close().await;
 }
 
+/// A ledger opens in any directory with neither a log nor `read.db`, an engine's root included;
+/// the engine then refuses the root while the ledger's log is in it.
+#[tokio::test]
+async fn a_ledger_opened_on_an_engines_root_shuts_the_engine_out() {
+    let dir = tempfile::tempdir().unwrap();
+    engine_root(dir.path()).await;
+    drop(Ledger::open_blocking(dir.path(), new_env_ref(), clock()).unwrap());
+    let err = open(dir.path(), 1).await.err().expect("refused");
+    assert!(matches!(err, EngineError::NotAnEngineRoot), "{err:?}");
+    std::fs::remove_dir_all(dir.path().join("log")).unwrap();
+    open(dir.path(), 1).await.unwrap().engine.close().await;
+}
+
 /// A losing opener changes nothing, staging included: the winner may be building a ledger in it.
 #[tokio::test]
 async fn a_second_engine_is_locked_out_and_changes_nothing() {

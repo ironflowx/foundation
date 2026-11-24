@@ -942,7 +942,7 @@ fn an_undo_deletes_an_unmarked_bootstrap_and_nothing_else() {
     assert_eq!(everything(dir.path()), before);
 }
 
-/// The undo is one transaction: failing at its last delete, it deletes nothing (TEN-11).
+/// The undo is one transaction: failing at any of its deletes, it deletes nothing (TEN-11).
 #[test]
 fn an_undo_that_fails_deletes_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -951,12 +951,20 @@ fn an_undo_that_fails_deletes_nothing() {
         .unwrap();
     let before = everything(dir.path());
     let db = rusqlite::Connection::open(path(dir.path())).unwrap();
-    db.execute_batch(
-        "CREATE TRIGGER fail BEFORE DELETE ON tenants BEGIN SELECT RAISE(ABORT, 'injected'); END;",
-    )
-    .unwrap();
-    cp.undo_bootstrap(&env(1)).expect_err("injected");
-    assert_eq!(everything(dir.path()), before);
+    for table in ["keys", "environments", "projects", "tenants"] {
+        db.execute_batch(&format!(
+            "CREATE TRIGGER fail BEFORE DELETE ON {table} \
+             BEGIN SELECT RAISE(ABORT, 'injected: {table}'); END;"
+        ))
+        .unwrap();
+        // The trigger's own error: a missing delete would fail at a later foreign key instead.
+        match cp.undo_bootstrap(&env(1)).expect_err(table) {
+            StoreError::Failed(why) => assert_eq!(why, format!("injected: {table}")),
+            err => panic!("{table}: {err:?}"),
+        }
+        assert_eq!(everything(dir.path()), before, "{table}");
+        db.execute_batch("DROP TRIGGER fail").unwrap();
+    }
 }
 
 /// Finishing marks the bootstrap and, with a minted key, revokes it and stores its replacement,

@@ -429,7 +429,8 @@ async fn a_finishing_open_with_a_conflicting_seed_leaves_the_bootstrap_unmarked(
         (false, key(1, 2), "the minted key's ID, another secret"),
         (true, key(1, 2), "the seed's ID, another secret"),
     ] {
-        for at in [Died::BeforeStaging, Died::AfterRename] {
+        for at in [Died::BeforeStaging, Died::InStaging, Died::AfterRename] {
+            let case = format!("{at:?}, {case}");
             let dir = tempfile::tempdir().unwrap();
             let (env, _) = died(dir.path(), at, by_seed);
             let before = keys(dir.path(), env);
@@ -442,6 +443,25 @@ async fn a_finishing_open_with_a_conflicting_seed_leaves_the_bootstrap_unmarked(
             opened.engine.close().await;
         }
     }
+}
+
+/// A directory at the ledger's final name that holds neither a log nor `read.db` becomes the
+/// ledger, in place: what it held stays (TEN-12).
+#[tokio::test]
+async fn a_finishing_open_builds_the_ledger_in_a_directory_at_its_final_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let (env, _) = died(dir.path(), Died::BeforeStaging, true);
+    let target = ledger(dir.path(), env);
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("notes"), "kept").unwrap();
+    let opened = open(dir.path(), None).await.unwrap();
+    opened.engine.close().await;
+    assert_eq!(state(dir.path()), BootstrapState::Marked { env });
+    assert!(target.join("log").is_dir());
+    assert_eq!(
+        std::fs::read_to_string(target.join("notes")).unwrap(),
+        "kept"
+    );
 }
 
 /// A finishing open undoes nothing, whatever fails: an unmarked bootstrap stays one, with its
