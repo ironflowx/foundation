@@ -777,6 +777,10 @@ fn cells(line: &str) -> String {
     out
 }
 
+/// How many scenarios of `events.feature` run, an outline once per example, so no example goes
+/// unnoticed.
+const EVENT_RUNS: usize = 95;
+
 /// Every feature file in `docs/behaviors/` and its scenario declarations.
 const SCENARIOS: &[(&str, usize)] = &[("events.feature", 41), ("tenancy.feature", 40)];
 
@@ -818,6 +822,8 @@ async fn main() {
         ))
         .await;
     let tenancy = tenancy::run(Unescaped).await;
-    assert!(!events.execution_has_failed(), "events.feature failed");
+    let passed = events.scenarios_stats().passed;
+    let failed = events.execution_has_failed() || passed != EVENT_RUNS;
+    assert!(!failed, "events.feature failed");
     assert!(!tenancy, "tenancy.feature failed");
 }

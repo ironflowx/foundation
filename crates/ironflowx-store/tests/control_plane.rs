@@ -1228,7 +1228,8 @@ fn a_key_is_created_and_revoked_at_a_now_read_after_the_write_lock() {
     let again = under_a_held_lock(false, |cp, told| {
         cp.ensure_bootstrap(&bootstrap(env(2), 1).0, &told)
     });
-    again.expect_err("bootstrapped");
+    let refused = matches!(&again, Err(StoreError::Failed(why)) if why == "already bootstrapped");
+    assert!(refused, "{again:?}");
 }
 
 /// Recovered keys hold no slot: at a full cap one is recovered and a seed then applies, and

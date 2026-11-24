@@ -60,7 +60,7 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 | `KeyDigest` | SHA-256 of a key's whole text, in `ironflowx-authz`. Private bytes, no `PartialEq`, `AsRef` or `Deref`; `ct_eq` is its only comparison; `to_stored` and `from_stored`, its storage codec, are confined to `ironflowx-store` by a lint (TEN-4) |
 | `KeyRecord` | What credentials need about a stored key: `{ id, env: EnvRef, scopes, digest, expires_at, expiry_recorded, revoked_at }`, `env` being the environment ID and token current when the key was made |
 | `Grant` | What a verified key may do: its key ID, scopes, `EnvRef` and expiry, and `submit_as()`, the key's attribution, the only `SubmitAs::key` call, which clippy confines to the engine (D36). Only `verify` and `recheck` make one; never stored |
-| `Authorized` | Proof of admission, `{ grant }`, its field private to the engine's admission module: the engine's ledger and key records are reached only with one (TEN-1) |
+| `Authorized` | Proof of admission, `{ grant }`, its field private to the engine's admission module: a handler reaches the engine's ledger and key records only with one (TEN-1) |
 
 ## Seams
 
@@ -266,7 +266,7 @@ A list query, not `decide`, checks the cursor: a token that does not decode, or 
 
 ## Errors
 
-The kind is contract. Four messages are contract too: `event name is required`, `event data exceeds maximum size`, `batch size {n} exceeds maximum of 100` and `event not found`. Other messages are not.
+The kind is contract. Nine messages are contract too: `event name is required`, `event data exceeds maximum size`, `batch size {n} exceeds maximum of 100`, `event not found`, `authentication required`, `invalid API key`, `missing scope: <scope>`, `key limit reached` and `key not found`. Other messages are not.
 
 | Kind | When | Retry |
 |---|---|---|
@@ -282,7 +282,7 @@ The kind is contract. Four messages are contract too: `event name is required`, 
 | `PermissionDenied` | The key lacks the operation's scope: `missing scope: <scope>`, with `hint` saying to create or use a key with that scope (D31) | No |
 | `ResourceExhausted` | `create_key` when 1,000 created keys hold a slot: `key limit reached`, with `hint` saying to revoke keys, expired ones first (D44) | After a revoke |
 
-`ErrorKind::retryable()` is true when the same request, unchanged, may succeed later: `Unavailable`, `Unknown` and `ResourceExhausted`. `OpError::hint` says when, or what to do. The two `Unauthenticated` messages, the `PermissionDenied` message, `key limit reached` and `key not found` are contract.
+`ErrorKind::retryable()` is true when the same request, unchanged, may succeed later: `Unavailable`, `Unknown` and `ResourceExhausted`. `OpError::hint` says when, or what to do.
 
 ## Commit and read
 

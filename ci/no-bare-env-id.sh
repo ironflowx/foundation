@@ -3,10 +3,12 @@
 # Fails if a public function takes an EnvironmentId without its token (LED-9): as a parameter
 # anywhere in its parameter list, or as `self` in any method of EnvironmentId other than its
 # std trait impls. Also fails on a public field or enum variant holding one, since a request
-# type would carry it in.
+# type would carry it in, and on a public type alias of one, which a signature would name instead
+# (a private alias or a renamed import does not show: the snapshot names the type itself).
 set -euo pipefail
 found=$(perl -ne '
   next unless /^pub\b/;
+  print if /^pub type .* = .*\bEnvironmentId\b/;
   if (!/\bfn\s/) {
     # A field, tuple field or variant: `pub a::B::f: T`, `pub a::B::V(T)`, `pub struct a::B(pub T)`.
     print if /EnvironmentId/ && !/^pub (use|mod|type|impl) / && !/^pub struct ironflowx_core::EnvironmentId\b/;

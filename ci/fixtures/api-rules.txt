@@ -21,3 +21,9 @@ impl core::cmp::PartialEq for ironflowx_authz::KeyDigest
 impl core::convert::From<ironflowx_authz::KeyDigest> for [u8; 32]
 impl core::convert::AsRef<[u8]> for &ironflowx_authz::KeyDigest
 pub fn ironflowx_authz::digest_bytes(&ironflowx_authz::KeyDigest) -> [u8; 32]
+pub fn ironflowx_authz::digest_text(&ironflowx_authz::KeyDigest) -> ironflowx_authz::Text
+pub ironflowx_operations::EngineError::Refused(ironflowx_proto::Call)
+pub ironflowx_operations::EngineError::Keyed(ironflowx_operations::Key)
+pub type ironflowx_operations::Key = ironflowx_core::secret::Secret
+pub type ironflowx_authz::Stored = core::option::Option<ironflowx_authz::KeyDigest>
+pub type ironflowx_core::Place = ironflowx_core::tenancy::Address

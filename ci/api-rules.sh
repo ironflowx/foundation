@@ -3,13 +3,16 @@
 # Fails if the public API breaks one of three rules over the snapshots. Each is an allowlist, so a
 # new shape fails until it is reviewed:
 # - TEN-3: no error type (one with an `impl Error`, or named *Error, *Refused, *Malformed) has a
-#   field or variant holding a Secret, or a type that holds one, however deeply;
+#   field or variant holding a Secret, or a type that holds one, however deeply. Public ones: the
+#   snapshot shows no private field, so a type whose private field holds one, today Call, is named;
 # - TEN-8: an Address only goes out: no function takes one but its own std methods, it has no
 #   method but `new` and std ones, and no impl mentions it but its own derives (so nothing turns
 #   an Address into an ID);
 # - TEN-4: KeyDigest's bytes stay private: its tuple field is hidden, its methods are ct_eq, the
 #   storage codec and std ones, its only impls are Clone and Debug, and no other function takes
-#   one and returns bytes.
+#   one.
+# A public alias, which a signature would name instead, holds what it stands for (TEN-3), and
+# neither of the other two types has one.
 set -euo pipefail
 found=$(perl -e '
   my @lines = map { chomp; $_ } <>;
@@ -20,11 +23,11 @@ found=$(perl -e '
     $errors{$1} = 1 if /^impl (?:core|std)::error::Error for ([\w:]+)$/;
     if (/^pub (?!fn |const |struct |enum |mod |use |trait |type |impl )([\w:]+)::(\w+)[(:]\s*(.*)$/) {
       push @{$members{$1}}, [$_, $3];
-    } elsif (/^pub struct ([\w:]+)\((.+)\)$/) {
+    } elsif (/^pub struct ([\w:]+)\((.+)\)$/ || /^pub type ([\w:]+) = (.+)$/) {
       push @{$members{$1}}, [$_, $2];
     }
   }
-  my %holds = (Secret => 1);
+  my %holds = (Secret => 1, Call => 1);
   for my $round (1 .. 10) {
     for my $owner (keys %members) {
       for my $m (@{$members{$owner}}) {
@@ -44,7 +47,9 @@ found=$(perl -e '
     }
   }
   my $std = qr/^(clone|clone_from|eq|ne|fmt|hash|assert_fields_are_eq|assert_receiver_is_total_eq)$/;
+  my %rule = (KeyDigest => "TEN-4", Address => "TEN-8");
   for (@lines) {
+    print "$rule{$1}: $_\n" if /^pub type .* = .*\b(KeyDigest|Address)\b/;
     # TEN-8
     if (/\bfn\s+([\w:]+)/) {
       my $name = $1;
@@ -62,8 +67,8 @@ found=$(perl -e '
     print "TEN-4: $_\n" if /^pub [\w:]*\bKeyDigest::\w+:/;
     if (/\bfn\s+[\w:]*\bKeyDigest::(\w+)\b/) {
       print "TEN-4: $_\n" unless $1 =~ $std || $1 =~ /^(ct_eq|to_stored|from_stored)$/;
-    } elsif (my ($params, $ret) = /\bfn\s+[\w:]+(?:<[^(]*>)?\s*\(([^)]*)\)\s*->\s*(.*)$/) {
-      print "TEN-4: $_\n" if $params =~ /\bKeyDigest\b/ && $ret =~ /\bu8\b/;
+    } elsif (/\bfn\s+[\w:]+(?:<[^(]*>)?\s*\([^)]*\bKeyDigest\b/) {
+      print "TEN-4: $_\n";
     }
     if (/^impl\b/ && /\bKeyDigest\b/) {
       print "TEN-4: $_\n" unless /^impl (core::(clone::Clone|fmt::Debug) for )?ironflowx_authz::KeyDigest$/;

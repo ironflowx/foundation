@@ -37,23 +37,28 @@ ci/must-reject.sh \
   'TEN-3: pub ironflowx_store::OpenFailure::Seed(ironflowx_core::secret::Secret)' \
   'TEN-3: pub ironflowx_store::StoreError::seed: ironflowx_core::secret::Secret' \
   'TEN-3: pub struct ironflowx_authz::Refused(pub ironflowx_core::secret::Secret)' \
+  'TEN-3: pub ironflowx_operations::EngineError::Refused(ironflowx_proto::Call)' \
+  'TEN-3: pub ironflowx_operations::EngineError::Keyed(ironflowx_operations::Key)' \
   'TEN-4: impl core::cmp::PartialEq for ironflowx_authz::KeyDigest' \
   'TEN-4: impl core::convert::AsRef<[u8]> for &ironflowx_authz::KeyDigest' \
   'TEN-4: impl core::convert::From<ironflowx_authz::KeyDigest> for [u8; 32]' \
   'TEN-4: pub fn ironflowx_authz::KeyDigest::as_bytes(&self) -> &[u8; 32]' \
   'TEN-4: pub fn ironflowx_authz::digest_bytes(&ironflowx_authz::KeyDigest) -> [u8; 32]' \
+  'TEN-4: pub fn ironflowx_authz::digest_text(&ironflowx_authz::KeyDigest) -> ironflowx_authz::Text' \
+  'TEN-4: pub type ironflowx_authz::Stored = core::option::Option<ironflowx_authz::KeyDigest>' \
   'TEN-4: pub ironflowx_authz::KeyDigest::0: [u8; 32]' \
   'TEN-4: pub struct ironflowx_authz::KeyDigest(pub [u8; 32])' \
   'TEN-8: impl core::convert::From<&ironflowx_core::tenancy::Address> for ironflowx_core::id::TenantId' \
   'TEN-8: impl core::convert::From<ironflowx_core::tenancy::Address> for ironflowx_core::id::ProjectId' \
   'TEN-8: impl core::convert::Into<ironflowx_core::id::ProjectId> for ironflowx_core::Address' \
   'TEN-8: impl core::convert::TryFrom<ironflowx_core::tenancy::Address> for ironflowx_core::id::ProjectId' \
+  'TEN-8: pub type ironflowx_core::Place = ironflowx_core::tenancy::Address' \
   'TEN-8: pub fn ironflowx_core::Address::project_id(&self) -> ironflowx_core::id::ProjectId' \
   'TEN-8: pub fn ironflowx_core::ProjectId::from_address(&ironflowx_core::tenancy::Address) -> Self' \
   'TEN-8: pub fn ironflowx_store::ControlPlane::resolve(&self, &ironflowx_core::tenancy::Address) -> core::result::Result<ironflowx_store::Resolved, ironflowx_store::StoreError>' \
   -- ci/api-rules.sh ci/fixtures/api-rules.txt
 ci/must-reject.sh Ledger::open find_after ffi_open EnvironmentId::lookup \
-  OpenRequest::env Target::Env proto::Wrapper -- \
+  OpenRequest::env Target::Env proto::Wrapper store::LookupId -- \
   ci/no-bare-env-id.sh ci/fixtures/bare-environment-id.txt
 ci/must-reject.sh rusqlite::error::Error segment_log_core::engine tokio::runtime uuid::Uuid -- \
   ci/no-dependency-types.sh ci/fixtures/dependency-type.txt

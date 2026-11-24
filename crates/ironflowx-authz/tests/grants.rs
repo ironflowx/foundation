@@ -150,6 +150,76 @@ fn a_grant_admits_only_the_scopes_it_holds() {
     }
 }
 
+/// The rule of D28, but for the label: within the creator's scopes and lifetime, expiring after
+/// now.
+fn within(
+    creator: &Grant,
+    scopes: &BTreeSet<Scope>,
+    expires_at: Option<Timestamp>,
+    now: Timestamp,
+) -> bool {
+    let within_lifetime = match (creator.expires_at(), expires_at) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(c), Some(e)) => e <= c,
+    };
+    let within_scope = !scopes.is_empty() && scopes.is_subset(creator.scopes());
+    within_scope && within_lifetime && expires_at.is_none_or(|e| e > now)
+}
+
+/// Over random creators, requests and times: as the grid below, at any time and expiry, near each
+/// other or far apart (TEN-5).
+#[test]
+fn no_created_key_exceeds_its_creator_at_any_time() {
+    // SplitMix64, its seed fixed, so a failure replays.
+    let mut state = 101_u64;
+    let mut random = || {
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let z = (state ^ (state >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        let z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    };
+    let sets = every_scope_set();
+    let mut seen = [0; 2];
+    for case in 0..20_000 {
+        let now = random().cast_signed();
+        // A step of up to 2 ms, or of any length.
+        let mut step = || {
+            let far = random();
+            let len = if far & 1 == 0 {
+                far >> 1
+            } else {
+                (far >> 1) % 3
+            };
+            len.cast_signed()
+        };
+        let creator_expiry = (step() & 3 != 0).then(|| at(now.saturating_add(step().max(1))));
+        let base = creator_expiry.map_or(now, Timestamp::as_millis);
+        let expires_at = match step() & 3 {
+            0 => None,
+            1 => Some(at(now.saturating_add(step()))),
+            2 => Some(at(base.saturating_add(step()))),
+            _ => Some(at(base.saturating_sub(step()))),
+        };
+        let mut set = || &sets[usize::try_from(random() % 8).unwrap()];
+        let (creator_scopes, scopes) = (set(), set());
+        let held = record(creator_scopes, creator_expiry);
+        // At the last millisecond there is, no expiry is after now.
+        let Ok(creator) = recheck(&held, &env(), at(now)) else {
+            continue;
+        };
+        let allowed = may_create(&creator, scopes, expires_at, None, at(now));
+        let expected = within(&creator, scopes, expires_at, at(now));
+        assert_eq!(
+            allowed.is_ok(),
+            expected,
+            "case {case}: {creator:?} at {now}; asked {scopes:?} until {expires_at:?}: {allowed:?}"
+        );
+        seen[usize::from(expected)] += 1;
+    }
+    assert!(seen.iter().all(|n| *n > 1_000), "{seen:?}");
+}
+
 /// Over every creator and every request: a created key never exceeds its creator in scope or
 /// lifetime, and a request beyond the creator, or otherwise bad, is refused (TEN-5).
 #[test]
@@ -188,17 +258,10 @@ fn no_created_key_exceeds_its_creator() {
                 for &expires_at in &expiries {
                     for (label, label_ok) in labels {
                         let allowed = may_create(&creator, &scopes, expires_at, label, at(T));
-                        let within_scope = !scopes.is_empty() && scopes.is_subset(&creator_scopes);
-                        let within_lifetime = match (creator_expiry, expires_at) {
-                            (None, _) => true,
-                            (Some(_), None) => false,
-                            (Some(c), Some(e)) => e <= c,
-                        };
-                        let after_now = expires_at.is_none_or(|e| e > at(T));
-                        let expected = within_scope && within_lifetime && after_now && label_ok;
+                        let within = within(&creator, &scopes, expires_at, at(T));
                         assert_eq!(
                             allowed.is_ok(),
-                            expected,
+                            within && label_ok,
                             "creator {creator_scopes:?} until {creator_expiry:?}; asked \
                              {scopes:?} until {expires_at:?}, label {label:?}: {allowed:?}"
                         );

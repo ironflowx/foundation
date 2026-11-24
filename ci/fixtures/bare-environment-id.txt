@@ -7,5 +7,6 @@ pub fn ironflowx_core::EnvRef::id(&self) -> ironflowx_core::EnvironmentId
 pub ironflowx_proto::OpenRequest::env: ironflowx_core::id::EnvironmentId
 pub ironflowx_proto::Target::Env(ironflowx_core::id::EnvironmentId)
 pub struct ironflowx_proto::Wrapper(pub ironflowx_core::id::EnvironmentId)
+pub type ironflowx_store::LookupId = ironflowx_core::id::EnvironmentId
 pub struct ironflowx_core::EnvironmentId(_)
 pub type ironflowx_core::EnvironmentId::Err = ironflowx_core::ParseError
