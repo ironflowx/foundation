@@ -5,6 +5,7 @@ Each release lists what it adds and changes. All published crates share one vers
 ## Unreleased
 
 - **Docs** ([#134](https://github.com/ironflowx/foundation/issues/134)): corrects 0.2.0's #97 entry and `Engine::open`'s page. A bootstrapping open that fails before its ledger is in place tries to undo itself; if the undo fails, a bootstrap it did not delete stays unmarked, for a later open to finish. If an open's mark commits but it does not return, no later open reports its lost secret. No behavior change.
+- **Secret checks** ([#131](https://github.com/ironflowx/foundation/issues/131)): the check that no error type holds a `Secret` covers a generic error used with one; the search for stored or logged secrets covers a refused `recover_admin_key` and escaped bytes; with `__fault-points`, the key hook is told a recovered key and its secret (TEN-3's stated exception). CI checks the error code each `compile_fail` doctest names. No behavior change.
 
 ## 0.2.0 - 2026-11-24
 

@@ -2,14 +2,20 @@
 # Usage: ci/no-secret-in-errors.sh <rustdoc JSON...>
 # TEN-3: fails if an error type (one with an `impl Error`, or named *Error, *Refused, *Malformed)
 # can hold a Secret: in a field or variant, private ones included, of its own or of a type it
-# holds, however deeply, through generics and their defaults, aliases and associated types. The
-# JSON, of every crate between Secret and the errors, is built with --document-private-items and
+# holds, however deeply, through generics and their defaults, aliases and associated types, or
+# because a signature, a field, an alias or an associated type uses it with one. The JSON, of every
+# crate between Secret and the errors, is built with --document-private-items and
 # --document-hidden-items; rustdoc has resolved the names and expanded the macros. A function
 # pointer that takes a Secret holds none.
 # It refuses too much, so fails closed, for PhantomData<Secret>, a `dyn` callable that takes a
 # Secret, a generic type one of whose defaults holds one, whatever it is used with, and an
-# associated type of a trait any type implements with one. It does not see a type declared in the
-# body of a function or a constant.
+# associated type of a trait any type implements with one.
+# It does not see:
+# - a type declared in the body of a function, a constant or a static;
+# - a generic parameter's default on a trait;
+# - an alias, or a re-export under a new name, that alone gives a type an error's name;
+# - a Secret a generic error is used with only in a body, or through the parameter of another
+#   generic item that is no alias.
 # shortcut: what a `dyn Trait` field hides is not seen; upgrade if an error ever stores one.
 set -euo pipefail
 # shellcheck disable=SC2016 # ruby's own `#{}`
@@ -17,6 +23,8 @@ exec ruby -rjson -e '
   SECRET = "ironflowx_core::secret::Secret"
   holds = Hash.new { |h, k| h[k] = [] }   # a type => the types its fields, or its alias, name
   errors = {}                             # an error type => the types its impl names
+  uses = []                               # a type with arguments, the types they name
+  passes = Hash.new { |h, k| h[k] = [] }  # an alias => the types it hands its own parameters to
   ARGV.each do |file|
     doc = JSON.parse(File.read(file))
     abort "#{file} was built without --document-private-items" unless doc["includes_private"]
@@ -37,6 +45,24 @@ exec ruby -rjson -e '
           own + types.(value)
         end
       else []
+      end
+    end
+    # Every type with arguments, and the arguments.
+    applied = lambda do |node|
+      case node
+      when Array then node.flat_map(&applied)
+      when Hash
+        used = node["resolved_path"]
+        own = used && used["args"] ? [[name.(used["id"]), used["args"]]] : []
+        own + node.values.flat_map(&applied)
+      else []
+      end
+    end
+    # Whether a type names a generic parameter.
+    generic = lambda do |node|
+      case node
+      when Array then node.any?(&generic)
+      when Hash then node.any? { |k, v| k == "generic" || generic.(v) }
       end
     end
     # The fields of a struct, a variant or a union, and the variants of an enum, by ID.
@@ -64,12 +90,14 @@ exec ruby -rjson -e '
     doc["index"].each_value do |item|
       kind = item["inner"].keys.first
       body = item["inner"][kind]
+      uses.concat(applied.(body).map { |type, args| [type, types.(args)] })
       case kind
       when "struct", "union", "enum"
         holds[name.(item["id"])].concat(fields.(item) + defaults.(body))
         errors[name.(item["id"])] ||= [] if item["name"] =~ /(Error|Refused|Malformed)\z/
       when "type_alias"
         holds[name.(item["id"])].concat(types.(body["type"]) + defaults.(body))
+        passes[name.(item["id"])].concat(applied.(body["type"]).select { |_, args| generic.(args) }.map(&:first))
       when "impl"
         next unless body["trait"]
         # An associated type: whoever names the trait may hold it.
@@ -85,6 +113,12 @@ exec ruby -rjson -e '
   end
   abort "no #{SECRET} in the JSON: is its core crate there, and its format read right?" unless holds.key?(SECRET)
   abort "no error type in the JSON: is its format read right?" if errors.empty?
+  # An error used with a type may hold it, also by way of aliases.
+  uses.each do |type, args|
+    reached = [type]
+    reached.each { |t| reached.concat(passes.fetch(t, [])) }
+    (reached & errors.keys).each { |error| errors[error].concat(args) }
+  end
   # To a fixed point.
   held = { SECRET => true }
   loop do

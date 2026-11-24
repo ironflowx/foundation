@@ -115,10 +115,11 @@ type KeyHook = fn(EnvRef, KeyId, Option<&Secret>);
 
 static KEY_HOOK: OnceLock<KeyHook> = OnceLock::new();
 
-/// Calls `hook` with each key an open or `create_key` is about to store, its environment, and its
-/// secret unless the key is a seed: the crash test learns which key to check before any point the
-/// key's storing reaches. A finishing open's replacement is told before it is known to be needed,
-/// and a created key before its transaction checks the request. The first hook set stays.
+/// Calls `hook` with each key an open, `create_key` or a recovery is about to store, its
+/// environment, and its secret unless the key is a seed: the crash test learns which key to check
+/// before any point the key's storing reaches. A finishing open's replacement is told before it is
+/// known to be needed, a created key before its transaction checks the request, and a recovered
+/// one before its transaction checks the mark. The first hook set stays.
 pub fn set_key_hook(hook: KeyHook) {
     let _ = KEY_HOOK.set(hook);
 }

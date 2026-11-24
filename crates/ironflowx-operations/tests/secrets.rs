@@ -20,7 +20,7 @@ use ironflowx_proto::{
     ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operations,
     RevokeKeyRequest, WhoamiRequest,
 };
-use ironflowx_store::{Bootstrap, ControlPlane};
+use ironflowx_store::{Bootstrap, ControlPlane, RecoverError};
 
 const T: i64 = 1_800_000_000_000;
 const HOUR: i64 = 3_600_000;
@@ -78,9 +78,11 @@ fn halves(key: &str) -> [Vec<u8>; 4] {
     [a, b, c, d].map(<[u8]>::to_vec)
 }
 
-/// What gives a secret away in `text`: half of one of `keys`, however it is written, or the start
-/// of any key's text. Written as it is, in either base64 alphabet, as a list of numbers, decimal
-/// or hex, or as a run of hex digits, whatever the case, the spaces and the `0x` between them.
+/// What gives a secret away in `text`: half of one of `keys`, or the start of any key's text. A
+/// half as it is, in either base64 alphabet, as a list of numbers, decimal or hex, as a run of hex
+/// digits, whatever the case, the spaces and the `0x` between them, or as `escape_ascii` writes
+/// it: what one usual call to std's formatting gives. In no other form: not with a `char` for each
+/// byte, unless in a path, nor as hex with anything else between.
 fn leak<'a>(text: &str, keys: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
     let list: String = text.split_whitespace().collect();
     let list = list.to_lowercase().replace("0x", "");
@@ -100,6 +102,9 @@ fn leak<'a>(text: &str, keys: impl IntoIterator<Item = &'a str>) -> Option<&'sta
             }
             if run.contains(&each(|b| format!("{b:02x}")).concat()) {
                 return Some("a secret in hex");
+            }
+            if text.contains(&half.escape_ascii().to_string()) {
+                return Some("a secret, escaped");
             }
         }
     }
@@ -348,6 +353,20 @@ async fn bootstrapped_root() -> Host {
     every_call(&engine, &wrong, false).await;
     host.search(true, "called");
 
+    // Refused, its key made all the same.
+    let control = rusqlite::Connection::open(host.root.path().join("control.db")).unwrap();
+    control
+        .execute_batch(
+            "CREATE TRIGGER fail BEFORE INSERT ON keys BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+        )
+        .unwrap();
+    let refused = recover_admin_key(host.root.path(), host.clock.clone())
+        .err()
+        .expect("a failed insert");
+    println!("recover: {refused} {refused:?}");
+    assert!(matches!(refused, RecoverError::Store(_)));
+    control.execute_batch("DROP TRIGGER fail;").unwrap();
+    drop(control);
     let recovered = recover_admin_key(host.root.path(), host.clock.clone()).unwrap();
     let recovered = host.keep(&recovered, true);
     every_call(&engine, &recovered, true).await;
@@ -473,6 +492,7 @@ fn no_secret_is_stored_or_logged() {
                 format!("{half:02X?}"),
                 format!("{half:#x?}"),
                 format!("{half:#x?}").replace("0x", "0X"),
+                half.escape_ascii().to_string(),
             ] {
                 let found = leak(&form, [probe.expose()]);
                 assert!(found.is_some_and(|f| f.starts_with("a secret")), "{form}");
@@ -543,8 +563,9 @@ fn no_secret_is_stored_or_logged() {
     let told = std::fs::read_to_string(told).unwrap();
     let keys: BTreeSet<&str> = told.lines().collect();
     // Kept: of the bootstrapped root, the seeded one, and the finished one; and one for each
-    // refused `create_key` of a key that works. Each is the one the child announced.
-    assert_eq!(keys.len(), 8 + 1 + 2 + 6);
+    // refused `create_key` of a key that works, and for the refused recovery. Each is the one the
+    // child announced.
+    assert_eq!(keys.len(), 8 + 1 + 2 + 6 + 1);
     for key in &keys {
         assert!(logs.contains(&announced(key)), "{}", &key[4..40]);
     }

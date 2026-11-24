@@ -1,4 +1,6 @@
-# For the checks over public-API snapshots: what a function takes in.
+# For the checks over public-API snapshots: what a function takes in. It refuses too much, so fails
+# closed, for a callable in a where clause that returns a guarded type, and for a function named
+# `r#where`; no snapshot has either.
 use strict;
 use warnings;
 

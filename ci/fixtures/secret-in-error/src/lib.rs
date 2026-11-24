@@ -105,6 +105,28 @@ pub struct BadHiddenModule(pub hidden_module::Inner);
 pub struct BadDefault<T = Secret>(pub T);
 pub struct BadDefaultHolder(pub Holder);
 pub struct BadDefaultAlias(pub DefaultAlias);
+/// Generic: it holds what it is used with. A `Call` prints itself, so a derive compiles.
+#[derive(Debug)]
+pub struct BadGeneric<T>(pub T);
+impl<T> fmt::Display for BadGeneric<T> {
+    fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
+    }
+}
+impl<T: fmt::Debug> Error for BadGeneric<T> {}
+pub fn bad_generic() -> Result<(), BadGeneric<Call>> {
+    Ok(())
+}
+pub struct BadAliasedError<T>(pub T);
+pub type AliasedResult<T> = Result<(), BadAliasedError<T>>;
+pub type AliasedAgain<T> = AliasedResult<Option<T>>;
+pub fn bad_aliased() -> AliasedAgain<Secret> {
+    Ok(())
+}
+pub struct NamedGenericError<T>(pub T);
+pub struct UsesNamed {
+    _last: Option<NamedGenericError<Alias>>,
+}
 pub struct NamedError(pub Secret);
 pub struct NamedRefused(#[allow(dead_code)] Call);
 pub struct NamedMalformed(pub Secret);
@@ -113,6 +135,22 @@ pub struct SecretName(pub String);
 pub struct FinePointer(pub fn(&Secret) -> bool);
 pub struct FineName(pub SecretName);
 pub struct FineHolder(pub Secret);
+/// Generic, used with no `Secret`: not by a result that holds one when all is well.
+#[derive(Debug)]
+pub struct FineGeneric<T>(pub T);
+impl<T> fmt::Display for FineGeneric<T> {
+    fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
+    }
+}
+impl<T: fmt::Debug> Error for FineGeneric<T> {}
+pub type FineResult<T> = Result<T, FineGeneric<u8>>;
+pub fn fine_generic() -> FineResult<Secret> {
+    Err(FineGeneric(0))
+}
+pub fn fine_pointer() -> Result<(), FineGeneric<fn(&Secret) -> bool>> {
+    Ok(())
+}
 
 error!(
     BadField, BadPrivate, BadVariant, BadTuple, BadDeep, BadAssociated, BadWrapper<Secret>,

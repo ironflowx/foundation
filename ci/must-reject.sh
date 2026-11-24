@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Usage: ci/must-reject.sh <pattern>... -- <command...>
-# Proves a check still works: the command must fail, and its output must contain every pattern,
-# so a fixture that fails for an unrelated reason (a typo, a missing tool) does not count, and
-# one fixture can prove several bans in a single run.
+# Proves a check still works: the command must fail, and each pattern must be in exactly one line
+# of its output, so a fixture that fails for an unrelated reason (a typo, a missing tool) does not
+# count, a longer name does not stand in for a missing one, and one fixture can prove several bans
+# in a single run.
 set -uo pipefail
 patterns=()
 while [ $# -gt 0 ] && [ "$1" != "--" ]; do
@@ -21,14 +22,15 @@ if [ "$code" -eq 0 ]; then
   echo "must-reject: '$*' passed, but it must reject its fixture"
   exit 1
 fi
-missing=0
+wrong=0
 for pattern in "${patterns[@]}"; do
-  if ! grep -qF -- "$pattern" <<<"$output"; then
-    echo "must-reject: '$*' failed without '$pattern'"
-    missing=1
+  lines=$(grep -cF -- "$pattern" <<<"$output")
+  if [ "$lines" -ne 1 ]; then
+    echo "must-reject: '$*' failed with '$pattern' in $lines lines, not one"
+    wrong=1
   fi
 done
-if [ "$missing" -ne 0 ]; then
+if [ "$wrong" -ne 0 ]; then
   echo "$output"
   exit 1
 fi
