@@ -5,9 +5,9 @@
 //! change is one transaction that takes SQLite's write lock first, then reads now from the clock
 //! it is given (TEN-11).
 //!
-//! One that SQLite fails at its commit is unsettled (D48): no open connection sees it, but the
-//! next open of the file may find it landed, whole, unless a write after it, or the last
-//! connection's close, clears it. Where an error below says nothing was written, or no key
+//! One whose commit SQLite fails after writing it to the WAL is unsettled (D48): no open
+//! connection sees it, but the next open of the file may find it landed, whole, unless a write
+//! after it, or the last connection's close, clears it. Where an error below says nothing was written, or no key
 //! changed, that is the one exception.
 
 #![forbid(unsafe_code)]
@@ -166,7 +166,7 @@ pub struct KeyRow {
 }
 
 /// Why a key change did not happen. Nothing was written, but for a calling key found newly
-/// expired: its expiry is recorded (D42); or for an unsettled commit, if `Store` (D48).
+/// expired: its expiry is recorded (D42); or for an unsettled commit (D48).
 #[derive(Debug)]
 pub enum KeyChangeError {
     /// The calling key is unknown, revoked, expired, or of another environment, read again

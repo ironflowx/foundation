@@ -365,7 +365,8 @@ fn address(record: &EnvironmentRecord) -> Address {
     Address::new(&record.project_name, &record.name)
 }
 
-/// Runs a control-plane read off the runtime; any failure is `Unavailable`.
+/// Runs a control-plane read, or admission's `record_expiry`, off the runtime; any failure is
+/// `Unavailable`.
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, StoreError> + Send + 'static,
 ) -> Result<T, OpError> {

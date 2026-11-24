@@ -60,7 +60,7 @@ The record of which tenants, projects, environments and keys exist, in `control.
 Creating the default tenant, project, environment and first admin key, once.
 
 **Unsettled commit**:
-A control-plane commit that SQLite failed. No open connection sees it, but the next open of `control.db` may find it landed, unless a later write or the last close clears it.
+A control-plane commit that SQLite failed after writing it to the WAL. No open connection sees it, but the next open of `control.db` may find it landed, unless a later write or the last close clears it.
 _Avoid_: Unknown (that is a ledger append's lost outcome, which closes the ledger)
 
 ### Storage

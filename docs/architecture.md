@@ -253,7 +253,7 @@ A list query, not `decide`, checks the cursor: a token that does not decode, or 
 
 **Admission.** Every call runs, in order: no key, or an empty one → `Unauthenticated`; `parse`; `lookup_key(id, env)`, a read-only lookup with no cache (D45) that then reads now, both under the control plane's lock, so no recorded expiry falls between them; `verify` at that now, and `record_expiry` when `Refused::newly_expired()` is true; `admit` against `required_scope(op)` (D37). Only then does the handler run, and it reaches the ledger only through `ledger(&Authorized)` and the key records only through `keys(&Authorized)`. Admission's one write is that flag.
 
-**Recorded expiry sticks.** A key is expired when `now ≥ expires_at` or its `expiry_recorded` flag is set (D42). The flag is set, once, when the key is refused as expired with a matching digest and not revoked (`record_expiry`), or when a key change finds its calling key newly expired, in that change's transaction. A key whose expiry was recorded is never accepted again, whatever the clock does later, across restarts too. If recording fails, the call still gets the one uniform refusal, but nothing is recorded: until a later refusal records it, a clock set back can accept that key again. A clock that runs ahead and is corrected expires for good only the keys refused while it ran ahead; a recorded expiry does not spread to the keys a key created, so a child can stay usable until its own expiry. `list_keys` reports status by the clock and the flag and records nothing, so a key listed as expired can list as active again after the clock is set back. Event time is never compared with key time (LED-1).
+**Recorded expiry sticks.** A key is expired when `now ≥ expires_at` or its `expiry_recorded` flag is set (D42). The flag is set, once, when the key is refused as expired with a matching digest and not revoked (`record_expiry`), or when a key change finds its calling key newly expired, in that change's transaction. A key whose expiry was recorded is never accepted again, whatever the clock does later, across restarts too. If recording fails, the call still gets the one uniform refusal, but nothing is recorded, unless its commit is unsettled and lands (D48): until a later refusal records it, a clock set back can accept that key again. A clock that runs ahead and is corrected expires for good only the keys refused while it ran ahead; a recorded expiry does not spread to the keys a key created, so a child can stay usable until its own expiry. `list_keys` reports status by the clock and the flag and records nothing, so a key listed as expired can list as active again after the clock is set back. Event time is never compared with key time (LED-1).
 
 **Revocation and calls in flight.** A revoke, or the revoke a seed's rotation makes, which has no calling key, takes effect when its transaction commits: a call whose `lookup_key` runs after it is refused; a call that read the key before may finish. `insert_key` and `revoke_key` take the write lock, read now, then read their calling key's record again and `recheck` it: a key revoked or expired by then changes no key, except that a newly expired one has its own expiry recorded, and the call is `Unauthenticated` (D43). No lock spans the control plane and the ledger, so an emit admitted before a revoke may still commit after it. Key and identity operations do not touch the ledger, so they keep working while it is `Unavailable`.
 
@@ -383,27 +383,13 @@ An open is one of three kinds (D41):
 
 **A cancelled open** may still finish the step it was in. Each step, the ledger's own open and the staging build included, holds the root's lock until it ends and what it made is closed, so no later open runs beside it. It starts no undo: it leaves no bootstrap, an unmarked one or a marked one, as its last commit left it.
 
-**The first secret is returned at most once.** A finishing open that succeeds reports `lost_secret` for the minted key it revoked and, without a seed, returns a replacement; a seeded bootstrap has no minted key, so its seed stays the bootstrap key unless the open is given another. If an open's mark commits, bootstrapping or finishing, and it does not return, since it dies, is cancelled or, finishing with a seed, fails at that seed, any minted secret or `lost_secret` it would have returned is lost: no later open reports it, and nothing can tell. A lost secret's key stays listed with origin `Minted`. The host, which knows what it saved, recovers an admin key and revokes that one with it.
+**The first secret is returned at most once.** A finishing open that succeeds reports `lost_secret` for the minted key it revoked and, without a seed, returns a replacement; a seeded bootstrap has no minted key, so its seed stays the bootstrap key unless the open is given another. If an open's mark commits, bootstrapping or finishing, and it does not return, since it dies, is cancelled or, finishing with a seed, fails at that seed, or if a mark it answered as failed is unsettled and lands (D48), any minted secret or `lost_secret` it would have returned is lost: no later open reports it, and nothing can tell. A lost secret's key stays listed with origin `Minted`. The host, which knows what it saved, recovers an admin key and revokes that one with it.
 
 **Recovery.** `recover_admin_key(root, clock)` stores a fresh admin key, with all three scopes and no expiry, of origin `Recovered` and labelled `recovered`, and returns its secret, once (D34). Reaching the data directory is the authority. It is a host's function, not an operation: it takes no engine lock and works with or without a running engine, whose next call accepts the key, since every call reads keys from the control plane. With it, revoking the last admin key, your own included, needs no guard.
 
 It is refused, `RecoverError::NotReady`, unless the bootstrap is marked. `insert_recovered` checks that in the transaction that inserts, and an undo checks "unmarked" in its own, so a recovered key is never undone (TEN-14). With no `control.db`, or an empty file with no WAL, it creates and changes nothing; on an unmarked one it waits for a mark under way, which it then follows, and stores no row otherwise. After a crash, a refused recovery can still change what SQLite keeps: reading a WAL rebuilds `control.db-shm`, as for a refused open, and on an unmarked bootstrap, which it opens to write, the WAL is checkpointed into `control.db`. `control.db` in another format is `Store(Format)`. A recovery and an engine's writes wait a bounded time for each other's write lock; the one that gives up fails and changes nothing.
 
-### After a failed open or change
-
-SQLite writes a commit to `control.db-wal` before the sync that makes it durable. If that sync fails, the commit answers an error and is rolled back, but its frames are in the file: it is **unsettled** (D48). No open connection sees it. The next open of `control.db`, with no other connection on it, replays the WAL and may find it landed, whole. Two things clear it first: the next write, which takes its place in the file, so a retry that writes does; and the close of the last connection, if it can checkpoint. Neither happens if the process dies first, and that close can fail too while the disk does, so no crash is needed. This holds for every change the control plane makes (TEN-11):
-
-| Failed, then landed | What is found then | What a host does |
-|---|---|---|
-| `mark_ledger_created` | Marked, the minted key active; no key returned, `lost_secret` false | Recovers an admin key, and revokes the minted one with it |
-| `finish_bootstrap` | Marked, the minted key revoked and any replacement active; no key returned, `lost_secret` false | Without a seed, as above |
-| `ensure_bootstrap` | An unmarked bootstrap, though its open's undo found nothing to delete | Nothing: a finishing open completes it |
-| `undo_bootstrap` | No bootstrap | Nothing: a bootstrapping open makes one |
-| `apply_seed` | The new seed current, the one before it revoked | Opens with the new seed again; opening with the old one answers `Revoked` |
-| `insert_key`, `insert_recovered` | An active key whose secret nobody holds | Lists the keys and revokes it |
-| `revoke_key`, `record_expiry` | The key revoked; its expiry recorded | Nothing |
-
-The current seed is the one unrevoked key of origin `Seed`; there is at most one. A seed must parse as a key; nothing else about it is judged, and it is dropped once parsed, its digest alone going on. `apply_seed` runs in its own transaction, on a finishing or later open, after the ledger opens, so a failed open rotates no seed (D33, TEN-9):
+The current seed is the one unrevoked key of origin `Seed`; there is at most one. A seed must parse as a key; nothing else about it is judged, and it is dropped once parsed, its digest alone going on. `apply_seed` runs in its own transaction, on a finishing or later open, after the ledger opens, so a failed open rotates no seed, but for an unsettled commit (D33, D48, TEN-9):
 
 | Seed | Result | `Opened.seed` |
 |---|---|---|
@@ -412,6 +398,26 @@ The current seed is the one unrevoked key of origin `Seed`; there is at most one
 | A revoked seed, same key ID and digest | Nothing changes; it stays revoked, since a revoked key never returns | `Revoked`: the host should warn |
 | A seed with a new key ID | Revokes the current seed, if any, and inserts the new one, with all three scopes and no expiry; other admin keys are untouched | `Current` |
 | A seed whose key ID is a key with another digest, of another origin or of another incarnation | Refused: `EngineError::SeedConflict`; no key changes | |
+
+### After a failed open or change
+
+SQLite writes a commit to `control.db-wal`, syncs it, then shows it in the WAL index. If it fails after the write, in practice at the sync, the commit answers an error and is rolled back, but its frames are in the file: it is **unsettled** (D48). No open connection sees it. The next open of `control.db` with no other connection on it, an engine's, a recovery's or a refused one's, replays the WAL and may find it landed, whole. Two things clear it first:
+
+- a later write on a connection already open that reaches the file, since it takes the commit's place there, even if it then errors too; a write that fails before that clears nothing. So a key change retried on the same engine clears it if it writes, while a retried open or recovery can be the open that finds it;
+- the close of the last connection, if it can checkpoint. While the disk still fails it may not, so no crash is needed.
+
+This holds for every change TEN-11 lists, and for the schema an open creates, which lands empty and is bootstrapped as any empty file. A change that fails before its commit, or at a constraint its commit checks, is not unsettled. What is found when one lands, and what the host does:
+
+- **A bootstrapping open's mark** (`mark_ledger_created`): the bootstrap is marked and no later open reports it. Without a seed, its minted key is active and its secret lost: recover an admin key and revoke the minted one with it. With one, open with that seed again.
+- **A finishing open's mark** (`finish_bootstrap`): the same, but a minted key is revoked already and, without a seed, its replacement is the active minted key.
+- **A bootstrap** (`ensure_bootstrap`), its open's undo having found nothing to delete: an unmarked bootstrap, which a finishing open completes.
+- **An undo** (`undo_bootstrap`): no bootstrap; the next open makes one.
+- **A seed's rotation** (`apply_seed`): the new seed is current and the one before it, if any, revoked. Open with the new seed again; the old one now answers `Revoked`.
+- **A created or recovered key** (`insert_key`, `insert_recovered`): an active key whose secret nobody holds. List the keys and revoke it. A key's text holds its ID, so the one to revoke is the one no holder has; where the holders cannot be asked, replace the candidates before revoking them.
+- **A revoke** (`revoke_key`): the key is revoked. Until then it works, so revoke it again.
+- **A recorded expiry** (`record_expiry`, or a key change refused as its calling key expired): the expiry is recorded.
+
+Seen with a fault-injecting VFS that fails the WAL's sync (macOS, [#135](https://github.com/ironflowx/foundation/issues/135)); no test in the suite produces it. A power loss and Linux were not tried.
 
 ## What is stored
 

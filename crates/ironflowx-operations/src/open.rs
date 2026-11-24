@@ -195,14 +195,14 @@ impl Engine {
     /// An open that fails while it bootstraps tries to undo it, unless its ledger is already in
     /// place, and returns the failure, not the undo's. A bootstrap left in place, its ledger built
     /// or its undo failed, is for a later open to finish. No other open undoes anything, and one
-    /// that fails rotates no seed. A cancelled open may still finish the step it was in, and
+    /// that fails rotates no seed, but as below. A cancelled open may still finish the step it was in, and
     /// starts no undo: `root` stays locked until that step ends.
     ///
     /// If it failed because a write to the control plane failed (`Store`), that write may still
-    /// land when `root` is next opened: a later open may then return no key for a bootstrap this
-    /// one began or was finishing, with `lost_secret` false, and [`crate::recover_admin_key`] is
-    /// the way in; or find this one's seed current and the one before it revoked, so open with the
-    /// same seed again.
+    /// land when `root` is next opened. A later open may then return no key for a bootstrap this
+    /// one began or was finishing without a seed, with `lost_secret` false:
+    /// [`crate::recover_admin_key`] is the way in. Or it may find this one's seed current and the
+    /// one before it revoked: open with the same seed again.
     ///
     /// # Panics
     ///
