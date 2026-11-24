@@ -38,11 +38,11 @@ Judgement rules for review. Anything a tool can check belongs in CI instead (`ci
   output for a secret, stops accidents, not evasion: a bypass that gets through one is a defect to
   fix in this PR, whatever an older check shares the gap, if a contributor would plausibly write it
   without trying to get past the check. Any other bypass that gets through one is listed in a code
-  comment on that check, and the PR shows this repo does not have it. So is code the check wrongly
-  refuses that this repo does not have; if this repo has it, the check is fixed in this PR. A
-  bypass that gets through anything else, product code included, is a defect to fix in this PR. If
-  the author and a reviewer, or two reviewers, disagree on which kind a bypass is, the maintainer
-  decides.
+  comment on that check, and the PR shows this repo does not have it. Code the check wrongly
+  refuses is listed and shown absent the same way; if this repo has it, the check is fixed in this
+  PR. A bypass that gets through anything else, product code included, is a defect to fix in this
+  PR. If the author and a reviewer, or two reviewers, disagree on which kind a bypass is, the
+  maintainer decides.
 - **Limits leave with proof.** A change that deletes a documented limit, caveat or failure cause
   includes a test showing it no longer happens. Without one, the line stays.
 - **Tables are tested by row.** For each table in `architecture.md` that maps an input or a state
