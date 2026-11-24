@@ -95,6 +95,9 @@ impl Engine {
     /// Reads the control plane once, then whether the ledger has failed, for the host's readiness.
     /// Not an operation: it takes no key, and reads no key record and no event (TEN-1).
     ///
+    /// It waits for the control plane's lock, as every call does, so a key change waiting for
+    /// another process's write lock holds it for seconds: the host bounds the wait.
+    ///
     /// # Panics
     ///
     /// Outside a tokio runtime.

@@ -5,7 +5,7 @@ use std::fmt;
 use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use ironflowx_core::{Clock, Emitter, EnvRef, EventId, SequencedTime, SubmitAs, Timestamp};
@@ -120,6 +120,8 @@ struct Progress {
     committed: u64,
     applied: u64,
     failed: bool,
+    /// The writer has joined: no failure counts from here on.
+    closed: bool,
 }
 
 struct Job {
@@ -204,6 +206,7 @@ impl Ledger {
             committed: recovered.watermark,
             applied: recovered.watermark,
             failed: false,
+            closed: false,
         }));
         let store = Arc::new(Mutex::new(recovered.conn));
         #[cfg(any(test, feature = "__fault-points"))]
@@ -261,7 +264,9 @@ impl Ledger {
     pub fn faulted(&self) -> impl Future<Output = Fault> + Send + 'static + use<> {
         let mut gate = self.progress.subscribe();
         async move {
-            if gate.wait_for(|p| p.failed).await.is_err() {
+            // `wait_for` answers later when its task's budget is spent.
+            let failed = gate.borrow().failed;
+            if !failed && gate.wait_for(|p| p.failed).await.is_err() {
                 // Closed, and never failed.
                 std::future::pending::<()>().await;
             }
@@ -306,10 +311,9 @@ impl Ledger {
             return Err(ReadError::Unavailable);
         }
         let store = self.store.clone();
-        // Not the gate itself: a query abandoned by its caller may outlive the ledger.
-        let gate = Arc::downgrade(&self.progress);
+        let gate = self.progress.clone();
         let answer = tokio::task::spawn_blocking(move || {
-            let on_panic = FailOnPanic(gate);
+            let _on_panic = FailOnPanic(gate.clone());
             // Poisoned: an earlier query panicked holding it.
             let answer = store.lock().ok().map(|conn| q(&ReadStore(&conn)));
             match answer {
@@ -317,7 +321,7 @@ impl Ledger {
                 Some(Err(Error::Refused(r))) => Err(ReadError::Refused(r)),
                 // Here and not below, which an abandoned read never reaches.
                 Some(Err(Error::Store(_))) | None => {
-                    on_panic.fail();
+                    fail(&gate);
                     Err(ReadError::Unavailable)
                 }
             }
@@ -365,11 +369,13 @@ impl Drop for Ledger {
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
         }
+        self.progress.send_modify(|p| p.closed = true);
     }
 }
 
+/// Fails the ledger, unless it has closed: a query its caller abandoned may outlive it.
 fn fail(progress: &watch::Sender<Progress>) {
-    progress.send_modify(|p| p.failed = true);
+    progress.send_modify(|p| p.failed |= !p.closed);
 }
 
 /// Losing the reply during an append leaves its outcome uncertain.
@@ -404,20 +410,12 @@ struct Writer {
 }
 
 /// A panic while this is held fails the ledger: no read waits forever, and the fault is signalled.
-struct FailOnPanic(Weak<watch::Sender<Progress>>);
-
-impl FailOnPanic {
-    fn fail(&self) {
-        if let Some(progress) = self.0.upgrade() {
-            fail(&progress);
-        }
-    }
-}
+struct FailOnPanic(Arc<watch::Sender<Progress>>);
 
 impl Drop for FailOnPanic {
     fn drop(&mut self) {
         if thread::panicking() {
-            self.fail();
+            fail(&self.0);
         }
     }
 }
@@ -425,8 +423,10 @@ impl Drop for FailOnPanic {
 impl Writer {
     /// One submission at a time: decide, append, fsync, publish, acknowledge, fold (D15).
     fn run(mut self, mut queue: mpsc::Receiver<Job>) {
-        let _on_panic = FailOnPanic(Arc::downgrade(&self.progress));
         while let Some(job) = queue.blocking_recv() {
+            // After `job`, and again after `reply`, so that it drops first: a caller whose reply a
+            // panic loses finds the ledger failed.
+            let _on_panic = FailOnPanic(self.progress.clone());
             if self.stopping.load(Ordering::SeqCst) || self.progress.borrow().failed {
                 let _ = job.reply.send(Err(SubmitError::Unavailable));
                 continue;
@@ -448,6 +448,7 @@ impl Writer {
             let emitted_by = Emitter::from(job.by);
             let payload = record::events(self.env.token(), &emitted_by, &record);
             let reply = AppendReply(Some(job.reply));
+            let _on_panic = FailOnPanic(self.progress.clone());
             let offset = match self.append(payload) {
                 Ok(offset) => offset,
                 Err(e) => {
