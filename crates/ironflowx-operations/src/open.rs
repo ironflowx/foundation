@@ -202,8 +202,8 @@ impl Engine {
     /// land when `control.db` is next opened. A later open may then return no key for a bootstrap
     /// this one, given no seed, began or was finishing, with `lost_secret` false, and unless a
     /// seed began it, its key's secret is lost: [`crate::recover_admin_key`] is the way in. Or it
-    /// may find this one's seed current and any previous one revoked: open with the same seed
-    /// again.
+    /// may find this one's seed current and the previous current seed, if any, revoked: open
+    /// with the same seed again.
     ///
     /// # Panics
     ///
