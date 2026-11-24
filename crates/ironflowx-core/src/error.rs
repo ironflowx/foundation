@@ -4,7 +4,8 @@ use std::fmt;
 /// belongs to the module that produces it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
-    /// A rule refused the request. The same request is refused the same way.
+    /// A rule refused the request. The same request is refused the same way, unless it names
+    /// an expiry that a clock set back makes valid.
     Invalid,
     /// No such resource, or its ID does not parse.
     NotFound,
@@ -25,13 +26,14 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
-    /// True when the same request, sent again unchanged, may succeed and stores no second event;
-    /// the error's hint says when. A kind that is not retryable may still have a hint that says
-    /// what to do first.
+    /// True only when the same request, sent again unchanged, may succeed and stores no second
+    /// event. The error's hint says what to do, retryable or not; [`Self::Unavailable`] says when
+    /// "at once" is not enough.
     ///
     /// It promises no second event, not no second key: a `create_key` that answered `Unavailable`
-    /// may have stored its key. List the keys before sending it again; a key whose commit is
-    /// unsettled (D48) is listed only after a reopen, if it lands.
+    /// may have stored its key, whose secret is then lost. List the keys before sending it again,
+    /// and again after a reopen: a key whose commit is unsettled (D48) is listed only then, if it
+    /// lands. Revoke the one no holder has.
     pub const fn retryable(self) -> bool {
         matches!(self, Self::Unavailable)
     }

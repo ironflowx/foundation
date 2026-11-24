@@ -1,7 +1,8 @@
 //! The Ironflow X Operations interface and its request and answer types.
 //!
-//! Types, a trait and each operation's required scope (D37). An event's defaults, limits and
-//! checks belong to event rules (D1), a key's to the engine, credentials and the control plane.
+//! Types, a trait and each operation's required scope (D37), RPC name and whether it changes
+//! state. An event's defaults, limits and checks belong to event rules (D1), a key's to the engine,
+//! credentials and the control plane.
 //! No operation takes an environment: it runs on the one its key is bound to (LED-7).
 
 use std::fmt;
@@ -189,8 +190,8 @@ impl Call {
     }
 }
 
-/// A failed call: the kind decides whether to send it again unchanged (`kind.retryable()`), the
-/// message explains, and the hint, when there is one, says what to do or when to retry.
+/// A failed call: `kind.retryable()` says whether any call that failed so may be sent again
+/// unchanged, the message explains, and the hint, when there is one, says what to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpError {
     pub kind: ErrorKind,

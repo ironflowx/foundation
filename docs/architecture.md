@@ -275,10 +275,10 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 
 | Kind | When | Retry |
 |---|---|---|
-| `Invalid` | A rule refused the request, or one batch item; or `create_key` with more scopes than the creator, an expiry not after now or later than the creator's, or a bad label; or `list_keys` with a cursor that does not decode or names another incarnation | No: the same request is refused the same way |
+| `Invalid` | A rule refused the request, or one batch item; or `create_key` with more scopes than the creator, an expiry not after now or later than the creator's, or a bad label; or `list_keys` with a cursor that does not decode or names another incarnation | No: the same request is refused the same way, unless it names an expiry that a clock set back makes valid |
 | `NotFound` | No event has that ID, or the ID does not parse | No |
 | `NotFound` | `revoke_key` with an ID that does not parse or names no key in the environment: `key not found` | No |
-| `Unknown` | The append's outcome is unknown; the ledger is now `Unavailable` | Not unchanged unless it has an idempotency key: after reopen, with the same key, the retry returns the original event if it landed. Without one it may store a second event, so check first |
+| `Unknown` | The append's outcome is unknown; the ledger is now `Unavailable` | After reopen, only if it has an idempotency key, or every item of its batch has one: the same request then returns the original event of each item that landed, and stores the others once. An item without one may store a second event, so check first |
 | `Unavailable` | The ledger failed (append, fold, read store, or a `read` query that panicked) and refuses every call until it is reopened. Reads waiting at the gate end with it | After reopen |
 | `Unavailable` | A control-plane read or write failed during admission or a handler: `lookup_key`, `environment`, `list_keys` or a key change. The call fails closed and changes nothing, but for an [unsettled commit](#after-a-failed-open-or-change) (D48); the engine stays open (D44). A failure to record an expiry is not this: the call keeps its uniform refusal. A `create_key` whose answer was lost may have committed. Once a call has panicked under the control plane's lock (a host `Clock` that panics), every later call that reaches the control plane answers so until the engine is reopened, though its hint still says at once | Yes, at once; after such a panic, after reopen |
 | `Unauthenticated` | No key, or an empty one: `authentication required` | No |
@@ -294,11 +294,11 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 | `Unauthenticated` | false | 3 |
 | `PermissionDenied` | false | 4 |
 | `NotFound` | false | 5 |
-| `Unknown` | false: send it again only with the same idempotency key, or check first | 6 |
+| `Unknown` | false: send it again only with the same idempotency key, on every item of a batch, or check first | 6 |
 | `ResourceExhausted` | false: something must change first | 7 |
 | `Unavailable` | true | 8 |
 
-`ErrorKind::retryable()` is true only when the same request, sent again unchanged, may succeed and stores no second event (D70). `OpError::hint` says when, or what to do first. It promises no second event, not no second key: a `create_key` that answered `Unavailable` may have stored its key. List the keys before sending it again; a key whose commit is [unsettled](#after-a-failed-open-or-change) (D48) is listed only after a reopen, if it lands.
+`ErrorKind::retryable()` is true only when the same request, sent again unchanged, may succeed and stores no second event (D70). `OpError::hint` says what to do; its "retry at once" is wrong after a call panicked under the control plane's lock (above). `retryable()` promises no second event, not no second key: a `create_key` that answered `Unavailable` may have stored its key, whose secret is then lost. List the keys before sending it again, and again after a reopen: a key whose commit is [unsettled](#after-a-failed-open-or-change) (D48) is listed only then, if it lands. Revoke the one no holder has.
 
 `ErrorKind::exit_code()` is the exit code of a process that ends with that kind; 0 is success. `Internal` is a server fault (D69); no operation answers it yet.
 
