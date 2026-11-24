@@ -28,13 +28,17 @@ pub fn recover_admin_key(root: &Path, clock: impl Clock) -> Result<Secret, Recov
     let path = root.join("control.db");
     // Opening to write would create the file. Whether the bootstrap is marked is not decided
     // here, but in the transaction that inserts (TEN-14).
-    match ControlPlane::bootstrap_state(&path)? {
+    let env = match ControlPlane::bootstrap_state(&path)? {
         BootstrapState::NoFile | BootstrapState::Unbootstrapped => {
             return Err(RecoverError::NotReady);
         }
-        BootstrapState::Unmarked { .. } | BootstrapState::Marked { .. } => {}
-    }
+        BootstrapState::Unmarked { env } | BootstrapState::Marked { env } => env,
+    };
     let (key, secret) = new_admin_key();
+    #[cfg(feature = "__fault-points")]
+    ironflowx_core::tell_key(env, key.id, Some(&secret));
+    #[cfg(not(feature = "__fault-points"))]
+    let _ = env;
     ControlPlane::open(&path)?.insert_recovered(&key, &clock)?;
     Ok(secret)
 }
