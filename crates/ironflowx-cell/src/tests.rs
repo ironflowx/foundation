@@ -372,26 +372,46 @@ fn store_message(e: ironflowx_events::Error<crate::StoreError>) -> String {
 
 #[tokio::test]
 async fn a_page_of_events_reads_no_event_past_its_end() {
-    // Ten events of 512 KiB, with or without metadata: six without are 3 MiB exactly.
-    for (metadata, limit, first, second, third) in [
-        (None, None, vec![10, 9, 8, 7, 6, 5], vec![4, 3, 2, 1], false),
+    // Ten events of 512 KiB, their metadata included, so six are 3 MiB exactly; or the newest is
+    // a byte larger.
+    for (metadata, larger, limit, first, second, third) in [
         (
-            Some("{}"),
+            "",
+            0,
+            None,
+            vec![10, 9, 8, 7, 6, 5],
+            vec![4, 3, 2, 1],
+            false,
+        ),
+        (
+            "{}",
+            0,
+            None,
+            vec![10, 9, 8, 7, 6, 5],
+            vec![4, 3, 2, 1],
+            false,
+        ),
+        (
+            "{}",
+            1,
             None,
             vec![10, 9, 8, 7, 6],
             vec![5, 4, 3, 2, 1],
             false,
         ),
-        (None, 2.try_into().ok(), vec![10, 9], vec![8, 7], true),
+        ("", 0, 2.try_into().ok(), vec![10, 9], vec![8, 7], true),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let env = new_env_ref();
         let ledger = open(dir.path(), env).await;
         // Each event's data is its own letter, so that its bytes can be found in the file.
         for letter in 'a'..='j' {
+            let larger = if letter == 'j' { larger } else { 0 };
+            // Less the quotes.
+            let letters = letter.to_string().repeat(524_286 - metadata.len() + larger);
             let big = Emit {
-                data: Some(format!("\"{}\"", letter.to_string().repeat(524_286)).into_bytes()),
-                metadata: metadata.map(Into::into),
+                data: Some(format!("\"{letters}\"").into_bytes()),
+                metadata: (!metadata.is_empty()).then(|| metadata.into()),
                 ..named("blob.saved")
             };
             emit(&ledger, big).await.unwrap();
@@ -414,10 +434,13 @@ async fn a_page_of_events_reads_no_event_past_its_end() {
 
         // Cut the chain of pages that holds the data of every event past the first page: SQLite
         // fails to read any of them now, and the first page lists all the same.
+        let page_size: usize = rusqlite::Connection::open(&path)
+            .and_then(|conn| conn.query_row("PRAGMA page_size", [], |r| r.get(0)))
+            .unwrap();
         let mut file = std::fs::read(&path).unwrap();
         let past_letters: BTreeSet<u8> = (b'a'..).zip(1..=second[0]).map(|(l, _)| l).collect();
         let mut cut = BTreeSet::new();
-        for page in file.chunks_mut(4096) {
+        for page in file.chunks_mut(page_size) {
             let letter = page[4];
             let (next, data) = page.split_at_mut(4);
             if past_letters.contains(&letter) && data.iter().all(|&b| b == letter) {
@@ -455,7 +478,7 @@ fn a_page_fails_when_the_read_store_cannot_read_an_event_on_it() {
         (
             "CREATE VIEW events AS SELECT 1 AS sequence, 'x' AS id, 'x' AS name, NULL AS data,
              NULL AS metadata, 1 AS version, NULL AS idempotency_key, 0 AS time, '' AS emitted_by",
-            "Invalid column type Null at index: 1,",
+            "Invalid column type Null at index: 1",
         ),
         (
             "CREATE VIEW events AS SELECT 1 AS sequence, 'x' AS id, 'x' AS name,
@@ -468,8 +491,10 @@ fn a_page_fails_when_the_read_store_cannot_read_an_event_on_it() {
         conn.execute_batch(schema).unwrap();
         let page = ironflowx_events::list_events(&ReadStore(&conn), token, None, None);
         let message = store_message(page.unwrap_err());
-        let expected = format!("read store: {failed}");
-        assert!(message.starts_with(&expected), "{message}");
+        // Less what rusqlite adds: the statement, or the column's name.
+        let cause = message.split(" in SELECT").next().unwrap();
+        let cause = cause.split(", name: ").next().unwrap();
+        assert_eq!(cause, format!("read store: {failed}"));
     }
 }
 

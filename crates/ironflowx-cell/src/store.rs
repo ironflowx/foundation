@@ -274,8 +274,8 @@ impl EventsView for ReadStore<'_> {
         // A cursor past every sequence lists from the newest.
         let before = before.map_or(i64::MAX, |b| i64::try_from(b).unwrap_or(i64::MAX));
         store_err((|| {
-            // SQLite takes a blob's length from its row's header, so of an event that ends the
-            // page, it reads no more than the one database page that holds the row.
+            // SQLite takes a blob's length from its row's header, so of the event that ends the
+            // page it reads none of the overflow pages.
             let mut sizes = self.0.prepare(
                 "SELECT sequence, length(data) + ifnull(length(metadata), 0) FROM events
                  WHERE sequence < ?1 ORDER BY sequence DESC",
