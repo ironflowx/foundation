@@ -14,6 +14,8 @@ Foundation crates are 0.x with no semver-stability promise.
 
 Every part of the engine writes through one commit path. Foundation is that path, proven on its own: the crates any Ironflow X product links to commit one environment's events durably, in order, and read them back.
 
+![What foundation does, layer by layer](https://raw.githubusercontent.com/ironflowx/foundation/main/docs/img/layers.svg)
+
 ## What 0.2 is
 
 In `0.2.0`: an engine that admits every call by its key, in front of one environment's ledger, linked into your process.
@@ -31,13 +33,11 @@ An app that needs no keys opens a ledger directly.
 
 The engine is linked, not run: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead. Event rules, credentials and core are pure; only the ledger, the control plane and the engine touch disk, the clock and randomness.
 
-![C2 crates](https://raw.githubusercontent.com/ironflowx/foundation/main/docs/img/c2-crates.svg)
-
 A write is acknowledged once its record is fsynced, and a read sees every write acknowledged before it arrived, whoever made it:
 
 ![Emit, then read your write](https://raw.githubusercontent.com/ironflowx/foundation/main/docs/img/flow-emit-read.svg)
 
-More diagrams (modules and seams, crash recovery) and the details are in [`docs/architecture.md`](https://github.com/ironflowx/foundation/blob/main/docs/architecture.md); the decisions behind them are in [`docs/decisions.md`](https://github.com/ironflowx/foundation/blob/main/docs/decisions.md).
+More diagrams (crates, modules and seams, crash recovery) and the details are in [`docs/architecture.md`](https://github.com/ironflowx/foundation/blob/main/docs/architecture.md); the decisions behind them are in [`docs/decisions.md`](https://github.com/ironflowx/foundation/blob/main/docs/decisions.md).
 
 | Crate | Contents |
 | --- | --- |

@@ -32,6 +32,8 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 
 ## Modules
 
+![What foundation does, layer by layer](img/layers.svg)
+
 | Module | Does | Interface | Crate |
 |---|---|---|---|
 | Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time | `open`, `open_blocking`, `open_existing_blocking`, `submit`, `read`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
