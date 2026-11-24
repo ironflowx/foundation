@@ -1,6 +1,6 @@
 # Tenancy in release 0.2: bootstrap, keys, scopes and who emitted each event, through
 # the engine. Conventions, adapters and what is out of scope: README.md. The rules these
-# scenarios sample: architecture.md, "Keys", "Bootstrap" and "Open".
+# scenarios sample: architecture.md, "Keys", "Errors" and "Engine open".
 
 Feature: Tenancy: bootstrap, keys and scopes
 

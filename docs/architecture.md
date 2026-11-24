@@ -18,7 +18,7 @@ Event rules, credentials and core are pure. Only the ledger, the control plane a
 
 ![C3 modules and seams](img/c3-modules.svg)
 
-The ledger's interface is the only way in; everything inside it is implementation.
+Inside the ledger: its interface is the only way in, and everything behind it is implementation. The engine in front of it, with its credentials and control plane, is in [Modules](#modules), a call's way through them in [Keys](#keys) ("Admission").
 
 ## Flows
 
@@ -28,7 +28,7 @@ How a write becomes visible to every reader: [Commit and read](#commit-and-read)
 
 ![Open after a crash, and a failed append](img/flow-restart.svg)
 
-The rows behind it: [Open](#open).
+The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open).
 
 ## Modules
 
@@ -60,7 +60,7 @@ The rows behind it: [Open](#open).
 | `KeyDigest` | SHA-256 of a key's whole text, in `ironflowx-authz`. Private bytes, no `PartialEq`, `AsRef` or `Deref`; `ct_eq` is its only comparison; `to_stored` and `from_stored`, its storage codec, are confined to `ironflowx-store` by a lint (TEN-4) |
 | `KeyRecord` | What credentials need about a stored key: `{ id, env: EnvRef, scopes, digest, expires_at, expiry_recorded, revoked_at }`, `env` being the environment ID and token current when the key was made |
 | `Grant` | What a verified key may do: its key ID, scopes, `EnvRef` and expiry, and `submit_as()`, the key's attribution, the only `SubmitAs::key` call, which clippy confines to the engine (D36). Only `verify` and `recheck` make one; never stored |
-| `Authorized` | Proof of admission, `{ grant }`, its field private to the engine's admission module: the engine's key operations take one (TEN-1) |
+| `Authorized` | Proof of admission, `{ grant }`, its field private to the engine's admission module: a handler reaches the engine's ledger and key records only with one (TEN-1) |
 
 ## Seams
 
@@ -71,7 +71,7 @@ The rows behind it: [Open](#open).
 | Control plane | SQLite · a shared database for clusters | SQLite only: hypothetical, so no trait |
 | Ledger, event rules, credentials | One adapter each | Module interfaces, not seams |
 
-The segment log has a storage seam of its own, private to `segment-log-core`; 0.1 does not reach it.
+The segment log has a storage seam of its own, private to `segment-log-core`; foundation does not reach it.
 
 ## Interfaces
 
@@ -234,7 +234,7 @@ fn fold<T: EventTables>(tx: &mut T, record: &Record, emitted_by: &Emitter) -> Re
 
 If a build turns on `serde_json`'s `arbitrary_precision` feature, which Cargo's feature unification can do from any crate in the embedder's graph, an object whose first key is `$serde_json::private::Number` is read as a number and so may be refused. A default build reads that key like any other. CI runs the event-rule tests in both builds.
 
-A list query, not `decide`, checks the cursor: a token that does not decode, or names another incarnation, is `Invalid` (EVT-045, EVT-055). A cursor encodes the incarnation token and the last event sequence returned, and stays valid across reopen. A page lists the events older than the cursor's sequence, whether or not an event has that sequence, so a cursor past every sequence lists from the newest. It is an encoding, not a signature: 0.1 does not detect a forged one.
+A list query, not `decide`, checks the cursor: a token that does not decode, or names another incarnation, is `Invalid` (EVT-045, EVT-055). A cursor encodes the incarnation token and the last event sequence returned, and stays valid across reopen. A page lists the events older than the cursor's sequence, whether or not an event has that sequence, so a cursor past every sequence lists from the newest. It is an encoding, not a signature: a forged one is not detected.
 
 ## Keys
 
@@ -266,7 +266,7 @@ A list query, not `decide`, checks the cursor: a token that does not decode, or 
 
 ## Errors
 
-The kind is contract. Four messages are contract too: `event name is required`, `event data exceeds maximum size`, `batch size {n} exceeds maximum of 100` and `event not found`. Other messages are not.
+The kind is contract. Nine messages are contract too: `event name is required`, `event data exceeds maximum size`, `batch size {n} exceeds maximum of 100`, `event not found`, `authentication required`, `invalid API key`, `missing scope: <scope>`, `key limit reached` and `key not found`. Other messages are not.
 
 | Kind | When | Retry |
 |---|---|---|
@@ -282,7 +282,7 @@ The kind is contract. Four messages are contract too: `event name is required`, 
 | `PermissionDenied` | The key lacks the operation's scope: `missing scope: <scope>`, with `hint` saying to create or use a key with that scope (D31) | No |
 | `ResourceExhausted` | `create_key` when 1,000 created keys hold a slot: `key limit reached`, with `hint` saying to revoke keys, expired ones first (D44) | After a revoke |
 
-`ErrorKind::retryable()` is true when the same request, unchanged, may succeed later: `Unavailable`, `Unknown` and `ResourceExhausted`. `OpError::hint` says when, or what to do. The three `Unauthenticated` messages, the `PermissionDenied` message, `key limit reached` and `key not found` are contract.
+`ErrorKind::retryable()` is true when the same request, unchanged, may succeed later: `Unavailable`, `Unknown` and `ResourceExhausted`. `OpError::hint` says when, or what to do.
 
 ## Commit and read
 
@@ -339,13 +339,13 @@ Steps, with the embedder stopped:
    - **Lossless plan:** reopen the ledger. It replays and opens.
    - **Lossy plan:** acknowledged records are dropped and the tool needs `--drop-acknowledged`, which leaves the log sealed. Go to step 4, then read the note on a sealed log.
      The segment log's repair class F ([segment-log ADR 0068](https://github.com/ironflowx/segment-log/blob/v0.2.0/docs/decisions/0068-open-refuses-damage-with-acknowledged-groups-after-it.md)) is a bad frame in the newest unsealed segment with a later record or a close frame after it. Its plan is always lossy: apply it with `--drop-acknowledged`. The tool refuses it (exit code 3) when the damage is in the second-newest segment, when the second-newest segment lacks its closing run, or when the seal run would reach the last acknowledged record after the cut and that record is a group frame; then restore from a backup. When the proof after the cut is a close frame, which every clean `close` writes, the plan copies it past the seal run and can apply. The segment log's section above is the authority on these cases.
-   - **Other damage** (an older segment, the headers) is not repairable in 0.1: restore the directory from a backup.
+   - **Other damage** (an older segment, the headers) is not repairable: restore the directory from a backup.
 4. **If verify is clean**, or after a lossy repair, the ledger refused. Prefer restoring the directory from a backup at least as new as the last acknowledged emit. To accept the loss instead (if the log was empty, the step 1 copy of `read.db` is the only copy of those events: keep it), delete `<dir>/read.db` and its `-wal` and `-shm` files and reopen: the ledger rebuilds the read store from the log as it now is. This deletion is the one step that accepts lost events.
 5. **If it still answers `Corrupt`** after the deletion, the ledger refused a record: rebuilding cannot get past it. Restore the directory from a backup taken before that record was written. The step 1 copy holds the same record and will not open; keep it for inspection.
 
 After accepting a loss, the lost events are gone for good, and so are their idempotency keys: a client's keyed retry stores a new event instead of returning the original. New events reuse the lost event sequences, so a cursor issued before the loss can page into events stored after it.
 
-A sealed log, after a lossy repair, opens and reads until the first emit that appends. That append fails the ledger: the emit answers `Unavailable`, and so does every later call, reads included, until it is reopened (D19). An emit that appends nothing, a duplicate or a refusal, is answered as usual. Serve a sealed ledger read-only: do not emit to it. 0.1 cannot unseal it. To take writes again, create a new environment (`new_env_ref`) in a new directory; moving events into it is outside 0.1.
+A sealed log, after a lossy repair, opens and reads until the first emit that appends. That append fails the ledger: the emit answers `Unavailable`, and so does every later call, reads included, until it is reopened (D19). An emit that appends nothing, a duplicate or a refusal, is answered as usual. Serve a sealed ledger read-only: do not emit to it. Foundation cannot unseal it. To take writes again, create a new environment (`new_env_ref`) in a new directory; foundation moves no events into it.
 
 `WrongIncarnation` and `Format` are not damage: the `EnvRef` or the build does not match the directory. Open it with the `EnvRef` it was created with, or with a build that reads its format.
 
@@ -406,7 +406,7 @@ An engine's data directory, `<root>`:
 | Where | Holds |
 |---|---|
 | `<root>/engine.lock` | The engine's lock file; never deleted |
-| `<root>/control.db` (SQLite, WAL, `synchronous=FULL`, `fullfsync`) | `tenants` (id, name, created_at) · `projects` (id, tenant_id, name, created_at) · `environments` (id, project_id, name, token, created_at, ledger_created_at) · `keys` (seq, id, environment_id, environment_token, scopes, digest, origin, created_by, label, expires_at, expiry_recorded, revoked_at, created_at) · `meta` (format version, 1). Times are `Timestamp`'s `i64` milliseconds (D18); the digest is `KeyDigest::to_stored()`; no last-used time (D38) |
+| `<root>/control.db` (SQLite, WAL, `synchronous=FULL`, `fullfsync`) | `tenants` (id, name, created_at) · `projects` (id, tenant_id, name, created_at) · `environments` (id, project_id, name, token, created_at, ledger_created_at) · `keys` (seq, id, environment_id, environment_token, scopes, digest, origin, created_by, label, expires_at, expiry_recorded, revoked_at, created_at) · `meta` (format version, 1: a change to this schema changes it, D47). Times are `Timestamp`'s `i64` milliseconds (D18); the digest is `KeyDigest::to_stored()`; no last-used time (D38) |
 | `<root>/ledgers/<environment-id>/` | The environment's ledger, laid out as below |
 | `<root>/ledgers/.staging/` | A ledger being built; deleted by any open that locks the root and reads its control plane |
 
@@ -439,9 +439,9 @@ How the ledger uses the log:
 - **Options:** `group_byte_cap` 8 MiB (the library's maximum, above the 4.1 MiB worst case), `pending_byte_budget` at least that, `linger` 0, since the writer sends one record at a time.
 - **Records:** one stream, `events`; the genesis record expects `ExpectedRevision::Empty`, each later one `At(last revision)`. No log key: the ledger keeps its own idempotency.
 - **Errors:** `CommitError::Indeterminate` is `Unknown`. `CommitError::Poisoned` and `AppendError::Poisoned` are `Unavailable`. Every other append or commit error (`Full`, `TooLarge`, `Invalid`, `Sealed`, `WrongRevision`, `KeyConflict`, `PartialRetry`, `Exhausted`) cannot happen by construction; if one does, the ledger treats it as a fault: `Unavailable` until reopened.
-- **A sealed log:** nothing in 0.1 seals one; only the log's operator repair tool does. The library opens it without an error and cannot say it is sealed until an append, so `open` succeeds, reads work, and the first append is the fault above, after which reads answer `Unavailable` too (D19).
+- **A sealed log:** the ledger never seals one; only the log's operator repair tool does. The library opens it without an error and cannot say it is sealed until an append, so `open` succeeds, reads work, and the first append is the fault above, after which reads answer `Unavailable` too (D19).
 - **Names:** the log's `Record`, `Position` and `Committed` types stay private to `ironflowx-cell`. This repo calls them the log record and the log offset; the ledger's own terms are in [`GLOSSARY.md`](../GLOSSARY.md).
-- **Durability:** `wait` returns after the record's `sync_data`, which is a full flush on Linux and macOS. 0.1 claims crash durability on both. Power-loss durability is unclaimed until the simulator proves it.
+- **Durability:** `wait` returns after the record's `sync_data`, which is a full flush on Linux and macOS. Crash durability is claimed on both. Power-loss durability is unclaimed until the simulator proves it.
 - **Close:** `close`, and dropping a `Ledger`, drop the log cleanly, so it writes a close frame after the last record (segment-log format version 4, [ADR 0071](https://github.com/ironflowx/segment-log/blob/v0.2.0/docs/decisions/0071-a-clean-drop-writes-a-close-frame.md)). The upgrade is one-way: once a build on `segment-log-core` 0.2 has opened a directory, a build on 0.1 answers `Format` for it.
 
 The decisions behind this design: [`decisions.md`](decisions.md).

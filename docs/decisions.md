@@ -2,7 +2,7 @@
 
 Every architecture decision, numbered across all milestones. Numbers are never reused. A decision a later one overturns stays, marked "Superseded by Dnn" in its Why cell.
 
-From 0.2 on, a milestone's PRD issue assigns its decision numbers up front and each lands with the PR that builds it, so the table can skip numbers still to land: 0.2's are D27–D46 ([#64](https://github.com/ironflowx/foundation/issues/64), which renumbered its D25 and D26, taken on `main` first, as D45 and D46).
+From 0.2 on, a milestone's PRD issue assigns its decision numbers up front and each lands with the PR that builds it, so the table can skip numbers still to land: 0.2's are D27–D46 ([#64](https://github.com/ironflowx/foundation/issues/64), which renumbered its D25 and D26, taken on `main` first, as D45 and D46), and D47, made as 0.2 closed ([#101](https://github.com/ironflowx/foundation/issues/101)).
 
 **Since** is the milestone that made the decision. From D23 on, the issue or PR that made it is in that row's git history. D1–D22 moved here from the [0.1 architecture doc](https://github.com/ironflowx/foundation/blob/93f0bb261276d7522180d7307464256239a44030/docs/milestones/0.1-ledger/architecture.md#decisions); their history is in that file's log.
 
@@ -54,3 +54,4 @@ From 0.2 on, a milestone's PRD issue assigns its decision numbers up front and e
 | D44 | 0.2 | Any control-plane failure is `Unavailable`, retried at once, except a failure to record an expiry (D42); `retryable()` means the unchanged request may succeed later, and `hint` says when (at once, after a revoke, after reopen); the cap is `ResourceExhausted` and counts a created key until it is revoked or its expiry is recorded | The call fails closed without closing the engine; one flag answers "may I retry" and the hint answers "when", so no kind splits on timing; a cap that a clock set back cannot overfill |
 | D45 | 0.2 | `Call` carries the raw key as a `Secret`; the engine parses and verifies it on every call, with no cache | Revocation and expiry act on the next call; a digest lookup by ID is cheap; the raw key never sits in a printable type |
 | D46 | 0.2 | Keys are `ixk_<key-id>_<secret>`, 84 characters; the control plane stores SHA-256 of the whole text and compares in constant time | A 256-bit random secret needs no slow hash; the ID gives a direct lookup |
+| D47 | 0.2 | `control.db`'s format version is 1 in 0.2.0, the first release with that file, whatever its schema was while 0.2 was built. A test pins the schema, and from then on a change to it changes the version too | Only a build from before the release could have made an older file; after it, D8's loud refusal beats a silent misread |

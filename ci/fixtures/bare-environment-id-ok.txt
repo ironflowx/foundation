@@ -1,0 +1,7 @@
+pub fn ironflowx_core::EnvRef::id(&self) -> ironflowx_core::id::EnvironmentId
+pub fn ironflowx_core::EnvironmentId::clone(&self) -> Self
+pub fn ironflowx_core::find(impl core::ops::function::Fn() -> bool) -> core::option::Option<ironflowx_core::id::EnvironmentId>
+pub fn ironflowx_core::legitimate(ironflowx_core::EnvironmentIdentity)
+pub ironflowx_proto::Request::identity: ironflowx_core::EnvironmentIdentity
+pub struct ironflowx_core::EnvironmentId(_)
+pub type ironflowx_core::EnvironmentId::Err = ironflowx_core::ParseError

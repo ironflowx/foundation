@@ -110,7 +110,12 @@ pub const fn required_scope(op: Operation) -> Option<Scope> {
 }
 
 /// Who is calling: the key as presented, or none (D2, D45). Not `Clone`, since the key is a
-/// [`Secret`].
+/// [`Secret`]:
+///
+/// ```compile_fail,E0599
+/// # use ironflowx_proto::Call;
+/// fn copy(c: Call) -> (Call, Call) { (c.clone(), c) }
+/// ```
 pub struct Call {
     key: Option<Secret>,
 }

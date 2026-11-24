@@ -1,0 +1,11 @@
+[package]
+name = "secret-in-error"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ironflowx-core = { path = "../../../crates/ironflowx-core" }
+ironflowx-proto = { path = "../../../crates/ironflowx-proto" }
+
+[workspace]

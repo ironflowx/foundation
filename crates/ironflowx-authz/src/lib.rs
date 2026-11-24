@@ -334,8 +334,8 @@ mod tests {
             .unwrap()
     }
 
-    /// `verify` compares digests through `ct_eq` once on every record it is given, whether or
-    /// not the ID and environment match (TEN-4).
+    /// `verify` compares digests through `ct_eq` once on every record it is given, whatever its
+    /// ID, environment or state (TEN-4).
     #[test]
     fn verify_reaches_ct_eq_for_every_record() {
         let id: KeyId = "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f".parse().unwrap();
@@ -358,6 +358,30 @@ mod tests {
                 "another key's record, same digest",
                 KeyRecord {
                     id: other,
+                    ..record(id, [7; 32], env(1))
+                },
+                false,
+            ),
+            (
+                "revoked",
+                KeyRecord {
+                    revoked_at: Some(Timestamp::from_millis(0)),
+                    ..record(id, [7; 32], env(1))
+                },
+                false,
+            ),
+            (
+                "expired",
+                KeyRecord {
+                    expires_at: Some(Timestamp::from_millis(0)),
+                    ..record(id, [7; 32], env(1))
+                },
+                false,
+            ),
+            (
+                "recorded as expired",
+                KeyRecord {
+                    expiry_recorded: true,
                     ..record(id, [7; 32], env(1))
                 },
                 false,

@@ -10,7 +10,7 @@ The crates any Ironflow X product links. They commit one environment's events du
 The unit of isolation: one ledger, one directory, one stream of events.
 
 **Incarnation token**:
-A random value minted with an environment. An environment recreated under the same ID would get a new one, so the old directory, its records and its cursors are refused; 0.1 has no call that recreates one.
+A random value minted with an environment. An environment recreated under the same ID would get a new one, so the old directory, its records and its cursors are refused; no call recreates one yet.
 
 **Environment reference** (`EnvRef`):
 An environment's ID with its incarnation token. A ledger is opened with one, and work is never looked up by the ID alone.
@@ -65,7 +65,7 @@ Creating the default tenant, project, environment and first admin key, once.
 One environment's commit log, read store and the single writer between them.
 
 **Cell**:
-One fenceable volume, written by one node, holding many ledgers: the unit of ownership. Not built in 0.1: the `ironflowx-cell` crate is named for it and implements the ledger.
+One fenceable volume, written by one node, holding many ledgers: the unit of ownership. Not built yet: the `ironflowx-cell` crate is named for it and implements the ledger.
 
 **Submission**:
 One call to the ledger's `submit`: a single emit or a batch. It commits at most one record, and none when every item is a duplicate or refused.

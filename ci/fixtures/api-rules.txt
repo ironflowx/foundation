@@ -1,12 +1,3 @@
-pub enum ironflowx_operations::EngineError
-impl core::error::Error for ironflowx_operations::EngineError
-pub ironflowx_operations::EngineError::MalformedSeed(ironflowx_core::secret::Secret)
-pub ironflowx_operations::EngineError::Leak(ironflowx_operations::Opened)
-pub ironflowx_operations::Opened::minted: core::option::Option<ironflowx_core::secret::Secret>
-pub struct ironflowx_authz::Refused(pub ironflowx_core::secret::Secret)
-pub ironflowx_store::StoreError::seed: ironflowx_core::secret::Secret
-impl core::error::Error for ironflowx_store::OpenFailure
-pub ironflowx_store::OpenFailure::Seed(ironflowx_core::secret::Secret)
 impl core::convert::From<ironflowx_core::tenancy::Address> for ironflowx_core::id::ProjectId
 impl core::convert::TryFrom<ironflowx_core::tenancy::Address> for ironflowx_core::id::ProjectId
 impl core::convert::From<&ironflowx_core::tenancy::Address> for ironflowx_core::id::TenantId
@@ -21,3 +12,14 @@ impl core::cmp::PartialEq for ironflowx_authz::KeyDigest
 impl core::convert::From<ironflowx_authz::KeyDigest> for [u8; 32]
 impl core::convert::AsRef<[u8]> for &ironflowx_authz::KeyDigest
 pub fn ironflowx_authz::digest_bytes(&ironflowx_authz::KeyDigest) -> [u8; 32]
+pub fn ironflowx_authz::digest_text(&ironflowx_authz::KeyDigest) -> ironflowx_authz::Text
+pub type ironflowx_authz::Stored = core::option::Option<ironflowx_authz::KeyDigest>
+pub type ironflowx_core::Place = ironflowx_core::tenancy::Address
+pub fn ironflowx_authz::export((), &ironflowx_authz::KeyDigest) -> [u8; 32]
+pub fn ironflowx_authz::export_with<F: core::ops::function::Fn() -> bool>(F, ironflowx_authz::KeyDigest) -> [u8; 32]
+pub fn ironflowx_authz::exporter() -> fn(&ironflowx_authz::KeyDigest) -> [u8; 32]
+pub fn ironflowx_store::resolve((), &ironflowx_core::tenancy::Address) -> ironflowx_core::id::ProjectId
+pub fn ironflowx_store::resolve_any<T>(T) -> ironflowx_core::id::ProjectId where T: core::convert::AsRef<ironflowx_core::tenancy::Address>
+pub ironflowx_store::Resolver::with: alloc::boxed::Box<dyn core::ops::function::Fn((), &ironflowx_core::tenancy::Address) -> ironflowx_core::id::ProjectId>
+pub fn ironflowx_store::resolve_where<F, T>(F, T) -> bool where F: core::ops::function::Fn() -> bool, T: core::convert::Into<ironflowx_core::tenancy::Address>
+pub fn ironflowx_authz::export_where<F, T>(F, T) where F: core::ops::function::Fn() -> bool, T: core::borrow::Borrow<ironflowx_authz::KeyDigest>

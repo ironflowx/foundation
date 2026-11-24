@@ -1,5 +1,4 @@
-//! `tenancy.feature` on the engine. Only the scenarios in [`REGISTERED`] run; each ticket that
-//! lands a scenario adds its ID, and every registered scenario must run and pass.
+//! `tenancy.feature` on the engine.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -20,50 +19,8 @@ use ironflowx_proto::{
 };
 use tempfile::TempDir;
 
-/// The tenancy scenarios that run, by tag, each with how many times it runs: an outline once per
-/// example.
-pub const REGISTERED: &[(&str, usize)] = &[
-    ("ACC-001", 1),
-    ("ACC-002", 1),
-    ("ACC-003", 1),
-    ("ACC-004", 1),
-    ("ACC-005", 1),
-    ("ACC-006", 2),
-    ("ACC-007", 4),
-    ("ACC-008", 2),
-    ("ACC-009", 1),
-    ("ACC-010", 1),
-    ("ACC-011", 1),
-    ("ACC-012", 1),
-    ("ACC-013", 1),
-    ("ACC-014", 2),
-    ("ACC-016", 4),
-    ("ACC-017", 1),
-    ("ACC-018", 1),
-    ("ACC-020", 2),
-    ("ACC-021", 2),
-    ("ACC-022", 3),
-    ("ACC-023", 1),
-    ("ACC-024", 1),
-    ("ACC-030", 13),
-    ("ACC-031", 1),
-    ("ACC-032", 1),
-    ("ACC-040", 1),
-    ("ACC-041", 1),
-    ("ACC-042", 1),
-    ("ACC-043", 3),
-    ("ACC-044", 1),
-    ("ACC-045", 4),
-    ("ACC-046", 1),
-    ("ACC-047", 1),
-    ("ACC-050", 1),
-    ("ACC-051", 1),
-    ("ACC-052", 1),
-    ("ACC-053", 1),
-    ("ACC-054", 1),
-    ("ACC-060", 1),
-    ("ACC-061", 1),
-];
+/// How many scenarios run, an outline once per example, so no example goes unnoticed.
+pub const RUNS: usize = 70;
 
 const HOUR: i64 = 3_600_000;
 
@@ -1478,8 +1435,8 @@ fn still_empty(w: &mut Tenancy) {
     assert_eq!(w.read_directory(), BTreeMap::new());
 }
 
-/// Runs the registered tenancy scenarios. True if any failed or one did not run.
-pub async fn run(parser: super::Unescaped) -> bool {
+/// Runs every tenancy scenario: whether any failed, and how many passed.
+pub async fn run(parser: super::Unescaped) -> (bool, usize) {
     let writer = Tenancy::cucumber::<&str>()
         .with_parser(parser)
         .after(|_, _, _, _, world| {
@@ -1495,20 +1452,11 @@ pub async fn run(parser: super::Unescaped) -> bool {
             })
         })
         .fail_on_skipped()
-        .filter_run(
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../docs/behaviors/tenancy.feature"
-            ),
-            |_, _, scenario| {
-                scenario
-                    .tags
-                    .iter()
-                    .any(|t| REGISTERED.iter().any(|(tag, _)| tag == t))
-            },
-        )
+        .run(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/behaviors/tenancy.feature"
+        ))
         .await;
     let passed = writer.scenarios_stats().passed;
-    let runs: usize = REGISTERED.iter().map(|(_, runs)| runs).sum();
-    writer.execution_has_failed() || passed != runs
+    (writer.execution_has_failed(), passed)
 }

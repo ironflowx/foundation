@@ -1,6 +1,5 @@
 //! The behavior scenarios in `docs/behaviors/`, each file on its own World: an engine on a
-//! temporary directory with a `ManualClock` (D20). Steps call `Operations`, never a URL. All of
-//! `events.feature` runs; tenancy scenarios run as each lands (`tenancy::REGISTERED`).
+//! temporary directory with a `ManualClock` (D20). Steps call `Operations`, never a URL.
 
 #[path = "behaviors/tenancy.rs"]
 mod tenancy;
@@ -778,6 +777,10 @@ fn cells(line: &str) -> String {
     out
 }
 
+/// How many scenarios of `events.feature` run, an outline once per example, so no example goes
+/// unnoticed.
+const EVENT_RUNS: usize = 95;
+
 /// Every feature file in `docs/behaviors/` and its scenario declarations.
 const SCENARIOS: &[(&str, usize)] = &[("events.feature", 41), ("tenancy.feature", 40)];
 
@@ -818,7 +821,14 @@ async fn main() {
             "/../../docs/behaviors/events.feature"
         ))
         .await;
-    let tenancy = tenancy::run(Unescaped).await;
+    let (tenancy_failed, tenancy_passed) = tenancy::run(Unescaped).await;
     assert!(!events.execution_has_failed(), "events.feature failed");
-    assert!(!tenancy, "tenancy.feature failed");
+    let passed = events.scenarios_stats().passed;
+    assert_eq!(passed, EVENT_RUNS, "events.feature: scenarios run");
+    assert!(!tenancy_failed, "tenancy.feature failed");
+    assert_eq!(
+        tenancy_passed,
+        tenancy::RUNS,
+        "tenancy.feature: scenarios run"
+    );
 }

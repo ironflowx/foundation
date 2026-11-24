@@ -7,5 +7,7 @@ impl core::fmt::Debug for ironflowx_authz::KeyDigest
 pub fn ironflowx_authz::KeyDigest::ct_eq(&self, &Self) -> bool
 pub const fn ironflowx_authz::KeyDigest::to_stored(&self) -> [u8; 32]
 pub fn ironflowx_authz::KeyDigest::from_stored(&[u8]) -> core::option::Option<Self>
-pub ironflowx_operations::Opened::minted: core::option::Option<ironflowx_core::secret::Secret>
-pub ironflowx_operations::EngineError::Io(std::io::error::Error)
+pub fn ironflowx_proto::Whoami::environment(&self) -> &ironflowx_core::tenancy::Address
+pub fn ironflowx_store::address_with(impl core::ops::function::Fn() -> bool) -> ironflowx_core::tenancy::Address
+pub fn ironflowx_store::find(ironflowx_store::AddressBook, ironflowx_store::KeyDigests) -> bool
+pub fn ironflowx_authz::mint(ironflowx_core::id::KeyId, [u8; 32]) -> (ironflowx_core::secret::Secret, ironflowx_authz::KeyDigest)
