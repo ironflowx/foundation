@@ -83,7 +83,7 @@ fn halves(key: &str) -> [Vec<u8>; 4] {
 /// or hex, or as a run of hex digits, whatever the case, the spaces and the `0x` between them.
 fn leak<'a>(text: &str, keys: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
     let list: String = text.split_whitespace().collect();
-    let list = list.replace("0x", "").to_lowercase();
+    let list = list.to_lowercase().replace("0x", "");
     let run = list.replace(',', "");
     for key in keys {
         for half in halves(key) {
@@ -114,7 +114,8 @@ fn leak_in<'a>(
     (path, bytes): &(PathBuf, String),
     keys: impl IntoIterator<Item = &'a str>,
 ) -> Option<&'static str> {
-    leak(&format!("{}\n{bytes}", path.display()), keys)
+    let path = latin1(path.as_os_str().as_encoded_bytes());
+    leak(&format!("{path}\n{bytes}"), keys)
 }
 
 /// Every file and directory under `root`, by its path there, a directory empty. Copied by another
@@ -259,31 +260,39 @@ async fn every_call(engine: &Engine, key: &str, works: bool) {
     println!("{emitted:?} {batch:?} {got:?} {events:?} {me:?} {envs:?} {keys:?}");
     println!("{revoked:?} {created:?}");
 
-    // The kind, the message, and whether there is a hint; `None` for a success.
-    type Answer = Option<(ErrorKind, String, bool)>;
-    let of = |e: OpError| (e.kind, e.message, e.hint.is_some());
+    // `None` for a success.
+    type Answer = Option<OpError>;
+    let error = |kind, message: &str, hint: Option<&str>| {
+        let (message, hint) = (message.to_owned(), hint.map(str::to_owned));
+        Some(OpError {
+            kind,
+            message,
+            hint,
+        })
+    };
     let answers: [Answer; 9] = [
-        emitted.err().map(of),
-        batch.err().map(of),
-        got.err().map(of),
-        events.err().map(of),
-        me.err().map(of),
-        envs.err().map(of),
-        keys.err().map(of),
-        revoked.err().map(of),
-        created.err().map(of),
+        emitted.err(),
+        batch.err(),
+        got.err(),
+        events.err(),
+        me.err(),
+        envs.err(),
+        keys.err(),
+        revoked.err(),
+        created.err(),
     ];
     let mut expected: [Answer; 9] = Default::default();
     if works {
-        let not_found = "key not found".to_owned();
-        let label = "a label is at most 128 bytes, with no control character".to_owned();
-        expected[7] = Some((ErrorKind::NotFound, not_found, false));
-        expected[8] = Some((ErrorKind::Invalid, label, false));
+        let label = "a label is at most 128 bytes, with no control character";
+        expected[7] = error(ErrorKind::NotFound, "key not found", None);
+        expected[8] = error(ErrorKind::Invalid, label, None);
     } else {
         // Only a malformed key's refusal hints.
         let malformed = parse(&Secret::new(key.to_owned())).is_err();
-        let message = "invalid API key".to_owned();
-        expected.fill(Some((ErrorKind::Unauthenticated, message, malformed)));
+        let hint = "a key is ixk_<key-id>_<secret>: 84 characters, a lowercase UUIDv7 key ID and \
+                    43 base64url characters";
+        let hint = malformed.then_some(hint);
+        expected.fill(error(ErrorKind::Unauthenticated, "invalid API key", hint));
     }
     assert_eq!(answers, expected);
 }
@@ -463,6 +472,7 @@ fn no_secret_is_stored_or_logged() {
                 format!("{half:02x?}"),
                 format!("{half:02X?}"),
                 format!("{half:#x?}"),
+                format!("{half:#x?}").replace("0x", "0X"),
             ] {
                 let found = leak(&form, [probe.expose()]);
                 assert!(found.is_some_and(|f| f.starts_with("a secret")), "{form}");
@@ -472,20 +482,28 @@ fn no_secret_is_stored_or_logged() {
     for half in ["4OHi4+Tl5ufo6err7O3u7", "/Dx8vP09fb3+Pn6+/z9/v8"] {
         assert_eq!(leak(half, [high_key.expose()]), Some("a secret's text"));
     }
+    // Not the high bytes of another.
+    let others: Vec<u8> = high.iter().rev().copied().collect();
+    assert_eq!(leak(&latin1(&others), [high_key.expose()]), None);
     // And a whole key it does not know; not the format a hint names.
     let unknown = format!("x {}", key(8).expose());
     assert_eq!(leak(&unknown, [high_key.expose()]), Some("a key's text"));
     assert_eq!(leak("ixk_<key-id>_<secret>", [high_key.expose()]), None);
-    // It reads a file, and the path of one and of a directory.
+    // It reads a file, and the path of one and of a directory, bits that make one included.
+    let accents = "\u{e9}".repeat(16);
+    let id = "019a9f3e-7c2b-7d41-8a3e-2000000000ff".parse().unwrap();
+    let accented = mint(id, accents.as_bytes().try_into().unwrap()).0;
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join(text)).unwrap();
+    std::fs::create_dir(dir.path().join(&accents[..16])).unwrap();
     std::fs::write(dir.path().join(&text[..21]), "").unwrap();
     std::fs::write(dir.path().join("file"), text).unwrap();
     std::fs::write(dir.path().join("fine"), "fine").unwrap();
     let held = files(dir.path());
+    let keys = || [high_key.expose(), accented.expose()];
     let held = held
         .iter()
-        .map(|f| (f.0.as_path(), leak_in(f, [high_key.expose()]).is_some()));
+        .map(|f| (f.0.as_path(), leak_in(f, keys()).is_some()));
     let mut held: Vec<_> = held.collect();
     held.sort();
     let expected = [
@@ -493,6 +511,7 @@ fn no_secret_is_stored_or_logged() {
         (text, true),
         ("file", true),
         ("fine", false),
+        (&accents[..16], true),
     ];
     assert_eq!(held, expected.map(|(path, held)| (Path::new(path), held)));
 

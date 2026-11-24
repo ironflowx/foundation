@@ -7,10 +7,12 @@ use warnings;
 sub takes {
   my ($line) = @_;
   my ($rest) = $line =~ /\bfn\s+(.*)$/ or return undef;
-  my ($depth, $returns, $out) = (0, 0, "");
+  my ($depth, $returns, $where, $out) = (0, 0, 0, "");
   for my $token ($rest =~ /->|\bwhere\b|./g) {
     if ($token eq "->" || $token eq "where") {
-      $returns = $token eq "->" if $depth == 0;
+      # A bound of the where clause has arrows of its own.
+      $where = 1 if $depth == 0 && $token eq "where";
+      $returns = !$where if $depth == 0;
     } elsif ($token =~ /[(\[<{]/) {
       $depth++;
     } elsif ($token =~ /[)\]>}]/) {

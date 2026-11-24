@@ -42,6 +42,7 @@ ci/must-reject.sh \
   'TEN-4: pub fn ironflowx_authz::digest_text(&ironflowx_authz::KeyDigest) -> ironflowx_authz::Text' \
   'TEN-4: pub fn ironflowx_authz::export((), &ironflowx_authz::KeyDigest) -> [u8; 32]' \
   'TEN-4: pub fn ironflowx_authz::export_with<' \
+  'TEN-4: pub fn ironflowx_authz::export_where<' \
   'TEN-4: pub fn ironflowx_authz::exporter() -> fn(&ironflowx_authz::KeyDigest) -> [u8; 32]' \
   'TEN-4: pub ironflowx_authz::KeyDigest::0: [u8; 32]' \
   'TEN-4: pub struct ironflowx_authz::KeyDigest(pub [u8; 32])' \
@@ -55,18 +56,22 @@ ci/must-reject.sh \
   'TEN-8: pub fn ironflowx_store::ControlPlane::resolve(&self, &ironflowx_core::tenancy::Address) -> core::result::Result<ironflowx_store::Resolved, ironflowx_store::StoreError>' \
   'TEN-8: pub fn ironflowx_store::resolve((), &ironflowx_core::tenancy::Address) -> ironflowx_core::id::ProjectId' \
   'TEN-8: pub fn ironflowx_store::resolve_any<T>(T)' \
+  'TEN-8: pub fn ironflowx_store::resolve_where<' \
   'TEN-8: pub ironflowx_store::Resolver::with:' \
   'TEN-8: pub type ironflowx_core::Place = ironflowx_core::tenancy::Address' \
   -- ci/api-rules.sh ci/fixtures/api-rules.txt
 ci/must-reject.sh Ledger::open find_after ffi_open EnvironmentId::lookup \
   OpenRequest::env Target::Env proto::Wrapper store::LookupId cell::dispatch cell::any_id \
-  cell::opener -- ci/no-bare-env-id.sh ci/fixtures/bare-environment-id.txt
+  cell::any_where cell::opener -- ci/no-bare-env-id.sh ci/fixtures/bare-environment-id.txt
 ci/must-reject.sh rusqlite::error::Error segment_log_core::engine tokio::runtime uuid::Uuid -- \
   ci/no-dependency-types.sh ci/fixtures/dependency-type.txt
 
-# TEN-3, over every item: rustdoc's JSON of each published crate, private items included, and every
-# feature a build can switch on.
-json() { cargo "+$NIGHTLY" rustdoc -q --locked "$@" -- -Zunstable-options --output-format json --document-private-items --cap-lints allow; }
+# TEN-3, over every item: rustdoc's JSON of each published crate, private and hidden items included,
+# and every feature a build can switch on.
+json() {
+  cargo "+$NIGHTLY" rustdoc -q --locked "$@" -- -Zunstable-options --output-format json \
+    --document-private-items --document-hidden-items --cap-lints allow
+}
 docs=()
 for crate in "${published[@]}"; do
   json -p "$crate" --lib --all-features
@@ -77,7 +82,8 @@ bad=ci/fixtures/secret-in-error
 json --manifest-path "$bad/Cargo.toml"
 docs+=("$bad/target/doc/secret_in_error.json")
 ci/must-reject.sh BadField BadPrivate BadCall BadVariant BadTuple BadDeep BadAssociated BadWrapper \
-  BadUnion BadMacro NamedError NamedRefused -- ci/no-secret-in-errors.sh "${docs[@]}"
+  BadUnion BadMacro BadHiddenField BadHiddenVariant BadHiddenType BadHiddenModule BadDefault \
+  BadDefaultHolder BadDefaultAlias NamedError NamedRefused NamedMalformed -- ci/no-secret-in-errors.sh "${docs[@]}"
 found=$(ci/no-secret-in-errors.sh "${docs[@]}" || true)
 if grep Fine <<<"$found"; then
   echo "public-api: ci/no-secret-in-errors.sh rejects an error that holds no Secret"

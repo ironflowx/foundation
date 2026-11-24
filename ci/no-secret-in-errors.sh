@@ -2,9 +2,14 @@
 # Usage: ci/no-secret-in-errors.sh <rustdoc JSON...>
 # TEN-3: fails if an error type (one with an `impl Error`, or named *Error, *Refused, *Malformed)
 # can hold a Secret: in a field or variant, private ones included, of its own or of a type it
-# holds, however deeply, through generics, aliases and associated types. The JSON, of every crate
-# between Secret and the errors, is built with --document-private-items; rustdoc has resolved the
-# names and expanded the macros. A function pointer that takes a Secret holds none.
+# holds, however deeply, through generics and their defaults, aliases and associated types. The
+# JSON, of every crate between Secret and the errors, is built with --document-private-items and
+# --document-hidden-items; rustdoc has resolved the names and expanded the macros. A function
+# pointer that takes a Secret holds none.
+# It refuses too much, so fails closed, for PhantomData<Secret>, a `dyn` callable that takes a
+# Secret, a generic type one of whose defaults holds one, whatever it is used with, and an
+# associated type of a trait any type implements with one. It does not see a type declared in a
+# function body.
 # shortcut: what a `dyn Trait` field hides is not seen; upgrade if an error ever stores one.
 set -euo pipefail
 # shellcheck disable=SC2016 # ruby's own `#{}`
@@ -52,14 +57,19 @@ exec ruby -rjson -e '
       else []
       end
     end
+    # What its generic parameters are unless given.
+    defaults = lambda do |body|
+      types.(body["generics"]["params"].map { |p| p["kind"].dig("type", "default") })
+    end
     doc["index"].each_value do |item|
       kind = item["inner"].keys.first
       body = item["inner"][kind]
       case kind
       when "struct", "union", "enum"
-        holds[name.(item["id"])].concat(fields.(item))
+        holds[name.(item["id"])].concat(fields.(item) + defaults.(body))
         errors[name.(item["id"])] ||= [] if item["name"] =~ /(Error|Refused|Malformed)\z/
-      when "type_alias" then holds[name.(item["id"])].concat(types.(body["type"]))
+      when "type_alias"
+        holds[name.(item["id"])].concat(types.(body["type"]) + defaults.(body))
       when "impl"
         next unless body["trait"]
         # An associated type: whoever names the trait may hold it.

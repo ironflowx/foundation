@@ -21,10 +21,28 @@ macro_rules! error {
 
 pub type Alias = Option<Secret>;
 pub type Pair<T> = (T, Renamed);
-type Chain1 = Alias;
-type Chain2 = Chain1;
+pub type Chain1 = Alias;
+pub type Chain2 = Chain1;
+pub type Chain3 = Chain2;
+pub type Chain4 = Chain3;
+pub type Chain5 = Chain4;
+pub type Chain6 = Chain5;
+pub type Chain7 = Chain6;
+pub type Chain8 = Chain7;
+pub type Chain9 = Chain8;
+pub type Chain10 = Chain9;
+pub type Chain11 = Chain10;
+pub type Chain12 = Chain11;
 struct Nested {
-    _chain: Vec<Chain2>,
+    _chain: Vec<Chain12>,
+}
+pub struct Holder<T = Secret>(pub T);
+pub type DefaultAlias<T = Secret> = Option<T>;
+#[doc(hidden)]
+pub struct HiddenHolder(pub Secret);
+#[doc(hidden)]
+pub mod hidden_module {
+    pub struct Inner(pub super::Secret);
 }
 mod hidden {
     pub struct Deep {
@@ -74,8 +92,22 @@ pub union BadUnion {
     pub key: std::mem::ManuallyDrop<Secret>,
 }
 field!(BadMacro);
+pub struct BadHiddenField {
+    #[doc(hidden)]
+    pub key: Secret,
+}
+pub enum BadHiddenVariant {
+    #[doc(hidden)]
+    Key(Secret),
+}
+pub struct BadHiddenType(pub HiddenHolder);
+pub struct BadHiddenModule(pub hidden_module::Inner);
+pub struct BadDefault<T = Secret>(pub T);
+pub struct BadDefaultHolder(pub Holder);
+pub struct BadDefaultAlias(pub DefaultAlias);
 pub struct NamedError(pub Secret);
 pub struct NamedRefused(#[allow(dead_code)] Call);
+pub struct NamedMalformed(pub Secret);
 
 pub struct SecretName(pub String);
 pub struct FinePointer(pub fn(&Secret) -> bool);
@@ -84,5 +116,6 @@ pub struct FineHolder(pub Secret);
 
 error!(
     BadField, BadPrivate, BadVariant, BadTuple, BadDeep, BadAssociated, BadWrapper<Secret>,
-    BadUnion, BadMacro, FinePointer, FineName
+    BadUnion, BadMacro, BadHiddenField, BadHiddenVariant, BadHiddenType, BadHiddenModule,
+    BadDefault, BadDefaultHolder, BadDefaultAlias, FinePointer, FineName
 );

@@ -21,3 +21,5 @@ pub fn ironflowx_authz::exporter() -> fn(&ironflowx_authz::KeyDigest) -> [u8; 32
 pub fn ironflowx_store::resolve((), &ironflowx_core::tenancy::Address) -> ironflowx_core::id::ProjectId
 pub fn ironflowx_store::resolve_any<T>(T) -> ironflowx_core::id::ProjectId where T: core::convert::AsRef<ironflowx_core::tenancy::Address>
 pub ironflowx_store::Resolver::with: alloc::boxed::Box<dyn core::ops::function::Fn((), &ironflowx_core::tenancy::Address) -> ironflowx_core::id::ProjectId>
+pub fn ironflowx_store::resolve_where<F, T>(F, T) -> bool where F: core::ops::function::Fn() -> bool, T: core::convert::Into<ironflowx_core::tenancy::Address>
+pub fn ironflowx_authz::export_where<F, T>(F, T) where F: core::ops::function::Fn() -> bool, T: core::borrow::Borrow<ironflowx_authz::KeyDigest>
