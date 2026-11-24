@@ -105,6 +105,129 @@ pub struct BadHiddenModule(pub hidden_module::Inner);
 pub struct BadDefault<T = Secret>(pub T);
 pub struct BadDefaultHolder(pub Holder);
 pub struct BadDefaultAlias(pub DefaultAlias);
+/// Generic: it holds what it is used with. A `Call` prints itself, so a derive compiles.
+#[derive(Debug)]
+pub struct BadGeneric<T>(pub T);
+impl<T> fmt::Display for BadGeneric<T> {
+    fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
+    }
+}
+impl<T: fmt::Debug> Error for BadGeneric<T> {}
+pub fn bad_generic() -> Result<(), BadGeneric<Call>> {
+    Ok(())
+}
+pub struct BadAliasedError<T>(pub T);
+pub type AliasedResult<T> = Result<(), BadAliasedError<T>>;
+pub type AliasedAgain<T> = AliasedResult<Option<T>>;
+pub fn bad_aliased() -> AliasedAgain<Secret> {
+    Ok(())
+}
+// Named as errors, each reached by one way only.
+pub struct BadDefaultedError<T>(pub T);
+pub type Defaulted<T, E = BadDefaultedError<T>> = Result<T, E>;
+pub fn bad_defaulted() -> Defaulted<Secret> {
+    Err(BadDefaultedError(Secret::new(String::new())))
+}
+pub struct BadEnvelopeError<T>(pub T);
+pub struct Envelope<T> {
+    _outcome: Result<(), BadEnvelopeError<T>>,
+}
+pub enum Outer<T> {
+    Reply(Option<Envelope<T>>),
+}
+pub fn bad_envelope() -> Outer<Call> {
+    Outer::Reply(None)
+}
+pub struct BadMethodError<T>(pub T);
+pub struct Client<T>(pub Option<T>);
+impl<R> Client<R> {
+    pub fn send(&self) -> Result<(), BadMethodError<R>> {
+        Ok(())
+    }
+}
+pub fn bad_method() -> Client<Call> {
+    Client(None)
+}
+pub struct BadMixedError<T>(pub T);
+pub struct Keyed<K, T>(pub K, pub T);
+impl<R> Keyed<u8, R> {
+    pub fn send(&self) -> Result<(), BadMixedError<R>> {
+        Ok(())
+    }
+}
+pub fn bad_mixed(_: Keyed<u8, Call>) {}
+pub struct BadDefaultMethodError<T>(pub T);
+pub struct DefaultClient<T = Call>(pub Option<T>);
+impl<R> DefaultClient<R> {
+    pub fn send(&self) -> Result<(), BadDefaultMethodError<R>> {
+        Ok(())
+    }
+}
+pub fn bad_default_method() -> DefaultClient {
+    DefaultClient(None)
+}
+pub struct BadForeignMethodError<T>(pub T);
+pub trait Ext<T> {
+    fn try_next(&self) -> Result<(), BadForeignMethodError<T>>;
+}
+impl<T> Ext<T> for std::sync::mpsc::Receiver<T> {
+    fn try_next(&self) -> Result<(), BadForeignMethodError<T>> {
+        Ok(())
+    }
+}
+pub struct Inbox {
+    _keys: std::sync::mpsc::Receiver<Call>,
+}
+pub struct BadPlacedError<T>(pub T);
+pub struct Placed<'a, A, const N: usize, B> {
+    _a: Option<&'a [A; N]>,
+    _last: Option<BadPlacedError<B>>,
+}
+pub fn bad_placed(_: Placed<'static, u8, 1, Call>) {}
+pub type BadNamedAliasError = FineHolder;
+pub struct BadSelfError<T>(pub T);
+pub struct Carrier(pub Secret);
+impl Carrier {
+    pub fn retry(self) -> Result<(), BadSelfError<Self>> {
+        Ok(())
+    }
+}
+pub struct BadSelfForeignError<T>(pub T);
+pub trait Retry: Sized {
+    fn retry(self) -> Result<(), BadSelfForeignError<Self>>;
+}
+impl Retry for Option<Secret> {
+    fn retry(self) -> Result<(), BadSelfForeignError<Self>> {
+        Ok(())
+    }
+}
+pub struct BadSelfMethodError<T>(pub T);
+impl<R> Client<R> {
+    pub fn again(self) -> Result<(), BadSelfMethodError<Self>> {
+        Ok(())
+    }
+}
+pub struct BadSelfPlainError<T>(pub T);
+pub struct SelfPlain {
+    _key: Secret,
+    _last: Option<Box<BadSelfPlainError<Self>>>,
+}
+pub struct BadSelfFieldError<T>(pub T);
+pub struct SelfField<T> {
+    _key: Option<T>,
+    _last: Option<Box<BadSelfFieldError<Self>>>,
+}
+pub fn bad_self_field() -> SelfField<Secret> {
+    SelfField { _key: None, _last: None }
+}
+pub fn bad_dependency() -> Result<(), std::sync::mpsc::SendError<Secret>> {
+    Ok(())
+}
+pub struct NamedGenericError<T>(pub T);
+pub struct UsesNamed {
+    _last: Option<NamedGenericError<Alias>>,
+}
 pub struct NamedError(pub Secret);
 pub struct NamedRefused(#[allow(dead_code)] Call);
 pub struct NamedMalformed(pub Secret);
@@ -113,6 +236,40 @@ pub struct SecretName(pub String);
 pub struct FinePointer(pub fn(&Secret) -> bool);
 pub struct FineName(pub SecretName);
 pub struct FineHolder(pub Secret);
+/// Generic, used with no `Secret`: not by a result that holds one when all is well.
+#[derive(Debug)]
+pub struct FineGeneric<T>(pub T);
+impl<T> fmt::Display for FineGeneric<T> {
+    fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
+    }
+}
+impl<T: fmt::Debug> Error for FineGeneric<T> {}
+pub type FineResult<T> = Result<T, FineGeneric<u8>>;
+pub fn fine_generic() -> FineResult<Secret> {
+    Err(FineGeneric(0))
+}
+pub struct FineParamError<T>(pub T);
+pub type FineSplit<A, B> = Result<A, FineParamError<B>>;
+pub fn fine_split() -> FineSplit<Secret, u8> {
+    Err(FineParamError(0))
+}
+pub type FineCallback<T> = FineParamError<fn(T)>;
+pub fn fine_callback(_: FineCallback<Secret>) {}
+pub struct FinePlacedError<T>(pub T);
+pub struct FinePlaced<'a, A, const N: usize, B> {
+    _a: Option<&'a [A; N]>,
+    _last: Option<FinePlacedError<B>>,
+}
+pub fn fine_placed(_: FinePlaced<'static, Call, 1, u8>) {}
+pub struct FineNode<T> {
+    _own: Option<T>,
+    _next: Option<Box<FineNode<Option<T>>>>,
+}
+pub fn fine_node(_: FineNode<FineParamError<u8>>) {}
+pub fn fine_pointer() -> Result<(), FineGeneric<fn(&Secret) -> bool>> {
+    Ok(())
+}
 
 error!(
     BadField, BadPrivate, BadVariant, BadTuple, BadDeep, BadAssociated, BadWrapper<Secret>,
