@@ -114,8 +114,8 @@ fn leak_in<'a>(
     (path, bytes): &(PathBuf, String),
     keys: impl IntoIterator<Item = &'a str>,
 ) -> Option<&'static str> {
-    let path = latin1(path.as_os_str().as_encoded_bytes());
-    leak(&format!("{path}\n{bytes}"), keys)
+    let raw = latin1(path.as_os_str().as_encoded_bytes());
+    leak(&format!("{}\n{raw}\n{bytes}", path.display()), keys)
 }
 
 /// Every file and directory under `root`, by its path there, a directory empty. Copied by another
@@ -489,13 +489,15 @@ fn no_secret_is_stored_or_logged() {
     let unknown = format!("x {}", key(8).expose());
     assert_eq!(leak(&unknown, [high_key.expose()]), Some("a key's text"));
     assert_eq!(leak("ixk_<key-id>_<secret>", [high_key.expose()]), None);
-    // It reads a file, and the path of one and of a directory, bits that make one included.
+    // It reads a file, and the path of one and of a directory, also one that is raw bits, or bits
+    // written as the characters of those numbers.
     let accents = "\u{e9}".repeat(16);
     let id = "019a9f3e-7c2b-7d41-8a3e-2000000000ff".parse().unwrap();
     let accented = mint(id, accents.as_bytes().try_into().unwrap()).0;
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join(text)).unwrap();
     std::fs::create_dir(dir.path().join(&accents[..16])).unwrap();
+    std::fs::create_dir(dir.path().join(latin1(&high[..16]))).unwrap();
     std::fs::write(dir.path().join(&text[..21]), "").unwrap();
     std::fs::write(dir.path().join("file"), text).unwrap();
     std::fs::write(dir.path().join("fine"), "fine").unwrap();
@@ -511,6 +513,7 @@ fn no_secret_is_stored_or_logged() {
         (text, true),
         ("file", true),
         ("fine", false),
+        (&latin1(&high[..16]), true),
         (&accents[..16], true),
     ];
     assert_eq!(held, expected.map(|(path, held)| (Path::new(path), held)));

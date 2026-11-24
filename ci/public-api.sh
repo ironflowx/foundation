@@ -82,7 +82,7 @@ bad=ci/fixtures/secret-in-error
 json --manifest-path "$bad/Cargo.toml"
 docs+=("$bad/target/doc/secret_in_error.json")
 ci/must-reject.sh BadField BadPrivate BadCall BadVariant BadTuple BadDeep BadAssociated BadWrapper \
-  BadUnion BadMacro BadHiddenField BadHiddenVariant BadHiddenType BadHiddenModule BadDefault \
+  BadUnion BadMacro BadHiddenField BadHiddenVariant BadHiddenType BadHiddenModule 'BadDefault is' \
   BadDefaultHolder BadDefaultAlias NamedError NamedRefused NamedMalformed -- ci/no-secret-in-errors.sh "${docs[@]}"
 found=$(ci/no-secret-in-errors.sh "${docs[@]}" || true)
 if grep Fine <<<"$found"; then

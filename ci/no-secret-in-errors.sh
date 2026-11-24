@@ -8,8 +8,8 @@
 # pointer that takes a Secret holds none.
 # It refuses too much, so fails closed, for PhantomData<Secret>, a `dyn` callable that takes a
 # Secret, a generic type one of whose defaults holds one, whatever it is used with, and an
-# associated type of a trait any type implements with one. It does not see a type declared in a
-# function body.
+# associated type of a trait any type implements with one. It does not see a type declared in the
+# body of a function or a constant.
 # shortcut: what a `dyn Trait` field hides is not seen; upgrade if an error ever stores one.
 set -euo pipefail
 # shellcheck disable=SC2016 # ruby's own `#{}`
