@@ -195,8 +195,15 @@ impl Engine {
     /// An open that fails while it bootstraps tries to undo it, unless its ledger is already in
     /// place, and returns the failure, not the undo's. A bootstrap left in place, its ledger built
     /// or its undo failed, is for a later open to finish. No other open undoes anything, and one
-    /// that fails rotates no seed. A cancelled open may still finish the step it was in, and
-    /// starts no undo: `root` stays locked until that step ends.
+    /// that fails rotates no seed, but as below. A cancelled open may still finish the step it was
+    /// in, and starts no undo: `root` stays locked until that step ends.
+    ///
+    /// If it failed because a write to the control plane failed (`Store`), that write may still
+    /// land when `control.db` is next opened. A later open may then return no key for a bootstrap
+    /// this one, given no seed, began or was finishing, with `lost_secret` false, and unless a
+    /// seed began it, its key's secret is lost: [`crate::recover_admin_key`] is the way in. Or it
+    /// may find this one's seed current and the previous current seed, if any, revoked: open
+    /// with the same seed again.
     ///
     /// # Panics
     ///
@@ -335,8 +342,9 @@ pub(crate) fn new_admin_key() -> (KeyParts, Secret) {
 
 /// A bootstrapping open: mint the environment, and its admin key unless it is the seed;
 /// bootstrap the control plane in one transaction; build the ledger; then mark it (D41). The mark
-/// is the last fallible step, so no failure after it can lose the secret. A failure before it
-/// tries to undo the bootstrap, unless the ledger is already in place.
+/// is the last fallible step, so no failure after it can lose the secret; its own commit, if it
+/// fails, can (D48). A failure before it tries to undo the bootstrap, unless the ledger is already
+/// in place.
 async fn bootstrap(
     root: &Root,
     clock: impl Clock + Clone + Send + Sync + 'static,
