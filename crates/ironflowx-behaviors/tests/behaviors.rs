@@ -821,9 +821,14 @@ async fn main() {
             "/../../docs/behaviors/events.feature"
         ))
         .await;
-    let tenancy = tenancy::run(Unescaped).await;
+    let (tenancy_failed, tenancy_passed) = tenancy::run(Unescaped).await;
+    assert!(!events.execution_has_failed(), "events.feature failed");
     let passed = events.scenarios_stats().passed;
-    let failed = events.execution_has_failed() || passed != EVENT_RUNS;
-    assert!(!failed, "events.feature failed");
-    assert!(!tenancy, "tenancy.feature failed");
+    assert_eq!(passed, EVENT_RUNS, "events.feature: scenarios run");
+    assert!(!tenancy_failed, "tenancy.feature failed");
+    assert_eq!(
+        tenancy_passed,
+        tenancy::RUNS,
+        "tenancy.feature: scenarios run"
+    );
 }

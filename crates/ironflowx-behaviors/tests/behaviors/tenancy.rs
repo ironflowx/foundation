@@ -20,7 +20,7 @@ use ironflowx_proto::{
 use tempfile::TempDir;
 
 /// How many scenarios run, an outline once per example, so no example goes unnoticed.
-const RUNS: usize = 70;
+pub const RUNS: usize = 70;
 
 const HOUR: i64 = 3_600_000;
 
@@ -1435,8 +1435,8 @@ fn still_empty(w: &mut Tenancy) {
     assert_eq!(w.read_directory(), BTreeMap::new());
 }
 
-/// Runs every tenancy scenario. True if any failed or one did not run.
-pub async fn run(parser: super::Unescaped) -> bool {
+/// Runs every tenancy scenario: whether any failed, and how many passed.
+pub async fn run(parser: super::Unescaped) -> (bool, usize) {
     let writer = Tenancy::cucumber::<&str>()
         .with_parser(parser)
         .after(|_, _, _, _, world| {
@@ -1457,5 +1457,6 @@ pub async fn run(parser: super::Unescaped) -> bool {
             "/../../docs/behaviors/tenancy.feature"
         ))
         .await;
-    writer.execution_has_failed() || writer.scenarios_stats().passed != RUNS
+    let passed = writer.scenarios_stats().passed;
+    (writer.execution_has_failed(), passed)
 }

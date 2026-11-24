@@ -78,40 +78,43 @@ fn halves(key: &str) -> [Vec<u8>; 4] {
     [a, b, c, d].map(<[u8]>::to_vec)
 }
 
-/// How bytes are written in the clear: as they are, in hex, or as a list, as `{:?}` and its hex
-/// forms print one.
-fn written(bytes: &[u8]) -> Vec<String> {
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    let mut out = vec![latin1(bytes), hex.to_uppercase(), hex];
-    for list in [
-        format!("{bytes:?}"),
-        format!("{bytes:x?}"),
-        format!("{bytes:X?}"),
-        format!("{bytes:02x?}"),
-        format!("{bytes:02X?}"),
-    ] {
-        out.push(list[1..list.len() - 1].to_owned());
-    }
-    out
-}
-
-/// What gives a secret away in `text`: half of one of `keys`, or the start of any key's text.
-fn leak<'a>(text: &str, keys: impl IntoIterator<Item = &'a str>) -> Option<String> {
-    // `{:#?}` writes a list a line each.
-    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let holds = |w: &String| text.contains(w) || one_line.contains(w);
+/// What gives a secret away in `text`: half of one of `keys`, however it is written, or the start
+/// of any key's text. Written as it is, in either base64 alphabet, as a list of numbers, decimal
+/// or hex, or as a run of hex digits, whatever the case, the spaces and the `0x` between them.
+fn leak<'a>(text: &str, keys: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
+    let list: String = text.split_whitespace().collect();
+    let list = list.replace("0x", "").to_lowercase();
+    let run = list.replace(',', "");
     for key in keys {
         for half in halves(key) {
-            let found = written(&half).into_iter().find(holds);
-            if found.is_some() {
-                return found;
+            let as_is = latin1(&half);
+            let base64 = as_is.replace('-', "+").replace('_', "/");
+            let each = |f: fn(&u8) -> String| half.iter().map(f).collect::<Vec<_>>();
+            if text.contains(&as_is) || text.contains(&base64) {
+                return Some("a secret's text");
+            }
+            if list.contains(&each(|b| format!("{b}")).join(","))
+                || list.contains(&each(|b| format!("{b:x}")).join(","))
+            {
+                return Some("a secret as a list");
+            }
+            if run.contains(&each(|b| format!("{b:02x}")).concat()) {
+                return Some("a secret in hex");
             }
         }
     }
     // The key format a hint names goes on with `<`.
     let mut starts = text.match_indices("ixk_");
     let start = starts.find(|(at, _)| text[at + 4..].starts_with(|c: char| c.is_ascii_hexdigit()));
-    start.map(|_| "a key's text".to_owned())
+    start.map(|_| "a key's text")
+}
+
+/// As [`leak`], in a file's or directory's path or in a file's bytes.
+fn leak_in<'a>(
+    (path, bytes): &(PathBuf, String),
+    keys: impl IntoIterator<Item = &'a str>,
+) -> Option<&'static str> {
+    leak(&format!("{}\n{bytes}", path.display()), keys)
 }
 
 /// Every file and directory under `root`, by its path there, a directory empty. Copied by another
@@ -189,10 +192,9 @@ impl Host {
     fn search(&self, running: bool, case: &str) {
         let files = files(self.root.path());
         let secrets = self.all();
-        for (path, bytes) in &files {
-            let text = format!("{}\n{bytes}", path.display());
-            let held = leak(&text, secrets.iter().map(String::as_str));
-            assert_eq!(held, None, "{case}: {path:?} holds a secret");
+        for file in &files {
+            let held = leak_in(file, secrets.iter().map(String::as_str));
+            assert_eq!(held, None, "{case}: {:?} holds a secret", file.0);
         }
         let file = |name: &str| {
             let found = files.iter().find(|(path, _)| path == Path::new(name));
@@ -431,42 +433,68 @@ fn no_secret_is_stored_or_logged() {
             .unwrap();
         return rt.block_on(play(Path::new(&told)));
     }
-    // The search finds each half alone, however written, and a whole key it does not know.
-    let probe = key(224);
-    let found = |text: &str| leak(text, [probe.expose()]).is_some();
-    let raw: Vec<u8> = (224..=255).collect();
-    let text = "4OHi4-Tl5ufo6err7O3u7_Dx8vP09fb3-Pn6-_z9_v8".as_bytes();
-    assert_eq!(&probe.expose().as_bytes()[41..], text);
-    for half in [&text[..21], &text[21..], &raw[..16], &raw[16..]] {
-        let hex: String = half.iter().map(|b| format!("{b:02x}")).collect();
-        let upper: String = half.iter().map(|b| format!("{b:02X}")).collect();
-        for form in [
-            latin1(half),
-            hex,
-            upper,
-            format!("{half:?}"),
-            format!("{half:x?}"),
-            format!("{half:X?}"),
-            format!("{half:#?}"),
-        ] {
-            assert!(found(&form), "{form}");
+    // The search finds each half alone, however written. Two probes: bytes below 16 are what tell
+    // a padded list from one that is not; those above 127 make a text with `-` and `_`.
+    let (low, high): (Vec<u8>, Vec<u8>) = ((0..32).collect(), (224..=255).collect());
+    let (low_key, high_key) = (key(0), key(224));
+    let text = "4OHi4-Tl5ufo6err7O3u7_Dx8vP09fb3-Pn6-_z9_v8";
+    assert_eq!(&high_key.expose()[41..], text);
+    for (probe, whole) in [
+        (&low_key, low.as_slice()),
+        (&high_key, &high),
+        (&high_key, text.as_bytes()),
+    ] {
+        let (first, second) = whole.split_at(whole.len() / 2);
+        for half in [first, second] {
+            let spaced = |pad: fn(&u8) -> String| {
+                let each: Vec<String> = half.iter().map(pad).collect();
+                each.join(" ")
+            };
+            for form in [
+                latin1(half),
+                spaced(|b| format!("{b:02x}")).replace(' ', ""),
+                spaced(|b| format!("{b:02X}")).replace(' ', ""),
+                spaced(|b| format!("{b:02x}")),
+                format!("{half:?}"),
+                format!("{half:?}").replace(' ', ""),
+                format!("{half:#?}"),
+                format!("{half:x?}"),
+                format!("{half:X?}"),
+                format!("{half:02x?}"),
+                format!("{half:02X?}"),
+                format!("{half:#x?}"),
+            ] {
+                let found = leak(&form, [probe.expose()]);
+                assert!(found.is_some_and(|f| f.starts_with("a secret")), "{form}");
+            }
         }
     }
-    // Bytes below 16 are what tell `{:02x?}` from `{:x?}`.
-    let low = key(0);
-    let low_bits: Vec<u8> = (0..32).collect();
-    for half in [&low_bits[..16], &low_bits[16..]] {
-        for form in [
-            format!("{half:x?}"),
-            format!("{half:X?}"),
-            format!("{half:02x?}"),
-            format!("{half:02X?}"),
-        ] {
-            assert!(leak(&form, [low.expose()]).is_some(), "{form}");
-        }
+    for half in ["4OHi4+Tl5ufo6err7O3u7", "/Dx8vP09fb3+Pn6+/z9/v8"] {
+        assert_eq!(leak(half, [high_key.expose()]), Some("a secret's text"));
     }
-    assert!(found(&format!("x {}", key(8).expose())));
-    assert!(!found("the key format is ixk_<key-id>_<secret>"));
+    // And a whole key it does not know; not the format a hint names.
+    let unknown = format!("x {}", key(8).expose());
+    assert_eq!(leak(&unknown, [high_key.expose()]), Some("a key's text"));
+    assert_eq!(leak("ixk_<key-id>_<secret>", [high_key.expose()]), None);
+    // It reads a file, and the path of one and of a directory.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(text)).unwrap();
+    std::fs::write(dir.path().join(&text[..21]), "").unwrap();
+    std::fs::write(dir.path().join("file"), text).unwrap();
+    std::fs::write(dir.path().join("fine"), "fine").unwrap();
+    let held = files(dir.path());
+    let held = held
+        .iter()
+        .map(|f| (f.0.as_path(), leak_in(f, [high_key.expose()]).is_some()));
+    let mut held: Vec<_> = held.collect();
+    held.sort();
+    let expected = [
+        (&text[..21], true),
+        (text, true),
+        ("file", true),
+        ("fine", false),
+    ];
+    assert_eq!(held, expected.map(|(path, held)| (Path::new(path), held)));
 
     let dir = tempfile::tempdir().unwrap();
     let told = dir.path().join("told");

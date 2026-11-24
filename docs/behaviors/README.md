@@ -33,7 +33,7 @@ The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It 
 - In `events.feature`, "a fresh environment" is `Engine::open` on a temporary directory, "a client" is a call holding the bootstrap key, and "another client" is a call on the same engine holding a key the bootstrap key created with all three scopes. EVT-055's other incarnation is a bare `Ledger` with the same ID and a new token, written as an embedder (D36).
 - "N days ago", "N hours pass" and "the clock reads" step the `ManualClock`.
 - `@local`: the scenario needs a fixture only the in-process adapter has (the clock, a second incarnation, the data directory, what `open` returns). The remote adapter skips it until it can drive them.
-- In `tenancy.feature`, "opened", "closed" and "reopened" are `Engine::open` and `close` on the scenario's directory; "the bootstrap key" is the key the first open returned; a seed is a well-formed key the step builds.
+- In `tenancy.feature`, "opened", "closed" and "reopened" are `Engine::open` and `close` on the scenario's directory; "the bootstrap key" is the key the first open returned, or the seed it was given; a seed is a well-formed key the step builds; "a client with a `<scope>` key" holds a key the bootstrap key created with exactly those scopes.
 
 ## Not yet
 

@@ -78,7 +78,8 @@ json --manifest-path "$bad/Cargo.toml"
 docs+=("$bad/target/doc/secret_in_error.json")
 ci/must-reject.sh BadField BadPrivate BadCall BadVariant BadTuple BadDeep BadAssociated BadWrapper \
   BadUnion BadMacro NamedError NamedRefused -- ci/no-secret-in-errors.sh "${docs[@]}"
-if ci/no-secret-in-errors.sh "${docs[@]}" | grep Fine; then
+found=$(ci/no-secret-in-errors.sh "${docs[@]}" || true)
+if grep Fine <<<"$found"; then
   echo "public-api: ci/no-secret-in-errors.sh rejects an error that holds no Secret"
   exit 1
 fi
