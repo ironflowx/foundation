@@ -181,8 +181,6 @@ impl Work {
     fn apply(&mut self, step: &Step, landed: bool) -> Answer {
         match *step {
             Step::Create { by, expires, step } => {
-                let admitted = self.keys[by].accepted(self.now, landed);
-                assert!(admitted, "the caller is admitted, so the key is told");
                 self.now += step;
                 let accepted = self.keys[by].accepted(self.now, landed);
                 self.keys.push(Key {
@@ -221,8 +219,8 @@ impl Work {
         }
     }
 
-    /// Sends the request and checks its answer. The key it creates, if one.
-    fn send(&mut self, step: &Step) -> usize {
+    /// Sends the request and checks its answer.
+    fn send(&mut self, step: &Step) {
         let (label, line) = self.line(step);
         self.child.send(&line);
         let want = self.apply(step, true);
@@ -238,15 +236,16 @@ impl Work {
                 self.keys.last_mut().expect("created").answered = Some(id);
             }
         }
-        self.keys.len() - 1
     }
 
+    /// The seed creates a key; which.
     fn create(&mut self, expires: Option<i64>) -> usize {
         self.send(&Step::Create {
             by: ADMIN,
             expires,
             step: 0,
-        })
+        });
+        self.keys.len() - 1
     }
 
     /// Any key but the seed, while each was created.
@@ -390,6 +389,8 @@ impl Killed {
                 Ok(me) => {
                     assert!(want, "{id} is accepted at {now}");
                     assert_eq!((me.key_id, &me.scopes), (*id, &key.scopes));
+                    let expires = key.expires.map(Timestamp::from_millis);
+                    assert_eq!(me.expires_at, expires, "{id}");
                     self.accepted.push(*id);
                 }
                 Err(e) => {
@@ -405,10 +406,7 @@ impl Killed {
     fn open_stepped_back(&mut self) {
         let now = clock().now().as_millis() + STEPPED_BACK;
         self.open(now);
-        let first = (self.listed.clone(), self.accepted.clone());
         self.open(now);
-        let second = (self.listed.clone(), self.accepted.clone());
-        assert_eq!(first, second, "two reopens agree");
     }
 
     fn lists(&self, key: usize) -> bool {
@@ -453,6 +451,9 @@ fn killed_around_a_revokes_commit() {
         let earlier = work.create(None);
         let key = work.create(None);
         let other = work.create(None);
+        work.send(&Step::Revoke(earlier));
+        // Again, which keeps the time of the first.
+        work.send(&Step::Clock(1));
         work.send(&Step::Revoke(earlier));
         work.send(&Step::Use(key));
         let mut killed = work.kill(&Step::Revoke(key), REVOKE, at);

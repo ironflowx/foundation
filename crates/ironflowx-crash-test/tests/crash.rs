@@ -199,8 +199,7 @@ impl Driver {
     /// The answer to the request that stops at `point`, if the child sends one before it
     /// stops: only at a point after the acknowledgment (after-ack, mid-fold) does it, and the
     /// two lines come in either order.
-    /// Before it, a `probe` proves no answer is on its way. The child names only the point it
-    /// was given, so `at` carries nothing to check.
+    /// Before it, a `probe` proves no answer is on its way.
     fn stop(&mut self, request: &str, point: FaultPoint) -> Option<String> {
         let lines = if matches!(point, FaultPoint::AfterAck | FaultPoint::MidFold) {
             2
@@ -211,7 +210,7 @@ impl Driver {
         let mut stopped = false;
         for _ in 0..lines {
             let line = self.line(&format!("{request} to stop at {}", point.name()));
-            if line.starts_with("at ") {
+            if line == format!("at {}", point.name()) {
                 stopped = true;
             } else {
                 answer = Some(line);

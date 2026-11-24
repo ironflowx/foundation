@@ -49,8 +49,8 @@ use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::pin::pin;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::task::Poll;
 
 use ironflowx_cell::ManualClock;
@@ -72,6 +72,8 @@ static ARMED: OnceLock<String> = OnceLock::new();
 /// The engine's clock, and how far it steps as the next key is told.
 static CLOCK: OnceLock<ManualClock> = OnceLock::new();
 static STEP: AtomicI64 = AtomicI64::new(0);
+/// The secret last told.
+static TOLD: Mutex<String> = Mutex::new(String::new());
 /// What makes the open fail: `staged` or `renamed`, and `ledgers/`.
 static OBSTRUCT: OnceLock<(String, PathBuf)> = OnceLock::new();
 /// Held until the kill.
@@ -106,6 +108,7 @@ fn tell(env: EnvRef, key: KeyId, secret: Option<&Secret>) {
     UnixStream::from(socket.expect("the socket duplicates"))
         .write_all(line.as_bytes())
         .expect("the socket writes");
+    *TOLD.lock().expect("no panic") = secret.map_or("", Secret::expose).to_owned();
     let clock = CLOCK.get().expect("set before the engine opens");
     clock.step(STEP.swap(0, Ordering::SeqCst));
 }
@@ -294,6 +297,8 @@ fn main() {
                         STEP.store(step, Ordering::SeqCst);
                         match engine.create_key(&callers[by], req).await {
                             Ok(created) => {
+                                let same = *TOLD.lock().expect("no panic") == created.key.expose();
+                                assert!(same, "a created key's secret is the one told");
                                 let id = created.info.key_id.to_string();
                                 callers.insert(id.clone(), Call::with_key(created.key));
                                 format!("key {id}")
