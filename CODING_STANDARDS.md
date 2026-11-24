@@ -34,8 +34,11 @@ Judgement rules for review. Anything a tool can check belongs in CI instead (`ci
   reviewer runs each limit's boundary (max, max+1, escaped forms) and the dependency features a
   downstream build can switch on, rather than reading the tests. For a CI check, that means
   throwaway fixtures that try to get past it, and legitimate cases it should still pass. The
-  review lists every bypass tried and shows each one rejected. A bypass that gets through is a
-  defect to fix in this PR, whatever an older check shares the gap.
+  review lists every bypass tried and its outcome. A check stops accidents, not evasion. A bypass
+  a contributor would plausibly write without trying to get past the check is a defect to fix in
+  this PR, whatever an older check shares the gap. Any other is listed in a comment on the check,
+  as is code it wrongly refuses that this repo does not have; the PR shows this repo has neither.
+  If author and reviewer disagree on which it is, the maintainer decides.
 - **Limits leave with proof.** A change that deletes a documented limit, caveat or failure cause
   includes a test showing it no longer happens. Without one, the line stays.
 - **Tables are tested by row.** For each table in `architecture.md` that maps an input or a state
