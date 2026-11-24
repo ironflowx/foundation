@@ -17,4 +17,12 @@
 //! ```compile_fail,fooE0308
 //! let n: u32 = "E0308";
 //! ```
+//!
+//! ```compile_fail (E0308)
+//! let n: u32 = "E0308";
+//! ```
+//!
+//! ```compile_fail,E0308.
+//! let n: u32 = "E0308";
+//! ```
 #![doc = include_str!("included.md")]
