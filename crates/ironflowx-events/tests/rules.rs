@@ -10,7 +10,7 @@ use std::num::NonZeroU32;
 use ironflowx_core::{Emitter, ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
 use ironflowx_events::{
     Decision, Emit, Error, Event, EventPage, EventTables, EventsView, ItemOutcome, NewEvent,
-    Record, Submission, decide, fold, get_event, list_events,
+    PageBudget, Record, Submission, decide, fold, get_event, list_events,
 };
 
 /// The read tables, in memory: the one seam.
@@ -34,15 +34,25 @@ impl EventsView for Store {
     fn event(&self, id: EventId) -> Result<Option<Event>, Infallible> {
         Ok(self.events.values().find(|e| e.id == id).cloned())
     }
-    fn events_before(&self, before: Option<u64>, limit: usize) -> Result<Vec<Event>, Infallible> {
+    fn events_before(
+        &self,
+        before: Option<u64>,
+        budget: &mut PageBudget,
+    ) -> Result<Vec<Event>, Infallible> {
         Ok(self
             .events
             .range((Unbounded, before.map_or(Unbounded, Excluded)))
             .rev()
-            .take(limit)
-            .map(|(_, e)| e.clone())
+            .map(|(_, e)| e)
+            .take_while(|e| budget.take(size(e)))
+            .cloned()
             .collect())
     }
+}
+
+/// The bytes of an event's data and metadata.
+fn size(e: &Event) -> usize {
+    e.data.len() + e.metadata.as_ref().map_or(0, Vec::len)
 }
 
 /// The sequence of a row the store already holds.
@@ -594,7 +604,11 @@ impl EventsView for Failing<'_> {
     fn event(&self, _: EventId) -> Result<Option<Event>, &'static str> {
         unreachable!()
     }
-    fn events_before(&self, _: Option<u64>, _: usize) -> Result<Vec<Event>, &'static str> {
+    fn events_before(
+        &self,
+        _: Option<u64>,
+        _: &mut PageBudget,
+    ) -> Result<Vec<Event>, &'static str> {
         unreachable!()
     }
 }
@@ -859,6 +873,294 @@ fn events_page_by_cursor_and_the_last_page_has_none() {
     let empty = list(&Env::new(), None, None);
     assert!(empty.events.is_empty());
     assert_eq!(empty.next, None);
+}
+
+/// An environment holding one event per (data, metadata) size, oldest first, named "e.1", ...
+/// Folded, not decided, so an event may be larger than one a client can emit.
+fn with_sizes(sizes: &[(usize, Option<usize>)]) -> Env {
+    let mut env = Env::new();
+    let events = (1u64..).zip(ids()).zip(sizes);
+    let events = events.map(|((sequence, id), &(data, metadata))| NewEvent {
+        sequence,
+        id,
+        name: format!("e.{sequence}"),
+        data: vec![b'1'; data],
+        metadata: metadata.map(|n| vec![b' '; n]),
+        version: 1,
+        idempotency_key: None,
+    });
+    let record = Record {
+        time: NOW,
+        events: events.collect(),
+    };
+    fold(&mut env.store, &record, &by()).expect("in memory");
+    env
+}
+
+const KIB: usize = 1024;
+const MIB: usize = 1024 * KIB;
+
+#[test]
+fn a_page_of_events_stops_before_its_data_passes_3_mib() {
+    let env = with_sizes(&[(512 * KIB, None); 10]);
+    let first = list(&env, None, None);
+    assert_eq!(names(&first), ["e.10", "e.9", "e.8", "e.7", "e.6", "e.5"]);
+    let last = list(&env, None, first.next.as_deref());
+    assert_eq!(names(&last), ["e.4", "e.3", "e.2", "e.1"]);
+    assert_eq!(last.next, None);
+}
+
+/// The sequences on each page, following `next` to the last; the limit of page `i` is `limit(i)`.
+fn walk(env: &Env, mut limit: impl FnMut(usize) -> Option<u32>) -> Vec<Vec<u64>> {
+    let mut pages = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = list(env, limit(pages.len()), cursor.as_deref());
+        // So the page of the oldest event is the last one.
+        assert_eq!(page.events.is_empty(), env.store.events.is_empty());
+        pages.push(page.events.iter().map(|e| e.sequence).collect());
+        assert!(pages.len() <= env.store.events.len().max(1), "{pages:?}");
+        cursor = page.next;
+        if cursor.is_none() {
+            return pages;
+        }
+    }
+}
+
+#[test]
+fn a_page_holds_exactly_3_mib_and_not_a_byte_more_unless_one_event_does() {
+    for (sizes, pages) in [
+        // Data and metadata together: exactly the bound, with and without more events.
+        (
+            vec![(1, None), (MIB, None), (2 * MIB - 1, Some(1))],
+            vec![vec![3, 2], vec![1]],
+        ),
+        (
+            vec![(MIB, Some(0)), (2 * MIB - 1, Some(1))],
+            vec![vec![2, 1]],
+        ),
+        // A byte more, of data or of metadata.
+        (
+            vec![(MIB + 1, None), (2 * MIB - 1, Some(1))],
+            vec![vec![2], vec![1]],
+        ),
+        (
+            vec![(MIB, None), (2 * MIB - 1, Some(2))],
+            vec![vec![2], vec![1]],
+        ),
+        // An event past the bound by itself, first, between two and last.
+        (vec![(3 * MIB + 1, None)], vec![vec![1]]),
+        (vec![(3 * MIB, Some(1))], vec![vec![1]]),
+        (
+            vec![(1, None), (3 * MIB + 1, None), (1, None)],
+            vec![vec![3], vec![2], vec![1]],
+        ),
+        (
+            vec![(3 * MIB, None), (1, None), (1, None)],
+            vec![vec![3, 2], vec![1]],
+        ),
+        // An empty one still fits a full page.
+        (vec![(0, None), (3 * MIB, None)], vec![vec![2, 1]]),
+        // A small event does not jump one that does not fit.
+        (
+            vec![(1, None), (2 * MIB, None), (2 * MIB, None)],
+            vec![vec![3], vec![2, 1]],
+        ),
+        (vec![], vec![vec![]]),
+    ] {
+        assert_eq!(walk(&with_sizes(&sizes), |_| None), pages, "{sizes:?}");
+    }
+}
+
+/// xorshift64*: the same numbers on every run.
+struct Rng(u64);
+
+impl Rng {
+    /// Below `n`.
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        (self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 33) as usize % n
+    }
+
+    /// Often a multiple of 256 KiB, so that pages end exactly at the bound; or a byte off one.
+    fn size(&mut self) -> usize {
+        match self.below(4) {
+            0 => self.below(2000),
+            1 => (self.below(14) * 256 * KIB + 1).saturating_sub(self.below(3)),
+            _ => self.below(5) * 256 * KIB,
+        }
+    }
+}
+
+#[test]
+fn the_count_and_the_bytes_of_a_page_together_never_skip_or_repeat_an_event() {
+    let mut full = [0; 3];
+    for seed in 1..=150 {
+        let mut rng = Rng(seed);
+        // One case in three has events so small that only the count limits a page.
+        let (n, small) = match rng.below(3) {
+            0 => (rng.below(450), true),
+            _ => (rng.below(30), false),
+        };
+        let sizes: Vec<_> = (0..n)
+            .map(|_| {
+                if small {
+                    return (rng.below(9), None);
+                }
+                let data = rng.size();
+                let metadata = (rng.below(3) == 0).then(|| rng.below(3) * 32 * KIB);
+                // Moved from the data, so that the sums stay near the bound.
+                (data.saturating_sub(metadata.unwrap_or(0)), metadata)
+            })
+            .collect();
+        let limits: Vec<_> = (0..=n)
+            .map(|_| match rng.below(6) {
+                0 => None,
+                1 => Some(1 + rng.below(6) as u32),
+                2 => Some(199 + rng.below(3) as u32),
+                3 => Some(u32::MAX),
+                _ => Some(5 + rng.below(30) as u32),
+            })
+            .collect();
+        let env = with_sizes(&sizes);
+        let pages = walk(&env, |i| limits[i]);
+        let case = format!("seed {seed}: {sizes:?} {limits:?} {pages:?}");
+        // Every event once, newest first.
+        let newest_first: Vec<u64> = (1..=n as u64).rev().collect();
+        assert_eq!(pages.concat(), newest_first, "{case}");
+        let bytes = |s: u64| size(&env.store.events[&s]);
+        for (i, page) in pages.iter().enumerate() {
+            let limit = limits[i].map_or(20, |l| l.min(200)) as usize;
+            let total: usize = page.iter().copied().map(bytes).sum();
+            assert!(page.len() <= limit, "page {i} of {case}");
+            assert!(page.len() <= 1 || total <= 3 * MIB, "page {i} of {case}");
+            // It stopped only for a limit it had reached.
+            match page.last() {
+                Some(&last) if last > 1 && page.len() == limit => full[0] += 1,
+                Some(&last) if last > 1 => {
+                    assert!(total + bytes(last - 1) > 3 * MIB, "page {i} of {case}");
+                    full[1] += 1;
+                }
+                // The last page: nothing is left.
+                _ => full[2] += usize::from(total == 3 * MIB),
+            }
+        }
+    }
+    // Each kind of page was seen: ended by the count, by the bytes, and by nothing at the bound.
+    assert!(full.iter().all(|&n| n > 0), "{full:?}");
+}
+
+/// A view of which events up to `past` cannot be read: the newest of them has a size, and no
+/// older one can be looked at.
+struct FailsPast<'a> {
+    store: &'a Store,
+    past: u64,
+}
+
+impl EventsView for FailsPast<'_> {
+    type Error = u64;
+    fn event_by_key(&self, _: &str) -> Result<Option<EventId>, u64> {
+        unreachable!()
+    }
+    fn last_sequence(&self) -> Result<u64, u64> {
+        unreachable!()
+    }
+    fn event(&self, _: EventId) -> Result<Option<Event>, u64> {
+        unreachable!()
+    }
+    fn events_before(
+        &self,
+        before: Option<u64>,
+        budget: &mut PageBudget,
+    ) -> Result<Vec<Event>, u64> {
+        let mut events = Vec::new();
+        for (&sequence, event) in self.store.events.iter().rev() {
+            if before.is_some_and(|b| sequence >= b) {
+                continue;
+            }
+            if sequence < self.past {
+                return Err(sequence);
+            }
+            if !budget.take(size(event)) {
+                break;
+            }
+            if sequence == self.past {
+                return Err(sequence);
+            }
+            events.push(event.clone());
+        }
+        Ok(events)
+    }
+}
+
+#[test]
+fn a_view_that_fails_past_a_page_does_not_fail_it() {
+    let env = with_sizes(&[(512 * KIB, None); 10]);
+    // By its bytes, then by its count.
+    for (limit, past) in [(None, 4), (NonZeroU32::new(3), 7)] {
+        let view = FailsPast {
+            store: &env.store,
+            past,
+        };
+        let page = list_events(&view, token(1), limit, None).expect("listed");
+        let listed: Vec<_> = page.events.iter().map(|e| e.sequence).collect();
+        assert_eq!(listed, (past + 1..=10).rev().collect::<Vec<_>>());
+        let next = list_events(&view, token(1), limit, page.next.as_deref());
+        assert_eq!(next, Err(Error::Store(past)));
+    }
+}
+
+/// A view that asks on after a refusal, about every event there is, by the sizes it is given.
+struct AsksOn<'a> {
+    store: &'a Store,
+    newest_first: &'a [usize],
+}
+
+impl EventsView for AsksOn<'_> {
+    type Error = Infallible;
+    fn event_by_key(&self, _: &str) -> Result<Option<EventId>, Infallible> {
+        unreachable!()
+    }
+    fn last_sequence(&self) -> Result<u64, Infallible> {
+        unreachable!()
+    }
+    fn event(&self, _: EventId) -> Result<Option<Event>, Infallible> {
+        unreachable!()
+    }
+    fn events_before(
+        &self,
+        _: Option<u64>,
+        budget: &mut PageBudget,
+    ) -> Result<Vec<Event>, Infallible> {
+        let events = self.store.events.values().rev().zip(self.newest_first);
+        Ok(events
+            .filter(|&(_, &size)| budget.take(size))
+            .map(|(e, _)| e.clone())
+            .collect())
+    }
+}
+
+#[test]
+fn a_refused_event_ends_the_page_for_every_older_one() {
+    let env = with_events(3);
+    for (newest_first, limit) in [
+        // By its count, then by its bytes, with a small event after the one that does not fit.
+        ([1, 1, 1], NonZeroU32::new(1)),
+        ([1, 3 * MIB, 1], None),
+        // Their sum overflows.
+        ([1, usize::MAX, 1], None),
+        ([usize::MAX, 1, 1], None),
+    ] {
+        let view = AsksOn {
+            store: &env.store,
+            newest_first: &newest_first,
+        };
+        let page = list_events(&view, token(1), limit, None).expect("listed");
+        assert_eq!(names(&page), ["e.3"], "{newest_first:?}");
+        assert_eq!(page.next, Some(format!("{}.3", token(1))));
+    }
 }
 
 /// A store whose one event takes the last event sequence there is.

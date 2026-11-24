@@ -109,7 +109,8 @@ const fn required_scope(op: Operation) -> Option<Scope>;   // an exhaustive matc
 // Event            { event_id, name, data: Vec<u8> /* the bytes as sent */, metadata: Option<Vec<u8>>, version: i64,
 //                    idempotency_key: Option<String>, time: Timestamp, emitted_by: Emitter }
 // ListEventsRequest{ limit: Option<NonZeroU32> /* None 20, above 200 clamps to 200 */, cursor: Option<String> }
-// EventPage        { events: Vec<Event> /* newest first */, next: Option<String> /* None on the last page */ }
+// EventPage        { events: Vec<Event> /* newest first; data and metadata within 3 MiB, or one event (D73) */,
+//                    next: Option<String> /* None on the last page, else continues after the last event */ }
 // Call             Call::anonymous() | Call::with_key(Secret)   // the key as presented (D45); not Clone
 // OpError          { kind: ErrorKind, message: String, hint: Option<String> }   // see Errors
 // Whoami           { key_id: KeyId, scopes: BTreeSet<Scope>, environment: Address, expires_at: Option<Timestamp> }
@@ -213,6 +214,13 @@ fn new_env_ref() -> EnvRef;   // a fresh UUIDv7 ID and a 128-bit token from the 
 fn decide<V: EventsView>(view: &V, sub: &Submission, now: SequencedTime,
           fresh: &mut impl Iterator<Item = EventId>) -> Result<Decision, Error<V::Error>>;
 fn fold<T: EventTables>(tx: &mut T, record: &Record, emitted_by: &Emitter) -> Result<(), T::Error>;
+fn get_event<V: EventsView>(view: &V, id: &str) -> Result<Event, Error<V::Error>>;
+fn list_events<V: EventsView>(view: &V, token: IncarnationToken, limit: Option<NonZeroU32>,
+          cursor: Option<&str>) -> Result<EventPage, Error<V::Error>>;
+// EventsView also has event_by_key, last_sequence and event.
+// The budget is asked about each event in turn, before it is loaded; the first it refuses ends the read
+fn EventsView::events_before(&self, before: Option<u64>, budget: &mut PageBudget) -> Result<Vec<Event>, Self::Error>;
+fn PageBudget::take(&mut self, bytes: usize) -> bool;   // only list_events makes a PageBudget
 // Error<E> Refused(Refusal) | Store(E)   // E: the view's own read error
 ```
 
@@ -242,6 +250,8 @@ fn fold<T: EventTables>(tx: &mut T, record: &Record, emitted_by: &Emitter) -> Re
 If a build turns on `serde_json`'s `arbitrary_precision` feature, which Cargo's feature unification can do from any crate in the embedder's graph, an object whose first key is `$serde_json::private::Number` is read as a number and so may be refused. A default build reads that key like any other. CI runs the event-rule tests in both builds.
 
 A list query, not `decide`, checks the cursor: a token that does not decode, or names another incarnation, is `Invalid` (EVT-045, EVT-055). A cursor encodes the incarnation token and the last event sequence returned, and stays valid across reopen. A page lists the events older than the cursor's sequence, whether or not an event has that sequence, so a cursor past every sequence lists from the newest. It is an encoding, not a signature: a forged one is not detected.
+
+A page holds 20 events unless asked otherwise, at most 200, and stops before its data and metadata, as stored, would pass 3 MiB; exactly 3 MiB fits. It holds at least one event if any is left, so a larger event is a page of its own (D73). `next` continues after the last event whichever limit ended the page, and only the last page has none, so a page shorter than its limit is not necessarily the last. Names, keys and the other fields do not count. The read stops with the page: the read store loads no event past it. Of the event that ended the page it takes the size, for which SQLite reads the way to its row and none of its overflow pages, and it asks for no older one.
 
 ## Keys
 
@@ -471,7 +481,7 @@ A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 
 | Crate | Version | Used | Relied on |
 |---|---|---|---|
 | `segment-log-core` | Pinned exactly (D16), from crates.io (MIT) | `SegmentLog::open`, `append` → `Pending::wait`, `read(from, max)`, `watermark`, `stream_head` | See below |
-| `rusqlite` | A caret range (0.43.x), `bundled` (D26), which compiles SQLite with a C compiler; its `libsqlite3-sys` links `sqlite3`, so an embedder's graph can hold no other version of it | Read store; the control plane | One transaction per folded record; one per control-plane change |
+| `rusqlite` | A caret range (0.43.x), `bundled` (D26), which compiles SQLite with a C compiler; its `libsqlite3-sys` links `sqlite3`, so an embedder's graph can hold no other version of it | Read store; the control plane | One transaction per folded record; one per control-plane change. `length()` of a blob reads none of its overflow pages (D73) |
 | `serde_json` | Pinned exactly (D26); the 127 depth limit is checked against it | Event rules | D12 |
 | `serde_core` | A caret range | Event rules' JSON visitor | D12 |
 | `uuid` | A caret range; `v7` in `ironflowx-cell` and `ironflowx-operations` only | Event, environment, tenant, project and key IDs | |

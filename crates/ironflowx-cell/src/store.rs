@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::Path;
 
 use ironflowx_core::{Emitter, EnvRef, EventId, Timestamp};
-use ironflowx_events::{Event, EventTables, EventsView, Record};
+use ironflowx_events::{Event, EventTables, EventsView, PageBudget, Record};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
@@ -266,17 +266,32 @@ impl EventsView for ReadStore<'_> {
         )
     }
 
-    fn events_before(&self, before: Option<u64>, limit: usize) -> Result<Vec<Event>, StoreError> {
-        let sql =
-            format!("SELECT {EVENT_COLUMNS} WHERE sequence < ?1 ORDER BY sequence DESC LIMIT ?2");
+    fn events_before(
+        &self,
+        before: Option<u64>,
+        budget: &mut PageBudget,
+    ) -> Result<Vec<Event>, StoreError> {
         // A cursor past every sequence lists from the newest.
         let before = before.map_or(i64::MAX, |b| i64::try_from(b).unwrap_or(i64::MAX));
-        store_err(self.0.prepare(&sql).and_then(|mut stmt| {
-            stmt.query_map(
-                params![before, i64::try_from(limit).unwrap_or(i64::MAX)],
-                row_event,
-            )?
-            .collect()
-        }))
+        store_err((|| {
+            // SQLite takes a blob's length from its row's header, so of the event that ends the
+            // page it reads none of the overflow pages.
+            let mut sizes = self.0.prepare(
+                "SELECT sequence, length(data) + ifnull(length(metadata), 0) FROM events
+                 WHERE sequence < ?1 ORDER BY sequence DESC",
+            )?;
+            let sql = format!("SELECT {EVENT_COLUMNS} WHERE sequence = ?1");
+            let mut event = self.0.prepare(&sql)?;
+            let mut events = Vec::new();
+            // Both statements read one snapshot, the open query's.
+            let mut rows = sizes.query([before])?;
+            while let Some(row) = rows.next()? {
+                if !budget.take(row.get(1)?) {
+                    break;
+                }
+                events.push(event.query_row([row.get::<_, u64>(0)?], row_event)?);
+            }
+            Ok(events)
+        })())
     }
 }

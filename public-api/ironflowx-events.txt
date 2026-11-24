@@ -113,6 +113,11 @@ pub fn ironflowx_events::NewEvent::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_events::NewEvent
 pub fn ironflowx_events::NewEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_events::NewEvent
+pub struct ironflowx_events::PageBudget
+impl ironflowx_events::PageBudget
+pub fn ironflowx_events::PageBudget::take(&mut self, usize) -> bool
+impl core::fmt::Debug for ironflowx_events::PageBudget
+pub fn ironflowx_events::PageBudget::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct ironflowx_events::Record
 pub ironflowx_events::Record::events: alloc::vec::Vec<ironflowx_events::NewEvent>
 pub ironflowx_events::Record::time: ironflowx_core::time::Timestamp
@@ -145,7 +150,7 @@ pub trait ironflowx_events::EventsView
 pub type ironflowx_events::EventsView::Error
 pub fn ironflowx_events::EventsView::event(&self, ironflowx_core::id::EventId) -> core::result::Result<core::option::Option<ironflowx_events::Event>, Self::Error>
 pub fn ironflowx_events::EventsView::event_by_key(&self, &str) -> core::result::Result<core::option::Option<ironflowx_core::id::EventId>, Self::Error>
-pub fn ironflowx_events::EventsView::events_before(&self, core::option::Option<u64>, usize) -> core::result::Result<alloc::vec::Vec<ironflowx_events::Event>, Self::Error>
+pub fn ironflowx_events::EventsView::events_before(&self, core::option::Option<u64>, &mut ironflowx_events::PageBudget) -> core::result::Result<alloc::vec::Vec<ironflowx_events::Event>, Self::Error>
 pub fn ironflowx_events::EventsView::last_sequence(&self) -> core::result::Result<u64, Self::Error>
 pub fn ironflowx_events::decide<V: ironflowx_events::EventsView>(&V, &ironflowx_events::Submission, ironflowx_core::time::SequencedTime, &mut impl core::iter::traits::iterator::Iterator<Item = ironflowx_core::id::EventId>) -> core::result::Result<ironflowx_events::Decision, ironflowx_events::Error<<V as ironflowx_events::EventsView>::Error>>
 pub fn ironflowx_events::fold<T: ironflowx_events::EventTables>(&mut T, &ironflowx_events::Record, &ironflowx_core::who::Emitter) -> core::result::Result<(), <T as ironflowx_events::EventTables>::Error>

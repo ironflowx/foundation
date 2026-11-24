@@ -8,7 +8,9 @@ use ironflowx_core::{Emitter, EnvRef, ErrorKind, EventId, SubmitAs, Timestamp};
 use ironflowx_events::{Emit, Event, ItemOutcome, Submission};
 use segment_log_core::{ExpectedRevision, NewRecord, Options, SegmentLog, Submit};
 
-use crate::{Ledger, ManualClock, OpenError, ReadError, SubmitError, new_env_ref, record};
+use crate::{
+    Ledger, ManualClock, OpenError, ReadError, ReadStore, SubmitError, new_env_ref, record,
+};
 
 const T: i64 = 1_800_000_000_000;
 const HOUR: i64 = 3_600_000;
@@ -359,6 +361,164 @@ async fn a_cursor_past_every_sequence_lists_from_the_newest() {
         .await
         .unwrap();
     assert_eq!(page.events.len(), 1);
+}
+
+fn store_message(e: ironflowx_events::Error<crate::StoreError>) -> String {
+    match e {
+        ironflowx_events::Error::Store(e) => e.to_string(),
+        ironflowx_events::Error::Refused(r) => panic!("refused: {r:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_page_of_events_reads_no_event_past_its_end() {
+    // Ten events of 512 KiB, their metadata included, so six are 3 MiB exactly; or the newest is
+    // a byte larger.
+    for (metadata, larger, limit, first, second, third) in [
+        (
+            "",
+            0,
+            None,
+            vec![10, 9, 8, 7, 6, 5],
+            vec![4, 3, 2, 1],
+            false,
+        ),
+        (
+            "{}",
+            0,
+            None,
+            vec![10, 9, 8, 7, 6, 5],
+            vec![4, 3, 2, 1],
+            false,
+        ),
+        (
+            "{}",
+            1,
+            None,
+            vec![10, 9, 8, 7, 6],
+            vec![5, 4, 3, 2, 1],
+            false,
+        ),
+        ("", 0, 2.try_into().ok(), vec![10, 9], vec![8, 7], true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let env = new_env_ref();
+        let ledger = open(dir.path(), env).await;
+        // Each event's data is its own letter, so that its bytes can be found in the file.
+        for letter in 'a'..='j' {
+            let larger = if letter == 'j' { larger } else { 0 };
+            // Less the quotes.
+            let letters = letter.to_string().repeat(524_286 - metadata.len() + larger);
+            let big = Emit {
+                data: Some(format!("\"{letters}\"").into_bytes()),
+                metadata: (!metadata.is_empty()).then(|| metadata.into()),
+                ..named("blob.saved")
+            };
+            emit(&ledger, big).await.unwrap();
+        }
+        ledger.close().await;
+        let path = dir.path().join("read.db");
+        let list = |cursor: Option<&str>| {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let page = ironflowx_events::list_events(&ReadStore(&conn), env.token(), limit, cursor);
+            page.map(|p| {
+                let sequences: Vec<u64> = p.events.iter().map(|e| e.sequence).collect();
+                (sequences, p.next)
+            })
+        };
+        let (listed, next) = list(None).unwrap();
+        assert_eq!(listed, first);
+        let after = list(next.as_deref()).unwrap();
+        let third = third.then(|| format!("{}.{}", env.token(), second[second.len() - 1]));
+        assert_eq!(after, (second.clone(), third));
+
+        // Cut the chain of pages that holds the data of every event past the first page: SQLite
+        // fails to read any of them now, and the first page lists all the same.
+        let page_size: usize = rusqlite::Connection::open(&path)
+            .and_then(|conn| conn.query_row("PRAGMA page_size", [], |r| r.get(0)))
+            .unwrap();
+        let mut file = std::fs::read(&path).unwrap();
+        let past_letters: BTreeSet<u8> = (b'a'..).zip(1..=second[0]).map(|(l, _)| l).collect();
+        let mut cut = BTreeSet::new();
+        for page in file.chunks_mut(page_size) {
+            let letter = page[4];
+            let (next, data) = page.split_at_mut(4);
+            if past_letters.contains(&letter) && data.iter().all(|&b| b == letter) {
+                next.fill(0xff);
+                cut.insert(letter);
+            }
+        }
+        assert_eq!(cut, past_letters);
+        std::fs::write(&path, file).unwrap();
+        assert_eq!(list(None).unwrap(), (first, next.clone()));
+        let err = list(next.as_deref()).unwrap_err();
+        assert_eq!(
+            store_message(err),
+            "read store: database disk image is malformed"
+        );
+    }
+}
+
+#[test]
+fn a_page_fails_when_the_read_store_cannot_read_an_event_on_it() {
+    let token = new_env_ref().token();
+    for (schema, failed) in [
+        ("", "no such table: events"),
+        // The size is readable and the event is not.
+        (
+            "CREATE TABLE events (sequence, data, metadata)",
+            "no such column: id",
+        ),
+        (
+            "CREATE VIEW events AS SELECT -1 AS sequence, 'x' AS id, 'x' AS name, x'' AS data,
+             NULL AS metadata, 1 AS version, NULL AS idempotency_key, 0 AS time, '' AS emitted_by",
+            "Integer -1 out of range at index 0",
+        ),
+        // The size cannot be read: no integer, then an error from SQLite itself.
+        (
+            "CREATE VIEW events AS SELECT 1 AS sequence, 'x' AS id, 'x' AS name, NULL AS data,
+             NULL AS metadata, 1 AS version, NULL AS idempotency_key, 0 AS time, '' AS emitted_by",
+            "Invalid column type Null at index: 1",
+        ),
+        (
+            "CREATE VIEW events AS SELECT 1 AS sequence, 'x' AS id, 'x' AS name,
+             abs(-9223372036854775808) AS data, NULL AS metadata, 1 AS version,
+             NULL AS idempotency_key, 0 AS time, '' AS emitted_by",
+            "integer overflow",
+        ),
+    ] {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(schema).unwrap();
+        let page = ironflowx_events::list_events(&ReadStore(&conn), token, None, None);
+        let message = store_message(page.unwrap_err());
+        // Less what rusqlite adds: the statement, or the column's name.
+        let cause = message.split(" in SELECT").next().unwrap();
+        let cause = cause.split(", name: ").next().unwrap();
+        assert_eq!(cause, format!("read store: {failed}"));
+    }
+}
+
+#[test]
+fn a_page_looks_at_no_event_older_than_the_one_that_ends_it() {
+    let token = new_env_ref().token();
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    // Event 1 has no size.
+    conn.execute_batch(
+        "CREATE TABLE events (sequence INTEGER PRIMARY KEY, id, name, data, metadata, version,
+                              idempotency_key, time, emitted_by);
+         INSERT INTO events SELECT column1, '019a8f3c-7e21-7b4a-9c3d-00000000000' || column1,
+             'x', column2, NULL, 1, NULL, 0, 'embedder:x'
+             FROM (VALUES (1, NULL), (2, x'31'), (3, x'31'));",
+    )
+    .unwrap();
+    let list = |cursor: Option<&str>| {
+        ironflowx_events::list_events(&ReadStore(&conn), token, 1.try_into().ok(), cursor)
+    };
+    let page = list(None).unwrap();
+    assert_eq!(page.events.len(), 1);
+    assert_eq!(page.next, Some(format!("{token}.3")));
+    let err = list(page.next.as_deref()).unwrap_err();
+    assert!(store_message(err).starts_with("read store: Invalid column type Null at index: 1,"));
 }
 
 #[tokio::test]
