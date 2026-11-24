@@ -4,6 +4,7 @@
 use std::future::Future;
 use std::num::NonZeroU32;
 use std::pin::pin;
+use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 
 use std::collections::BTreeSet;
@@ -115,6 +116,71 @@ fn created(req: CreateKeyRequest) -> CreatedKey {
     }
 }
 
+/// Records each call's [`Operation`], then answers as `Fixed` does.
+#[derive(Default)]
+struct Recording(Mutex<Vec<Operation>>);
+
+impl Recording {
+    fn record(&self, op: Operation) {
+        self.0.lock().unwrap().push(op);
+    }
+}
+
+impl Operations for Recording {
+    async fn emit(&self, cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError> {
+        self.record(Operation::Emit);
+        Fixed.emit(cx, req).await
+    }
+
+    async fn emit_batch(
+        &self,
+        cx: &Call,
+        req: EmitBatchRequest,
+    ) -> Result<EmitBatchResponse, OpError> {
+        self.record(Operation::EmitBatch);
+        Fixed.emit_batch(cx, req).await
+    }
+
+    async fn get_event(&self, cx: &Call, req: GetEventRequest) -> Result<Event, OpError> {
+        self.record(Operation::GetEvent);
+        Fixed.get_event(cx, req).await
+    }
+
+    async fn list_events(&self, cx: &Call, req: ListEventsRequest) -> Result<EventPage, OpError> {
+        self.record(Operation::ListEvents);
+        Fixed.list_events(cx, req).await
+    }
+
+    async fn whoami(&self, cx: &Call, req: WhoamiRequest) -> Result<Whoami, OpError> {
+        self.record(Operation::Whoami);
+        Fixed.whoami(cx, req).await
+    }
+
+    async fn list_environments(
+        &self,
+        cx: &Call,
+        req: ListEnvironmentsRequest,
+    ) -> Result<Vec<Environment>, OpError> {
+        self.record(Operation::ListEnvironments);
+        Fixed.list_environments(cx, req).await
+    }
+
+    async fn create_key(&self, cx: &Call, req: CreateKeyRequest) -> Result<CreatedKey, OpError> {
+        self.record(Operation::CreateKey);
+        Fixed.create_key(cx, req).await
+    }
+
+    async fn list_keys(&self, cx: &Call, req: ListKeysRequest) -> Result<KeyPage, OpError> {
+        self.record(Operation::ListKeys);
+        Fixed.list_keys(cx, req).await
+    }
+
+    async fn revoke_key(&self, cx: &Call, req: RevokeKeyRequest) -> Result<(), OpError> {
+        self.record(Operation::RevokeKey);
+        Fixed.revoke_key(cx, req).await
+    }
+}
+
 /// Polls a future that must be ready at once; `Fixed` never awaits anything pending.
 fn ready<F: Future>(f: F) -> F::Output {
     match pin!(f).poll(&mut Context::from_waker(Waker::noop())) {
@@ -127,7 +193,7 @@ fn assert_send<T: Send>(t: T) -> T {
     t
 }
 
-/// A caller that knows only the trait, as the behavior steps will be.
+/// A caller that knows only the trait, as the behavior steps will be. Calls each method once.
 fn drive<O: Operations>(ops: &O) {
     let cx = Call::anonymous();
     let req = EmitRequest {
@@ -221,6 +287,58 @@ fn each_operation_requires_its_scope() {
     ] {
         assert_eq!(required_scope(op), scope, "{op:?}");
     }
+}
+
+/// Each method of the trait is one operation (SRV-2).
+#[test]
+fn one_call_of_each_method_is_all_the_operations() {
+    let ops = Recording::default();
+    drive(&ops);
+    assert_eq!(ops.0.into_inner().unwrap(), Operation::ALL);
+}
+
+/// One RPC each.
+#[test]
+fn each_operation_has_its_rpc() {
+    let rpcs: Vec<_> = Operation::ALL.iter().map(|op| (*op, op.rpc())).collect();
+    assert_eq!(
+        rpcs,
+        [
+            (Operation::Emit, "ironflowx.v1.EventService/Emit"),
+            (Operation::EmitBatch, "ironflowx.v1.EventService/EmitBatch"),
+            (Operation::GetEvent, "ironflowx.v1.EventService/GetEvent"),
+            (
+                Operation::ListEvents,
+                "ironflowx.v1.EventService/ListEvents"
+            ),
+            (Operation::Whoami, "ironflowx.v1.IdentityService/Whoami"),
+            (
+                Operation::ListEnvironments,
+                "ironflowx.v1.EnvironmentService/ListEnvironments"
+            ),
+            (Operation::CreateKey, "ironflowx.v1.KeyService/CreateKey"),
+            (Operation::ListKeys, "ironflowx.v1.KeyService/ListKeys"),
+            (Operation::RevokeKey, "ironflowx.v1.KeyService/RevokeKey"),
+        ]
+    );
+}
+
+#[test]
+fn only_emits_and_key_changes_change_state() {
+    let changing: Vec<_> = Operation::ALL
+        .iter()
+        .copied()
+        .filter(|op| op.changes_state())
+        .collect();
+    assert_eq!(
+        changing,
+        [
+            Operation::Emit,
+            Operation::EmitBatch,
+            Operation::CreateKey,
+            Operation::RevokeKey,
+        ]
+    );
 }
 
 #[test]

@@ -189,7 +189,7 @@ async fn a_wrong_secret_records_no_expiry() {
 }
 
 /// 1,000 created keys hold a slot whatever the clock reads; a revoke or a recorded expiry frees
-/// one. The refusal is retryable, and its hint says what frees a slot.
+/// one. The refusal is not retryable, and its hint says what frees a slot.
 #[tokio::test]
 async fn a_thousand_created_keys_hold_a_slot_whatever_the_clock_does() {
     let dir = tempfile::tempdir().unwrap();
@@ -223,7 +223,7 @@ async fn a_thousand_created_keys_hold_a_slot_whatever_the_clock_does() {
             ),
             "{case}"
         );
-        assert!(err.kind.retryable());
+        assert!(!err.kind.retryable());
     };
     let last = create(&engine, &admin, &[Scope::Read], T + HOUR).await;
     full("the 1,001st").await;

@@ -4,7 +4,8 @@ use std::fmt;
 /// belongs to the module that produces it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
-    /// A rule refused the request. The same request is refused the same way.
+    /// A rule refused the request. The same request is refused the same way, unless it names
+    /// an expiry that a clock set back makes valid.
     Invalid,
     /// No such resource, or its ID does not parse.
     NotFound,
@@ -20,15 +21,36 @@ pub enum ErrorKind {
     PermissionDenied,
     /// A limit is reached; the hint says what frees room.
     ResourceExhausted,
+    /// A fault of the server, not of the request.
+    Internal,
 }
 
 impl ErrorKind {
-    /// True when the same request, unchanged, may succeed later; the error's hint says when.
+    /// True only when the same request, sent again unchanged, may succeed and stores no second
+    /// event. The error's hint, when there is one, says what to do, retryable or not;
+    /// [`Self::Unknown`]'s assumes an idempotency key on every item, and [`Self::Unavailable`]
+    /// says when "at once" is not enough.
+    ///
+    /// It promises no second event, not no second key: a `create_key` that answered `Unavailable`
+    /// may have stored its key, whose secret is then lost. List the keys before sending it again,
+    /// and again after a reopen: a key whose commit is unsettled (D48) is listed only then, if it
+    /// lands. Revoke the one no holder has.
     pub const fn retryable(self) -> bool {
-        matches!(
-            self,
-            Self::Unavailable | Self::Unknown | Self::ResourceExhausted
-        )
+        matches!(self, Self::Unavailable)
+    }
+
+    /// The exit code of a process that ends with this kind. 0 is success.
+    pub const fn exit_code(self) -> u8 {
+        match self {
+            Self::Internal => 1,
+            Self::Invalid => 2,
+            Self::Unauthenticated => 3,
+            Self::PermissionDenied => 4,
+            Self::NotFound => 5,
+            Self::Unknown => 6,
+            Self::ResourceExhausted => 7,
+            Self::Unavailable => 8,
+        }
     }
 }
 
