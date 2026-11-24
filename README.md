@@ -14,7 +14,7 @@ Foundation crates are 0.x with no semver-stability promise.
 
 Every part of the engine writes through one commit path. Foundation is that path, proven on its own: the crates any Ironflow X product links to commit one environment's events durably, in order, and read them back.
 
-![What foundation does, layer by layer](https://raw.githubusercontent.com/ironflowx/foundation/main/docs/img/layers.svg)
+![Foundation's layers: a host calls the engine with a key; the engine checks the key against the control plane, then runs event calls on the ledger, which commits events durably and reads them back; an embedder without keys calls the ledger directly; beneath them are the pure credentials, event rules and core types](https://raw.githubusercontent.com/ironflowx/foundation/main/docs/img/layers.svg)
 
 ## What 0.2 is
 
