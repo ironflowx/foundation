@@ -9,7 +9,9 @@ use std::path::PathBuf;
 use ironflowx_authz::parse;
 use ironflowx_core::{EnvRef, ErrorKind, FaultPoint, KeyId, KeyOrigin, Scope, Secret};
 use ironflowx_operations::{Engine, SeedState, recover_admin_key};
-use ironflowx_proto::{Call, EmitRequest, ListEventsRequest, Operations, WhoamiRequest};
+use ironflowx_proto::{
+    Call, EmitRequest, ListEnvironmentsRequest, ListEventsRequest, Operations, WhoamiRequest,
+};
 use ironflowx_store::{BootstrapState, ControlPlane};
 use tempfile::TempDir;
 
@@ -330,6 +332,7 @@ impl Root {
         if !self.schema {
             return;
         }
+        assert_eq!(count("meta").expect("counts"), 1, "{when}: the format");
         for table in ["tenants", "projects", "environments"] {
             let rows = count(table).expect("counts");
             assert_eq!(rows, usize::from(self.boot.is_some()), "{when}: {table}");
@@ -420,7 +423,7 @@ impl Root {
                 seed: opened.seed,
             };
             self.known.extend(minted.map(str::to_owned));
-            let want = self.opened(seed, minted);
+            let want = self.expect_open(seed, minted);
             assert_eq!(returned, want, "what the open returned");
             self.accepted.clear();
             for text in self.known.clone() {
@@ -439,7 +442,7 @@ impl Root {
     }
 
     /// What an open with `seed` that minted `minted` should leave, and return.
-    fn opened(&mut self, seed: Option<&str>, minted: Option<&str>) -> Returned {
+    fn expect_open(&mut self, seed: Option<&str>, minted: Option<&str>) -> Returned {
         self.schema = true;
         let Some(boot) = &mut self.boot else {
             let path = self.dir.path().join("control.db");
@@ -524,7 +527,10 @@ impl Root {
                 version: None,
                 idempotency_key: None,
             };
-            let id = engine.emit(&call(key), emit).await.expect("emits").event_id;
+            let id = engine.emit(&call(key), emit).await;
+            let id = id
+                .unwrap_or_else(|e| panic!("emits: {:?}", e.kind))
+                .event_id;
             self.events.push((id.to_string(), emitter(key)));
         }
         let page = ListEventsRequest {
@@ -532,7 +538,7 @@ impl Root {
             cursor: None,
         };
         let page = engine.list_events(&call(&keys[0]), page).await;
-        let page = page.expect("the events list");
+        let page = page.unwrap_or_else(|e| panic!("the events list: {:?}", e.kind));
         let listed: Vec<(String, String)> = page
             .events
             .iter()
@@ -540,6 +546,14 @@ impl Root {
             .map(|e| (e.event_id.to_string(), e.emitted_by.to_string()))
             .collect();
         assert_eq!(listed, self.events, "every event and its emitter");
+        let cx = call(&keys[0]);
+        let envs = engine
+            .list_environments(&cx, ListEnvironmentsRequest {})
+            .await;
+        let envs = envs.unwrap_or_else(|e| panic!("environments list: {:?}", e.kind));
+        let envs: Vec<EnvRef> = envs.iter().map(|e| e.env).collect();
+        let env = self.boot.as_ref().expect("a bootstrap").env;
+        assert_eq!(envs, [env], "the open serves the environment stored");
     }
 
     /// Recovers an admin key from the directory.
@@ -661,25 +675,28 @@ fn killed_after_the_mark_with_a_seed() {
     let _alone = alone();
     let mut root = Root::killed(Some(A), FaultPoint::AfterMarkCommit);
     assert_eq!(root.open(None), NOTHING_NEW);
+    assert!(root.accepts(A));
     assert_eq!(root.keys, [(KeyOrigin::Seed, false)]);
     assert_eq!(root.open(None), NOTHING_NEW);
 }
 
-/// The finishing open marks, then rotates to the other seed.
+/// The finishing open marks, then rotates to the other seed; a minted key is lost, not replaced.
 #[test]
 fn killed_before_the_mark_then_opened_with_another_seed() {
     let _alone = alone();
-    for point in unmarked_points() {
-        let mut root = Root::killed(Some(A), point);
-        let rotated = Returned {
-            seed: Some(SeedState::Current),
-            ..NOTHING_NEW
-        };
-        assert_eq!(root.open(Some(B)), rotated, "{}", point.name());
-        assert!(root.accepts(B) && !root.accepts(A), "{}", point.name());
-        let keys = [(KeyOrigin::Seed, true), (KeyOrigin::Seed, false)];
-        assert_eq!(root.keys, keys);
-        assert_eq!(root.open(None), NOTHING_NEW);
+    for (bootstrapped, origin) in [(Some(A), KeyOrigin::Seed), (None, KeyOrigin::Minted)] {
+        for point in unmarked_points() {
+            let mut root = Root::killed(bootstrapped, point);
+            let rotated = Returned {
+                minted: false,
+                lost_secret: bootstrapped.is_none(),
+                seed: Some(SeedState::Current),
+            };
+            assert_eq!(root.open(Some(B)), rotated, "{}", point.name());
+            assert_eq!(root.accepted, [B], "{}", point.name());
+            assert_eq!(root.keys, [(origin, true), (KeyOrigin::Seed, false)]);
+            assert_eq!(root.open(None), NOTHING_NEW);
+        }
     }
 }
 
@@ -726,6 +743,19 @@ fn killed_while_a_finishing_open_runs() {
                     seed: None,
                 };
                 assert_eq!(root.open(None), replaced, "{}", point.name());
+                // A kill that took the minted key and left B unapplied leaves no key: one is
+                // recovered.
+                use KeyOrigin::{Minted, Recovered, Seed};
+                let applied = point == FaultPoint::AfterSeedCommit;
+                let want = match (bootstrapped.is_some(), seed.is_some(), finished) {
+                    (true, _, _) if applied => vec![(Seed, true), (Seed, false)],
+                    (true, _, _) => vec![(Seed, false)],
+                    (false, true, true) if applied => vec![(Minted, true), (Seed, false)],
+                    (false, true, true) => vec![(Minted, true), (Recovered, false)],
+                    (false, _, _) => vec![(Minted, true), (Minted, false)],
+                };
+                assert_eq!(root.keys, want, "{}", point.name());
+                assert_eq!(root.accepts(B), applied, "{}", point.name());
                 assert_eq!(root.open(None), NOTHING_NEW);
             }
         }

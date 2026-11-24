@@ -352,7 +352,7 @@ async fn bootstrap(
         }
     };
     #[cfg(feature = "__fault-points")]
-    ironflowx_core::tell_identity(env, key.id, secret.as_ref());
+    ironflowx_core::tell_key(env, key.id, secret.as_ref());
     let plan = Bootstrap {
         env,
         tenant: uuid7(),
@@ -422,7 +422,7 @@ async fn finish(
     let (replacement, secret) = seed.is_none().then(new_admin_key).unzip();
     #[cfg(feature = "__fault-points")]
     if let Some(key) = &replacement {
-        ironflowx_core::tell_identity(env, key.id, secret.as_ref());
+        ironflowx_core::tell_key(env, key.id, secret.as_ref());
     }
     let lost_secret = {
         let (control, clock) = (control.clone(), clock.clone());

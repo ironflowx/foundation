@@ -20,7 +20,7 @@ mod who;
 pub use error::{ErrorKind, ParseError};
 #[cfg(feature = "__fault-points")]
 #[doc(hidden)]
-pub use fault::{FaultPoint, reach_fault_point, set_fault_hook, set_identity_hook, tell_identity};
+pub use fault::{FaultPoint, reach_fault_point, set_fault_hook, set_key_hook, tell_key};
 pub use id::{EnvRef, EnvironmentId, EventId, IncarnationToken, KeyId, ProjectId, TenantId};
 pub use secret::Secret;
 pub use tenancy::{Address, KeyOrigin, Scope};

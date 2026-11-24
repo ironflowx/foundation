@@ -18,6 +18,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::Duration;
 
+use ironflowx_authz::parse;
 use ironflowx_cell::ManualClock;
 use ironflowx_core::{Clock, EnvRef, FaultPoint, KeyId, Secret, Timestamp};
 use ironflowx_operations::Engine;
@@ -36,7 +37,10 @@ const SEED: &str =
 
 /// The ID in a key's text.
 fn key_id(key: &str) -> KeyId {
-    key[4..40].parse().expect("a key ID")
+    let Ok(parts) = parse(&Secret::new(key.to_owned())) else {
+        panic!("the parent holds a malformed key");
+    };
+    parts.id
 }
 
 /// The emitter of events the key whose text is `key` emits.
@@ -612,7 +616,7 @@ async fn check(engine: &Engine, cx: &Call, seen: &Seen) -> Result<Vec<Event>, St
                     item.request
                 )
             })?;
-        if marker(&event) != Some(&item.marker) {
+        if event.event_id.to_string() != *id || marker(&event) != Some(&item.marker) {
             return Err(format!("{}: {id} reads back another event", item.request));
         }
         let want = &seen.emitters[&item.marker];

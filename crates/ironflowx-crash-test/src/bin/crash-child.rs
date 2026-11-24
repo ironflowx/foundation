@@ -47,7 +47,7 @@ use std::task::Poll;
 
 use ironflowx_cell::ManualClock;
 use ironflowx_core::{
-    EnvRef, FaultPoint, KeyId, Scope, Secret, Timestamp, set_fault_hook, set_identity_hook,
+    EnvRef, FaultPoint, KeyId, Scope, Secret, Timestamp, set_fault_hook, set_key_hook,
 };
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
@@ -177,7 +177,7 @@ fn main() {
     let crossing = crossing.parse().expect("a crossing number");
     STOP.set((point.clone(), crossing)).expect("set once");
     set_fault_hook(at_point);
-    set_identity_hook(tell);
+    set_key_hook(tell);
     let mut seed = String::new();
     std::io::stdin()
         .read_line(&mut seed)

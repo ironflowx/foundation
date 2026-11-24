@@ -91,21 +91,21 @@ pub fn reach_fault_point(point: FaultPoint) {
     }
 }
 
-type Identity = fn(EnvRef, KeyId, Option<&Secret>);
+type KeyHook = fn(EnvRef, KeyId, Option<&Secret>);
 
-static IDENTITY: OnceLock<Identity> = OnceLock::new();
+static KEY_HOOK: OnceLock<KeyHook> = OnceLock::new();
 
 /// Calls `hook` with each key an open is about to store, its environment, and its secret if the
 /// engine minted it: the crash test learns which key to check before any point the key's storing
 /// reaches. A finishing open's replacement is told before it is known to be needed. The first hook
 /// set stays.
-pub fn set_identity_hook(hook: Identity) {
-    let _ = IDENTITY.set(hook);
+pub fn set_key_hook(hook: KeyHook) {
+    let _ = KEY_HOOK.set(hook);
 }
 
 /// Calls the hook, if one is set, with `key` of `env`.
-pub fn tell_identity(env: EnvRef, key: KeyId, secret: Option<&Secret>) {
-    if let Some(hook) = IDENTITY.get() {
+pub fn tell_key(env: EnvRef, key: KeyId, secret: Option<&Secret>) {
+    if let Some(hook) = KEY_HOOK.get() {
         hook(env, key, secret);
     }
 }
