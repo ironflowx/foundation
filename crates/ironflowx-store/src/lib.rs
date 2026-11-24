@@ -166,7 +166,7 @@ pub struct KeyRow {
 }
 
 /// Why a key change did not happen. Nothing was written, but for a calling key found newly
-/// expired: its expiry is recorded (D42); or for an unsettled commit (D48).
+/// expired, whose expiry it tries to record (D42), or for an unsettled commit (D48).
 #[derive(Debug)]
 pub enum KeyChangeError {
     /// The calling key is unknown, revoked, expired, or of another environment, read again
@@ -573,7 +573,7 @@ impl ControlPlane {
     ///
     /// `Caller`, `Refused` or `Full` as the checks find, `Store` if SQLite fails; no key is
     /// created, but for an unsettled commit (D48). A newly expired `creator` has its expiry
-    /// recorded.
+    /// recorded, unless that fails.
     pub fn insert_key(
         &self,
         env: &EnvRef,
@@ -654,7 +654,7 @@ impl ControlPlane {
     ///
     /// `Caller` if `by` is no longer valid, `NotFound` if `env` holds no key `id`, `Store` if
     /// SQLite fails; no key is revoked, but for an unsettled commit (D48). A newly expired `by`
-    /// has its expiry recorded.
+    /// has its expiry recorded, unless that fails.
     pub fn revoke_key(
         &self,
         env: &EnvRef,
