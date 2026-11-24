@@ -130,5 +130,5 @@ An app that links foundation and calls the ledger directly, without keys; the le
 ### Testing
 
 **Fault point**:
-A named place in the commit, recovery, bootstrap or seed path, such as after fsync and before the acknowledgment, where the crash test stops the process, or another test fails the writer (`__fault-points`).
+A named place in the commit, recovery, bootstrap, seed or key-change path, such as after fsync and before the acknowledgment, where the crash test stops the process, or another test fails the writer (`__fault-points`).
 _Avoid_: Kill point

@@ -4,13 +4,14 @@
 //! row's outcome beside it, over what was seen there, not over what `Root` expects.
 
 use std::num::NonZeroU32;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ironflowx_authz::parse;
 use ironflowx_core::{EnvRef, ErrorKind, FaultPoint, KeyId, KeyOrigin, Scope, Secret};
 use ironflowx_operations::{Engine, SeedState, recover_admin_key};
 use ironflowx_proto::{
-    Call, EmitRequest, ListEnvironmentsRequest, ListEventsRequest, Operations, WhoamiRequest,
+    Call, EmitRequest, ListEnvironmentsRequest, ListEventsRequest, OpError, Operations,
+    WhoamiRequest,
 };
 use ironflowx_store::{BootstrapState, ControlPlane};
 use tempfile::TempDir;
@@ -303,13 +304,7 @@ impl Root {
     /// digest and whether it is revoked, on a copy: reading a WAL in place would recover it before
     /// the next open does.
     fn check_rows(&mut self, when: &str) {
-        let copy = tempfile::tempdir().expect("a temporary directory");
-        for name in ["control.db", "control.db-wal"] {
-            let from = self.dir.path().join(name);
-            if from.exists() {
-                std::fs::copy(from, copy.path().join(name)).expect("copies");
-            }
-        }
+        let copy = copy_control(self.dir.path());
         let path = copy.path().join("control.db");
         let state = ControlPlane::bootstrap_state(&path).expect("the state reads");
         let want = match &self.boot {
@@ -499,9 +494,7 @@ impl Root {
             Err(e) => {
                 // Not the error's text: no failure prints what the engine made of a secret.
                 assert!(!self.works(text), "{id} is refused: {:?}", e.kind);
-                assert_eq!(e.kind, ErrorKind::Unauthenticated, "{id}");
-                let uniform = e.message == "invalid API key" && e.hint.is_none();
-                assert!(uniform, "{id} is refused in other words");
+                assert_uniform(id, &e);
                 false
             }
         }
@@ -573,7 +566,26 @@ impl Root {
     }
 }
 
-fn call(key: &str) -> Call {
+/// A copy of `root`'s `control.db` and its WAL, in a directory of its own.
+pub fn copy_control(root: &Path) -> TempDir {
+    let copy = tempfile::tempdir().expect("a temporary directory");
+    for name in ["control.db", "control.db-wal"] {
+        let from = root.join(name);
+        if from.exists() {
+            std::fs::copy(from, copy.path().join(name)).expect("copies");
+        }
+    }
+    copy
+}
+
+/// Checks that the key `id` is refused as every invalid key is.
+pub fn assert_uniform(id: KeyId, e: &OpError) {
+    assert_eq!(e.kind, ErrorKind::Unauthenticated, "{id}");
+    let uniform = e.message == "invalid API key" && e.hint.is_none();
+    assert!(uniform, "{id} is refused in other words");
+}
+
+pub fn call(key: &str) -> Call {
     Call::with_key(Secret::new(key.to_owned()))
 }
 

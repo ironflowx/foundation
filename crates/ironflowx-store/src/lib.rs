@@ -550,8 +550,7 @@ impl ControlPlane {
             let mut conn = self.lock()?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             set_expiry_recorded(&tx, id, env)?;
-            tx.commit()?;
-            Ok(())
+            Ok(commit_expiry(tx)?)
         })
     }
 
@@ -612,7 +611,11 @@ impl ControlPlane {
                 ],
             )?;
             let seq = u64::try_from(tx.last_insert_rowid()).map_err(|_| refused("bad seq"))?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeCreateCommit);
             tx.commit()?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterCreateCommit);
             Ok(Ok(KeyRow {
                 seq,
                 record: KeyRecord {
@@ -663,7 +666,11 @@ impl ControlPlane {
                 "UPDATE keys SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL",
                 params![now.as_millis(), id.to_string()],
             )?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeRevokeCommit);
             tx.commit()?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterRevokeCommit);
             Ok(Ok(()))
         })
         .map_err(KeyChangeError::Store)?
@@ -945,6 +952,16 @@ fn set_expiry_recorded(conn: &Connection, id: KeyId, env: &EnvRef) -> Result<(),
     Ok(())
 }
 
+/// Commits a transaction that recorded an expiry.
+fn commit_expiry(tx: Transaction<'_>) -> rusqlite::Result<()> {
+    #[cfg(feature = "__fault-points")]
+    ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeExpiryCommit);
+    tx.commit()?;
+    #[cfg(feature = "__fault-points")]
+    ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterExpiryCommit);
+    Ok(())
+}
+
 /// The calling key of a key change, read again inside its transaction and checked at the
 /// transaction's now, with the transaction to go on with: `None` if the key is unknown, revoked
 /// or expired by then (D43). A newly expired key's expiry is recorded, ending the transaction.
@@ -962,7 +979,7 @@ fn caller<'c>(
         Err(refused) => {
             if refused.newly_expired() && set_expiry_recorded(&tx, id, env).is_ok() {
                 // Refused alike whether or not the expiry was recorded (TEN-7).
-                let _ = tx.commit();
+                let _ = commit_expiry(tx);
             }
             Ok(None)
         }

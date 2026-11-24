@@ -2,8 +2,10 @@
 //! through its pipe and its socket, then checks the directory through a reopened engine and,
 //! read-only, the read store, for the sequences and applied position no public interface exposes.
 //! Kills while the ledger works are here; those inside a bootstrap or a seed change are in
-//! `crash/opens.rs`.
+//! `crash/opens.rs`, and those around a key change or an expiry's refusal in `crash/keys.rs`.
 
+#[path = "crash/keys.rs"]
+mod keys;
 #[path = "crash/opens.rs"]
 mod opens;
 
@@ -70,7 +72,7 @@ struct Driver {
 struct Told {
     env: EnvRef,
     key: KeyId,
-    /// The key's text, if the engine minted it.
+    /// The key's text, unless it is the seed.
     secret: Option<String>,
 }
 
@@ -197,8 +199,7 @@ impl Driver {
     /// The answer to the request that stops at `point`, if the child sends one before it
     /// stops: only at a point after the acknowledgment (after-ack, mid-fold) does it, and the
     /// two lines come in either order.
-    /// Before it, a `probe` proves no answer is on its way. The child names only the point it
-    /// was given, so `at` carries nothing to check.
+    /// Before it, a `probe` proves no answer is on its way.
     fn stop(&mut self, request: &str, point: FaultPoint) -> Option<String> {
         let lines = if matches!(point, FaultPoint::AfterAck | FaultPoint::MidFold) {
             2
@@ -209,7 +210,7 @@ impl Driver {
         let mut stopped = false;
         for _ in 0..lines {
             let line = self.line(&format!("{request} to stop at {}", point.name()));
-            if line.starts_with("at ") {
+            if line == format!("at {}", point.name()) {
                 stopped = true;
             } else {
                 answer = Some(line);
@@ -548,12 +549,18 @@ fn run(root: &Path, point: FaultPoint, append: u64, workload: Vec<Request>) -> (
         "the workload has an append {append} to stop at"
     );
     let told = child.kill();
-    let [told] = &told[..] else {
-        panic!("the child told {} keys, not its bootstrap's", told.len());
-    };
-    assert_eq!(told.env, home.env, "the child told the bootstrap it made");
-    assert_eq!(told.key, key_id(SEED), "the child told its bootstrap key");
-    assert!(told.secret.is_none(), "a seeded bootstrap mints no key");
+    let told: Vec<_> = told
+        .iter()
+        .map(|t| (t.env, t.key, t.secret.is_some()))
+        .collect();
+    assert_eq!(
+        told,
+        [
+            (home.env, key_id(SEED), false),
+            (home.env, home.second, true)
+        ],
+        "the child told its bootstrap key, the seed, and its second key"
+    );
     (seen, home)
 }
 
@@ -983,8 +990,8 @@ fn a_broken_expectation_names_its_request() {
     );
 }
 
-/// Every named point the working ledger reaches, for the seeded kills to choose from; `opens` has
-/// the rest.
+/// Every named point the working ledger reaches, for the seeded kills to choose from; `opens` and
+/// `keys` have the rest.
 const POINTS: [FaultPoint; 5] = [
     FaultPoint::BeforeAppend,
     FaultPoint::AfterFsync,
@@ -993,7 +1000,7 @@ const POINTS: [FaultPoint; 5] = [
     FaultPoint::DuringOpen,
 ];
 
-/// Fails to build when a point is added, as a reminder to add it to `POINTS`, or to `opens`.
+/// Fails to build when a point is added, as a reminder to add it to `POINTS`, `opens` or `keys`.
 const _: fn(FaultPoint) = |p| match p {
     FaultPoint::BeforeAppend
     | FaultPoint::AfterFsync
@@ -1014,6 +1021,12 @@ const _: fn(FaultPoint) = |p| match p {
     | FaultPoint::AfterUndo
     | FaultPoint::BeforeSeedCommit
     | FaultPoint::AfterSeedCommit => {}
+    FaultPoint::BeforeCreateCommit
+    | FaultPoint::AfterCreateCommit
+    | FaultPoint::BeforeRevokeCommit
+    | FaultPoint::AfterRevokeCommit
+    | FaultPoint::BeforeExpiryCommit
+    | FaultPoint::AfterExpiryCommit => {}
 };
 
 /// splitmix64: the seed is all a run depends on, so a run replays.
@@ -1075,14 +1088,14 @@ fn random_workload(rng: &mut Rng) -> Vec<Request> {
     requests
 }
 
-/// Kills the child inside an open, as `opens::kill_seeded` does, or while its ledger works: which,
-/// the seed picks.
+/// Kills the child inside an open, as `opens::kill_seeded` does, around a key change, as
+/// `keys::kill_seeded` does, or while its ledger works: which, the seed picks.
 fn kill_seeded(seed: u64) {
     let mut rng = Rng(seed);
-    if rng.below(2) == 0 {
-        opens::kill_seeded(&mut rng);
-    } else {
-        kill_working(&mut rng);
+    match rng.below(3) {
+        0 => opens::kill_seeded(&mut rng),
+        1 => keys::kill_seeded(&mut rng),
+        _ => kill_working(&mut rng),
     }
 }
 

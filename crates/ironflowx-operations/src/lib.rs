@@ -231,6 +231,8 @@ impl Operations for Engine {
             req.scopes
         };
         let (id, key, digest) = open::new_key();
+        #[cfg(feature = "__fault-points")]
+        ironflowx_core::tell_key(self.env, id, Some(&key));
         let new = NewKey {
             id,
             digest,
