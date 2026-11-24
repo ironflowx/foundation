@@ -151,7 +151,11 @@ impl Root {
         self.step(move || {
             if !target.try_exists()? {
                 drop(Ledger::open_blocking(&staging, env, clock.clone())?);
+                #[cfg(feature = "__fault-points")]
+                ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeRename);
                 std::fs::rename(&staging, &target)?;
+                #[cfg(feature = "__fault-points")]
+                ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterRename);
             }
             // Also for a rename an earlier open died after: the mark must not outlive it.
             File::open(&ledgers)?.sync_all()?;
@@ -347,6 +351,8 @@ async fn bootstrap(
             (key, Some(secret))
         }
     };
+    #[cfg(feature = "__fault-points")]
+    ironflowx_core::tell_key(env, key.id, secret.as_ref());
     let plan = Bootstrap {
         env,
         tenant: uuid7(),
@@ -366,10 +372,14 @@ async fn bootstrap(
         Err(e) => {
             let dir = root.dir.clone();
             let undone = root.step(move || {
+                #[cfg(feature = "__fault-points")]
+                ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeUndo);
                 let _ = std::fs::remove_dir_all(staging(&dir));
                 if !ledger_dir(&dir, env).try_exists()? {
                     control.undo_bootstrap(&env)?;
                 }
+                #[cfg(feature = "__fault-points")]
+                ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterUndo);
                 Ok(())
             });
             // What an undo that fails leaves, the next open finishes.
@@ -410,6 +420,10 @@ async fn finish(
     let ledger = root.create_ledger(env, clock.clone()).await?;
     let control = root.control_for(env, seed.clone()).await?;
     let (replacement, secret) = seed.is_none().then(new_admin_key).unzip();
+    #[cfg(feature = "__fault-points")]
+    if let Some(key) = &replacement {
+        ironflowx_core::tell_key(env, key.id, secret.as_ref());
+    }
     let lost_secret = {
         let (control, clock) = (control.clone(), clock.clone());
         root.step(move || Ok(control.finish_bootstrap(&env, replacement.as_ref(), &clock)?))

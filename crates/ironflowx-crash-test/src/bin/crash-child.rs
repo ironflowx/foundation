@@ -1,13 +1,23 @@
-//! The child side of the crash test (#6). Usage: `crash-child <root> <point> <crossing>`.
+//! The child side of the crash test (#6). Usage: `crash-child <root> <point> <crossing>
+//! [staged|renamed]`, its stdin a socket.
 //!
-//! Opens an engine on `<root>`, without a seed and with a manual clock, and prints `ready`, then
-//! `<env-ref> <key>`: its environment and the bootstrap key it minted. So `<root>` must be fresh,
-//! unless the child is to stop before `ready`. Then, with that key, per stdin line:
+//! The first stdin line is the seed to open with, or `-` for none. Secrets pass only over that
+//! socket, never in an argument or over stdout: as an open comes to store a key, before any point
+//! that storing reaches, the child writes `<env-ref> <key-id> <secret>|-` back over it, the secret
+//! only if the engine minted it.
 //!
-//! - `emit <item>` emits one item and prints `<result>`: `new:<event-id>`, `dup:<event-id>`
-//!   or `err:<kind>`;
-//! - `batch <item> <item> ...` emits a batch and prints `<result> <result> ...`, one per item
-//!   in input order, or `err:<kind>` for the whole batch;
+//! The child opens an engine on `<root>` with the seed and a manual clock, creates a second key
+//! with it, and prints `ready`, then `<env-ref> <second-key-id>`. With `staged`, the first ledger
+//! to append its genesis record finds its read store's place taken, so that a bootstrapping open
+//! fails in staging. With `renamed`, a ledger that has reached its final name finds its lock held,
+//! by the child, so that the open fails then.
+//!
+//! Then, per stdin line, `<caller>` being `1` for the seed or `2` for the second key:
+//!
+//! - `emit <caller> <item>` emits one item and prints `<result>`: `new:<event-id>`,
+//!   `dup:<event-id>` or `err:<kind>`;
+//! - `batch <caller> <item> <item> ...` emits a batch and prints `<result> <result> ...`, one per
+//!   item in input order, or `err:<kind>` for the whole batch;
 //! - `list <limit> <cursor>|-` lists a page and prints `page <next>|- <event-id> ...`, or
 //!   `err:<kind>`;
 //! - `clock <millis>` steps the manual clock by `<millis>`, which may be negative, and prints
@@ -20,31 +30,72 @@
 //!
 //! On its `<crossing>`-th pass of the fault point named `<point>`, it prints `at <point>` and
 //! waits there for the parent to kill it: the barrier that makes the kill land exactly at the
-//! point (D23). At `during-open` that is before `ready`, which it then never prints.
+//! point (D23). A point inside an open is before `ready`, which it then never prints.
 
+use std::collections::BTreeSet;
+use std::fs::File;
 use std::future::{Future, poll_fn};
 use std::io::{BufRead, Write};
 use std::num::NonZeroU32;
-use std::path::Path;
+use std::os::fd::AsFd;
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::Poll;
 
-use ironflowx_cell::{FaultPoint, ManualClock, set_fault_hook};
-use ironflowx_core::{Secret, Timestamp};
+use ironflowx_cell::ManualClock;
+use ironflowx_core::{
+    EnvRef, FaultPoint, KeyId, Scope, Secret, Timestamp, set_fault_hook, set_key_hook,
+};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
-    Call, EmitBatchRequest, EmitRequest, EmitResponse, ListEnvironmentsRequest, ListEventsRequest,
-    OpError, Operations,
+    Call, CreateKeyRequest, EmitBatchRequest, EmitRequest, EmitResponse, ListEnvironmentsRequest,
+    ListEventsRequest, OpError, Operations,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 
 /// The point to stop at, and on which pass of it.
 static STOP: OnceLock<(String, u64)> = OnceLock::new();
 static CROSSINGS: AtomicU64 = AtomicU64::new(0);
+/// What makes the open fail: `staged` or `renamed`, and `ledgers/`.
+static OBSTRUCT: OnceLock<(String, PathBuf)> = OnceLock::new();
+/// Held until the kill.
+static LOCK: OnceLock<File> = OnceLock::new();
+
+/// Puts what the engine's open trips over in its way.
+fn obstruct(point: FaultPoint) {
+    let Some((how, ledgers)) = OBSTRUCT.get() else {
+        return;
+    };
+    match (how.as_str(), point) {
+        ("staged", FaultPoint::AfterGenesis) => {
+            let path = ledgers.join(".staging/read.db");
+            std::fs::create_dir(path).expect("the read store's place is free");
+        }
+        ("renamed", FaultPoint::AfterRename) => {
+            let mut entries = std::fs::read_dir(ledgers).expect("ledgers/ reads");
+            let ledger = entries.next().expect("a ledger").expect("an entry").path();
+            let lock = File::open(ledger.join("ledger.lock")).expect("the ledger's lock file");
+            lock.try_lock().expect("the lock is free");
+            LOCK.set(lock).expect("set once");
+        }
+        _ => {}
+    }
+}
+
+/// Tells the parent, over the socket, which key is about to be stored.
+fn tell(env: EnvRef, key: KeyId, secret: Option<&Secret>) {
+    let socket = std::io::stdin().as_fd().try_clone_to_owned();
+    let line = format!("{env} {key} {}\n", secret.map_or("-", Secret::expose));
+    UnixStream::from(socket.expect("the socket duplicates"))
+        .write_all(line.as_bytes())
+        .expect("the socket writes");
+}
 
 fn at_point(point: FaultPoint) {
+    obstruct(point);
     let (name, crossing) = STOP.get().expect("set before the engine opens");
     if point.name() != name || CROSSINGS.fetch_add(1, Ordering::SeqCst) + 1 != *crossing {
         return;
@@ -113,32 +164,56 @@ async fn probing(
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let [root, point, crossing] = &args[..] else {
-        panic!("usage: crash-child <root> <point> <crossing>");
+    let (root, point, crossing) = match &args[..] {
+        [root, point, crossing] => (PathBuf::from(root), point, crossing),
+        [root, point, crossing, how] if how == "staged" || how == "renamed" => {
+            let root = PathBuf::from(root);
+            let set = OBSTRUCT.set((how.clone(), root.join("ledgers")));
+            set.expect("set once");
+            (root, point, crossing)
+        }
+        _ => panic!("usage: crash-child <root> <point> <crossing> [staged|renamed]"),
     };
     let crossing = crossing.parse().expect("a crossing number");
     STOP.set((point.clone(), crossing)).expect("set once");
     set_fault_hook(at_point);
+    set_key_hook(tell);
+    let mut seed = String::new();
+    std::io::stdin()
+        .read_line(&mut seed)
+        .expect("the socket reads");
+    let seed = seed.trim_end();
+    let secret = || Secret::new(seed.to_owned());
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("a runtime");
     runtime.block_on(async {
         let clock = ManualClock::new(Timestamp::from_millis(1_700_000_000_000));
-        let opened = Engine::open(Path::new(root), clock.clone(), None)
+        let opened = Engine::open(&root, clock.clone(), (seed != "-").then(secret))
             .await
             .expect("the engine opens");
         let engine = opened.engine;
-        let key = opened.minted.expect("a fresh root mints a key");
-        let key = key.expose();
-        let cx = Call::with_key(Secret::new(key.to_owned()));
+        let first = Call::with_key(secret());
         let envs = engine
-            .list_environments(&cx, ListEnvironmentsRequest {})
+            .list_environments(&first, ListEnvironmentsRequest {})
             .await
-            .expect("the bootstrap key lists its environment");
+            .expect("the seed lists its environment");
+        let write = CreateKeyRequest {
+            scopes: BTreeSet::from([Scope::Write]),
+            ..CreateKeyRequest::default()
+        };
+        let created = engine.create_key(&first, write).await;
+        let created = created.expect("the seed creates a key");
+        let second = Call::with_key(created.key);
+        let caller = |n: &str| match n {
+            "1" => &first,
+            "2" => &second,
+            _ => panic!("no caller {n:?}"),
+        };
         let mut out = std::io::stdout();
         writeln!(out, "ready").expect("the pipe writes");
-        writeln!(out, "{} {key}", envs[0].env).expect("the pipe writes");
+        writeln!(out, "{} {}", envs[0].env, created.info.key_id).expect("the pipe writes");
         // Stdin is read on its own thread, so a `probe` reaches the runtime mid-request.
         let (send, mut lines) = mpsc::unbounded_channel();
         std::thread::spawn(move || {
@@ -152,10 +227,15 @@ fn main() {
             let (verb, rest) = line.split_once(' ').unwrap_or((&line, ""));
             let request = async {
                 match verb {
-                    "emit" => encode(&engine.emit(&cx, item(rest)).await),
+                    "emit" => {
+                        let (by, text) = rest.split_once(' ').expect("emit <caller> <item>");
+                        encode(&engine.emit(caller(by), item(text)).await)
+                    }
                     "batch" => {
-                        let items = rest.split(' ').map(item).collect();
-                        match engine.emit_batch(&cx, EmitBatchRequest { items }).await {
+                        let (by, items) = rest.split_once(' ').expect("batch <caller> <item> ...");
+                        let items = items.split(' ').map(item).collect();
+                        let batch = EmitBatchRequest { items };
+                        match engine.emit_batch(caller(by), batch).await {
                             Ok(r) => r.items.iter().map(encode).collect::<Vec<_>>().join(" "),
                             Err(e) => encode(&Err(e)),
                         }
@@ -166,7 +246,7 @@ fn main() {
                             limit: NonZeroU32::new(limit.parse().expect("a limit")),
                             cursor: (cursor != "-").then(|| cursor.to_owned()),
                         };
-                        match engine.list_events(&cx, req).await {
+                        match engine.list_events(&first, req).await {
                             Ok(page) => {
                                 let mut words = vec![page.next.unwrap_or_else(|| "-".into())];
                                 words.extend(page.events.iter().map(|e| e.event_id.to_string()));

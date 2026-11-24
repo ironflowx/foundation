@@ -1,18 +1,26 @@
 //! The parent side of the crash test (#6, invariants.md "Crash test"). It sees the child only
-//! through the pipe, then checks the directory through a reopened engine and, read-only, the
-//! read store, for the sequences and applied position no public interface exposes.
+//! through its pipe and its socket, then checks the directory through a reopened engine and,
+//! read-only, the read store, for the sequences and applied position no public interface exposes.
+//! Kills while the ledger works are here; those inside a bootstrap or a seed change are in
+//! `crash/opens.rs`.
+
+#[path = "crash/opens.rs"]
+mod opens;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::num::NonZeroU32;
+use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::Duration;
 
-use ironflowx_cell::{FaultPoint, ManualClock};
-use ironflowx_core::{Clock, EnvRef, Secret, Timestamp};
+use ironflowx_authz::parse;
+use ironflowx_cell::ManualClock;
+use ironflowx_core::{Clock, EnvRef, FaultPoint, KeyId, Secret, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
     Call, EmitRequest, Event, GetEventRequest, ListEnvironmentsRequest, ListEventsRequest,
@@ -23,20 +31,54 @@ use ironflowx_proto::{
 /// fails the test instead of hanging it.
 const ANSWER_DEADLINE: Duration = Duration::from_secs(30);
 
+/// The seed each run's first open takes, so the parent always knows an admin key.
+const SEED: &str =
+    "ixk_019a9f3e-7c2b-7d41-8a3e-200000000001_AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+
+/// The ID in a key's text.
+fn key_id(key: &str) -> KeyId {
+    let Ok(parts) = parse(&Secret::new(key.to_owned())) else {
+        panic!("the parent holds a malformed key");
+    };
+    parts.id
+}
+
+/// The emitter of events the key whose text is `key` emits.
+fn emitter(key: &str) -> String {
+    format!("key:{}", key_id(key))
+}
+
+/// Held by each test: a child process shares the lock files open in this one until it execs, so a
+/// test that closes an engine and opens it again beside a spawn could find it locked.
+fn alone() -> MutexGuard<'static, ()> {
+    static ALONE: Mutex<()> = Mutex::new(());
+    ALONE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// The child process, stopped at its `crossing`-th pass of `point`. Dropping it kills the
 /// child, so a failed assertion leaves no process parked at a point.
 struct Driver {
     child: Child,
-    stdin: ChildStdin,
+    /// The child's stdin, and the channel it tells identities and secrets on.
+    socket: UnixStream,
     /// The child's stdout lines, read on their own thread so each read can time out.
     lines: mpsc::Receiver<std::io::Result<String>>,
 }
 
-/// What the child said it bootstrapped: its engine's environment and the minted key.
+/// A key the child's engine was about to store, told before any point its storing reaches. Not
+/// `Debug`: a failed assertion must not print its secret.
+struct Told {
+    env: EnvRef,
+    key: KeyId,
+    /// The key's text, if the engine minted it.
+    secret: Option<String>,
+}
+
+/// What the child bootstrapped with `SEED`: its engine's environment and the second key it made.
 struct Home {
     root: PathBuf,
     env: EnvRef,
-    key: String,
+    second: KeyId,
 }
 
 impl Home {
@@ -46,21 +88,26 @@ impl Home {
     }
 
     fn call(&self) -> Call {
-        Call::with_key(Secret::new(self.key.clone()))
+        Call::with_key(Secret::new(SEED.to_owned()))
     }
 
-    /// Opens the engine again: its bootstrap is done, so no key is minted, and the child's key
-    /// still reaches the environment the child reported, its incarnation included.
+    /// Opens the engine again without a seed: its bootstrap is done, so no key is minted, and
+    /// `SEED` still reaches the environment the child reported, its incarnation included.
     async fn open(&self, clock: ManualClock) -> Engine {
         let opened = Engine::open(&self.root, clock, None)
             .await
             .expect("the engine reopens after the kill");
         assert!(opened.minted.is_none(), "a reopen mints no key");
+        assert!(
+            !opened.lost_secret,
+            "a seeded bootstrap has no secret to lose"
+        );
+        assert_eq!(opened.seed, None, "a reopen without a seed applies none");
         let envs = opened
             .engine
             .list_environments(&self.call(), ListEnvironmentsRequest {})
             .await
-            .expect("the child's key still authenticates");
+            .expect("the seed still authenticates");
         let envs: Vec<EnvRef> = envs.iter().map(|e| e.env).collect();
         assert_eq!(
             envs,
@@ -74,29 +121,37 @@ impl Home {
 impl Driver {
     /// The child, its engine open on the fresh `root`, and what it bootstrapped.
     fn spawn(root: &Path, point: &str, crossing: u64) -> (Self, Home) {
-        let driver = Self::start(root, point, crossing);
+        let driver = Self::start(root, point, crossing, Some(SEED), None);
         assert_eq!(driver.line("ready"), "ready", "the child opens its engine");
-        let line = driver.line("the environment and the key");
-        let (env, key) = line.split_once(' ').expect("<env-ref> <key>");
+        let line = driver.line("the environment and the second key");
+        let (env, second) = line.split_once(' ').expect("<env-ref> <key-id>");
         let home = Home {
             root: root.to_owned(),
             env: env.parse().expect("an environment reference"),
-            key: key.to_owned(),
+            second: second.parse().expect("a key ID"),
         };
         (driver, home)
     }
 
-    /// The child, before its engine has opened.
-    fn start(root: &Path, point: &str, crossing: u64) -> Self {
+    /// The child, before its engine has opened with `seed`; obstructed, it is made to fail.
+    fn start(
+        root: &Path,
+        point: &str,
+        crossing: u64,
+        seed: Option<&str>,
+        obstruct: Option<&str>,
+    ) -> Self {
+        let (mut socket, theirs) = UnixStream::pair().expect("a socket pair");
         let mut child = Command::new(env!("CARGO_BIN_EXE_crash-child"))
             .arg(root)
             .arg(point)
             .arg(crossing.to_string())
-            .stdin(Stdio::piped())
+            .args(obstruct)
+            .stdin(OwnedFd::from(theirs))
             .stdout(Stdio::piped())
             .spawn()
             .expect("the child starts");
-        let stdin = child.stdin.take().expect("piped");
+        writeln!(socket, "{}", seed.unwrap_or("-")).expect("the socket writes");
         let stdout = BufReader::new(child.stdout.take().expect("piped"));
         let (send, lines) = mpsc::channel();
         std::thread::spawn(move || {
@@ -108,7 +163,7 @@ impl Driver {
         });
         Self {
             child,
-            stdin,
+            socket,
             lines,
         }
     }
@@ -126,7 +181,7 @@ impl Driver {
     }
 
     fn send(&mut self, line: &str) {
-        writeln!(self.stdin, "{line}").expect("the pipe writes");
+        writeln!(self.socket, "{line}").expect("the socket writes");
     }
 
     /// The answer to a request that must not stop at the point.
@@ -178,8 +233,8 @@ impl Driver {
         answer
     }
 
-    /// SIGKILL: no destructor, flush or close runs in the child.
-    fn kill(mut self) {
+    /// SIGKILL: no destructor, flush or close runs in the child. What it had told by then.
+    fn kill(mut self) -> Vec<Told> {
         self.child.kill().expect("the child is killed");
         let status = self.child.wait().expect("the child is reaped");
         assert_eq!(
@@ -187,6 +242,23 @@ impl Driver {
             Some(9),
             "the child died of the parent's SIGKILL, not on its own: {status}"
         );
+        // The child is gone, so this reads to the end of what it wrote.
+        let mut told = String::new();
+        self.socket
+            .read_to_string(&mut told)
+            .expect("the socket reads");
+        told.lines()
+            .map(|line| {
+                let [env, key, secret] = line.split(' ').collect::<Vec<_>>()[..] else {
+                    panic!("an identity is <env-ref> <key-id> <secret>|-");
+                };
+                Told {
+                    env: env.parse().expect("an environment reference"),
+                    key: key.parse().expect("a key ID"),
+                    secret: (secret != "-").then(|| secret.to_owned()),
+                }
+            })
+            .collect()
     }
 }
 
@@ -254,6 +326,8 @@ struct Seen {
     /// Each new item's marker and the time its event takes if stored: the clock the parent
     /// stepped, never behind the last record's (D7).
     times: BTreeMap<String, Timestamp>,
+    /// Each new item's marker and the emitter its event names if stored: the key that sent it.
+    emitters: BTreeMap<String, String>,
 }
 
 impl Seen {
@@ -392,11 +466,17 @@ fn run(root: &Path, point: FaultPoint, append: u64, workload: Vec<Request>) -> (
     let mut last = None;
     for (i, request) in workload.into_iter().enumerate() {
         let label = format!("request {}", i + 1);
+        // The two keys take turns.
+        let (caller, emitter) = if i % 2 == 0 {
+            (1, emitter(SEED))
+        } else {
+            (2, format!("key:{}", home.second))
+        };
         let (line, items, batch) = match request {
-            Request::Emit(item) => (format!("emit {}", item.line()), vec![item], false),
+            Request::Emit(item) => (format!("emit {caller} {}", item.line()), vec![item], false),
             Request::Batch(items) => {
                 let lines: Vec<_> = items.iter().map(Item::line).collect();
-                (format!("batch {}", lines.join(" ")), items, true)
+                (format!("batch {caller} {}", lines.join(" ")), items, true)
             }
             Request::List(limit) => {
                 child.send(&format!("list {limit} -"));
@@ -437,6 +517,7 @@ fn run(root: &Path, point: FaultPoint, append: u64, workload: Vec<Request>) -> (
             {
                 seen.times
                     .insert(item.marker.clone(), Timestamp::from_millis(time));
+                seen.emitters.insert(item.marker.clone(), emitter.clone());
             }
         }
         child.send(&line);
@@ -466,7 +547,13 @@ fn run(root: &Path, point: FaultPoint, append: u64, workload: Vec<Request>) -> (
         seen.stopped.is_some(),
         "the workload has an append {append} to stop at"
     );
-    child.kill();
+    let told = child.kill();
+    let [told] = &told[..] else {
+        panic!("the child told {} keys, not its bootstrap's", told.len());
+    };
+    assert_eq!(told.env, home.env, "the child told the bootstrap it made");
+    assert_eq!(told.key, key_id(SEED), "the child told its bootstrap key");
+    assert!(told.secret.is_none(), "a seeded bootstrap mints no key");
     (seen, home)
 }
 
@@ -529,8 +616,15 @@ async fn check(engine: &Engine, cx: &Call, seen: &Seen) -> Result<Vec<Event>, St
                     item.request
                 )
             })?;
-        if marker(&event) != Some(&item.marker) {
+        if event.event_id.to_string() != *id || marker(&event) != Some(&item.marker) {
             return Err(format!("{}: {id} reads back another event", item.request));
+        }
+        let want = &seen.emitters[&item.marker];
+        if event.emitted_by.to_string() != *want {
+            return Err(format!(
+                "{}: {id} reads back emitted by {}, not {want}",
+                item.request, event.emitted_by
+            ));
         }
     }
     let page = engine
@@ -559,6 +653,19 @@ async fn check(engine: &Engine, cx: &Call, seen: &Seen) -> Result<Vec<Event>, St
                 "{} takes time {:?}, not {want:?}",
                 marker(event).unwrap_or_default(),
                 event.time
+            ));
+        }
+    }
+    // TEN-6: each event names the key that emitted it.
+    for event in &page.events {
+        let Some(want) = marker(event).and_then(|m| seen.emitters.get(m)) else {
+            continue;
+        };
+        if event.emitted_by.to_string() != *want {
+            return Err(format!(
+                "{} is emitted by {}, not {want}",
+                marker(event).unwrap_or_default(),
+                event.emitted_by
             ));
         }
     }
@@ -787,14 +894,26 @@ fn kill_at(
 /// Kills a reopen of `root` inside its fold of the record the last kill left unfolded, its rows
 /// written and nothing committed.
 fn kill_during_open(root: &Path) {
-    let child = Driver::start(root, FaultPoint::DuringOpen.name(), 1);
-    let line = child.line("the reopen to stop during open");
+    let told = kill_inside_open(root, FaultPoint::DuringOpen, None, None);
+    assert!(told.is_empty(), "a later open makes no key");
+}
+
+/// Kills the child inside its open of `root`, at its first pass of `point`.
+fn kill_inside_open(
+    root: &Path,
+    point: FaultPoint,
+    seed: Option<&str>,
+    obstruct: Option<&str>,
+) -> Vec<Told> {
+    let name = point.name();
+    let child = Driver::start(root, name, 1, seed, obstruct);
+    let line = child.line(&format!("the open to stop at {name}"));
     assert_eq!(
         line,
-        format!("at {}", FaultPoint::DuringOpen.name()),
-        "the reopen stops during open, before it is ready"
+        format!("at {name}"),
+        "the open stops at {name}, before it is ready"
     );
-    child.kill();
+    child.kill()
 }
 
 /// `kill_at` with the fixed workload, in a fresh directory.
@@ -810,36 +929,42 @@ fn kill_named(point: FaultPoint, append: u64) {
 
 #[test]
 fn killed_before_the_append() {
+    let _alone = alone();
     kill_named(FaultPoint::BeforeAppend, SINGLE_APPEND);
     kill_named(FaultPoint::BeforeAppend, BATCH_APPEND);
 }
 
 #[test]
 fn killed_after_fsync() {
+    let _alone = alone();
     kill_named(FaultPoint::AfterFsync, SINGLE_APPEND);
     kill_named(FaultPoint::AfterFsync, BATCH_APPEND);
 }
 
 #[test]
 fn killed_after_the_acknowledgment() {
+    let _alone = alone();
     kill_named(FaultPoint::AfterAck, SINGLE_APPEND);
     kill_named(FaultPoint::AfterAck, BATCH_APPEND);
 }
 
 #[test]
 fn killed_mid_fold() {
+    let _alone = alone();
     kill_named(FaultPoint::MidFold, SINGLE_APPEND);
     kill_named(FaultPoint::MidFold, BATCH_APPEND);
 }
 
 #[test]
 fn killed_during_open() {
+    let _alone = alone();
     kill_named(FaultPoint::DuringOpen, SINGLE_APPEND);
     kill_named(FaultPoint::DuringOpen, BATCH_APPEND);
 }
 
 #[test]
 fn a_broken_expectation_names_its_request() {
+    let _alone = alone();
     let dir = tempfile::tempdir().expect("a temporary directory");
     let (mut seen, home) = run(
         dir.path(),
@@ -858,7 +983,8 @@ fn a_broken_expectation_names_its_request() {
     );
 }
 
-/// Every named point, for the seeded kills to choose from.
+/// Every named point the working ledger reaches, for the seeded kills to choose from; `opens` has
+/// the rest.
 const POINTS: [FaultPoint; 5] = [
     FaultPoint::BeforeAppend,
     FaultPoint::AfterFsync,
@@ -867,13 +993,27 @@ const POINTS: [FaultPoint; 5] = [
     FaultPoint::DuringOpen,
 ];
 
-/// Fails to build when a point is added, as a reminder to add it to `POINTS`.
+/// Fails to build when a point is added, as a reminder to add it to `POINTS`, or to `opens`.
 const _: fn(FaultPoint) = |p| match p {
     FaultPoint::BeforeAppend
     | FaultPoint::AfterFsync
     | FaultPoint::AfterAck
     | FaultPoint::MidFold
     | FaultPoint::DuringOpen => {}
+    FaultPoint::BeforeSchemaCommit
+    | FaultPoint::BeforeBootstrapCommit
+    | FaultPoint::AfterBootstrapCommit
+    | FaultPoint::BeforeGenesis
+    | FaultPoint::AfterGenesis
+    | FaultPoint::BeforeRename
+    | FaultPoint::AfterRename
+    | FaultPoint::BeforeMarkCommit
+    | FaultPoint::AfterMarkCommit
+    | FaultPoint::BeforeUndo
+    | FaultPoint::BeforeUndoCommit
+    | FaultPoint::AfterUndo
+    | FaultPoint::BeforeSeedCommit
+    | FaultPoint::AfterSeedCommit => {}
 };
 
 /// splitmix64: the seed is all a run depends on, so a run replays.
@@ -935,12 +1075,22 @@ fn random_workload(rng: &mut Rng) -> Vec<Request> {
     requests
 }
 
+/// Kills the child inside an open, as `opens::kill_seeded` does, or while its ledger works: which,
+/// the seed picks.
+fn kill_seeded(seed: u64) {
+    let mut rng = Rng(seed);
+    if rng.below(2) == 0 {
+        opens::kill_seeded(&mut rng);
+    } else {
+        kill_working(&mut rng);
+    }
+}
+
 /// Kills the child at the point and on the append the seed picks, checks it as `kill_at` does,
 /// then opens once more with the clock behind the last event and checks a new event takes the
 /// last event's time.
-fn kill_seeded(seed: u64) {
-    let mut rng = Rng(seed);
-    let workload = random_workload(&mut rng);
+fn kill_working(rng: &mut Rng) {
+    let workload = random_workload(rng);
     let point = POINTS[rng.below(POINTS.len() as u64) as usize];
     let append = 1 + rng.below(appends(&workload));
     let behind = 1 + rng.below(60_000);
@@ -954,7 +1104,7 @@ fn kill_seeded(seed: u64) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("a runtime");
-    let time = runtime.block_on(async {
+    let (time, by) = runtime.block_on(async {
         let engine = home.open(ManualClock::new(at)).await;
         let cx = home.call();
         let emit = EmitRequest {
@@ -975,8 +1125,9 @@ fn kill_seeded(seed: u64) {
             .await
             .expect("reads back");
         engine.close().await;
-        event.time
+        (event.time, event.emitted_by.to_string())
     });
+    assert_eq!(by, emitter(SEED), "emitted after the reopen");
     // Behind the last event it takes that event's time; with none, the clock's.
     assert_eq!(
         time,
@@ -1003,6 +1154,7 @@ impl Drop for ReplayHint {
 /// first seed random unless set.
 #[test]
 fn seeded_random_kills() {
+    let _alone = alone();
     let var = |name| {
         std::env::var(name).ok().map(|v: String| {
             v.parse::<u64>()

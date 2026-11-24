@@ -730,10 +730,12 @@ dependencies = [
 name = "ironflowx-crash-test"
 version = "0.1.0"
 dependencies = [
+ "ironflowx-authz",
  "ironflowx-cell",
  "ironflowx-core",
  "ironflowx-operations",
  "ironflowx-proto",
+ "ironflowx-store",
  "rusqlite",
  "tempfile",
  "tokio",
