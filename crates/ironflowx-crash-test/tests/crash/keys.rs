@@ -310,7 +310,7 @@ struct Killed {
 }
 
 impl Killed {
-    /// Checks each row's ID, digest, revoke and recorded expiry, before any open.
+    /// Checks each row's ID, digest, revoke and recorded expiry.
     fn check_rows(&self) {
         let copy = copy_control(&self.home.root);
         let control = ControlPlane::open(&copy.path().join("control.db"));
@@ -355,6 +355,7 @@ impl Killed {
             self.check(&engine, now).await;
             engine.close().await;
         });
+        self.check_rows();
     }
 
     async fn check(&mut self, engine: &Engine, now: i64) {
@@ -489,7 +490,7 @@ fn killed_around_an_expirys_refusal() {
     }
 }
 
-/// The same for a key that expires between its admission and its key change's transaction, which
+/// The same for a key that expires between its admission and its `create_key`'s transaction, which
 /// records the expiry itself and creates nothing.
 #[test]
 fn killed_around_a_key_changes_expiry_refusal() {
