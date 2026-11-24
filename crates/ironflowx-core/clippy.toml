@@ -4,8 +4,7 @@
 # TEN-4). ironflowx-events links this file; ironflowx-authz copies it, less the SubmitAs::key
 # ban.
 # Clippy cannot ban a whole module, so each function and type is listed.
-# shortcut: a list is never complete, and an #[allow] gets past it; the dependency allowlist is
-# the backstop. Upgrade when a tool can ban whole std modules.
+# shortcut: a list is never complete; the dependency allowlist is the backstop. Upgrade when a tool can ban whole std modules.
 
 disallowed-methods = [
   # Only the ledger stamps event time. Inside core the path does not resolve, so

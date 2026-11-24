@@ -2,8 +2,8 @@
 //! `<root>/control.db` (SQLite).
 //!
 //! Blocking: the engine calls it under `spawn_blocking`, a recovery on its caller's thread. Every
-//! change is one transaction that takes SQLite's write lock first, then reads now from the clock
-//! it is given (TEN-11).
+//! change is one transaction that takes SQLite's write lock first (TEN-11); one that needs now
+//! then reads it from the clock it is given.
 //!
 //! One whose commit SQLite fails after writing it to the WAL is unsettled (D48): no open
 //! connection sees it, but the next open of the file may find it landed, whole, unless a write
@@ -287,7 +287,7 @@ impl ControlPlane {
     }
 
     /// Reads where the bootstrap at `path` stands. Writes no row, creates nothing, and leaves
-    /// behind no file SQLite makes to read it.
+    /// behind no file SQLite makes to read it but `-shm`, which it derives from a WAL a crash left.
     ///
     /// # Errors
     ///

@@ -53,7 +53,8 @@ impl SequencedTime {
     }
 }
 
-/// A source of the current time. Core declares it and never calls it.
+/// A source of the current time. Core declares it and never calls it. `now` must not panic: it
+/// runs on the ledger's writer and under the control plane's lock.
 pub trait Clock {
     fn now(&self) -> Timestamp;
 }

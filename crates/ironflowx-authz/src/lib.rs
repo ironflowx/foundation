@@ -58,7 +58,8 @@ impl std::error::Error for Malformed {}
 ///
 /// # Errors
 ///
-/// If `raw` is not `ixk_<key-id>_<43 base64url characters>`, 84 characters in all.
+/// If `raw` is not `ixk_<key-id>_<secret>`, 84 characters in all, the secret being 32 bytes in
+/// canonical base64url without padding (43 characters).
 pub fn parse(raw: &Secret) -> Result<KeyParts, Malformed> {
     let text = raw.expose();
     // ASCII first, so the slices below fall on character boundaries.

@@ -142,7 +142,8 @@ fn new_event_id() -> EventId {
 }
 
 impl Ledger {
-    /// Opens the environment `env` in `dir`, creating it if `dir` is empty or missing.
+    /// Opens the environment `env` in `dir`, creating it if `dir` is missing or holds neither a log
+    /// nor `read.db`, whatever else it holds: an engine's root is not recognised.
     ///
     /// # Panics
     ///

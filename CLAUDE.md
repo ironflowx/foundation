@@ -14,7 +14,7 @@ Single-context: one `GLOSSARY.md` at the root, and one `docs/decisions.md` numbe
 
 ### Docs
 
-Milestone plans (PRDs, specs, slices) live in GitHub issues: one tracking issue per milestone, titled with the milestone (e.g. #34 "0.1 Ledger"), holds the PRD and a status checklist, with each spec as a sub-issue and each slice under its spec. `docs/` describes the system as it is now, by topic, never in per-milestone folders. A PR that changes behavior, an interface or a decision updates `docs/` in the same PR. See `docs/README.md`.
+Milestone plans (PRDs, specs, slices) live in GitHub issues: one tracking issue per milestone, titled with the milestone (e.g. #34 "0.1 Ledger"), holds the PRD and a status checklist, with its specs or slices as sub-issues (a slice goes under its spec when there is one). `docs/` describes the system as it is now, by topic, never in per-milestone folders. A PR that changes behavior, an interface or a decision updates `docs/` in the same PR. See `docs/README.md`.
 
 ## CI
 

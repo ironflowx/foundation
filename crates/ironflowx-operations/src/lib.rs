@@ -45,11 +45,15 @@ pub use open::EngineError;
 pub use recover::recover_admin_key;
 
 /// An open data directory: its control plane, its environment's ledger and the root's lock.
+///
+/// Its operations, `open` and `close` run on tokio and panic outside a runtime. Dropping it
+/// without `close` blocks until the emit in hand is done, ends queued ones `Unavailable` and
+/// releases the root; async code calls `close`.
 pub struct Engine {
     ledger: Ledger,
     control: Arc<ControlPlane>,
     env: EnvRef,
-    /// The ledger's clock, which also decides key expiry.
+    /// The clock the engine was opened with, which decides key expiry.
     clock: Arc<dyn Clock + Send + Sync>,
     // Held until `close`, after the ledger closes.
     _lock: Arc<File>,
@@ -125,7 +129,7 @@ impl Operations for Engine {
     ///
     /// # Errors
     ///
-    /// As [`Engine::whoami`].
+    /// As [`Engine::whoami`]; `PermissionDenied` without `read`.
     async fn list_environments(
         &self,
         cx: &Call,
@@ -146,7 +150,8 @@ impl Operations for Engine {
     ///
     /// # Errors
     ///
-    /// As [`Engine::whoami`], or as the ledger refuses the event.
+    /// As [`Engine::whoami`]; `PermissionDenied` without `write`; as the ledger refuses the event;
+    /// `Unknown` if the append's outcome is unknown; `Unavailable` if the ledger failed.
     async fn emit(&self, cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError> {
         let a = self.admit(cx, Operation::Emit).await?;
         let sub = Submission::Emit(events::emit(req));
@@ -178,7 +183,8 @@ impl Operations for Engine {
     ///
     /// # Errors
     ///
-    /// As [`Engine::whoami`]; `NotFound` for an unknown ID.
+    /// As [`Engine::whoami`]; `PermissionDenied` without `read`; `NotFound` for an unknown ID;
+    /// `Unavailable` if the ledger failed.
     async fn get_event(&self, cx: &Call, req: GetEventRequest) -> Result<Event, OpError> {
         let a = self.admit(cx, Operation::GetEvent).await?;
         self.ledger(&a)
@@ -192,7 +198,8 @@ impl Operations for Engine {
     ///
     /// # Errors
     ///
-    /// As [`Engine::whoami`], or for a bad cursor.
+    /// As [`Engine::whoami`]; `PermissionDenied` without `read`; `Invalid` for a bad cursor;
+    /// `Unavailable` if the ledger failed.
     async fn list_events(&self, cx: &Call, req: ListEventsRequest) -> Result<EventPage, OpError> {
         let a = self.admit(cx, Operation::ListEvents).await?;
         let token = self.env.token();
@@ -217,7 +224,7 @@ impl Operations for Engine {
     /// As [`Engine::whoami`]; `PermissionDenied` without `admin`; `Invalid` for a request
     /// beyond the caller, an expiry not after now, or a bad label; `ResourceExhausted` while
     /// 1,000 created keys hold a slot: not revoked, and no expiry recorded; `Unauthenticated` if
-    /// the caller expired before the key was stored.
+    /// the caller was revoked or expired before the key was stored.
     ///
     /// # Panics
     ///

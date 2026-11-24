@@ -188,7 +188,8 @@ impl Engine {
     ///
     /// `MalformedSeed` before anything is read. `NotAnEngineRoot`, `Locked`, `Format` and
     /// `Orphaned` change nothing but the lock file and a leftover staging directory, nor does
-    /// `LedgerMissing`, but for what a log that has a segment recovers as it opens. `SeedConflict`
+    /// `LedgerMissing`, but for `control.db-shm`, which reading a WAL a crash left rebuilds, and
+    /// what a log that has a segment recovers as it opens. `SeedConflict`
     /// if the seed's key ID is already another key, with no key changed; a store, ledger or I/O
     /// failure otherwise.
     ///
@@ -420,7 +421,7 @@ async fn create(
 }
 
 /// A finishing open: complete the bootstrap an earlier open left unmarked. It undoes nothing
-/// (D41), and refuses a conflicting seed before it writes (D33).
+/// (D41), and refuses a conflicting seed before it writes to `control.db` (D33).
 async fn finish(
     root: &Root,
     env: EnvRef,

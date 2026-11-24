@@ -19,11 +19,11 @@ This repo is single-context:
 ├── GLOSSARY.md
 └── docs/
     ├── architecture.md
-    ├── decisions.md      ← every decision, D1, D2, …; the next one takes the next number
+    ├── decisions.md      ← every decision, D1, D2, …; the next one takes the next number no PRD has assigned, or its PRD's
     └── invariants.md
 ```
 
-Record a new decision as the next D-row in `docs/decisions.md`, never as a separate ADR file or a `docs/adr/` folder.
+Record a new decision as a D-row, numbered so, in `docs/decisions.md`, never as a separate ADR file or a `docs/adr/` folder.
 
 ## Use the glossary's vocabulary
 
