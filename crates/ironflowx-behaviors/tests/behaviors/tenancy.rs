@@ -9,8 +9,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
 use ironflowx_cell::{Ledger, ManualClock, new_env_ref};
-use ironflowx_core::{EnvRef, ErrorKind, Scope, Secret, Timestamp};
-use ironflowx_operations::{Engine, EngineError, Opened, SeedState};
+use ironflowx_core::{EnvRef, ErrorKind, KeyOrigin, Scope, Secret, Timestamp};
+use ironflowx_operations::{
+    Engine, EngineError, Opened, RecoverError, SeedState, recover_admin_key,
+};
 use ironflowx_proto::{
     Call, CreateKeyRequest, EmitBatchRequest, EmitRequest, Environment, GetEventRequest, KeyInfo,
     KeyPage, KeyStatus, ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError,
@@ -31,6 +33,8 @@ pub const REGISTERED: &[(&str, usize)] = &[
     ("ACC-008", 2),
     ("ACC-009", 1),
     ("ACC-010", 1),
+    ("ACC-011", 1),
+    ("ACC-012", 1),
     ("ACC-013", 1),
     ("ACC-014", 2),
     ("ACC-016", 4),
@@ -101,6 +105,8 @@ pub struct Tenancy {
     reported: Option<SeedState>,
     /// Why the last reopen was refused, if it was.
     refused: Option<EngineError>,
+    /// Why the recovery was refused, if it was.
+    not_recovered: Option<RecoverError>,
     /// The text of the seeds and keys a scenario names.
     texts: BTreeMap<String, String>,
     /// Keys a scenario names (A, B, C, K), by key ID.
@@ -166,6 +172,7 @@ impl Tenancy {
             listed: None,
             reported: None,
             refused: None,
+            not_recovered: None,
             texts: BTreeMap::new(),
             named: BTreeMap::new(),
             secrets: Vec::new(),
@@ -912,11 +919,7 @@ async fn listed_with(w: &mut Tenancy, label: String) {
     );
     assert_eq!(
         (listed.status, listed.origin, listed.created_by),
-        (
-            KeyStatus::Active,
-            ironflowx_core::KeyOrigin::Created,
-            Some(bootstrap_id)
-        )
+        (KeyStatus::Active, KeyOrigin::Created, Some(bootstrap_id))
     );
 }
 
@@ -1418,6 +1421,61 @@ async fn a_on_the_first(w: &mut Tenancy) {
 #[then("key B is refused on the first engine")]
 async fn b_on_the_first(w: &mut Tenancy) {
     refused_as_invalid_key(w, "B".into()).await;
+}
+
+#[given("a client with the bootstrap key revoked the bootstrap key")]
+async fn bootstrap_revoked_itself(w: &mut Tenancy) {
+    w.open().await;
+    revokes_bootstrap(w).await;
+    assert_eq!(w.outcome, Some(Ok(())));
+}
+
+#[when(regex = r"^an admin key is recovered from the (?:fresh )?engine directory$")]
+fn recovers(w: &mut Tenancy) {
+    match recover_admin_key(w.dir.path(), w.clock.clone()) {
+        Ok(key) => {
+            w.texts.insert("R".into(), key.expose().to_owned());
+        }
+        Err(err) => w.not_recovered = Some(err),
+    }
+}
+
+#[then(regex = r"^the recovered key authenticates with scopes (.+)$")]
+async fn recovered_authenticates(w: &mut Tenancy, names: String) {
+    let me = w.whoami_with("R").await.expect("the key authenticates");
+    assert_eq!(me.scopes, scopes(&names));
+}
+
+#[then(r#"listing keys shows it with origin "recovered" and label "recovered""#)]
+async fn listed_recovered(w: &mut Tenancy) {
+    let req = ListKeysRequest {
+        limit: None,
+        cursor: None,
+    };
+    let page = w.engine().list_keys(&call(w.text("R")), req).await;
+    let id = &w.text("R")[4..40];
+    let keys = page.expect("an admin key lists keys").keys;
+    let key = keys.iter().find(|k| k.key_id.to_string() == id);
+    let key = key.expect("the recovered key");
+    assert_eq!(key.origin, KeyOrigin::Recovered);
+    assert_eq!(key.label.as_deref(), Some("recovered"));
+    assert_eq!(key.created_by, None);
+}
+
+#[then("the revoked bootstrap key is still refused")]
+async fn revoked_bootstrap_refused(w: &mut Tenancy) {
+    next_call_refused_with(w, "invalid API key".into()).await;
+}
+
+#[then("the recovery is refused as not ready")]
+fn recovery_not_ready(w: &mut Tenancy) {
+    let err = w.not_recovered.as_ref().expect("a refused recovery");
+    assert!(matches!(err, RecoverError::NotReady), "{err:?}");
+}
+
+#[then("the directory is still empty")]
+fn still_empty(w: &mut Tenancy) {
+    assert_eq!(w.read_directory(), BTreeMap::new());
 }
 
 /// Runs the registered tenancy scenarios. True if any failed or one did not run.

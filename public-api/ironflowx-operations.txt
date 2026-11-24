@@ -1,4 +1,5 @@
 pub mod ironflowx_operations
+pub use ironflowx_operations::RecoverError
 pub use ironflowx_operations::SeedState
 pub enum ironflowx_operations::EngineError
 pub ironflowx_operations::EngineError::Format
@@ -47,3 +48,4 @@ pub ironflowx_operations::Opened::engine: ironflowx_operations::Engine
 pub ironflowx_operations::Opened::lost_secret: bool
 pub ironflowx_operations::Opened::minted: core::option::Option<ironflowx_core::secret::Secret>
 pub ironflowx_operations::Opened::seed: core::option::Option<ironflowx_authz::SeedState>
+pub fn ironflowx_operations::recover_admin_key(&std::path::Path, impl ironflowx_core::time::Clock) -> core::result::Result<ironflowx_core::secret::Secret, ironflowx_store::RecoverError>

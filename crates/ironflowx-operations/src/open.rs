@@ -321,8 +321,8 @@ where
         .expect("a UUIDv7 parses")
 }
 
-/// The key an open without a seed mints, and its secret.
-fn minted_key() -> (KeyParts, Secret) {
+/// A fresh key as the control plane stores an admin key, and its secret.
+pub(crate) fn new_admin_key() -> (KeyParts, Secret) {
     let (id, secret, digest) = new_key();
     (KeyParts { id, digest }, secret)
 }
@@ -343,7 +343,7 @@ async fn bootstrap(
     let (key, secret) = match seed {
         Some(seed) => (seed, None),
         None => {
-            let (key, secret) = minted_key();
+            let (key, secret) = new_admin_key();
             (key, Some(secret))
         }
     };
@@ -409,7 +409,7 @@ async fn finish(
 ) -> Result<Made, EngineError> {
     let ledger = root.create_ledger(env, clock.clone()).await?;
     let control = root.control_for(env, seed.clone()).await?;
-    let (replacement, secret) = seed.is_none().then(minted_key).unzip();
+    let (replacement, secret) = seed.is_none().then(new_admin_key).unzip();
     let lost_secret = {
         let (control, clock) = (control.clone(), clock.clone());
         root.step(move || Ok(control.finish_bootstrap(&env, replacement.as_ref(), &clock)?))

@@ -1,8 +1,9 @@
 //! The Ironflow X control plane: which tenants, projects, environments and keys exist, in
 //! `<root>/control.db` (SQLite).
 //!
-//! Blocking: the engine calls it under `spawn_blocking`. Every change is one transaction that
-//! takes SQLite's write lock first, then reads now from the clock it is given (TEN-11).
+//! Blocking: the engine calls it under `spawn_blocking`, a recovery on its caller's thread. Every
+//! change is one transaction that takes SQLite's write lock first, then reads now from the clock
+//! it is given (TEN-11).
 
 #![forbid(unsafe_code)]
 
@@ -208,6 +209,31 @@ impl fmt::Display for SeedError {
 
 impl std::error::Error for SeedError {}
 
+/// Why no key was recovered. No key changed.
+#[derive(Debug)]
+pub enum RecoverError {
+    /// The bootstrap is not finished: there is none, or its ledger was not marked created.
+    NotReady,
+    Store(StoreError),
+}
+
+impl fmt::Display for RecoverError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotReady => f.write_str("the bootstrap is not finished"),
+            Self::Store(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for RecoverError {}
+
+impl From<StoreError> for RecoverError {
+    fn from(e: StoreError) -> Self {
+        Self::Store(e)
+    }
+}
+
 /// An environment with its parents' IDs and the names its address is derived from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvironmentRecord {
@@ -273,24 +299,7 @@ impl ControlPlane {
             if !has_schema(&conn)? {
                 return Ok(BootstrapState::Unbootstrapped);
             }
-            let row = conn
-                .query_row(
-                    "SELECT id, token, ledger_created_at IS NOT NULL FROM environments",
-                    [],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get(2)?)),
-                )
-                .optional()?;
-            Ok(match row {
-                None => BootstrapState::Unbootstrapped,
-                Some((id, token, marked)) => {
-                    let env = env_ref(&id, &token)?;
-                    if marked {
-                        BootstrapState::Marked { env }
-                    } else {
-                        BootstrapState::Unmarked { env }
-                    }
-                }
-            })
+            read_state(&conn)
         })
     }
 
@@ -331,7 +340,7 @@ impl ControlPlane {
                 ],
             )?;
             let origin = if b.by_seed { SEED } else { MINTED };
-            insert_admin(&tx, &b.key, &env, origin, at)?;
+            insert_admin(&tx, &b.key, &env, origin, None, at)?;
             tx.commit()?;
             Ok(())
         })
@@ -414,7 +423,7 @@ impl ControlPlane {
             mark(&tx, env, now)?;
             let lost = revoke_all(&tx, env, MINTED, now)? > 0;
             if lost && let Some(key) = replacement {
-                insert_admin(&tx, key, env, MINTED, now)?;
+                insert_admin(&tx, key, env, MINTED, None, now)?;
             }
             tx.commit()?;
             Ok(lost)
@@ -458,12 +467,34 @@ impl ControlPlane {
                 Ok(None) => {}
             }
             revoke_all(&tx, env, SEED, now)?;
-            insert_admin(&tx, seed, env, SEED, now)?;
+            insert_admin(&tx, seed, env, SEED, None, now)?;
             tx.commit()?;
             Ok(Ok(SeedState::Current))
         })
         .map_err(SeedError::Store)?
         .map_err(|SeedConflict| SeedError::Conflict)
+    }
+
+    /// Inserts `key` as an admin key of the file's environment, of origin `Recovered` and labelled
+    /// `recovered`, in one transaction that first checks the bootstrap is marked: only an unmarked
+    /// one is ever undone, so a recovered key never is (D34, TEN-14).
+    ///
+    /// # Errors
+    ///
+    /// `NotReady` unless the bootstrap is marked, `Store` if SQLite fails; no key is inserted.
+    pub fn insert_recovered(&self, key: &KeyParts, clock: &dyn Clock) -> Result<(), RecoverError> {
+        // The outer error is SQLite's; the inner one, a check that refused.
+        run(|| {
+            let mut conn = self.lock()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let now = clock.now();
+            let BootstrapState::Marked { env } = read_state(&tx)? else {
+                return Ok(Err(RecoverError::NotReady));
+            };
+            insert_admin(&tx, key, &env, RECOVERED, Some(RECOVERED), now)?;
+            tx.commit()?;
+            Ok(Ok(()))
+        })?
     }
 
     /// The key `id`, if it was made for `env`'s ID and incarnation token, and then `clock`'s now:
@@ -719,6 +750,28 @@ impl ControlPlane {
     }
 }
 
+/// Where the bootstrap in a file with a schema stands.
+fn read_state(conn: &Connection) -> Result<BootstrapState, Error> {
+    let row = conn
+        .query_row(
+            "SELECT id, token, ledger_created_at IS NOT NULL FROM environments",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        None => BootstrapState::Unbootstrapped,
+        Some((id, token, marked)) => {
+            let env = env_ref(&id, &token)?;
+            if marked {
+                BootstrapState::Marked { env }
+            } else {
+                BootstrapState::Unmarked { env }
+            }
+        }
+    })
+}
+
 /// The key `id`, if it was made for `env`'s ID and incarnation token.
 fn lookup(conn: &Connection, id: KeyId, env: &EnvRef) -> Result<Option<KeyRecord>, Error> {
     let row = conn
@@ -829,18 +882,19 @@ fn revoke_all(
     )?)
 }
 
-/// Inserts an admin key no key created: all three scopes, no expiry, no label.
+/// Inserts an admin key no key created: all three scopes, no expiry.
 fn insert_admin(
     conn: &Connection,
     key: &KeyParts,
     env: &EnvRef,
     origin: &str,
+    label: Option<&str>,
     now: Timestamp,
 ) -> Result<(), Error> {
     let every = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]);
     conn.execute(
         "INSERT INTO keys (id, environment_id, environment_token, scopes, digest, origin, \
-         created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+         label, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             key.id.to_string(),
             env.id().to_string(),
@@ -848,6 +902,7 @@ fn insert_admin(
             scopes_text(&every),
             key.digest.to_stored(),
             origin,
+            label,
             now.as_millis()
         ],
     )?;
