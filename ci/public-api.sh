@@ -2,8 +2,8 @@
 # Usage: ci/public-api.sh [--bless]
 # Compares each foundation crate's public API with its snapshot in public-api/ (D21); any
 # difference fails. --bless rewrites the snapshots after a reviewed change.
-# Then checks LED-9, that no dependency type is public, and TEN-3, TEN-8 and TEN-4's API rules
-# over the snapshots, and each check rejecting its fixture.
+# Then checks LED-9, that no dependency type is public, and TEN-8 and TEN-4's API rules over the
+# snapshots, TEN-3's over rustdoc's JSON, and each check rejecting its fixture.
 # Needs cargo-public-api and the nightly pinned in ci/tools.env (ci/install-tools.sh).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -11,8 +11,9 @@ cd "$(dirname "$0")/.."
 source ci/tools.env
 rustup toolchain install "$NIGHTLY" --profile minimal --no-self-update >/dev/null
 mkdir -p public-api
-for crate in ironflowx-core ironflowx-events ironflowx-proto ironflowx-cell ironflowx-authz ironflowx-store \
-  ironflowx-operations ironflowx ironflowx-behaviors ironflowx-crash-test; do
+published=(ironflowx-core ironflowx-events ironflowx-proto ironflowx-cell ironflowx-authz
+  ironflowx-store ironflowx-operations ironflowx)
+for crate in "${published[@]}" ironflowx-behaviors ironflowx-crash-test; do
   # -ss keeps derived impls, so a new derive (an Ord, a From) shows in the diff. Hidden items
   # are documented too, so a second #[doc(hidden)] constructor shows.
   RUSTDOCFLAGS="-Zunstable-options --document-hidden-items" cargo "+$NIGHTLY" public-api --color never -p "$crate" -ss > "public-api/$crate.txt"
@@ -31,34 +32,53 @@ ci/no-bare-env-id.sh public-api/*.txt
 ci/no-dependency-types.sh public-api/*.txt
 ci/api-rules.sh public-api/*.txt
 ci/api-rules.sh ci/fixtures/api-rules-ok.txt
+ci/no-bare-env-id.sh ci/fixtures/bare-environment-id-ok.txt
 ci/must-reject.sh \
-  'TEN-3: pub ironflowx_operations::EngineError::Leak(ironflowx_operations::Opened)' \
-  'TEN-3: pub ironflowx_operations::EngineError::MalformedSeed(ironflowx_core::secret::Secret)' \
-  'TEN-3: pub ironflowx_store::OpenFailure::Seed(ironflowx_core::secret::Secret)' \
-  'TEN-3: pub ironflowx_store::StoreError::seed: ironflowx_core::secret::Secret' \
-  'TEN-3: pub struct ironflowx_authz::Refused(pub ironflowx_core::secret::Secret)' \
-  'TEN-3: pub ironflowx_operations::EngineError::Refused(ironflowx_proto::Call)' \
-  'TEN-3: pub ironflowx_operations::EngineError::Keyed(ironflowx_operations::Key)' \
   'TEN-4: impl core::cmp::PartialEq for ironflowx_authz::KeyDigest' \
   'TEN-4: impl core::convert::AsRef<[u8]> for &ironflowx_authz::KeyDigest' \
   'TEN-4: impl core::convert::From<ironflowx_authz::KeyDigest> for [u8; 32]' \
   'TEN-4: pub fn ironflowx_authz::KeyDigest::as_bytes(&self) -> &[u8; 32]' \
   'TEN-4: pub fn ironflowx_authz::digest_bytes(&ironflowx_authz::KeyDigest) -> [u8; 32]' \
   'TEN-4: pub fn ironflowx_authz::digest_text(&ironflowx_authz::KeyDigest) -> ironflowx_authz::Text' \
-  'TEN-4: pub type ironflowx_authz::Stored = core::option::Option<ironflowx_authz::KeyDigest>' \
+  'TEN-4: pub fn ironflowx_authz::export((), &ironflowx_authz::KeyDigest) -> [u8; 32]' \
+  'TEN-4: pub fn ironflowx_authz::export_with<' \
+  'TEN-4: pub fn ironflowx_authz::exporter() -> fn(&ironflowx_authz::KeyDigest) -> [u8; 32]' \
   'TEN-4: pub ironflowx_authz::KeyDigest::0: [u8; 32]' \
   'TEN-4: pub struct ironflowx_authz::KeyDigest(pub [u8; 32])' \
+  'TEN-4: pub type ironflowx_authz::Stored = core::option::Option<ironflowx_authz::KeyDigest>' \
   'TEN-8: impl core::convert::From<&ironflowx_core::tenancy::Address> for ironflowx_core::id::TenantId' \
   'TEN-8: impl core::convert::From<ironflowx_core::tenancy::Address> for ironflowx_core::id::ProjectId' \
   'TEN-8: impl core::convert::Into<ironflowx_core::id::ProjectId> for ironflowx_core::Address' \
   'TEN-8: impl core::convert::TryFrom<ironflowx_core::tenancy::Address> for ironflowx_core::id::ProjectId' \
-  'TEN-8: pub type ironflowx_core::Place = ironflowx_core::tenancy::Address' \
   'TEN-8: pub fn ironflowx_core::Address::project_id(&self) -> ironflowx_core::id::ProjectId' \
   'TEN-8: pub fn ironflowx_core::ProjectId::from_address(&ironflowx_core::tenancy::Address) -> Self' \
   'TEN-8: pub fn ironflowx_store::ControlPlane::resolve(&self, &ironflowx_core::tenancy::Address) -> core::result::Result<ironflowx_store::Resolved, ironflowx_store::StoreError>' \
+  'TEN-8: pub fn ironflowx_store::resolve((), &ironflowx_core::tenancy::Address) -> ironflowx_core::id::ProjectId' \
+  'TEN-8: pub fn ironflowx_store::resolve_any<T>(T)' \
+  'TEN-8: pub ironflowx_store::Resolver::with:' \
+  'TEN-8: pub type ironflowx_core::Place = ironflowx_core::tenancy::Address' \
   -- ci/api-rules.sh ci/fixtures/api-rules.txt
 ci/must-reject.sh Ledger::open find_after ffi_open EnvironmentId::lookup \
-  OpenRequest::env Target::Env proto::Wrapper store::LookupId -- \
-  ci/no-bare-env-id.sh ci/fixtures/bare-environment-id.txt
+  OpenRequest::env Target::Env proto::Wrapper store::LookupId cell::dispatch cell::any_id \
+  cell::opener -- ci/no-bare-env-id.sh ci/fixtures/bare-environment-id.txt
 ci/must-reject.sh rusqlite::error::Error segment_log_core::engine tokio::runtime uuid::Uuid -- \
   ci/no-dependency-types.sh ci/fixtures/dependency-type.txt
+
+# TEN-3, over every item: rustdoc's JSON of each published crate, private items included, and every
+# feature a build can switch on.
+json() { cargo "+$NIGHTLY" rustdoc -q --locked "$@" -- -Zunstable-options --output-format json --document-private-items --cap-lints allow; }
+docs=()
+for crate in "${published[@]}"; do
+  json -p "$crate" --lib --all-features
+  docs+=("target/doc/${crate//-/_}.json")
+done
+ci/no-secret-in-errors.sh "${docs[@]}"
+bad=ci/fixtures/secret-in-error
+json --manifest-path "$bad/Cargo.toml"
+docs+=("$bad/target/doc/secret_in_error.json")
+ci/must-reject.sh BadField BadPrivate BadCall BadVariant BadTuple BadDeep BadAssociated BadWrapper \
+  BadUnion BadMacro NamedError NamedRefused -- ci/no-secret-in-errors.sh "${docs[@]}"
+if ci/no-secret-in-errors.sh "${docs[@]}" | grep Fine; then
+  echo "public-api: ci/no-secret-in-errors.sh rejects an error that holds no Secret"
+  exit 1
+fi

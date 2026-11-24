@@ -1,21 +1,24 @@
-//! TEN-3, end to end: no secret an engine returns, is given or is shown is stored in its data
-//! directory, while it runs or once it is closed, or printed by its process; nor is the text of
-//! one it makes and returns to no one. No published crate depends on a logging one (`cargo tree`,
-//! run for #101), so what a process prints is all it logs: this test runs itself as a child that
-//! plays a host, which prints every answer and error it gets.
+//! TEN-3, end to end: no secret an engine makes, is given or is shown is stored in its data
+//! directory, while it runs or once it is closed, or printed by its process. The key hook
+//! (`__fault-points`) tells even of a key the engine makes and returns to no one. No published
+//! crate depends on a logging one (`cargo tree`, run for #101), so what a process prints is all it
+//! logs: this test runs itself as a child that plays a host, which prints every answer and error it
+//! gets.
 
 use std::collections::BTreeSet;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 
 use ironflowx_authz::{mint, parse};
 use ironflowx_cell::{ManualClock, new_env_ref};
-use ironflowx_core::{Clock, Scope, Secret, Timestamp};
+use ironflowx_core::{Clock, EnvRef, ErrorKind, KeyId, Scope, Secret, Timestamp, set_key_hook};
 use ironflowx_operations::{Engine, EngineError, Opened, recover_admin_key};
 use ironflowx_proto::{
     Call, CreateKeyRequest, EmitBatchRequest, EmitRequest, GetEventRequest,
-    ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, Operations, RevokeKeyRequest,
-    WhoamiRequest,
+    ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operations,
+    RevokeKeyRequest, WhoamiRequest,
 };
 use ironflowx_store::{Bootstrap, ControlPlane};
 
@@ -26,6 +29,23 @@ const TOLD: &str = "IRONFLOWX_TEST_TOLD_SECRETS";
 
 const fn at(ms: i64) -> Timestamp {
     Timestamp::from_millis(ms)
+}
+
+/// The text of every key the engine made that it told the hook of.
+static MINTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn minted(_: EnvRef, _: KeyId, secret: Option<&Secret>) {
+    if let Some(secret) = secret {
+        println!("{}", announced(secret.expose()));
+        MINTED.lock().unwrap().push(secret.expose().to_owned());
+    }
+}
+
+/// A key as the child announces it to its parent: its ID and a hash of its text.
+fn announced(key: &str) -> String {
+    let mut hash = DefaultHasher::new();
+    key.hash(&mut hash);
+    format!("a key: {} {:016x}", &key[4..40], hash.finish())
 }
 
 /// The 256 bits a key's secret part encodes.
@@ -75,8 +95,7 @@ fn written(bytes: &[u8]) -> Vec<String> {
     out
 }
 
-/// What gives a secret away in `text`: half of one of `keys`, or the start of any key's text, as
-/// of one the engine made and never returned.
+/// What gives a secret away in `text`: half of one of `keys`, or the start of any key's text.
 fn leak<'a>(text: &str, keys: impl IntoIterator<Item = &'a str>) -> Option<String> {
     // `{:#?}` writes a list a line each.
     let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -95,8 +114,8 @@ fn leak<'a>(text: &str, keys: impl IntoIterator<Item = &'a str>) -> Option<Strin
     start.map(|_| "a key's text".to_owned())
 }
 
-/// Every file under `root`, by its path there. Copied by another process: closing a file this one
-/// opened would drop the locks SQLite holds on it here.
+/// Every file and directory under `root`, by its path there, a directory empty. Copied by another
+/// process: closing a file this one opened would drop the locks SQLite holds on it here.
 fn files(root: &Path) -> Vec<(PathBuf, String)> {
     let copy = tempfile::tempdir().unwrap();
     let copied = copy.path().join("root");
@@ -106,12 +125,13 @@ fn files(root: &Path) -> Vec<(PathBuf, String)> {
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
+            let mut bytes = String::new();
             if path.is_dir() {
-                stack.push(path);
+                stack.push(path.clone());
             } else {
-                let bytes = latin1(&std::fs::read(&path).unwrap());
-                out.push((path.strip_prefix(&copied).unwrap().to_owned(), bytes));
+                bytes = latin1(&std::fs::read(&path).unwrap());
             }
+            out.push((path.strip_prefix(&copied).unwrap().to_owned(), bytes));
         }
     }
     out
@@ -137,7 +157,7 @@ impl Host {
     /// Keeps a secret to search for; its text.
     fn keep(&mut self, key: &Secret, stored: bool) -> String {
         let text = key.expose().to_owned();
-        println!("kept {}", &text[4..40]);
+        println!("{}", announced(&text));
         self.secrets.push((text.clone(), stored));
         text
     }
@@ -156,14 +176,22 @@ impl Host {
         Ok((engine, minted.map(|key| self.keep(&key, true))))
     }
 
-    /// No file of the root, or its path, holds a secret. The search does read what is stored: the
-    /// key stored last is found by its ID in the WAL while the engine runs, and every stored key's
-    /// is in `control.db` once it is closed, with no WAL left.
+    /// Every secret so far: the host's, and those the engine made.
+    fn all(&self) -> BTreeSet<String> {
+        let minted = MINTED.lock().unwrap().clone();
+        let kept = self.secrets.iter().map(|(key, _)| key.clone());
+        kept.chain(minted).collect()
+    }
+
+    /// No file of the root, or any path in it, holds a secret. The search does read what is
+    /// stored: the key stored last is found by its ID in the WAL while the engine runs, and every
+    /// stored key's is in `control.db` once it is closed, with no WAL left.
     fn search(&self, running: bool, case: &str) {
         let files = files(self.root.path());
-        let secrets = || self.secrets.iter().map(|(key, _)| key.as_str());
+        let secrets = self.all();
         for (path, bytes) in &files {
-            let held = leak(&format!("{}\n{bytes}", path.display()), secrets());
+            let text = format!("{}\n{bytes}", path.display());
+            let held = leak(&text, secrets.iter().map(String::as_str));
             assert_eq!(held, None, "{case}: {path:?} holds a secret");
         }
         let file = |name: &str| {
@@ -191,7 +219,8 @@ impl Host {
     }
 }
 
-/// Every operation with `key`, an admin key if it `works`, every answer printed.
+/// Every operation with `key`, a key of all three scopes if it `works`, every answer printed and
+/// as expected.
 async fn every_call(engine: &Engine, key: &str, works: bool) {
     let cx = || Call::with_key(Secret::new(key.to_owned()));
     println!("{:?}", cx());
@@ -204,33 +233,57 @@ async fn every_call(engine: &Engine, key: &str, works: bool) {
     };
     let emitted = engine.emit(&cx(), emit()).await;
     let event_id = emitted.as_ref().map(|e| e.event_id.to_string());
-    println!("{emitted:?}");
+    let event_id = event_id.unwrap_or_default();
     let items = vec![emit()];
     let batch = engine.emit_batch(&cx(), EmitBatchRequest { items }).await;
-    println!("{batch:?}");
-    let event_id = event_id.unwrap_or_default();
     let got = engine.get_event(&cx(), GetEventRequest { event_id }).await;
-    println!("{got:?}");
     let req = ListEventsRequest {
         limit: None,
         cursor: None,
     };
-    println!("{:?}", engine.list_events(&cx(), req).await);
-    println!("{:?}", engine.whoami(&cx(), WhoamiRequest {}).await);
+    let events = engine.list_events(&cx(), req).await;
+    let me = engine.whoami(&cx(), WhoamiRequest {}).await;
     let req = ListEnvironmentsRequest {};
-    println!("{:?}", engine.list_environments(&cx(), req).await);
+    let envs = engine.list_environments(&cx(), req).await;
     let keys = engine.list_keys(&cx(), ListKeysRequest::default()).await;
-    println!("{keys:?}");
-    assert_eq!(keys.is_ok(), works, "{keys:?}");
     let key_id = "none".into();
     let revoked = engine.revoke_key(&cx(), RevokeKeyRequest { key_id }).await;
-    println!("{revoked:?}");
-    // Refused, whoever asks: the one secret it makes is nobody's.
+    // Refused, whoever asks, its key made all the same if the caller is admitted.
     let req = CreateKeyRequest {
         label: Some("\n".into()),
         ..CreateKeyRequest::default()
     };
-    println!("{:?}", engine.create_key(&cx(), req).await);
+    let created = engine.create_key(&cx(), req).await;
+    println!("{emitted:?} {batch:?} {got:?} {events:?} {me:?} {envs:?} {keys:?}");
+    println!("{revoked:?} {created:?}");
+
+    // The kind, the message, and whether there is a hint; `None` for a success.
+    type Answer = Option<(ErrorKind, String, bool)>;
+    let of = |e: OpError| (e.kind, e.message, e.hint.is_some());
+    let answers: [Answer; 9] = [
+        emitted.err().map(of),
+        batch.err().map(of),
+        got.err().map(of),
+        events.err().map(of),
+        me.err().map(of),
+        envs.err().map(of),
+        keys.err().map(of),
+        revoked.err().map(of),
+        created.err().map(of),
+    ];
+    let mut expected: [Answer; 9] = Default::default();
+    if works {
+        let not_found = "key not found".to_owned();
+        let label = "a label is at most 128 bytes, with no control character".to_owned();
+        expected[7] = Some((ErrorKind::NotFound, not_found, false));
+        expected[8] = Some((ErrorKind::Invalid, label, false));
+    } else {
+        // Only a malformed key's refusal hints.
+        let malformed = parse(&Secret::new(key.to_owned())).is_err();
+        let message = "invalid API key".to_owned();
+        expected.fill(Some((ErrorKind::Unauthenticated, message, malformed)));
+    }
+    assert_eq!(answers, expected);
 }
 
 /// A key of all three scopes that `by` creates, expiring at `expires_at`.
@@ -357,17 +410,17 @@ async fn finished_root() -> Host {
 
 /// What the child runs: every secret to `told`, once nothing more is printed.
 async fn play(told: &Path) {
-    let mut text = String::new();
+    set_key_hook(minted);
+    let mut keys = BTreeSet::new();
     for host in [
         bootstrapped_root().await,
         seeded_root().await,
         finished_root().await,
     ] {
-        for (key, _) in host.secrets {
-            text += &format!("{key}\n");
-        }
+        keys.extend(host.all());
     }
-    std::fs::write(told, text).unwrap();
+    let lines: Vec<String> = keys.into_iter().collect();
+    std::fs::write(told, lines.join("\n")).unwrap();
 }
 
 #[test]
@@ -380,36 +433,40 @@ fn no_secret_is_stored_or_logged() {
     }
     // The search finds each half alone, however written, and a whole key it does not know.
     let probe = key(224);
-    let keys = || [probe.expose()];
+    let found = |text: &str| leak(text, [probe.expose()]).is_some();
     let raw: Vec<u8> = (224..=255).collect();
-    let encoded = "4OHi4-Tl5ufo6err7O3u7_Dx8vP09fb3-Pn6-_z9_v8";
-    assert_eq!(&probe.expose()[41..], encoded);
-    for half in [
-        &encoded.as_bytes()[..21],
-        &encoded.as_bytes()[21..],
-        &raw[..16],
-        &raw[16..],
-    ] {
-        for form in written(half) {
-            let found = leak(&format!("x {form} x"), keys());
-            assert_eq!(found, Some(form));
-        }
+    let text = "4OHi4-Tl5ufo6err7O3u7_Dx8vP09fb3-Pn6-_z9_v8".as_bytes();
+    assert_eq!(&probe.expose().as_bytes()[41..], text);
+    for half in [&text[..21], &text[21..], &raw[..16], &raw[16..]] {
         let hex: String = half.iter().map(|b| format!("{b:02x}")).collect();
+        let upper: String = half.iter().map(|b| format!("{b:02X}")).collect();
         for form in [
             latin1(half),
             hex,
+            upper,
             format!("{half:?}"),
-            format!("{half:02x?}"),
+            format!("{half:x?}"),
+            format!("{half:X?}"),
             format!("{half:#?}"),
         ] {
-            assert!(leak(&form, keys()).is_some(), "{form}");
+            assert!(found(&form), "{form}");
         }
     }
-    assert!(leak(&format!("x {}", key(8).expose()), keys()).is_some());
-    assert_eq!(
-        leak("the key format is ixk_<key-id>_<secret>", keys()),
-        None
-    );
+    // Bytes below 16 are what tell `{:02x?}` from `{:x?}`.
+    let low = key(0);
+    let low_bits: Vec<u8> = (0..32).collect();
+    for half in [&low_bits[..16], &low_bits[16..]] {
+        for form in [
+            format!("{half:x?}"),
+            format!("{half:X?}"),
+            format!("{half:02x?}"),
+            format!("{half:02X?}"),
+        ] {
+            assert!(leak(&form, [low.expose()]).is_some(), "{form}");
+        }
+    }
+    assert!(found(&format!("x {}", key(8).expose())));
+    assert!(!found("the key format is ixk_<key-id>_<secret>"));
 
     let dir = tempfile::tempdir().unwrap();
     let told = dir.path().join("told");
@@ -435,10 +492,11 @@ fn no_secret_is_stored_or_logged() {
     }
     let told = std::fs::read_to_string(told).unwrap();
     let keys: BTreeSet<&str> = told.lines().collect();
-    // Of the bootstrapped root, the seeded one, and the finished one; each is the host's.
-    assert_eq!(keys.len(), 8 + 1 + 2);
+    // Kept: of the bootstrapped root, the seeded one, and the finished one; and one for each
+    // refused `create_key` of a key that works. Each is the one the child announced.
+    assert_eq!(keys.len(), 8 + 1 + 2 + 6);
     for key in &keys {
-        assert!(logs.contains(&format!("kept {}", &key[4..40])), "{key}");
+        assert!(logs.contains(&announced(key)), "{}", &key[4..40]);
     }
     assert_eq!(leak(&logs, keys), None, "the logs hold a secret");
 }

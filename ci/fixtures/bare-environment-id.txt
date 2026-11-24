@@ -10,3 +10,6 @@ pub struct ironflowx_proto::Wrapper(pub ironflowx_core::id::EnvironmentId)
 pub type ironflowx_store::LookupId = ironflowx_core::id::EnvironmentId
 pub struct ironflowx_core::EnvironmentId(_)
 pub type ironflowx_core::EnvironmentId::Err = ironflowx_core::ParseError
+pub fn ironflowx_cell::dispatch<F: core::ops::function::Fn()>(F, ironflowx_core::id::EnvironmentId)
+pub fn ironflowx_cell::any_id<T>(T) -> bool where T: core::convert::Into<ironflowx_core::id::EnvironmentId>
+pub fn ironflowx_cell::opener() -> fn(ironflowx_core::id::EnvironmentId) -> bool

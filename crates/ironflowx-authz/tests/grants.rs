@@ -150,20 +150,20 @@ fn a_grant_admits_only_the_scopes_it_holds() {
     }
 }
 
-/// The rule of D28, but for the label: within the creator's scopes and lifetime, expiring after
-/// now.
+/// The rule of D28, but for the label: within the creator's scopes and lifetime, as its record
+/// was made, expiring after now.
 fn within(
-    creator: &Grant,
+    (creator_scopes, creator_expiry): (&BTreeSet<Scope>, Option<Timestamp>),
     scopes: &BTreeSet<Scope>,
     expires_at: Option<Timestamp>,
     now: Timestamp,
 ) -> bool {
-    let within_lifetime = match (creator.expires_at(), expires_at) {
+    let within_lifetime = match (creator_expiry, expires_at) {
         (None, _) => true,
         (Some(_), None) => false,
         (Some(c), Some(e)) => e <= c,
     };
-    let within_scope = !scopes.is_empty() && scopes.is_subset(creator.scopes());
+    let within_scope = !scopes.is_empty() && scopes.is_subset(creator_scopes);
     within_scope && within_lifetime && expires_at.is_none_or(|e| e > now)
 }
 
@@ -209,7 +209,12 @@ fn no_created_key_exceeds_its_creator_at_any_time() {
             continue;
         };
         let allowed = may_create(&creator, scopes, expires_at, None, at(now));
-        let expected = within(&creator, scopes, expires_at, at(now));
+        let expected = within(
+            (creator_scopes, creator_expiry),
+            scopes,
+            expires_at,
+            at(now),
+        );
         assert_eq!(
             allowed.is_ok(),
             expected,
@@ -258,7 +263,8 @@ fn no_created_key_exceeds_its_creator() {
                 for &expires_at in &expiries {
                     for (label, label_ok) in labels {
                         let allowed = may_create(&creator, &scopes, expires_at, label, at(T));
-                        let within = within(&creator, &scopes, expires_at, at(T));
+                        let made = (&creator_scopes, creator_expiry);
+                        let within = within(made, &scopes, expires_at, at(T));
                         assert_eq!(
                             allowed.is_ok(),
                             within && label_ok,
