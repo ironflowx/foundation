@@ -87,8 +87,9 @@ jobs:
       - uses: actions/checkout@v7
       - run: ci/purity.sh
 
-  # The PRD's last "Done when": a crate outside the workspace, on `ironflowx` and `tokio` only, opens
-  # a ledger and emits. Its .cargo/config.toml patches `ironflowx` to this checkout.
+  # The PRD's last "Done when": a crate outside the workspace, on `ironflowx` and `tokio` only,
+  # bootstraps an engine, emits, reads with a `read` key and sees its emit refused. Its
+  # .cargo/config.toml patches `ironflowx` to this checkout.
   embed:
     strategy:
       matrix:
