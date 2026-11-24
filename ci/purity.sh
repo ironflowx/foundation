@@ -89,11 +89,13 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     ci/no-fault-points.sh ci/fixtures/fault-points
 }
 
-# ci/must-reject.sh takes a pattern in one line of the output, no fewer and no more.
+# ci/must-reject.sh takes a pattern in one line of the output, no fewer, no more and no other's.
 ci/must-reject.sh "with 'BadType' in 0 lines" -- \
   ci/must-reject.sh BadType -- sh -c 'echo BadOther; exit 1'
 ci/must-reject.sh "with 'BadType' in 2 lines" -- \
   ci/must-reject.sh BadType -- sh -c 'echo BadType; echo BadTypeHolder; exit 1'
+ci/must-reject.sh "with 'BadTypeHolder' only in another pattern's line" -- \
+  ci/must-reject.sh BadType BadTypeHolder -- sh -c 'echo BadTypeHolder; exit 1'
 ci/must-reject.sh "passed, but it must reject" -- ci/must-reject.sh BadType -- echo BadType
 
 # ci/red.sh passes only on a failure that names its pattern, of a command that without the defect

@@ -123,6 +123,78 @@ pub type AliasedAgain<T> = AliasedResult<Option<T>>;
 pub fn bad_aliased() -> AliasedAgain<Secret> {
     Ok(())
 }
+// Named as errors, each reached by one way only.
+pub struct BadDefaultedError<T>(pub T);
+pub type Defaulted<T, E = BadDefaultedError<T>> = Result<T, E>;
+pub fn bad_defaulted() -> Defaulted<Secret> {
+    Err(BadDefaultedError(Secret::new(String::new())))
+}
+pub struct BadEnvelopeError<T>(pub T);
+pub struct Envelope<T> {
+    _outcome: Result<(), BadEnvelopeError<T>>,
+}
+pub enum Outer<T> {
+    Reply(Option<Envelope<T>>),
+}
+pub fn bad_envelope() -> Outer<Call> {
+    Outer::Reply(None)
+}
+pub struct BadMethodError<T>(pub T);
+pub struct Client<T>(pub Option<T>);
+impl<R> Client<R> {
+    pub fn send(&self) -> Result<(), BadMethodError<R>> {
+        Ok(())
+    }
+}
+pub fn bad_method() -> Client<Call> {
+    Client(None)
+}
+pub struct BadMixedError<T>(pub T);
+pub struct Keyed<K, T>(pub K, pub T);
+impl<R> Keyed<u8, R> {
+    pub fn send(&self) -> Result<(), BadMixedError<R>> {
+        Ok(())
+    }
+}
+pub fn bad_mixed(_: Keyed<u8, Call>) {}
+pub struct BadSelfError<T>(pub T);
+pub struct Carrier(pub Secret);
+impl Carrier {
+    pub fn retry(self) -> Result<(), BadSelfError<Self>> {
+        Ok(())
+    }
+}
+pub struct BadSelfForeignError<T>(pub T);
+pub trait Retry: Sized {
+    fn retry(self) -> Result<(), BadSelfForeignError<Self>>;
+}
+impl Retry for Option<Secret> {
+    fn retry(self) -> Result<(), BadSelfForeignError<Self>> {
+        Ok(())
+    }
+}
+pub struct BadSelfMethodError<T>(pub T);
+impl<R> Client<R> {
+    pub fn again(self) -> Result<(), BadSelfMethodError<Self>> {
+        Ok(())
+    }
+}
+pub struct BadSelfPlainError<T>(pub T);
+pub struct SelfPlain {
+    _key: Secret,
+    _last: Option<Box<BadSelfPlainError<Self>>>,
+}
+pub struct BadSelfFieldError<T>(pub T);
+pub struct SelfField<T> {
+    _key: Option<T>,
+    _last: Option<Box<BadSelfFieldError<Self>>>,
+}
+pub fn bad_self_field() -> SelfField<Secret> {
+    SelfField { _key: None, _last: None }
+}
+pub fn bad_dependency() -> Result<(), std::sync::mpsc::SendError<Secret>> {
+    Ok(())
+}
 pub struct NamedGenericError<T>(pub T);
 pub struct UsesNamed {
     _last: Option<NamedGenericError<Alias>>,
@@ -148,6 +220,18 @@ pub type FineResult<T> = Result<T, FineGeneric<u8>>;
 pub fn fine_generic() -> FineResult<Secret> {
     Err(FineGeneric(0))
 }
+pub struct FineParamError<T>(pub T);
+pub type FineSplit<A, B> = Result<A, FineParamError<B>>;
+pub fn fine_split() -> FineSplit<Secret, u8> {
+    Err(FineParamError(0))
+}
+pub type FineCallback<T> = FineParamError<fn(T)>;
+pub fn fine_callback(_: FineCallback<Secret>) {}
+pub struct FineNode<T> {
+    _own: Option<T>,
+    _next: Option<Box<FineNode<Option<T>>>>,
+}
+pub fn fine_node(_: FineNode<FineParamError<u8>>) {}
 pub fn fine_pointer() -> Result<(), FineGeneric<fn(&Secret) -> bool>> {
     Ok(())
 }

@@ -20,7 +20,7 @@ use ironflowx_proto::{
     ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operations,
     RevokeKeyRequest, WhoamiRequest,
 };
-use ironflowx_store::{Bootstrap, ControlPlane, RecoverError};
+use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, RecoverError};
 
 const T: i64 = 1_800_000_000_000;
 const HOUR: i64 = 3_600_000;
@@ -31,13 +31,15 @@ const fn at(ms: i64) -> Timestamp {
     Timestamp::from_millis(ms)
 }
 
-/// The text of every key the engine made that it told the hook of.
-static MINTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The environment and the text of every key the engine made that it told the hook of.
+static MINTED: Mutex<Vec<(EnvRef, String)>> = Mutex::new(Vec::new());
 
-fn minted(_: EnvRef, _: KeyId, secret: Option<&Secret>) {
+fn minted(env: EnvRef, id: KeyId, secret: Option<&Secret>) {
     if let Some(secret) = secret {
-        println!("{}", announced(secret.expose()));
-        MINTED.lock().unwrap().push(secret.expose().to_owned());
+        let text = secret.expose().to_owned();
+        assert_eq!(text[4..40], id.to_string(), "told of another key");
+        println!("{}", announced(&text));
+        MINTED.lock().unwrap().push((env, text));
     }
 }
 
@@ -189,7 +191,24 @@ impl Host {
     fn all(&self) -> BTreeSet<String> {
         let minted = MINTED.lock().unwrap().clone();
         let kept = self.secrets.iter().map(|(key, _)| key.clone());
-        kept.chain(minted).collect()
+        kept.chain(minted.into_iter().map(|(_, key)| key)).collect()
+    }
+
+    /// A refused recovery, which makes a key of the root's environment all the same.
+    fn refused_recovery(&self) -> RecoverError {
+        let told = || MINTED.lock().unwrap().len();
+        let before = told();
+        let recovered = recover_admin_key(self.root.path(), self.clock.clone());
+        let refused = recovered.err().expect("a refused recovery");
+        println!("recover: {refused} {refused:?}");
+        let (BootstrapState::Unmarked { env } | BootstrapState::Marked { env }) =
+            ControlPlane::bootstrap_state(&self.root.path().join("control.db")).unwrap()
+        else {
+            panic!("no bootstrap");
+        };
+        assert_eq!(told(), before + 1, "a recovered key is told");
+        assert_eq!(MINTED.lock().unwrap().last().unwrap().0, env);
+        refused
     }
 
     /// No file of the root, or any path in it, holds a secret. The search does read what is
@@ -353,18 +372,15 @@ async fn bootstrapped_root() -> Host {
     every_call(&engine, &wrong, false).await;
     host.search(true, "called");
 
-    // Refused, its key made all the same.
     let control = rusqlite::Connection::open(host.root.path().join("control.db")).unwrap();
     control
         .execute_batch(
             "CREATE TRIGGER fail BEFORE INSERT ON keys BEGIN SELECT RAISE(ABORT, 'injected'); END;",
         )
         .unwrap();
-    let refused = recover_admin_key(host.root.path(), host.clock.clone())
-        .err()
-        .expect("a failed insert");
-    println!("recover: {refused} {refused:?}");
+    let refused = host.refused_recovery();
     assert!(matches!(refused, RecoverError::Store(_)));
+    assert_eq!(refused.to_string(), "control plane: injected");
     control.execute_batch("DROP TRIGGER fail;").unwrap();
     drop(control);
     let recovered = recover_admin_key(host.root.path(), host.clock.clone()).unwrap();
@@ -430,6 +446,7 @@ async fn finished_root() -> Host {
     control.ensure_bootstrap(&bootstrap, clock).unwrap();
     drop(control);
     host.keep(&lost, true);
+    assert!(matches!(host.refused_recovery(), RecoverError::NotReady));
     let (engine, replacement) = host.open(None).await.unwrap();
     every_call(&engine, &replacement.expect("a replacement"), true).await;
     host.search(true, "finished");
@@ -555,6 +572,8 @@ fn no_secret_is_stored_or_logged() {
         "searched: closed, bootstrapped by a seed",
         "searched: closed, finished",
         "invalid API key",
+        "recover: control plane: injected",
+        "recover: the bootstrap is not finished",
         "malformed seed",
         "the seed's key ID is already another key",
     ] {
@@ -563,9 +582,9 @@ fn no_secret_is_stored_or_logged() {
     let told = std::fs::read_to_string(told).unwrap();
     let keys: BTreeSet<&str> = told.lines().collect();
     // Kept: of the bootstrapped root, the seeded one, and the finished one; and one for each
-    // refused `create_key` of a key that works, and for the refused recovery. Each is the one the
+    // refused `create_key` of a key that works, and for each refused recovery. Each is the one the
     // child announced.
-    assert_eq!(keys.len(), 8 + 1 + 2 + 6 + 1);
+    assert_eq!(keys.len(), 8 + 1 + 2 + 6 + 2);
     for key in &keys {
         assert!(logs.contains(&announced(key)), "{}", &key[4..40]);
     }
