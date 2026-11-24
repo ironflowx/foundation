@@ -12,6 +12,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
 - **Close a ticket from its PR**: the PR body says `Closes #<n>`. After a rebase drops commits, rewrite the body to match the diff.
+- **After a slice's PR merges**: on the milestone's tracking issue, tick the slice and update the counts ("n of m merged; #x is next"); on each issue it unblocks, leave a comment that starts `**Handoff (after #<n> merged as #<pr>).**` with what is already there, what to change, and what was left open.
 
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 

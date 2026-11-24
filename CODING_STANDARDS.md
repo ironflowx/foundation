@@ -16,11 +16,18 @@ Judgement rules for review. Anything a tool can check belongs in CI instead (`ci
   it (a one-line change to the code under test, then reverted), and the PR says which change
   turned it red. `ci/red.sh` applies the change, requires the failure, and only the failure, to
   name the check, restores the file and prints the PR's table row. The other way round, each
-  condition the change adds to the code under test (every SQL conjunct, every error branch) is
-  dropped once: a survivor gets a test, or the PR says why no test can see it.
+  condition the change adds to the code under test (every SQL conjunct, every error branch, each
+  `?` included, its error mapped to another outcome) is dropped once: a survivor gets a test, or
+  the PR says why no test can see it.
 - **Interleavings are named.** For a decision made from more than one read (a row and the clock,
   two rows, a row and a lock), the reviewer states what another call can commit between the reads,
   and names the lock, the transaction or the test that closes it. A gap nothing closes is a defect.
+  A test of an interleaving waits for an event at the contested step (`ironflowx-store`'s
+  `tests/writes` shows a writer's `BEGIN IMMEDIATE`), never for a length of silence, and stays red
+  with the second party 350 ms late.
+- **Claims say how they are known.** A finding, or a line of a PR, that a test cannot pass or that
+  something never happens is marked *run* or *read*. A probe that met no error says how many times
+  it tried.
 - **Checks prove themselves.** A new CI check lands with a fixture that triggers every pattern it
   claims to catch, and `must-reject.sh` asserts it fails for that reason, not any failure.
 - **Rules are probed at their edges.** For code or a CI check that accepts or refuses input, the

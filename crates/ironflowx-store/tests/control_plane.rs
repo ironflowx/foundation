@@ -1,7 +1,11 @@
 //! The control plane through its public interface, on a temporary directory.
 
+mod writes;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::mpsc::{Sender, channel};
+use std::time::{Duration, Instant};
 
 use ironflowx_authz::{KeyParts, KeyRecord, SeedState, mint};
 use ironflowx_core::{Clock, EnvRef, KeyId, KeyOrigin, ProjectId, Scope, TenantId, Timestamp};
@@ -803,33 +807,60 @@ fn a_rotation_leaves_the_seeds_of_other_environments_and_incarnations() {
     }
 }
 
-/// The seed's transaction takes the write lock before it reads the clock (TEN-11): while another
-/// connection holds the lock, the clock is not read.
-#[test]
-fn a_seed_is_applied_at_a_now_read_after_the_write_lock() {
-    struct Told(std::sync::mpsc::Sender<()>);
-    impl Clock for Told {
-        fn now(&self) -> Timestamp {
-            let _ = self.0.send(());
-            Timestamp::from_millis(T)
-        }
+/// A clock that says when it is read.
+struct Told(Sender<()>);
+
+impl Clock for Told {
+    fn now(&self) -> Timestamp {
+        let _ = self.0.send(());
+        Timestamp::from_millis(T)
     }
+}
+
+/// How `change` ends on a bootstrapped control plane, marked or not, whose write lock another
+/// connection holds until it comes to its own `BEGIN IMMEDIATE`, not having read the clock; it
+/// reads it once the lock is free.
+fn under_a_held_lock<R: Send>(
+    marked: bool,
+    change: impl FnOnce(&ControlPlane, Told) -> R + Send,
+) -> R {
+    writes::trace();
     let dir = tempfile::tempdir().unwrap();
     let cp = ControlPlane::open(&path(dir.path())).unwrap();
     cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
         .unwrap();
+    if marked {
+        cp.mark_ledger_created(&env(1), &Fixed(T)).unwrap();
+    }
     let db = rusqlite::Connection::open(path(dir.path())).unwrap();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let (tell, told) = std::sync::mpsc::channel();
+    let begun = || writes::begun(&path(dir.path()));
+    let before = begun();
+    let (tell, told) = channel();
     std::thread::scope(|s| {
-        let applied = s.spawn(move || cp.apply_seed(&env(1), &seed(150, 1), &Told(tell)));
-        // One-sided: with the lock held, a reading can only come from the defect.
-        let early = told.recv_timeout(std::time::Duration::from_millis(200));
+        let changing = s.spawn(|| change(&cp, Told(tell)));
+        let until = Instant::now() + Duration::from_secs(3);
+        while begun() == before && Instant::now() < until {
+            std::thread::yield_now();
+        }
+        let (came, early) = (begun() - before, told.try_recv());
         db.execute_batch("COMMIT").unwrap();
-        assert!(early.is_err(), "the clock was read before the lock");
-        assert_eq!(applied.join().unwrap().unwrap(), SeedState::Current);
+        assert_eq!(came, 1, "it did not come to its BEGIN IMMEDIATE");
+        early.expect_err("the clock was read before the lock");
+        let ended = changing.join().unwrap();
         told.recv().expect("read once the lock is free");
+        ended
+    })
+}
+
+/// The seed's transaction takes the write lock before it reads the clock (TEN-11): while another
+/// connection holds the lock, the clock is not read.
+#[test]
+fn a_seed_is_applied_at_a_now_read_after_the_write_lock() {
+    let applied = under_a_held_lock(false, |cp, told| {
+        cp.apply_seed(&env(1), &seed(150, 1), &told)
     });
+    assert_eq!(applied.unwrap(), SeedState::Current);
 }
 
 /// An environment, or an incarnation, the file does not hold takes no seed: it would be a second
@@ -1041,37 +1072,10 @@ fn finishing_revokes_no_key_of_another_origin_or_environment() {
 /// Marking and finishing take the write lock before they read the clock (TEN-11).
 #[test]
 fn a_mark_is_made_at_a_now_read_after_the_write_lock() {
-    struct Told(std::sync::mpsc::Sender<()>);
-    impl Clock for Told {
-        fn now(&self) -> Timestamp {
-            let _ = self.0.send(());
-            Timestamp::from_millis(T)
-        }
-    }
-    for finishing in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let cp = ControlPlane::open(&path(dir.path())).unwrap();
-        cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
-            .unwrap();
-        let db = rusqlite::Connection::open(path(dir.path())).unwrap();
-        db.execute_batch("BEGIN IMMEDIATE").unwrap();
-        let (tell, told) = std::sync::mpsc::channel();
-        std::thread::scope(|s| {
-            let marked = s.spawn(move || {
-                if finishing {
-                    cp.finish_bootstrap(&env(1), None, &Told(tell)).map(drop)
-                } else {
-                    cp.mark_ledger_created(&env(1), &Told(tell))
-                }
-            });
-            // One-sided: with the lock held, a reading can only come from the defect.
-            let early = told.recv_timeout(std::time::Duration::from_millis(200));
-            db.execute_batch("COMMIT").unwrap();
-            assert!(early.is_err(), "the clock was read before the lock");
-            marked.join().unwrap().unwrap();
-            told.recv().expect("read once the lock is free");
-        });
-    }
+    let marked = under_a_held_lock(false, |cp, told| cp.mark_ledger_created(&env(1), &told));
+    marked.unwrap();
+    let lost = under_a_held_lock(false, |cp, told| cp.finish_bootstrap(&env(1), None, &told));
+    assert!(lost.unwrap());
 }
 
 /// A recovered key is an admin key of the file's environment, of that origin and label, every
@@ -1204,31 +1208,8 @@ fn a_recovery_that_fails_leaves_no_row() {
 /// A recovery takes the write lock before it reads the clock (TEN-11).
 #[test]
 fn a_key_is_recovered_at_a_now_read_after_the_write_lock() {
-    struct Told(std::sync::mpsc::Sender<()>);
-    impl Clock for Told {
-        fn now(&self) -> Timestamp {
-            let _ = self.0.send(());
-            Timestamp::from_millis(T)
-        }
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let cp = ControlPlane::open(&path(dir.path())).unwrap();
-    cp.ensure_bootstrap(&bootstrap(env(1), 0).0, &Fixed(T))
-        .unwrap();
-    cp.mark_ledger_created(&env(1), &Fixed(T)).unwrap();
-    let db = rusqlite::Connection::open(path(dir.path())).unwrap();
-    db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let (tell, told) = std::sync::mpsc::channel();
-    std::thread::scope(|s| {
-        let recovered = s.spawn(move || cp.insert_recovered(&seed(184, 1), &Told(tell)));
-        // One-sided: with the lock held, a reading can only come from the defect.
-        let early = told.recv_timeout(std::time::Duration::from_millis(200));
-        db.execute_batch("COMMIT").unwrap();
-        let waiting = std::sync::mpsc::RecvTimeoutError::Timeout;
-        assert_eq!(early, Err(waiting), "the clock was read before the lock");
-        recovered.join().unwrap().unwrap();
-        told.recv().expect("read once the lock is free");
-    });
+    let recovered = under_a_held_lock(true, |cp, told| cp.insert_recovered(&seed(184, 1), &told));
+    recovered.unwrap();
 }
 
 /// Recovered keys hold no slot: at a full cap one is recovered and a seed then applies, and

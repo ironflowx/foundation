@@ -1,0 +1,17 @@
+[
+  { "type": "deletion" },
+  {
+    "type": "required_status_checks",
+    "parameters": {
+      "required_status_checks": [
+        { "context": "kept" },
+        { "context": "split (a)" },
+        { "context": "pair (a, c)" },
+        { "context": "by-hand" },
+        { "context": "skipped" },
+        { "context": "let-go" },
+        { "context": "gone" }
+      ]
+    }
+  }
+]
