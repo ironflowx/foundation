@@ -222,6 +222,40 @@ async fn a_bootstrapping_open_that_fails_before_its_rename_leaves_nothing() {
     }
 }
 
+/// An undo that fails leaves the bootstrap unmarked: the open returns what failed it, not the
+/// undo's failure, and the next open finishes the bootstrap, in the same environment.
+#[tokio::test]
+async fn a_bootstrapping_open_whose_undo_fails_is_finished_by_the_next() {
+    let a = key(1, 1);
+    for given in [None, Some(&*a)] {
+        let dir = tempfile::tempdir().unwrap();
+        let (staging, away) = (dir.path().join("ledgers/.staging"), dir.path().join("away"));
+        let root = dir.path().to_owned();
+        let block = OnWriterEnd::new(move || {
+            let fail = "CREATE TRIGGER fail BEFORE DELETE ON keys \
+                        BEGIN SELECT RAISE(ABORT, 'injected'); END;";
+            sql(&root, fail);
+            std::fs::rename(staging, away).unwrap();
+        });
+        let err = Engine::open(dir.path(), block, given.map(secret)).await;
+        let err = err.err().expect("refused");
+        assert!(matches!(err, EngineError::Io(_)), "{given:?}: {err:?}");
+        let env = unmarked(dir.path());
+        assert_eq!(ledgers(dir.path()), [""; 0], "{given:?}");
+        let left = keys(dir.path(), env);
+        assert!(matches!(left[..], [(_, _, false)]), "{given:?}: {left:?}");
+        sql(dir.path(), "DROP TRIGGER fail");
+
+        let opened = open(dir.path(), None).await.unwrap();
+        assert_eq!(state(dir.path()), BootstrapState::Marked { env });
+        assert_eq!(opened.lost_secret, given.is_none());
+        assert_eq!(opened.minted.is_some(), given.is_none());
+        let works = opened.minted.map_or(a.clone(), |m| m.expose().to_owned());
+        assert!(admits(&opened.engine, &works).await, "{given:?}");
+        opened.engine.close().await;
+    }
+}
+
 /// After its rename a bootstrapping open undoes nothing: the bootstrap stays unmarked, its ledger
 /// in place, and the next open finishes it, in the same environment.
 #[tokio::test]
