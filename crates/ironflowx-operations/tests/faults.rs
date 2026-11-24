@@ -5,9 +5,11 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ironflowx_cell::ManualClock;
-use ironflowx_core::{ErrorKind, Scope, Secret, Timestamp};
+use ironflowx_core::{Clock, ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
     Call, CreateKeyRequest, EmitRequest, ListEnvironmentsRequest, ListEventsRequest,
@@ -125,6 +127,39 @@ async fn a_failure_at_each_control_plane_seam_is_unavailable_until_it_clears() {
     );
     engine.revoke_key(&k, victim).await.unwrap();
     engine.close().await;
+}
+
+/// Panics while its flag is set.
+#[derive(Clone)]
+struct Panicky(Arc<AtomicBool>);
+
+impl Clock for Panicky {
+    fn now(&self) -> Timestamp {
+        assert!(!self.0.load(Ordering::SeqCst), "the clock panics");
+        Timestamp::from_millis(1_800_000_000_000)
+    }
+}
+
+/// A panic under the control plane's lock, as of a host's clock, outlasts its cause: the engine
+/// answers `Unavailable` until it is reopened (the Errors table).
+#[tokio::test]
+async fn a_panic_under_the_control_planes_lock_is_unavailable_until_reopened() {
+    let dir = tempfile::tempdir().unwrap();
+    let panics = Arc::new(AtomicBool::new(false));
+    let clock = Panicky(panics.clone());
+    let opened = Engine::open(dir.path(), clock.clone(), None).await.unwrap();
+    let k = Call::with_key(opened.minted.unwrap());
+    opened.engine.whoami(&k, WhoamiRequest {}).await.unwrap();
+    panics.store(true, Ordering::SeqCst);
+    let first = opened.engine.whoami(&k, WhoamiRequest {}).await;
+    assert_unavailable(first, "the clock panics");
+    panics.store(false, Ordering::SeqCst);
+    let later = opened.engine.whoami(&k, WhoamiRequest {}).await;
+    assert_unavailable(later, "after the panic");
+    opened.engine.close().await;
+    let opened = Engine::open(dir.path(), clock, None).await.unwrap();
+    opened.engine.whoami(&k, WhoamiRequest {}).await.unwrap();
+    opened.engine.close().await;
 }
 
 /// Key and identity operations do not touch the ledger, so they keep working while it is
