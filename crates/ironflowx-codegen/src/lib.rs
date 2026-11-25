@@ -150,7 +150,7 @@ fn read_method(method: &MethodDescriptor) -> Result<Method, CodegenError> {
         let why = format!("its (ironflowx.v1.example) fails its schema: {e}");
         return Err(refused(at, why));
     }
-    // What a schema does not say: a 64-bit number's bounds, a time's years, one of a oneof.
+    // The decoder also checks the request message, including oneof cardinality.
     DynamicMessage::deserialize(method.input(), &example)
         .map_err(|e| refused(at, format!("its (ironflowx.v1.example) is no request: {e}")))?;
     Ok(Method {
@@ -196,6 +196,22 @@ fn schema(message: &MessageDescriptor, shape: Shape) -> Result<Value, CodegenErr
     Ok(root)
 }
 
+/// The digits of a 64-bit integer's magnitude, up to and including its bound.
+fn decimal_magnitude(bound: u64) -> String {
+    let bound = bound.to_string();
+    let mut pattern = format!("[0-9]{{1,{}}}", bound.len() - 1);
+    for (i, digit) in bound.bytes().enumerate() {
+        if digit > b'0' {
+            let prefix = &bound[..i];
+            let end = char::from(digit - 1);
+            let remaining = bound.len() - i - 1;
+            write!(pattern, "|{prefix}[0-{end}][0-9]{{{remaining}}}")
+                .expect("a string takes any text");
+        }
+    }
+    format!("{pattern}|{bound}")
+}
+
 /// A field's JSON Schema, or that of each item for a repeated field.
 fn property(field: &FieldDescriptor, shape: Shape) -> Result<Value, CodegenError> {
     let schema = match field.kind() {
@@ -212,16 +228,25 @@ fn property(field: &FieldDescriptor, shape: Shape) -> Result<Value, CodegenError
         Kind::Uint32 | Kind::Fixed32 => {
             json!({"maximum": u32::MAX, "minimum": 0, "type": "integer"})
         }
-        // As protobuf prints them.
+        // Quoted decimals, as protobuf prints them. The decoder accepts leading zeros.
         Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => {
-            json!({"pattern": "^-?[0-9]+$", "type": "string"})
+            let max = decimal_magnitude(i64::MAX.unsigned_abs());
+            let min = decimal_magnitude(i64::MIN.unsigned_abs());
+            json!({"pattern": format!("^(?:0*(?:{max})|-0*(?:{min}))$"), "type": "string"})
         }
-        Kind::Uint64 | Kind::Fixed64 => json!({"pattern": "^[0-9]+$", "type": "string"}),
+        Kind::Uint64 | Kind::Fixed64 => {
+            let max = decimal_magnitude(u64::MAX);
+            json!({"pattern": format!("^0*(?:{max})$"), "type": "string"})
+        }
         Kind::Message(m) if m.full_name() == "google.protobuf.Timestamp" => {
-            // In whole milliseconds, as the wire takes one.
+            // Whole milliseconds with up to nine fractional digits, as the wire takes them.
             json!({
                 "format": "date-time",
-                "pattern": r"^[^.]*(\.[0-9]{1,3}0*)?[^.0-9][^.]*$",
+                "not": {"pattern": "^0000-"},
+                "pattern": concat!(
+                    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]",
+                    r"(?:\.[0-9]{1,3}0{0,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$",
+                ),
                 "type": "string",
             })
         }

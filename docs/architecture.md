@@ -612,7 +612,7 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 **Generator.** `ironflowx-cli`'s `build.rs` gives `generate` the descriptor set, so a proto it refuses is a build that fails (D52). It refuses:
 
 - a method without a `cli`, a `summary` or an `example` (a blank one is none), a `cli` that is not kebab-case words, a `summary` of more than one line, and a command that is another's, or the group another is in;
-- an example that is not JSON, that its request's schema does not allow, or that does not decode as the request (SRV-12): a 64-bit number, a time or a `oneof` can fail only the latter. The schema is JSON Schema 2020-12, with `additionalProperties: false`: no field the request does not have, at any depth. It requires none, a time is in whole milliseconds, and of a `json_text` field it asks only a string, whose text it does not read;
+- an example that is not JSON, that its request's schema does not allow, or that does not decode as the request (SRV-12). The decoder also checks the cardinality of a `oneof`. The schema is JSON Schema 2020-12, with `additionalProperties: false`: no field the request does not have, at any depth. It requires none, a time is in whole milliseconds, and of a `json_text` field it asks only a string, whose text it does not read;
 - a field, in any message of ours, whose `json_name` is not its own snake_case name (D78);
 - `json_text` on a field that is not a `string`, and a type it has no schema for: today bytes, floats, enums, maps and Google's messages other than `Timestamp`.
 
@@ -739,7 +739,9 @@ Their scope and whether they change state come from the same rules as the engine
 
 The schemas use JSON Schema 2020-12 and close each declared message object with
 `additionalProperties: false`. `input` describes the canonical wire JSON for `--json`,
-with `json_text` as strings. Run the example with `--json @file` or pipe it to
+with `json_text` as strings and 64-bit integers as bounded decimal strings. Timestamp schemas
+check the local year and whole-millisecond precision. The wire decoder also checks that
+applying the UTC offset leaves the instant in years 0001 through 9999. Run the example with `--json @file` or pipe it to
 `--json -`. The wire and engine also validate the request. `output` describes the CLI's
 printed answer, requiring the fields it always prints and allowing arbitrary JSON values
 inside `json_text` fields.
