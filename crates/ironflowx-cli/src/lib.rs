@@ -896,25 +896,23 @@ mod tests {
             "[".repeat(200),
             "]".repeat(200)
         );
-        // As a default build reads a number, or one with `arbitrary_precision`.
-        for (bad, default, precise) in [
-            ("1e400", "number out of range at line 1 column 5", 5),
+        // A build with `arbitrary_precision` reads a number without its value.
+        let precise = serde_json::from_str::<Value>("1e400").is_ok();
+        for (bad, default, column) in [
+            ("1e400", "number out of range", 5),
             (
                 r#"{"items":[1.5]}"#,
-                "invalid type: floating point `1.5`, expected an object at line 1 column 13",
+                "invalid type: floating point `1.5`, expected an object",
                 13,
             ),
-            (
-                r#"{"one":1e400}"#,
-                "number out of range at line 1 column 12",
-                12,
-            ),
+            (r#"{"one":1e400}"#, "number out of range", 12),
         ] {
-            let precise =
-                format!("invalid type: number, expected an object at line 1 column {precise}");
-            let either = [default, &precise].map(undecodable);
-            let refused = check(bad).unwrap_err();
-            assert!(either.contains(&refused), "{bad}: {refused:?}");
+            let why = match precise {
+                true => "invalid type: number, expected an object",
+                false => default,
+            };
+            let expected = undecodable(&format!("{why} at line 1 column {column}"));
+            assert_eq!(check(bad), Err(expected), "{bad}");
         }
         let quoted = format!(r#"{{"'{}'":1}}"#, "n".repeat(SECRET_LEN - 2));
         let long = "n".repeat(SECRET_LEN - 1);
