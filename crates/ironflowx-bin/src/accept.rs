@@ -285,6 +285,35 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn drain_ends_at_ten_seconds() {
+        let (mut client, stream) = duplex(1024);
+        let mut connections = Connections::default();
+        let entered = Arc::new(Notify::new());
+        let router = Router::new().route(
+            "/health",
+            get({
+                let entered = entered.clone();
+                move || async move {
+                    entered.notify_one();
+                    std::future::pending::<()>().await;
+                }
+            }),
+        );
+        connections.open.spawn(connection(
+            stream,
+            router,
+            connections.requests.clone(),
+            connections.graceful.clone(),
+            connections.abort.clone(),
+        ));
+        client.write_all(WHOLE).await.unwrap();
+        entered.notified().await;
+        let deadline = crate::drain_deadline(Instant::now());
+        let ((), after) = tokio::join!(connections.drain(deadline), closed_after(&mut client));
+        assert_10_s(after, "drain");
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_connection_has_10_s_for_its_first_head() {
         for first in [
             "",

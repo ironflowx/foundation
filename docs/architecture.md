@@ -204,9 +204,12 @@ fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode>;   // Err: --help 
 fn run(matches: &ArgMatches) -> ExitCode;                        // a command of the CLI's own
 
 // ironflowx-bin (tokio)
-async fn serve(data_dir: &Path, listen: SocketAddr) -> Result<Infallible, ServeError>;
-async fn run(listener: std::net::TcpListener, data_dir: &Path) -> Result<Infallible, ServeError>;   // serve, from a bound listener
-// ServeError StaleKeyFile(PathBuf) | Listen(io::Error) | DataDir(PathBuf, io::Error) | Engine(EngineError) | KeyFile(PathBuf, io::Error)
+async fn serve(data_dir: &Path, listen: SocketAddr) -> Result<(), ServeError>;
+async fn run(listener: std::net::TcpListener, data_dir: &Path) -> Result<(), ServeError>;   // serve, from a bound listener
+async fn serve_with_seed(data_dir: &Path, listen: SocketAddr, seed: Option<Secret>) -> Result<(), ServeError>;
+// ServeError StaleKeyFile(PathBuf) | Listen(io::Error) | Signals(io::Error) | LedgerFault
+// | DataDir(PathBuf, io::Error) | KeyLookup(PathBuf, io::Error) | Engine(EngineError)
+// | Probe(PathBuf, io::Error) | KeyFile(PathBuf, io::Error, KeyId)
 
 // ironflowx-operations also exports HostClock, OpenError and StoreError.
 fn is_bootstrapped(root: &Path) -> Result<bool, EngineError>;   // blocking; reads the bootstrap mark
@@ -217,6 +220,7 @@ impl Engine {
     async fn health(&self) -> Health;   // reads the control plane once (no key record), then the ledger's state; no key, not an operation
     fn faulted(&self) -> impl Future<Output = Fault> + Send + 'static;   // Ledger::faulted; no key, not an operation
     async fn close(self);
+    async fn close_with_state(self) -> LedgerState;   // ledger state at the start of close
 }
 // Each call is admitted first, with no cache; each submission is attributed to the calling key,
 // from its grant (TEN-6).
@@ -295,6 +299,7 @@ impl Ledger {
     fn state(&self) -> LedgerState;   // Open | Unavailable
     fn faulted(&self) -> impl Future<Output = Fault> + Send + 'static;   // resolves once, when the ledger fails; a close is no fault
     async fn close(self);   // drains in-flight submits and the fold, then releases the directory lock
+    async fn close_with_state(self) -> LedgerState;   // orders the start of close with fault publication
 }
 fn new_env_ref() -> EnvRef;   // a fresh UUIDv7 ID and a 128-bit token from the OS random source
 // Committed   { outcome: Vec<ItemOutcome> }   // one per item, in input order
@@ -739,8 +744,8 @@ not check the ledger. SQLite can rebuild `control.db-shm` from a WAL left by a c
 The slot stops admitting and the listener closes. Existing connections can still receive
 the stopping refusal while requests in flight drain. The host allows up to 10 seconds, including
 time to flush responses and close connections, then drops outstanding request futures, including
-HTTP/2 handlers. It marks the slot closed and awaits `Engine::close` before shutting down the
-runtime. Closing joins the ledger writer, which finishes queued submissions and the fold; event
+HTTP/2 handlers. It marks the slot closed and awaits `Engine::close_with_state` before shutting
+down the runtime. Closing joins the ledger writer, which finishes queued submissions and the fold; event
 acknowledgments already followed `fsync`. A dropped read can still hold `read.db` after engine
 close until its blocking query ends or the process exits. A detached control-plane write still
 uses a single SQLite transaction (D48, TEN-11).
@@ -749,7 +754,8 @@ A signal during open drains the transport on the same deadline while open finish
 publishes any minted key before it closes the engine.
 A second signal received during shutdown exits 1 immediately. The operating system can coalesce
 identical pending signals. A signal alone exits 0. A ledger fault present when close starts exits 8,
-even when a signal started the drain. A control-plane failure makes `/ready` answer
+even when a signal started the drain. The ledger reads its state at entry to close using the
+same progress gate that publishes faults. A control-plane failure makes `/ready` answer
 503 `control_plane` and serving continues. Restart runs the ledger's usual open and replay.
 A sealed ledger opens again and faults on any emit that appends (D19). Serve it read-only.
 

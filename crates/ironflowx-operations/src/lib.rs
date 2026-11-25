@@ -133,6 +133,18 @@ impl Engine {
         self.ledger.close().await;
     }
 
+    /// Closes as [`Self::close`] does and returns the ledger state at the start of close.
+    ///
+    /// The ledger orders this start with fault publication. A later fault still resolves
+    /// [`Self::faulted`] while the engine is closing.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::close`].
+    pub async fn close_with_state(self) -> LedgerState {
+        self.ledger.close_with_state().await
+    }
+
     /// The ledger, reached only with a proof of admission (TEN-1).
     fn ledger(&self, _: &Authorized) -> &Ledger {
         &self.ledger

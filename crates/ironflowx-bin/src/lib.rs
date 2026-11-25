@@ -12,14 +12,12 @@ pub use logging::panic_in_handler;
 
 use std::convert::Infallible;
 use std::fmt;
-use std::future::poll_fn;
 use std::io;
 use std::net::{SocketAddr, TcpListener};
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::sync::Arc;
-use std::task::Poll;
 use std::time::Duration;
 
 use ironflowx_core::{ErrorKind, KeyId, Secret};
@@ -34,6 +32,10 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 const DRAIN_LIMIT: Duration = Duration::from_secs(10);
+
+fn drain_deadline(start: Instant) -> Instant {
+    start + DRAIN_LIMIT
+}
 
 /// Why a host did not serve.
 #[derive(Debug)]
@@ -194,7 +196,7 @@ impl StopSignals {
         self.next().await;
         stop.cancel();
         self.next().await;
-        std::process::exit(1);
+        std::process::exit(i32::from(ErrorKind::Internal.exit_code()));
     }
 }
 
@@ -256,7 +258,7 @@ async fn run_with_seed(
         }
     }
 
-    let deadline = Instant::now() + DRAIN_LIMIT;
+    let deadline = drain_deadline(Instant::now());
     slot.drain();
     drop(listener);
     tracing::info!("stopping");
@@ -283,12 +285,7 @@ async fn run_with_seed(
     };
     slot.close();
     let engine = Arc::into_inner(engine).expect("drain dropped every engine reference");
-    // Take a fresh watch at the start of close. Its first poll sees an existing fault without
-    // waiting or spending Tokio's cooperative budget.
-    let mut fault = pin!(engine.faulted());
-    let failed = poll_fn(|cx| Poll::Ready(fault.as_mut().poll(cx).is_ready())).await;
-    engine.close().await;
-    if failed {
+    if engine.close_with_state().await == LedgerState::Unavailable {
         Err(ServeError::LedgerFault)
     } else {
         Ok(())
