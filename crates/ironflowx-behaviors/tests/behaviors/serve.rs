@@ -3,7 +3,7 @@
 use std::fmt;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::TcpStream;
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -192,9 +192,12 @@ impl ClientTransport for WithQuery {
 
 impl Serve {
     fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        // Not a setgid bit, which a directory made in it takes on Linux, as this one may have.
+        std::fs::set_permissions(dir.path(), PermissionsExt::from_mode(0o700)).unwrap();
         Self {
             served: None,
-            dir: tempfile::tempdir().unwrap(),
+            dir,
             key: None,
             answer: None,
         }

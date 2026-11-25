@@ -92,13 +92,20 @@ fn refused(data_dir: &Path, listen: &str) -> (Option<i32>, String) {
     (out.status.code(), String::from_utf8(out.stderr).unwrap())
 }
 
+/// A directory without the setgid bit, which one made in it takes on Linux, as this one may have.
+fn private() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), PermissionsExt::from_mode(0o700)).unwrap();
+    dir
+}
+
 fn mode(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
 }
 
 #[test]
 fn the_first_start_writes_the_key_and_a_later_one_keeps_what_is_there() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private();
     let data_dir = dir.path().join("a/data");
     let key_file = data_dir.join("admin.key");
     let log = Served::start(&data_dir, "127.0.0.1:0").stop();
@@ -289,9 +296,7 @@ fn under_umask(umask: &str, data_dir: &Path) -> Child {
 
 #[test]
 fn a_directory_above_the_data_directory_is_private_too() {
-    let dir = tempfile::tempdir().unwrap();
-    // Not its parent's setgid bit, which a new directory takes on Linux.
-    std::fs::set_permissions(dir.path(), PermissionsExt::from_mode(0o700)).unwrap();
+    let dir = private();
     let above = dir.path().join("above");
     let data_dir = above.join("data");
     let mut child = under_umask("0000", &data_dir);
