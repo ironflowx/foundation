@@ -21,6 +21,11 @@ __fault-points = []
 name = "serve_lifecycle"
 required-features = ["__fault-points"]
 
+# The race test runs the recovery handler in child processes and captures their raw output.
+[[test]]
+name = "recovery_race"
+harness = false
+
 [dependencies]
 ironflowx-cli = { path = "../ironflowx-cli" }
 ironflowx-core.workspace = true

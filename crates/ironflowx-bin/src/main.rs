@@ -2,10 +2,10 @@
 
 mod settings;
 
-use std::io::{self, IsTerminal as _, Write as _};
+use std::io;
 use std::process::ExitCode;
 
-use clap::{ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use ironflowx_core::ErrorKind;
 use ironflowx_proto::OpError;
 use tracing_subscriber::{Layer as _, filter, prelude::*};
@@ -13,6 +13,19 @@ use tracing_subscriber::{Layer as _, filter, prelude::*};
 fn main() -> ExitCode {
     let root = Command::new("ironflowx")
         .subcommand(settings::command())
+        .subcommand(
+            Command::new("recover-key")
+                .about("Recover an admin key from a local data directory")
+                .arg(settings::data_dir_arg("The existing data directory"))
+                .arg(
+                    Arg::new("stdout")
+                        .long("stdout")
+                        .action(ArgAction::SetTrue)
+                        .help(
+                            "Print the recovered key and its key ID instead of writing admin.key",
+                        ),
+                ),
+        )
         .subcommand(
             Command::new("seed")
                 .about("Make a seed for an engine")
@@ -25,7 +38,11 @@ fn main() -> ExitCode {
     };
     match matches.subcommand() {
         Some(("serve", serve)) => ironflowx_cli::end(run_serve(serve)),
-        Some(("seed", _)) => ironflowx_cli::end(generate_seed()),
+        Some(("recover-key", args)) => ironflowx_cli::end(
+            settings::data_dir(args)
+                .and_then(|dir| ironflowx_bin::recover_key(&dir, args.get_flag("stdout"))),
+        ),
+        Some(("seed", _)) => ironflowx_cli::end(ironflowx_bin::generate_seed()),
         _ => ironflowx_cli::run(&matches),
     }
 }
@@ -72,22 +89,6 @@ fn run_serve(args: &ArgMatches) -> Result<(), OpError> {
         tracing::error!(target: "ironflowx_bin", "{}", error.message);
         error
     })
-}
-
-fn generate_seed() -> Result<(), OpError> {
-    let (id, key) = ironflowx_operations::generate_seed();
-    // The key format needs no JSON escaping. Write it straight to its intended destination.
-    let mut out = io::stdout().lock();
-    let result = if out.is_terminal() {
-        writeln!(
-            out,
-            "{{\n  \"key\": \"{}\",\n  \"key_id\": \"{id}\"\n}}",
-            key.expose()
-        )
-    } else {
-        writeln!(out, r#"{{"key":"{}","key_id":"{id}"}}"#, key.expose())
-    };
-    result.map_err(|e| internal(format!("cannot write to stdout: {e}")))
 }
 
 fn internal(message: String) -> OpError {

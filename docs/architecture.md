@@ -586,7 +586,7 @@ What `ironflowx serve` adds to it:
 | `<root>/admin.key.<random>.tmp` | The temporary file used to publish the key, mode `0400`. A leftover may hold the only copy. The host warns once and keeps it. A warning identifies its path when safe |
 | `<root>/.admin-key-probe.<random>` and its `.link` | Dummy zero bytes only, mode `0400`. A live probe removes its own entries unless the OS refuses cleanup, in which case the error names the paths |
 
-**Where a secret may appear.** A served engine's key text reaches only these places: `admin.key` and the temporary file it is linked from, the `Authorization` header of a call, the `CreateKey` answer on the wire, stdout of `keys create` and `seed generate`, and the variable or file given to the CLI or host. A key's text sent where no key goes is data, as any: a label is stored and listed (the CLI refuses to create a key whose label holds its own), and a text that does not decode can be repeated to its sender.
+**Where a secret may appear.** A served engine's key text reaches only these places: `admin.key` and the temporary file it is linked from, the `Authorization` header of a call, the `CreateKey` answer on the wire, stdout of `keys create`, `recover-key --stdout` and `seed generate`, and the variable or file given to the CLI or host. A key's text sent where no key goes is data, as any: a label is stored and listed (the CLI refuses to create a key whose label holds its own), and a text that does not decode can be repeated to its sender.
 
 A ledger's directory, `<dir>`:
 
@@ -717,7 +717,7 @@ settings file.
 both probe-created names and sync the directory. Attempt cleanup of each created name even after
 an earlier failure, and keep any existing entry that the probe hit in a collision. If the OS refuses
 removal, name each failed removal by an exact safe absolute path or an exact filename relative to
-the configured data directory. Any probe failure exits 1 before open, with nothing minted.
+the configured data directory. Any probe failure exits 1 before opening the engine or recovering a key.
 
 The host uses an absolute locator in these warnings and errors only when the configured directory
 is absolute and the locator is unambiguous and safe to print. Otherwise it names the file relative
@@ -778,10 +778,23 @@ Host errors use the same table as the CLI, from `ErrorKind::exit_code()`.
 | Exit | Kind | Host outcome |
 |---|---|---|
 | 0 | Success | Stopped by a signal |
-| 1 | `internal` | Engine or ledger format, orphaned engine, missing ledger, wrong incarnation, corrupt ledger, data directory creation failure, failed pre-mint probe, key-file publication failure, signal registration failure. A second signal also exits 1 immediately |
-| 2 | `invalid` | Bad settings, malformed or unreadable seed, a directory belonging to a ledger, a seed conflict, stale `admin.key`, bind error other than address in use |
+| 1 | `internal` | Engine or ledger format, orphaned engine, missing ledger, wrong incarnation, corrupt ledger, data directory creation failure, failed pre-mint probe, key-file publication or recovery output failure, signal registration failure. A second signal also exits 1 immediately |
+| 2 | `invalid` | Bad settings, malformed or unreadable seed, a directory belonging to a ledger, a seed conflict, stale `admin.key`, bind error other than address in use, recovery with a missing data directory, unfinished bootstrap or occupied file destination |
 | 3–7 | [Call errors](#errors) | Calls only |
 | 8 | `unavailable` | Address in use, engine or ledger lock or I/O error, control-plane fault at open, destination lookup error, a ledger fault before close |
+
+**Recovering an admin key.** Run `ironflowx recover-key` with access to the data directory. It uses
+`--data-dir`, then `IRONFLOWX_DATA_DIR`, then `./.ironflowx`. It works with or without a running
+engine, uses no URL or existing key, and never creates the data directory. File delivery refuses
+an existing `admin.key`, including a dangling symlink, then runs the pre-mint probe before
+calling `recover_admin_key(data_dir, HostClock)`. On success it writes the whole key and a newline
+to `admin.key` using the same no-clobber writer as startup.
+
+An explicit `--stdout` skips file preflight and prints a JSON object with `key` and `key_id`,
+indented on a terminal. It never touches `admin.key`. If file publication or printing fails
+after the engine recovered a key, the refusal reports the key ID and says to use a working admin
+key, or recover one to stdout, then revoke that ID. If two recoveries pass preflight for the same
+file, the first successful link wins. The loser exits 1 and leaves the winner's file intact.
 
 **Seed generation.** `ironflowx seed generate` prints one JSON object with `key` and `key_id`.
 It indents the object on a terminal. It opens no engine and writes no file.
@@ -792,7 +805,7 @@ It indents the object on a terminal. It opens no engine and writes no file.
 
 | Part | Rule |
 |---|---|
-| Commands | One per method of the proto, generated (D52): `environments list`, `events emit`, `events emit-batch`, `events get`, `events list`, `keys create`, `keys list`, `keys revoke` and `whoami`. Hand-written: `describe` and `version` here, `serve` and `seed generate` in the host |
+| Commands | One per method of the proto, generated (D52): `environments list`, `events emit`, `events emit-batch`, `events get`, `events list`, `keys create`, `keys list`, `keys revoke` and `whoami`. Hand-written: `describe` and `version` here, `serve`, `recover-key` and `seed generate` in the host |
 | Engine | `--url`, else `IRONFLOWX_URL`, else `http://127.0.0.1:9310`. `https://` too, for an engine behind a TLS proxy ([Wire](#wire)) |
 | Key | `--key-file <path>`, else `IRONFLOWX_KEY`, else none, with surrounding whitespace trimmed. Nothing else: the CLI never reads `admin.key` unasked (D61). No key, and an empty one, is a call with no key, which the engine refuses; a file or a variable that is there and empty is still the one that was given. Text that is not UTF-8 is a malformed key |
 | Arguments | A flag for each scalar field of the request, its name in kebab case (`--event-id`); the flag of a repeated field may be repeated (`--scopes read --scopes write`), and a field that holds messages has none. Its value is what wire JSON reads from a string (text, a number, an RFC 3339 time) or, for a `bool`, `true` or `false`; one its field does not take is a usage error that names the flag, but for what the wire mapping or the engine refuses (a limit of 0, an unknown scope). A `json_text` field takes JSON text, also text that begins with `-`, or `@<file>`, the file's text, and sends it byte for byte. Any other value that begins with `-` is given after `=`: `--label=-x`. A field without its flag is absent |

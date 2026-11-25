@@ -6,6 +6,9 @@
 mod accept;
 mod key_file;
 mod logging;
+mod recovery;
+
+pub use recovery::{generate_seed, recover_key};
 
 #[cfg(feature = "__fault-points")]
 pub use logging::panic_in_handler;
@@ -103,10 +106,14 @@ const fn engine_kind(error: &EngineError) -> ErrorKind {
             | OpenError::Missing => ErrorKind::Internal,
             OpenError::Locked | OpenError::Io(_) => ErrorKind::Unavailable,
         },
-        EngineError::Store(e) => match e {
-            StoreError::Format => ErrorKind::Internal,
-            StoreError::Failed(_) => ErrorKind::Unavailable,
-        },
+        EngineError::Store(e) => store_kind(e),
+    }
+}
+
+const fn store_kind(error: &StoreError) -> ErrorKind {
+    match error {
+        StoreError::Format => ErrorKind::Internal,
+        StoreError::Failed(_) => ErrorKind::Unavailable,
     }
 }
 

@@ -74,14 +74,24 @@ const SEED: &str = "IRONFLOWX_SEED";
 const LEVELS: [&str; 6] = ["off", "error", "warn", "info", "debug", "trace"];
 const FORMATS: [&str; 2] = ["json", "text"];
 
+pub fn data_dir_arg(help: &'static str) -> Arg {
+    DATA_DIR
+        .arg("PATH", help)
+        .value_parser(value_parser!(PathBuf))
+}
+
+pub fn data_dir(args: &ArgMatches) -> Result<PathBuf, OpError> {
+    let dir = DATA_DIR.read(args, path)?.expect("has a default");
+    if dir.as_os_str().is_empty() {
+        return Err(invalid("--data-dir must not be empty"));
+    }
+    Ok(dir)
+}
+
 pub fn command() -> Command {
     Command::new("serve")
         .about("Open the engine in a data directory and serve it")
-        .arg(
-            DATA_DIR
-                .arg("PATH", "The data directory, created if missing")
-                .value_parser(value_parser!(PathBuf)),
-        )
+        .arg(data_dir_arg("The data directory, created if missing"))
         .arg(
             LISTEN
                 .arg(
@@ -117,7 +127,7 @@ pub struct Settings {
 
 impl Settings {
     pub fn read(args: &ArgMatches) -> Result<Self, OpError> {
-        let data_dir = DATA_DIR.read(args, path)?.expect("has a default");
+        let data_dir = data_dir(args)?;
         let listen = LISTEN
             .read(args, |value| value.to_str()?.parse().ok())?
             .expect("has a default");
@@ -130,9 +140,6 @@ impl Settings {
             .read(args, |value| choice(value, &FORMATS))?
             .expect("has a default");
         let seed_file = SEED_FILE.read(args, path)?;
-        if data_dir.as_os_str().is_empty() {
-            return Err(invalid("--data-dir must not be empty"));
-        }
         let malformed = || invalid(ironflowx_operations::EngineError::MalformedSeed.to_string());
         let seed = match (seed_file, env::var_os(SEED)) {
             (Some(_), Some(_)) => return Err(invalid("supply only one seed source")),
