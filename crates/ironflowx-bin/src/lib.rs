@@ -6,6 +6,9 @@
 mod accept;
 mod key_file;
 mod logging;
+mod recovery;
+
+pub use recovery::{generate_seed, recover_key};
 
 use std::convert::Infallible;
 use std::fmt;
