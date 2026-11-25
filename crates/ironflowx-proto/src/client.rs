@@ -43,7 +43,7 @@ use crate::{
 ///   does not carry, as the call says.
 /// - The engine's own error, unchanged.
 /// - `Unavailable` if the connection never opened: nothing ran.
-/// - What the server's library refused: `Invalid`, `ResourceExhausted`, or `Internal` where the
+/// - What the server's library refused, as a Connect server sends it: `Invalid`, `ResourceExhausted`, or `Internal` where the
 ///   engine is older than this client and has no such operation.
 /// - Any other failure, as a drop, the timeout or a proxy's error: `Unavailable` of a read, and
 ///   `Unknown` of a call that changes state, which may have run; its hint says what to do.
@@ -240,6 +240,9 @@ fn failure(answer: &Parts, body: Option<&[u8]>) -> ConnectError {
     #[derive(Deserialize)]
     struct Failure {
         code: Option<String>,
+        // Not printed, but a text in what a server of Connect's sends.
+        #[serde(rename = "message")]
+        _message: Option<String>,
         #[serde(default)]
         details: Vec<ErrorDetail>,
     }
@@ -272,9 +275,16 @@ fn is_json(headers: &HeaderMap) -> bool {
     let (Some(kind), None) = (types.next(), types.next()) else {
         return false;
     };
-    let kind = kind.to_str().unwrap_or_default().split(';').next();
-    kind.is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
-        && !headers.contains_key(CONTENT_ENCODING)
+    // Whole, since what follows a first type can be another.
+    let kind = kind.to_str().unwrap_or_default().to_ascii_lowercase();
+    let json = match kind.split_once(';') {
+        Some((kind, parameter)) => {
+            let charset = matches!(parameter.trim(), "charset=utf-8" | r#"charset="utf-8""#);
+            kind.trim_end() == "application/json" && charset
+        }
+        None => kind == "application/json",
+    };
+    json && !headers.contains_key(CONTENT_ENCODING)
 }
 
 /// Sends what `cx` holds: no header, or the key with the Bearer scheme.
@@ -364,7 +374,10 @@ where
         message: format!("the call was refused: {why}"),
         hint: hint.map(str::to_owned),
     };
-    if let Some(Instead::Connect) = instead {
+    // The library attaches no detail, so one that is no error this client knows is the engine's.
+    if let Some(Instead::Connect) = instead
+        && e.details.is_empty()
+    {
         match e.code {
             ErrorCode::InvalidArgument | ErrorCode::OutOfRange | ErrorCode::FailedPrecondition => {
                 return Err(refused(ErrorKind::Invalid, None));

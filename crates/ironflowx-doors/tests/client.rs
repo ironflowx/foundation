@@ -378,6 +378,11 @@ async fn a_request_over_16_mib_is_not_sent() {
     assert_eq!(operations.take().len(), 7);
 
     let over = most + 1;
+    let too_large = || OpError {
+        kind: ErrorKind::ResourceExhausted,
+        message: "the request is over 16 MiB".into(),
+        hint: None,
+    };
     for refused in [
         client.emit(&cx, emit(over)).await.unwrap_err(),
         client.emit_batch(&cx, items(over)).await.unwrap_err(),
@@ -387,23 +392,18 @@ async fn a_request_over_16_mib_is_not_sent() {
         client.list_keys(&cx, keys(over)).await.unwrap_err(),
         client.revoke_key(&cx, revoke(over)).await.unwrap_err(),
     ] {
-        let expected = OpError {
-            kind: ErrorKind::ResourceExhausted,
-            message: "the request is over 16 MiB".into(),
-            hint: None,
-        };
-        assert_eq!(refused, expected);
+        assert_eq!(refused, too_large());
     }
     // As one too large for protobuf: 2 GiB less a byte, and its field's tag and length.
     let huge = RevokeKeyRequest {
         key_id: "x".repeat(i32::MAX as usize),
     };
     let refused = client.revoke_key(&cx, huge).await.unwrap_err();
-    assert_eq!(refused.kind, ErrorKind::ResourceExhausted);
+    assert_eq!(refused, too_large());
     // Nor did it try: no door is there.
     let client = closed().await;
     let refused = client.emit(&cx, emit(over)).await.unwrap_err();
-    assert_eq!(refused.kind, ErrorKind::ResourceExhausted);
+    assert_eq!(refused, too_large());
     assert_eq!(operations.take(), []);
 }
 
@@ -514,6 +514,9 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
     let unfinished = b"HTTP/1.1 501 x\r\ncontent-type: application/json\r\ncontent-length: 99\r\n\r\n{\"code\":\"unimplemented\"}";
     // ErrorInfo of a kind this client does not know: 'kind' "new".
     let new_kind = r#"{"code":"invalid_argument","details":[{"type":"ironflowx.v1.ErrorInfo","value":"CgNuZXc"}]}"#;
+    let unreadable =
+        r#"{"code":"unimplemented","details":[{"type":"ironflowx.v1.ErrorInfo","value":"!"}]}"#;
+    let another = r#"{"code":"resource_exhausted","details":[{"type":"x"}]}"#;
     // Each with the HTTP status its message names, or the Connect code of the failure it is.
     let status = |n: u16| format!("an HTTP {n} that is not Connect's");
     let code = str::to_owned;
@@ -598,6 +601,40 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
         (status(400), http("400 x", "text/html", refusal)),
         (
             status(400),
+            json("400 x", r#"{"code":"invalid_argument","message":{}}"#),
+        ),
+        (
+            status(400),
+            json(
+                "400 x",
+                r#"{"code":"invalid_argument","message":"","message":""}"#,
+            ),
+        ),
+        (
+            status(400),
+            head(
+                "content-type: application/json\r\ncontent-type: text/html\r\n",
+                refusal,
+            ),
+        ),
+        (
+            status(400),
+            http(
+                "400 x",
+                "application/json; charset=utf-8, text/html",
+                refusal,
+            ),
+        ),
+        (
+            status(400),
+            http("400 x", "application/json; charset=latin1", refusal),
+        ),
+        (
+            status(400),
+            http("400 x", "application/jsonx; charset=utf-8", refusal),
+        ),
+        (
+            status(400),
             http("400 x", "application/connect+json", refusal),
         ),
         (
@@ -636,7 +673,10 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
         ),
         (code("internal"), http("200 OK", "application/proto", &cut)),
         (code("internal"), gzip.to_vec()),
+        // Not the library's, which attaches no detail: the engine's error, which says nothing here.
         (code("invalid_argument"), json("400 Bad Request", new_kind)),
+        (code("unimplemented"), json("404 x", unreadable)),
+        (code("resource_exhausted"), json("429 x", another)),
         // Says in words that no connection opened.
         (
             code("unavailable"),
@@ -646,8 +686,6 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
             ),
         ),
     ];
-    // ErrorInfo of no known kind is refused by its code (rule 4), as the code alone would be.
-    let refused = |why: &str| why == "invalid_argument";
     // Decode as messages, which are no answers where an answer needs something.
     let decoded = [&answers[0], &answers[1], &answers[2]];
     let ignored = [&answers[1], &answers[2]];
@@ -677,15 +715,10 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
             let e = got.unwrap_err();
             let ended = (e.kind, e.hint.as_deref());
             let why = &answer.0;
-            let expected = match refused(why) {
-                true => (ErrorKind::Invalid, None),
-                false => unanswered(op),
-            };
-            assert_eq!(ended, expected, "{op:?} {shown:?}");
+            assert_eq!(ended, unanswered(op), "{op:?} {shown:?}");
             let one = !matches!(op, Operation::EmitBatch) && !op.rpc().contains("/List");
             let message = match decoded.contains(&answer) && one {
                 true => "the answer does not decode".to_owned(),
-                false if refused(why) => format!("the call was refused: {why}"),
                 false => format!("the engine did not answer: {why}"),
             };
             assert_eq!(e.message, message, "{op:?} {shown:?}");
@@ -723,7 +756,12 @@ async fn an_answer_over_16_mib_is_no_refusal() {
     }
     let client = stub.answering(error(most));
     let e = client.emit(&call(KEY), item("a")).await.unwrap_err();
-    assert_eq!(e.kind, ErrorKind::ResourceExhausted);
+    let refused = OpError {
+        kind: ErrorKind::ResourceExhausted,
+        message: "the call was refused: resource_exhausted".into(),
+        hint: None,
+    };
+    assert_eq!(e, refused);
 }
 
 /// SRV-4, rule 4: a code of the server's library, without the engine's own error, under the HTTP
@@ -756,13 +794,14 @@ async fn a_code_of_the_library_is_the_kind_it_means() {
         ("data_loss", 500, None),
     ];
     for op in Operation::ALL.iter().copied() {
-        for (code, own, kind) in codes {
-            let body = format!(r#" {{"code":"{code}","message":"{CREATED}"}}"#);
-            let client = stub.answering(http(
-                &format!("{own} x"),
+        for (i, (code, own, kind)) in codes.into_iter().enumerate() {
+            let kind_sent = [
+                "application/json",
                 "Application/JSON; charset=utf-8",
-                body.as_bytes(),
-            ));
+                "application/json ;charset=\"UTF-8\"",
+            ][i % 3];
+            let body = format!(r#" {{"code":"{code}","message":"{CREATED}"}}"#);
+            let client = stub.answering(http(&format!("{own} x"), kind_sent, body.as_bytes()));
             let e = ask_one(&client, &call(KEY), op).await.unwrap_err();
             let ended = (e.kind, e.hint.as_deref());
             let expected = kind.unwrap_or_else(|| unanswered(op));

@@ -327,7 +327,7 @@ async fn the_engines_unknown_crosses_the_wire_as_it_is() {
         ),
     ] {
         let served = serve().await;
-        let (_, go) = barrier(FaultPoint::AfterFsync);
+        let (_reached, go) = barrier(FaultPoint::AfterFsync);
         // Never let go: the writer panics at the point, and the append's outcome is lost.
         drop(go);
         let e = change.ask(&served, &client(served.addr), "a").await;
