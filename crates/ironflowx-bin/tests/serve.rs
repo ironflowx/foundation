@@ -860,8 +860,14 @@ async fn a_call_logs_only_its_operation_outcome_duration_and_presented_key_id() 
 
     let rpc = ironflowx_proto::Operation::Emit.rpc();
     let rejected = "ironflowx.v1.IdentityService/unknown_operation_marker";
+    let create = ironflowx_proto::Operation::CreateKey.rpc();
     for (operation, body, status) in [
         (rpc, "{\"event_data_marker\"", "HTTP/1.0 400 "),
+        (
+            create,
+            r#"{"scopes":["unsupported_scope_marker"]}"#,
+            "HTTP/1.0 400 ",
+        ),
         (rejected, "{}", "HTTP/1.0 404 "),
     ] {
         let mut socket = TcpStream::connect(served.addr).unwrap();
@@ -886,6 +892,7 @@ async fn a_call_logs_only_its_operation_outcome_duration_and_presented_key_id() 
     for marker in [
         "event_data_marker",
         "accepted_event_metadata_marker",
+        "unsupported_scope_marker",
         "unknown_operation_marker",
     ] {
         assert!(!log.contains(marker), "{log}");
@@ -905,6 +912,7 @@ async fn a_call_logs_only_its_operation_outcome_duration_and_presented_key_id() 
         (whoami, "success", Some(&key[4..40])),
         (rpc, "success", Some(&key[4..40])),
         (rpc, "refused", None),
+        (create, "invalid", None),
         ("unknown", "refused", None),
     ];
     assert_eq!(lines.len(), expected.len(), "{log}");
@@ -1118,4 +1126,52 @@ fn a_seeded_stale_start_warns_once_about_each_matching_temporary() {
     ] {
         assert_eq!(std::fs::read(file).unwrap(), contents);
     }
+}
+
+#[test]
+fn a_short_probe_write_refuses_before_open_and_removes_the_source() {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    use std::os::unix::process::CommandExt as _;
+
+    const ROOT: &str = "IRONFLOWX_TEST_SHORT_PROBE_ROOT";
+    if let Some(root) = std::env::var_os(ROOT) {
+        // Only this child has the limit. At 84 bytes the 85-byte probe write must fail.
+        let max = getrlimit(Resource::Fsize).maximum;
+        setrlimit(
+            Resource::Fsize,
+            Rlimit {
+                current: Some(84),
+                maximum: max,
+            },
+        )
+        .unwrap();
+        panic!(
+            "cannot launch host: {}",
+            command(Path::new(&root), "127.0.0.1:0").exec()
+        );
+    }
+
+    let dir = private();
+    // Ignore SIGXFSZ so the write reports EFBIG and the host can clean up.
+    let out = Command::new("/bin/sh")
+        .args(["-c", "trap '' XFSZ && exec \"$@\"", "short-probe"])
+        .arg(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_short_probe_write_refuses_before_open_and_removes_the_source",
+        ])
+        .env(ROOT, dir.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    let envelope: Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
+    assert_eq!(envelope["code"], "internal");
+    let message = envelope["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("cannot probe writes and hard links"),
+        "{message}"
+    );
+    assert!(message.contains("File too large"), "{message}");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }
