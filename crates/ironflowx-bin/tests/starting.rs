@@ -57,8 +57,8 @@ async fn written(path: &Path) -> String {
 
 const LATE: Duration = Duration::from_secs(10);
 
-/// One test of both, since the barrier is the process's: SRV-9's opening state, then a key that cannot be
-/// written.
+/// One test of both, since the barrier is the process's: SRV-9's opening state, then a key that
+/// cannot be written.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_slot_answers_until_the_engine_is_open_and_the_key_is_written() {
     let dir = tempfile::tempdir().unwrap();

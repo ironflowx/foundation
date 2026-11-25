@@ -1,6 +1,7 @@
 //! The host's accept loop: HTTP/1.1 and cleartext HTTP/2. A connection sends its first request's
-//! head within 10 s, and on HTTP/1.1 each later one within 10 s of its first byte. A later head that
-//! arrives with the request before it, and later HTTP/2 heads, count as idle, which has no limit.
+//! head within 10 s, and on HTTP/1.1 each later one within 10 s of its first byte. A later head
+//! that arrives with the request before it, and later HTTP/2 heads, count as idle, which has no
+//! limit.
 
 use std::convert::Infallible;
 use std::io;
