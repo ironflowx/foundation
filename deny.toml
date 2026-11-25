@@ -10,4 +10,9 @@ allow = [
   "Unicode-3.0",
   # subtle: the key digest's constant-time comparison (TEN-4), in ironflowx-authz.
   "BSD-3-Clause",
+  # The wire, in ironflowx-proto's features: connectrpc and buffa, which serve and call it, and
+  # their smoothutf8 and sync_wrapper; protox's prost and miette, which compile the proto.
+  "Apache-2.0",
+  # foldhash: buffa's hash tables.
+  "Zlib",
 ]

@@ -48,6 +48,21 @@ pub const fn ironflowx_proto::Call::key(&self) -> core::option::Option<&ironflow
 pub const fn ironflowx_proto::Call::with_key(ironflowx_core::secret::Secret) -> Self
 impl core::fmt::Debug for ironflowx_proto::Call
 pub fn ironflowx_proto::Call::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct ironflowx_proto::Client
+impl ironflowx_proto::Client
+pub fn ironflowx_proto::Client::new(&str) -> core::result::Result<Self, ironflowx_proto::InvalidUrl>
+impl core::fmt::Debug for ironflowx_proto::Client
+pub fn ironflowx_proto::Client::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl ironflowx_proto::Operations for ironflowx_proto::Client
+pub async fn ironflowx_proto::Client::create_key(&self, &ironflowx_proto::Call, ironflowx_proto::CreateKeyRequest) -> core::result::Result<ironflowx_proto::CreatedKey, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::emit(&self, &ironflowx_proto::Call, ironflowx_proto::EmitRequest) -> core::result::Result<ironflowx_proto::EmitResponse, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::emit_batch(&self, &ironflowx_proto::Call, ironflowx_proto::EmitBatchRequest) -> core::result::Result<ironflowx_proto::EmitBatchResponse, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::get_event(&self, &ironflowx_proto::Call, ironflowx_proto::GetEventRequest) -> core::result::Result<ironflowx_proto::Event, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::list_environments(&self, &ironflowx_proto::Call, ironflowx_proto::ListEnvironmentsRequest) -> core::result::Result<alloc::vec::Vec<ironflowx_proto::Environment>, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::list_events(&self, &ironflowx_proto::Call, ironflowx_proto::ListEventsRequest) -> core::result::Result<ironflowx_proto::EventPage, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> core::result::Result<(), ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::whoami(&self, &ironflowx_proto::Call, ironflowx_proto::WhoamiRequest) -> core::result::Result<ironflowx_proto::Whoami, ironflowx_proto::OpError>
 pub struct ironflowx_proto::CreateKeyRequest
 pub ironflowx_proto::CreateKeyRequest::expires_at: core::option::Option<ironflowx_core::time::Timestamp>
 pub ironflowx_proto::CreateKeyRequest::label: core::option::Option<alloc::string::String>
@@ -173,6 +188,18 @@ pub fn ironflowx_proto::GetEventRequest::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_proto::GetEventRequest
 pub fn ironflowx_proto::GetEventRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_proto::GetEventRequest
+pub struct ironflowx_proto::InvalidUrl
+impl core::clone::Clone for ironflowx_proto::InvalidUrl
+pub fn ironflowx_proto::InvalidUrl::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_proto::InvalidUrl
+impl core::cmp::PartialEq for ironflowx_proto::InvalidUrl
+pub fn ironflowx_proto::InvalidUrl::eq(&self, &Self) -> bool
+impl core::error::Error for ironflowx_proto::InvalidUrl
+impl core::fmt::Debug for ironflowx_proto::InvalidUrl
+pub fn ironflowx_proto::InvalidUrl::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_proto::InvalidUrl
+pub fn ironflowx_proto::InvalidUrl::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_proto::InvalidUrl
 pub struct ironflowx_proto::KeyInfo
 pub ironflowx_proto::KeyInfo::created_at: ironflowx_core::time::Timestamp
 pub ironflowx_proto::KeyInfo::created_by: core::option::Option<ironflowx_core::id::KeyId>
@@ -302,4 +329,14 @@ pub fn ironflowx_proto::Operations::list_events(&self, &ironflowx_proto::Call, i
 pub fn ironflowx_proto::Operations::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> impl core::future::future::Future<Output = core::result::Result<(), ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::whoami(&self, &ironflowx_proto::Call, ironflowx_proto::WhoamiRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::Whoami, ironflowx_proto::OpError>> + core::marker::Send
+impl ironflowx_proto::Operations for ironflowx_proto::Client
+pub async fn ironflowx_proto::Client::create_key(&self, &ironflowx_proto::Call, ironflowx_proto::CreateKeyRequest) -> core::result::Result<ironflowx_proto::CreatedKey, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::emit(&self, &ironflowx_proto::Call, ironflowx_proto::EmitRequest) -> core::result::Result<ironflowx_proto::EmitResponse, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::emit_batch(&self, &ironflowx_proto::Call, ironflowx_proto::EmitBatchRequest) -> core::result::Result<ironflowx_proto::EmitBatchResponse, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::get_event(&self, &ironflowx_proto::Call, ironflowx_proto::GetEventRequest) -> core::result::Result<ironflowx_proto::Event, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::list_environments(&self, &ironflowx_proto::Call, ironflowx_proto::ListEnvironmentsRequest) -> core::result::Result<alloc::vec::Vec<ironflowx_proto::Environment>, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::list_events(&self, &ironflowx_proto::Call, ironflowx_proto::ListEventsRequest) -> core::result::Result<ironflowx_proto::EventPage, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> core::result::Result<(), ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::whoami(&self, &ironflowx_proto::Call, ironflowx_proto::WhoamiRequest) -> core::result::Result<ironflowx_proto::Whoami, ironflowx_proto::OpError>
 pub const fn ironflowx_proto::required_scope(ironflowx_proto::Operation) -> core::option::Option<ironflowx_core::tenancy::Scope>

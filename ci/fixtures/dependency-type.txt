@@ -4,3 +4,18 @@ pub fn ironflowx_cell::Ledger::log(&self) -> &segment_log_core::engine::SegmentL
 pub fn ironflowx_cell::Ledger::runtime(&self) -> tokio::runtime::Handle
 pub fn ironflowx_cell::EventIdExt::uuid(&self) -> uuid::Uuid
 pub struct ironflowx_cell::Committed
+impl core::convert::From<connectrpc::error::ConnectError> for ironflowx_proto::OpError
+pub fn ironflowx_proto::Client::decode(&[u8]) -> core::result::Result<Self, buffa::error::DecodeError>
+pub fn ironflowx_proto::Client::time(buffa_types::google::protobuf::Timestamp)
+pub fn ironflowx_proto::Client::of(http::uri::Uri) -> Self
+impl core::convert::From<hyper::error::Error> for ironflowx_proto::InvalidUrl
+pub ironflowx_proto::Client::transport: hyper_util::client::legacy::Client
+impl serde_core::ser::Serialize for ironflowx_proto::InvalidUrl
+pub fn ironflowx_proto::Client::bytes(&self) -> bytes::bytes::Bytes
+pub fn ironflowx_doors::service() -> axum::routing::MethodRouter
+pub fn ironflowx_doors::router<O>(ironflowx_doors::Slot<O>, tower::util::BoxService) -> axum::routing::Router
+pub fn ironflowx_proto::Client::handle(&self) -> ironflowx_vendor::Handle
+pub use ironflowx_proto::ProbeError
+pub use ironflowx_proto::probe_http
+pub use ironflowx_proto::<<connectrpc::client::*>>
+pub extern crate ironflowx_proto::zz_http

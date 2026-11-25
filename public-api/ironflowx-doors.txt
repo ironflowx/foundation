@@ -1,0 +1,22 @@
+pub mod ironflowx_doors
+pub enum ironflowx_doors::WaitingOn
+pub ironflowx_doors::WaitingOn::ControlPlane
+pub ironflowx_doors::WaitingOn::Ledger
+pub ironflowx_doors::WaitingOn::Open
+impl core::clone::Clone for ironflowx_doors::WaitingOn
+pub fn ironflowx_doors::WaitingOn::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_doors::WaitingOn
+impl core::cmp::Eq for ironflowx_doors::WaitingOn
+impl core::cmp::PartialEq for ironflowx_doors::WaitingOn
+pub fn ironflowx_doors::WaitingOn::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_doors::WaitingOn
+pub fn ironflowx_doors::WaitingOn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for ironflowx_doors::WaitingOn
+impl core::marker::StructuralPartialEq for ironflowx_doors::WaitingOn
+pub struct ironflowx_doors::Slot<O: ironflowx_proto::Operations, R: ironflowx_doors::Readiness>(_)
+impl<O: ironflowx_proto::Operations, R: ironflowx_doors::Readiness> ironflowx_doors::Slot<O, R>
+pub fn ironflowx_doors::Slot<O, R>::open(&self, alloc::rcs::arc::Arc<O>, R)
+pub const fn ironflowx_doors::Slot<O, R>::starting() -> Self
+pub trait ironflowx_doors::Readiness: core::marker::Send + core::marker::Sync
+pub fn ironflowx_doors::Readiness::ready(&self) -> impl core::future::future::Future<Output = core::result::Result<(), ironflowx_doors::WaitingOn>> + core::marker::Send
+pub fn ironflowx_doors::router<O: ironflowx_proto::Operations + 'static, R: ironflowx_doors::Readiness + 'static>(alloc::rcs::arc::Arc<ironflowx_doors::Slot<O, R>>) -> axum::routing::Router

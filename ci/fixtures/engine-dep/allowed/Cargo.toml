@@ -1,0 +1,11 @@
+[package]
+name = "allowed"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+ironflowx-core = { path = "../../../../crates/ironflowx-core" }
+ironflowx-proto = { path = "../../../../crates/ironflowx-proto" }
+
+[dev-dependencies]
+ironflowx-operations = { path = "../../../../crates/ironflowx-operations" }

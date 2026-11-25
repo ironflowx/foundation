@@ -13,7 +13,8 @@ pub enum ErrorKind {
     Unknown,
     /// The ledger failed and refuses every call until it is reopened; or the control plane failed
     /// this call, which can be retried at once, unless a call has panicked under its lock: then
-    /// only after a reopen.
+    /// only after a reopen. Through a door, the engine is not open yet; from the proto client, no
+    /// engine answered.
     Unavailable,
     /// No key, or a key that is not valid for this environment.
     Unauthenticated,
@@ -21,7 +22,7 @@ pub enum ErrorKind {
     PermissionDenied,
     /// A limit is reached; the hint says what frees room.
     ResourceExhausted,
-    /// A fault of the server, not of the request.
+    /// A fault of the server, not of the request; or an operation the proto client does not carry.
     Internal,
 }
 

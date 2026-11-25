@@ -1,6 +1,9 @@
 //! The behavior scenarios in `docs/behaviors/`, each file on its own World: an engine on a
-//! temporary directory with a `ManualClock` (D20). Steps call `Operations`, never a URL.
+//! temporary directory with a `ManualClock` (D20), or, for `serve.feature`, the `ironflowx` binary
+//! on one. Steps call `Operations`, never a URL, but for the binary's `/health` and `/ready`.
 
+#[path = "behaviors/serve.rs"]
+mod serve;
 #[path = "behaviors/tenancy.rs"]
 mod tenancy;
 
@@ -782,7 +785,11 @@ fn cells(line: &str) -> String {
 const EVENT_RUNS: usize = 95;
 
 /// Every feature file in `docs/behaviors/` and its scenario declarations.
-const SCENARIOS: &[(&str, usize)] = &[("events.feature", 41), ("tenancy.feature", 40)];
+const SCENARIOS: &[(&str, usize)] = &[
+    ("events.feature", 41),
+    ("serve.feature", 26),
+    ("tenancy.feature", 40),
+];
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/behaviors");
 
@@ -805,6 +812,7 @@ fn discover() {
 #[tokio::main]
 async fn main() {
     discover();
+    serve::build();
     let events = Env::cucumber::<&str>()
         .with_parser(Unescaped)
         // `close`, not a drop: dropping joins the writer thread on the runtime.
@@ -822,6 +830,7 @@ async fn main() {
         ))
         .await;
     let (tenancy_failed, tenancy_passed) = tenancy::run(Unescaped).await;
+    let (serve_failed, serve_passed) = serve::run(Unescaped).await;
     assert!(!events.execution_has_failed(), "events.feature failed");
     let passed = events.scenarios_stats().passed;
     assert_eq!(passed, EVENT_RUNS, "events.feature: scenarios run");
@@ -831,4 +840,6 @@ async fn main() {
         tenancy::RUNS,
         "tenancy.feature: scenarios run"
     );
+    assert!(!serve_failed, "serve.feature failed");
+    assert_eq!(serve_passed, serve::RUNS, "serve.feature: scenarios run");
 }

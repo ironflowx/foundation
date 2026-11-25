@@ -1,24 +1,45 @@
 # Architecture
 
-One environment's commit path and the engine in front of it, as foundation crates linked into a host's or an embedder's process.
+One environment's commit path and the engine in front of it, as foundation crates linked into a host's or an embedder's process; and the first host, `ironflowx serve`, which serves the engine over HTTP.
 
 ## C1: Context
 
 ![C1 system context](img/c1-context.svg)
 
-The engine is linked, not run: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead.
+The engine is a library: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead.
+
+`ironflowx serve` is a host as a process. Outside it:
+
+- a client calls the engine over HTTP, by Connect, gRPC or gRPC-Web, with a key, and reaches it no other way;
+- an orchestrator watches `/health` and `/ready`, with no key;
+- the operator takes the admin key from `admin.key` in the data directory.
 
 ## C2: Crates
 
 ![C2 crates](img/c2-crates.svg)
 
-Event rules, credentials and core are pure. Only the ledger, the control plane and the engine touch disk, the clock and randomness.
+Event rules, credentials and core are pure. Only the ledger, the control plane, the engine and the host touch disk, the clock and randomness.
+
+Around the engine, not in the diagram, each depending on what its line names:
+
+- `ironflowx-proto`, with a wire feature on: the proto, its generated messages and their mapping, and the proto client. It links `connectrpc` and `buffa`, and at build time `connectrpc-build` and `protox`. With none on, it links only `ironflowx-core`.
+- `ironflowx-doors`: the HTTP door, on `ironflowx-proto` and `ironflowx-core`, and no engine crate (SRV-1). Unpublished.
+- `ironflowx-bin`: the `ironflowx` binary and its host, on `ironflowx-doors`, `ironflowx-operations`, `ironflowx-cell`, `ironflowx-store` and `ironflowx-core`. Unpublished.
 
 ## C3: Modules and seams
 
 ![C3 modules and seams](img/c3-modules.svg)
 
 Inside the ledger: its interface is the only way in, and everything behind it is implementation. The engine in front of it, with its credentials and control plane, is in [Modules](#modules), a call's way through them in [Keys](#keys) ("Admission").
+
+In front of the engine, in `ironflowx serve`, a call goes through:
+
+1. the host's accept loop, which reads the request ([Wire](#wire), "Timeouts");
+2. the HTTP door, which decodes it, takes its key from `Authorization`, and converts it to an `Operations` request;
+3. the slot, which answers for the engine until it is open;
+4. the engine, through `Operations`; the answer, or the error, goes back the same way.
+
+`Operations` is a real seam: the engine in process and the proto client over Connect are its two adapters.
 
 ## Flows
 
@@ -38,7 +59,12 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 |---|---|---|---|
 | Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time; reports whether it has failed, and signals a ledger fault | `open`, `open_blocking`, `open_existing_blocking`, `submit`, `read`, `state`, `faulted`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
 | Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
-| `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types; 0.3 maps a wire format onto them | `Operations` trait and messages | `ironflowx-proto` |
+| `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types, which the wire maps onto (D53) | `Operations` trait and messages | `ironflowx-proto` |
+| Proto | Defines an operation once, on the wire: today `whoami` | `proto/ironflowx/v1/*.proto` | `ironflowx-proto` |
+| Wire mapping | Converts `Operations` requests and answers to and from wire messages, validating what arrives | `TryFrom` for requests, both ways; `From` for answers sent and `TryFrom` for answers received; `OpError` ↔ `ErrorInfo` ↔ the Connect error | `ironflowx-proto` (`wire`, `server`) |
+| Proto client | Calls `Operations` over Connect, sending each `Call`'s key | `Client::new(url)`, `Operations` | `ironflowx-proto` (`client`) |
+| HTTP door | Serves `Operations` over Connect, gRPC and gRPC-Web, with `/health` and `/ready`. Holds no rule | `router(slot)`, `Slot`, `Readiness` | `ironflowx-doors` (`http`) |
+| Host | Turns a data directory and an address into a served engine | `ironflowx serve`, `admin.key`, exit codes | `ironflowx-bin` |
 | Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records; reports its health and a ledger fault to the host | `Engine::open`, `health`, `faulted`, `close`, `Operations`, `recover_admin_key` | `ironflowx-operations` |
 | Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create` | `ironflowx-authz` |
 | Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `undo_bootstrap`, `mark_ledger_created`, `finish_bootstrap`, `check_seed`, `apply_seed`, `lookup_key`, `record_expiry`, `insert_key`, `insert_recovered`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
@@ -68,10 +94,10 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 
 | Seam | Adapters | Today |
 |---|---|---|
-| `Operations` | The engine (`Engine`) · a remote client over the network | `Engine`; the remote client arrives with the server in 0.3 |
+| `Operations` | The engine (`Engine`) · the proto client (`Client`) | Both. `Client` carries `whoami`; every other operation is `Internal` from it until its messages join the proto |
 | `Clock` | `HostClock` · `ManualClock`, which a test sets and steps, backwards too | Both, in `ironflowx-cell`. The behaviors and the crash test use `ManualClock` |
 | Control plane | SQLite · a shared database for clusters | SQLite only: hypothetical, so no trait |
-| Ledger, event rules, credentials | One adapter each | Module interfaces, not seams |
+| Ledger, event rules, credentials, door, host | One adapter each | Module interfaces, not seams |
 
 The segment log has a storage seam of its own, private to `segment-log-core`; foundation does not reach it.
 
@@ -123,6 +149,36 @@ const fn required_scope(op: Operation) -> Option<Scope>;   // an exhaustive matc
 // ListKeysRequest  { limit: Option<NonZeroU32> /* None 100, above 1,000 clamps */, cursor: Option<String> }
 // KeyPage          { keys: Vec<KeyInfo> /* newest first, by seq */, next: Option<String> /* <token>.<seq> */ }
 // RevokeKeyRequest { key_id: String }   // an ID that does not parse is NotFound
+
+// ironflowx-proto, feature "client" (tokio): the proto client. It names no dependency's type.
+impl Client { fn new(url: &str) -> Result<Client, InvalidUrl>; }   // http://host[:port][/path], no user, query or fragment
+impl Operations for Client { .. }   // sends Call's key as the Bearer key; Call::anonymous() sends none
+
+// ironflowx-proto, feature "wire": the messages connectrpc-build generates from the protox-compiled set, and their mapping.
+// Feature "server": also the generated service traits a door implements. Both expose buffa's and connectrpc's types, follow
+// their 0.x versions and are left out of public-api/, which has the default features and `client`.
+impl TryFrom<wire::WhoamiRequest> for WhoamiRequest { type Error = OpError; }       // the door; Invalid on what the wire cannot carry
+impl TryFrom<WhoamiRequest> for wire::WhoamiRequest { type Error = OpError; }       // the client
+impl From<Whoami> for wire::WhoamiResponse { }                                      // the door
+impl TryFrom<wire::WhoamiResponse> for Whoami { type Error = wire::Undecodable; }   // the client
+impl From<&OpError> for wire::ErrorInfo { }
+impl TryFrom<wire::ErrorInfo> for OpError { type Error = wire::Undecodable; }       // an unknown kind is no ErrorInfo
+fn wire::connect_error(e: &OpError) -> ConnectError;        // the kind's code, the message, ErrorInfo as a detail
+fn wire::op_error(e: &ConnectError) -> Option<OpError>;     // the engine's own error, if the answer carries one
+
+// ironflowx-doors; `router` behind the feature "http"
+trait Readiness: Send + Sync { fn ready(&self) -> impl Future<Output = Result<(), WaitingOn>> + Send; }
+// WaitingOn  Open | ControlPlane | Ledger
+impl<O: Operations, R: Readiness> Slot<O, R> {              // Starting → Open
+    const fn starting() -> Self;
+    fn open(&self, operations: Arc<O>, readiness: R);       // once; panics on a second
+}
+fn router<O: Operations + 'static, R: Readiness + 'static>(slot: Arc<Slot<O, R>>) -> axum::Router;
+
+// ironflowx-bin (tokio)
+async fn serve(data_dir: &Path, listen: SocketAddr) -> Result<Infallible, ServeError>;
+async fn run(listener: std::net::TcpListener, data_dir: &Path) -> Result<Infallible, ServeError>;   // serve, from a bound listener
+// ServeError StaleKeyFile(PathBuf) | Listen(io::Error) | DataDir(PathBuf, io::Error) | Engine(EngineError) | KeyFile(PathBuf, io::Error)
 
 // ironflowx-operations (tokio)
 impl Engine {
@@ -298,26 +354,29 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 | `Unknown` | The append's outcome is unknown; the ledger is now `Unavailable` | After reopen, only if it has an idempotency key, or every item of its batch has one. On the retry, a valid item whose key is already stored returns its original event, a new key stores one event, and a refused item is refused again. An item without a key may store a second event, so check first |
 | `Unavailable` | The ledger failed (append, fold, read store, a panic of its writer or of a `read` query, or a `read` that finds its runtime shut down before its query ran) and refuses every call until it is reopened. Reads waiting at the gate end with it | After reopen |
 | `Unavailable` | A control-plane read or write failed during admission or a handler: `lookup_key`, `environment`, `list_keys` or a key change. The call fails closed and changes nothing, but for an [unsettled commit](#after-a-failed-open-or-change) (D48); the engine stays open (D44). A failure to record an expiry is not this: the call keeps its uniform refusal. A `create_key` whose answer was lost may have committed. Once a call has panicked under the control plane's lock (a host `Clock` that panics), every later call that reaches the control plane answers so until the engine is reopened, though its hint still says at once | Yes, at once; after such a panic, after reopen |
+| `Unavailable` | Through a door, the engine is not open yet: every call, with the hint `the engine is starting` | Yes |
+| `Unavailable` | From the proto client, a read that no engine answered: no connection, no answer, a proxy's error, or an answer that does not decode | Yes |
 | `Unauthenticated` | No key, or an empty one: `authentication required` | No |
 | `Unauthenticated` | A malformed key: `invalid API key`, with the key format in `hint` | No |
 | `Unauthenticated` | An unknown key ID, a wrong secret, a revoked or expired key, or a key of another environment or incarnation: `invalid API key`, the same answer for each, with no hint, whether or not recording an expiry failed (D29, D30). Also a key change whose calling key was revoked or expired before its transaction (D43) | No |
 | `PermissionDenied` | The key lacks the operation's scope: `missing scope: <scope>`, with `hint` saying to create or use a key with that scope (D31) | No |
 | `ResourceExhausted` | `create_key` when 1,000 created keys hold a slot: `key limit reached`, with `hint` saying to revoke keys, expired ones first (D44) | After a revoke, or once an expiry is recorded |
+| `Internal` | From the proto client, an operation it does not carry yet: every one but `whoami`; nothing is sent | No |
 
-| Kind | `retryable` | Exit |
-|---|---|---|
-| `Internal` | false | 1 |
-| `Invalid` | false | 2 |
-| `Unauthenticated` | false | 3 |
-| `PermissionDenied` | false | 4 |
-| `NotFound` | false | 5 |
-| `Unknown` | false: send it again only with the same idempotency key, on every item of a batch, or check first | 6 |
-| `ResourceExhausted` | false: something must change first | 7 |
-| `Unavailable` | true | 8 |
+| Kind | `retryable` | Exit | Connect code |
+|---|---|---|---|
+| `Internal` | false | 1 | `internal` |
+| `Invalid` | false | 2 | `invalid_argument` |
+| `Unauthenticated` | false | 3 | `unauthenticated` |
+| `PermissionDenied` | false | 4 | `permission_denied` |
+| `NotFound` | false | 5 | `not_found` |
+| `Unknown` | false: send it again only with the same idempotency key, on every item of a batch, or check first | 6 | `unknown` |
+| `ResourceExhausted` | false: something must change first | 7 | `resource_exhausted` |
+| `Unavailable` | true | 8 | `unavailable` |
 
 `ErrorKind::retryable()` is true only when the same request, sent again unchanged, may succeed and stores no second event (D70). `OpError::hint`, when there is one, says what to do; `Unknown`'s assumes an idempotency key on every item, and "retry at once" is wrong after a call panicked under the control plane's lock (above). `retryable()` promises no second event, not no second key: a `create_key` that answered `Unavailable` may have stored its key, whose secret is then lost. List the keys before sending it again, and again after a reopen: a key whose commit is [unsettled](#after-a-failed-open-or-change) (D48) is listed only then, if it lands. Revoke the one no holder has.
 
-`ErrorKind::exit_code()` is the exit code of a process that ends with that kind; 0 is success. `Internal` is a server fault (D69); no operation answers it yet.
+`ErrorKind::exit_code()` is the exit code of a process that ends with that kind; 0 is success. `Internal` is a server fault (D69); no operation of the engine answers it yet.
 
 ## Commit and read
 
@@ -331,7 +390,7 @@ If the writer panics, submissions still queued or being decided return `Unavaila
 
 **A ledger fault** is signalled, so a host needs no traffic to learn of it. `faulted` resolves once, when the ledger becomes `Unavailable`, whichever way it failed ([Errors](#errors)) and whether or not a call waits for an answer; at once if it has failed already. The future holds nothing of the ledger or the engine. It resolves for no refusal and no control-plane failure, and a close is no fault: what is pending when `close` begins resolves only if the ledger fails before `close` returns, as by the fold it finishes or a panic as the writer ends, and after that stays pending for good. A drop without `close` is the same. So once `faulted` resolves the ledger failed, and a host that closes its engine stops waiting for it. The engine does not reopen itself: the host closes it and opens it again.
 
-`Engine::health` reports each part alone, as it was when read: the control plane by one read of the environment, which reads no key record, and then the ledger's state, so a ledger that failed meanwhile shows. It waits for the control plane's lock, which a key change waiting for another process's write lock holds for seconds. It has no deadline: a host that needs one sets it. A failed control-plane read leaves the engine open, and a later one may succeed, unless a call panicked under the control plane's lock ([Errors](#errors)).
+`Engine::health` reports each part alone, as it was when read: the control plane by one read of the environment, which reads no key record, and then the ledger's state, so a ledger that failed meanwhile shows. It waits for the control plane's lock, which a key change waiting for another process's write lock holds for seconds. It has no deadline: a host that needs one sets it, and `ironflowx serve` sets none. A failed control-plane read leaves the engine open, and a later one may succeed, unless a call panicked under the control plane's lock ([Errors](#errors)).
 
 The committed head and the applied position are exclusive positions: one past the last record, as the log's watermark is.
 
@@ -464,7 +523,7 @@ Seen with a fault-injecting VFS that fails the WAL's sync (macOS, [#135](https:/
 
 ## What is stored
 
-The engine and the ledger set no file modes, so the process umask applies, and encrypt nothing: the host keeps the directory private. Who can read it reads every event; who can write it has an admin's authority. A ledger has no delete and no retention.
+The engine and the ledger set no file modes, so the process umask applies, and encrypt nothing: the host keeps the directory private. `ironflowx serve` creates it, and what is missing above it, asking for mode `0700`; a directory that is there keeps its mode. A umask that takes one of the owner's bits leaves a new one narrower, and a start whose permissions then keep it from opening the engine exits 1 (root's usually do not). On Linux a default ACL of the parent's stands in for the umask, and a setgid parent passes its bit on. On macOS an inherited ACL entry can grant access beyond the mode bits, to `admin.key` too if it propagates to files. Who can read it reads every event; who can write it has an admin's authority. A ledger has no delete and no retention.
 
 An engine's data directory, `<root>`:
 
@@ -475,6 +534,15 @@ An engine's data directory, `<root>`:
 | `<root>/ledgers/<environment-id>/` | The environment's ledger, laid out as below |
 | `<root>/ledgers/.staging/` | A ledger being built; deleted by any open that locks the root and reads its control plane |
 
+What `ironflowx serve` adds to it:
+
+| Where | Holds |
+|---|---|
+| `<root>/admin.key` | The minted admin key and a newline, mode `0400`. Never overwritten. Deleting it is the operator's call |
+| `<root>/admin.key.<random>.tmp` | Only after a crash while `admin.key` was written: may hold the whole key, mode `0400` |
+
+**Where a secret may appear.** A served engine's key text reaches only these places: `admin.key` and the temporary file it is linked from, and the `Authorization` header of a call.
+
 A ledger's directory, `<dir>`:
 
 | Where | Holds |
@@ -484,6 +552,77 @@ A ledger's directory, `<dir>`:
 | `<dir>/read.db` (SQLite) | `events` keyed by sequence, unique by ID, each with its `emitted_by` · `idempotency` key → event ID · `meta`: applied position, environment ID, incarnation token, format version |
 
 A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 4 MiB of data and metadata, under 4.1 MiB.
+
+## Proto
+
+Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the published crate ships it. `build.rs` compiles it with `protox` only when a wire feature is on, and needs no `protoc` and no `buf` (SRV-14).
+
+| File | Holds |
+|---|---|
+| `identity.proto` | `IdentityService/Whoami`, its request and its answer |
+| `error.proto` | `ErrorInfo { kind, message, hint }`, the error a call fails with |
+
+| Rule | Is |
+|---|---|
+| Names | `Operation::rpc()` is `<package>.<Service>/<Method>`: today only `Whoami`'s is served |
+| Field names in JSON | The proto's snake_case names: every multiword field sets `json_name` to its own name (D78). A camelCase name is an unknown field |
+| Unknown JSON fields | Ignored, as protobuf does |
+| A read | Says `idempotency_level = NO_SIDE_EFFECTS`, so Connect may call it with GET |
+| Presence | A field whose absence means something (`expires_at`, `hint`) is `optional`; absent is `None` |
+| Times | `google.protobuf.Timestamp`, RFC 3339 in JSON. A stored time outside years 0001–9999, which only an in-process caller or a wrong clock can make, is sent as the nearer bound, `0001-01-01T00:00:00Z` or `9999-12-31T23:59:59.999Z` (D76); the stored value still decides expiry |
+| IDs | Strings in their text form |
+| Addresses | The text `project/environment`. The client splits it at the first `/` for `Address::new`, so it prints back exactly, and never makes an ID from it (D75, TEN-8) |
+| Scopes | `repeated string`: `read`, `write`, `admin` |
+| Errors | `ErrorInfo`'s `kind` is the kind's name in snake_case (`permission_denied`). An `ErrorInfo` of a kind its reader does not know is none |
+
+## Wire
+
+| Part | Rule |
+|---|---|
+| Protocols | One handler answers Connect (JSON and binary), gRPC and gRPC-Web, over HTTP/1.1 and cleartext HTTP/2. Connect is the documented protocol (D50). No TLS and no compression |
+| Key | `Authorization: Bearer <key>` and nothing else: no other header, cookie or query parameter is read (D55). The scheme is case-insensitive (RFC 9110). No header, or `Bearer` with no text, is a call with no key. Any other value (another scheme, a key with no scheme, two `Authorization` headers, bytes that are not text) is a malformed key, answered as such by `Operations`: the door passes on a text no engine accepts, never the value |
+| A key no header holds as it is | One with a byte outside visible ASCII is not well formed. The client sends a malformed key in its place, so the engine answers both alike |
+| Size | A request body and a message are at most 16 MiB each, so on gRPC and gRPC-Web, whose body holds a 5-byte envelope too, a message is at most 16 MiB less 5 bytes; over either, the library answers `resource_exhausted`. `Client` accepts an answer of 16 MiB |
+| Timeouts | A connection sends its first request's head within 10 s, and on HTTP/1.1 each later one within 10 s of its first byte. A later head that arrives with the request before it (as far as the host has read it when it answers that one), and later HTTP/2 heads, count as idle; no idle limit of its own (a proxy sets one); `Connect-Timeout-Ms` is honored; no deadline of its own, on `/ready` either |
+| Door | Holds no rule: decode, convert (`TryFrom`), call `Operations` once, convert back (SRV-1). A request that does not decode is `invalid_argument` before its key is read |
+| Errors | The kind's [Connect code](#errors), the message, and `ErrorInfo` as a detail, on every protocol. gRPC carries all of it in trailers, the message three times and once percent-encoded, so an error whose trailers pass its client's limit on them loses its `ErrorInfo`, then fails: `connectrpc`'s own client reads a message of 4,096 ASCII letters whole, loses the `ErrorInfo` of 4,096 `%` or 8,192 ASCII letters, and fails at 16,384. No error of the engine is that long. Any other answer without `ErrorInfo` is the library's or a proxy's |
+| While opening | Every call answers `Unavailable`, hint `the engine is starting` |
+
+`Client` speaks Connect binary. A call whose answer carries `ErrorInfo` fails with that error, exactly; `whoami`, the one call it carries, is a read, and any other failure of it is `Unavailable`.
+
+## Host
+
+`ironflowx serve` binds, opens the engine, and serves it until the process is killed. It handles no signal: every acknowledgment already followed `fsync`, so a kill loses nothing acknowledged.
+
+| Setting | Flag | Default |
+|---|---|---|
+| Data directory | `--data-dir` | `./.ironflowx` |
+| Listen address | `--listen`, an IP address and a port | `127.0.0.1:9310` |
+
+**Start.** In order:
+
+1. If the data directory holds `admin.key` and no `control.db`, exit 2: a stale key file, from another install.
+2. Bind the listen address. Nothing in the data directory is touched before (D62).
+3. Log `listening` with the bound URL, also when port 0 picked the address. An address that is not loopback also logs a warning that keys travel in clear without a TLS proxy (D59).
+4. Serve `/health` and the door, the slot `Starting`.
+5. Create the data directory, and what is missing above it, asking for mode `0700` ([What is stored](#what-is-stored)). If it holds `admin.key` and its bootstrap is not marked (`ControlPlane::bootstrap_state`), exit 2: no open before the mark wrote that file, so it is stale. An error of that read is left for the open. Then `Engine::open(data_dir, HostClock, None)`.
+6. Write a minted key to `admin.key` and log its path, never the key. If it cannot be written, close the engine and exit 1; the key stays stored, its secret lost ([Engine open](#engine-open), "Recovery").
+7. Set the slot `Open`.
+
+**Writing a key file.** Write the key and a newline to a new file in the data directory, `admin.key.<random>.tmp`, mode `0400`, and sync it; hard-link it to `admin.key`, which fails if the name is taken, by a symbolic link to nothing too; remove the temporary name; sync the directory. A crash leaves either no `admin.key` or the whole key, and at most the temporary file. A crash after the open marked the bootstrap and before the link leaves no `admin.key` and no sign to the next open: recover an admin key and revoke the minted one.
+
+**Health.** Plain HTTP `GET`, no key:
+
+| Path | 200 when | Else |
+|---|---|---|
+| `/health` | The process serves | No answer |
+| `/ready` | The slot is `Open` and `Engine::health()` reports both parts ok: `{"ready":true}` | 503 with `{"ready":false,"waiting_on":"open" \| "control_plane" \| "ledger"}`, the control plane first |
+
+`/ready` asks the engine on each request and has no deadline of its own, so it can answer as late as `Engine::health` does ([Commit and read](#commit-and-read)): a prober sets its own.
+
+**Log.** One JSON object per line on stderr, at `info` and above.
+
+**Exit.** 2 for a stale `admin.key` or a command line it cannot read; 1 for any other refusal, whose message is its last log line.
 
 ## Depends on
 
@@ -497,7 +636,14 @@ A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 
 | `getrandom` | A caret range (D26) | `new_env_ref`; a key's secret | OS random source |
 | `sha2`, `subtle`, `base64` | Caret ranges | Credentials: the key digest, its constant-time comparison, the key text | Pure: `ci/purity/ironflowx-authz.allow` names everything they pull in, `libc` included (only `cpufeatures`' CPU detection on AArch64 uses it) |
 | `zeroize` | A caret range | `Secret` is zeroed on drop | In `ironflowx-core.allow` |
-| `tokio` | A caret range (D26) | `spawn_blocking` for open, reads, close, admission and control-plane calls; the submission queue; the read gate; the answer to a submission | |
+| `tokio` | A caret range (D26) | `spawn_blocking` for open, reads, close, admission and control-plane calls; the submission queue; the read gate; the answer to a submission; the host's runtime and listener | |
+| `connectrpc`, `connectrpc-build` | Caret ranges (0.9.x), without default features: no gzip, no zstd | `ironflowx-proto`'s wire features and `ironflowx-doors`: the server and the client; code from a precompiled descriptor set | Connect, gRPC and gRPC-Web on the same handlers (D50) |
+| `buffa`, `buffa-types` | Caret ranges (0.9.x) | `ironflowx-proto`'s wire features: generated messages, `Timestamp` | |
+| `protox` | A caret range (0.10.x) | `ironflowx-proto`'s build, with a wire feature on | Compiles the proto in Rust; `encode_file_descriptor_set()` keeps custom options (D51) |
+| `base64`, `http`, `serde` | Caret ranges | `ironflowx-proto`'s wire features: an error detail's value, the client's URL and header, the generated JSON | |
+| `axum` | A caret range | `ironflowx-doors`: `/health` and `/ready` beside the RPCs | |
+| `hyper`, `hyper-util` | Caret ranges | `ironflowx-bin`: the accept loop | hyper times an HTTP/1.1 head with the `Timer` it is given |
+| `clap`, `tracing`, `tracing-subscriber`, `tempfile` | Caret ranges | `ironflowx-bin`: the command line, the log, the temporary key file | |
 
 How the ledger uses the log:
 

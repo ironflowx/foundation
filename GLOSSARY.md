@@ -49,6 +49,9 @@ Who made a change, as stored on every event: `key:<key-id>`, or `embedder:<name>
 **Grant**:
 What a verified key may do: its ID, scopes, environment and expiry. Never stored.
 
+**Data directory**:
+The directory a host opens an engine on: the engine's root, with its control plane and ledgers. `ironflowx serve` opens `./.ironflowx` unless told another.
+
 **Engine**:
 What a host opens on a data directory: it owns the control plane and the environment's ledger, and admits every call.
 _Avoid_: operation layer
@@ -128,14 +131,24 @@ The crates any Ironflow X product links.
 **Facade**:
 The `ironflowx` crate, which re-exports the foundation crates.
 
+**Proto**:
+The `.proto` files of `ironflowx.v1`, the one definition of the wire: each operation's request and answer, and the error a call fails with.
+
+**Proto client**:
+`Operations` over the network: a caller that reaches an engine through a door. "A client" stays any caller.
+_Avoid_: Remote client
+
 **Door**:
 A way in from outside the process, such as an HTTP server.
+
+**HTTP door**:
+The first door: turns Connect, gRPC and gRPC-Web calls into `Operations` calls and back.
 
 **Embedder**:
 An app that links foundation. One that calls the ledger directly, without keys, is trusted by it, the attribution it supplies included.
 
 **Host**:
-An embedder that opens an engine on a data directory.
+An embedder that opens an engine on a data directory. `ironflowx serve` is the first host we ship.
 
 ### Testing
 

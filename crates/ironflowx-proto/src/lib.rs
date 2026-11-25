@@ -4,6 +4,18 @@
 //! state. An event's defaults, limits and checks belong to event rules (D1), a key's to the engine,
 //! credentials and the control plane.
 //! No operation takes an environment: it runs on the one its key is bound to (LED-7).
+//!
+//! Features, none on by default: `client` is the proto client, [`Operations`] over the network;
+//! `wire` is the generated messages of the proto in `proto/` and their mapping to the types here;
+//! `server` adds the generated service traits a door implements. `wire` and `server` expose types
+//! of `buffa` and `connectrpc`, which are 0.x, and follow their versions.
+
+#[cfg(feature = "client")]
+mod client;
+#[cfg(feature = "wire")]
+pub mod wire;
+#[cfg(all(feature = "client", not(feature = "wire")))]
+mod wire;
 
 use std::fmt;
 use std::future::Future;
@@ -15,6 +27,9 @@ use ironflowx_core::{
     Address, Emitter, EnvRef, ErrorKind, EventId, KeyId, KeyOrigin, ProjectId, Scope, Secret,
     Timestamp,
 };
+
+#[cfg(feature = "client")]
+pub use client::{Client, InvalidUrl};
 
 /// Everything a client can do. Every caller, in process or remote, goes through this trait, and
 /// a call is answered only for the key it carries (D36). Callers are generic over it; there is
