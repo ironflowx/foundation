@@ -4,14 +4,16 @@ mod common;
 
 use std::collections::BTreeSet;
 use std::num::NonZeroU32;
+use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 
 use common::{
     CREATED, DATA, KEY, KINDS, METADATA, batch, created, emitted, environments, event, event_page,
-    key_page, serving, whoami,
+    key_page, serve, serving, whoami,
 };
 use ironflowx_core::{Address, ErrorKind, Scope, Secret, Timestamp};
+use ironflowx_doors::Slot;
 use ironflowx_proto::{
     Call, Client, CreateKeyRequest, EmitBatchRequest, EmitRequest, GetEventRequest, InvalidUrl,
     ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation, Operations,
@@ -187,6 +189,22 @@ async fn each_operation_crosses_to_the_engine_and_back() {
         assert_eq!(answer, Err(e.clone()), "{op:?}");
     }
     assert_eq!(operations.take().len(), 9);
+}
+
+/// While the engine opens.
+#[tokio::test]
+async fn each_operation_answers_that_the_engine_is_starting() {
+    let addr = serve(Arc::new(Slot::starting())).await;
+    let client = Client::new(&format!("http://{addr}")).unwrap();
+    for op in Operation::ALL {
+        let starting = OpError {
+            kind: ErrorKind::Unavailable,
+            message: "the engine is unavailable".into(),
+            hint: Some("the engine is starting".into()),
+        };
+        let answer = ask_one(&client, &call(KEY), *op).await;
+        assert_eq!(answer, Err(starting), "{op:?}");
+    }
 }
 
 /// D74: bytes that are no text are not sent, and one such item keeps its whole batch back.
@@ -425,9 +443,19 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
             assert_eq!(ended, unanswered(op), "{op:?} {shown:?}");
             assert!(!e.message.contains(&KEY[41..]), "{}", e.message);
             let held = op == Operation::CreateKey || op.rpc().contains("EventService");
-            if held {
-                assert!(!e.message.contains(&CREATED[41..62]), "{}", e.message);
-                assert!(!e.message.contains("html"), "{}", e.message);
+            if held && e.message != "the answer does not decode" {
+                // The Connect code, and nothing after it.
+                let code = e.message.strip_prefix("the engine did not answer: ");
+                let code = code.unwrap_or_else(|| panic!("{}", e.message));
+                let codes = [
+                    "internal",
+                    "invalid_argument",
+                    "unauthenticated",
+                    "unavailable",
+                ];
+                let known =
+                    codes.contains(&code) || ["unknown", "resource_exhausted"].contains(&code);
+                assert!(known, "{op:?} {shown:?}: {code}");
             }
         }
     }

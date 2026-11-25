@@ -1468,10 +1468,11 @@ pub async fn run(parser: super::Unescaped, remote: bool) -> (bool, usize) {
             }
             Box::pin(async {})
         })
-        .after(|_, _, _, _, world| {
+        .after(move |_, _, _, _, world| {
             Box::pin(async move {
                 if let Some(w) = world {
                     if let Some(engine) = w.engine.take() {
+                        assert_eq!(matches!(engine, Adapter::Binary(..)), remote, "the adapter");
                         engine.close().await;
                     }
                     if let Some((engine, _dir)) = w.other.take() {

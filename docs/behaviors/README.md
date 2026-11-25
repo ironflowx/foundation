@@ -17,7 +17,7 @@ Each scenario of 0.1, in `events.feature`, is mapped to the spec stories that ow
 
 ## How they run
 
-The steps call `Operations`, never a URL or a status code, but for `/health` and `/ready`, which are the interface. Those of `serve.feature` also start the binary, read its log and, where a scenario names a protocol, call with a client of that protocol generated from the proto; those of `cli.feature` start the binary and run commands of it, and read their stdout, stderr and exit code:
+The steps call `Operations`, never a URL or a status code, but for `/health` and `/ready`, which are the interface. Those of `serve.feature` also start the binary, read its log and, where a scenario names a protocol, call with a client of that protocol generated from the proto, or, where it is about the JSON itself, read what that protocol sent; those of `cli.feature` start the binary and run commands of it, and read their stdout, stderr and exit code:
 
 | Adapter | Drives | When |
 |---|---|---|

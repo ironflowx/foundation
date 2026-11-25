@@ -28,7 +28,7 @@ use ironflowx_proto::wire::{
 };
 use ironflowx_proto::{
     Call, Client, EmitBatchResponse, EmitResponse, ListEventsRequest, ListKeysRequest, OpError,
-    Operations as _,
+    Operation, Operations as _,
 };
 use serde_json::Value;
 use tempfile::TempDir;
@@ -170,6 +170,24 @@ fn get(url: &str, path: &str) -> u16 {
     stream.read_to_string(&mut answer).unwrap();
     let status = answer.split(' ').nth(1).expect("a status");
     status.parse().unwrap()
+}
+
+/// What the RPC answers, as the JSON it sends.
+fn post_json(url: &str, rpc: &str, key: &str, body: &str) -> Value {
+    let addr = url.strip_prefix("http://").expect("an http URL");
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let length = body.len();
+    write!(
+        stream,
+        "POST /{rpc} HTTP/1.0\r\nauthorization: Bearer {key}\r\n\
+         content-type: application/json\r\ncontent-length: {length}\r\n\r\n{body}"
+    )
+    .unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).unwrap();
+    let (head, body) = answer.split_once("\r\n\r\n").expect("an answer");
+    assert!(head.starts_with("HTTP/1.0 200 "), "{head}");
+    serde_json::from_str(body).unwrap()
 }
 
 #[derive(World)]
@@ -514,8 +532,8 @@ fn refused_as_invalid(w: &mut Serve) {
     } else {
         // It did not decode, so the library refused it.
         assert_eq!(op_error(e), None);
-        let message = e.message.as_deref().expect("a message");
-        assert!(message.contains("invalid UTF-8"), "{message}");
+        let message = "failed to decode proto request: invalid UTF-8 in string field";
+        assert_eq!(e.message.as_deref(), Some(message));
     }
 }
 
@@ -620,7 +638,12 @@ fn the_data_is(w: &mut Serve, cell: String) {
 
 #[then("over JSON the event's time is RFC 3339 in UTC, with no fraction finer than a millisecond")]
 async fn the_time_is(w: &mut Serve) {
-    let event = serde_json::to_value(read(w, "Connect JSON").await).unwrap();
+    // As it is sent: a client would read any spelling of the time.
+    let emitted = w.emitted.as_ref().expect("an emit");
+    let id = emitted.as_ref().expect("an event").event_id;
+    let body = format!(r#"{{"event_id":"{id}"}}"#);
+    let rpc = Operation::GetEvent.rpc();
+    let event = post_json(&w.served().url(), rpc, w.client_key(), &body);
     let time = event["time"].as_str().expect("a time").to_owned();
     // 2027-01-15T08:00:00Z or 2027-01-15T08:00:00.123Z
     let shape: String = time
@@ -635,10 +658,9 @@ async fn the_time_is(w: &mut Serve) {
 #[when("the client sends an emit batch whose request body is 17 MiB")]
 async fn sends_17_mib(w: &mut Serve) {
     let size = 17 * 1024 * 1024;
-    let (head, tail) = (r#"{"items":[{"name":"a.one","data":"\""#, r#"\""}]}"#);
-    let fill = "a".repeat(size - head.len() - tail.len());
-    let body = format!("{head}{fill}{tail}").into_bytes();
-    assert_eq!(body.len(), size);
+    // An event the engine would store, and spaces.
+    let mut body = br#"{"items":[{"name":"a.one"}]}"#.to_vec();
+    body.resize(size, b' ');
     // HTTP/1.1 closes the connection on a body it refuses, and can lose the answer with it.
     let http = HttpClient::plaintext_http2_only();
     let client = EventServiceClient::new(WithBody(http, body), w.config().json());
@@ -650,7 +672,12 @@ async fn sends_17_mib(w: &mut Serve) {
 
 #[then("the call is refused as resource exhausted")]
 fn resource_exhausted(w: &mut Serve) {
-    assert_eq!(w.refusal().code, ErrorCode::ResourceExhausted);
+    let e = w.refusal();
+    assert_eq!(e.code, ErrorCode::ResourceExhausted);
+    // By the library, before the engine.
+    assert_eq!(op_error(e), None);
+    let message = e.message.as_deref();
+    assert_eq!(message, Some("request body size exceeds limit 16777216"));
 }
 
 #[then("the observer lists no events")]

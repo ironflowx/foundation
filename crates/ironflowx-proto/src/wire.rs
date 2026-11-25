@@ -194,7 +194,11 @@ impl TryFrom<crate::GetEventRequest> for GetEventRequest {
 
 impl From<crate::Event> for Event {
     fn from(e: crate::Event) -> Self {
-        let text = |bytes| String::from_utf8(bytes).expect("a stored event is UTF-8 (LED-5)");
+        // Not `expect`, which prints the bytes.
+        let text = |bytes| match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(_) => panic!("a stored event is not UTF-8 (LED-5)"),
+        };
         Self {
             event_id: e.event_id.to_string(),
             name: e.name,

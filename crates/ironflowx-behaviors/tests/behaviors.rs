@@ -835,9 +835,10 @@ async fn events(remote: bool) -> (bool, usize) {
             world.remote = remote;
             Box::pin(async {})
         })
-        .after(|_, _, _, _, world| {
+        .after(move |_, _, _, _, world| {
             Box::pin(async move {
                 if let Some(ops) = world.and_then(|w| w.ops.take()) {
+                    assert_eq!(matches!(ops, Adapter::Binary(..)), remote, "the adapter");
                     ops.close().await;
                 }
             })

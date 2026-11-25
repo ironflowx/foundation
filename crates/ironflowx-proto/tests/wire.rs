@@ -173,6 +173,26 @@ fn an_event_crosses_whole_but_for_its_times_bound() {
     assert_eq!(EventPage::try_from(sent), Ok(page));
 }
 
+/// No engine stores one (LED-5); what says so holds none of it.
+#[test]
+fn an_event_that_is_not_utf8_is_not_sent() {
+    let bytes = b"secret \xff".to_vec();
+    let data = Event {
+        data: bytes.clone(),
+        ..event()
+    };
+    let metadata = Event {
+        metadata: Some(bytes),
+        ..event()
+    };
+    for event in [data, metadata] {
+        let sent = std::panic::catch_unwind(|| wire::Event::from(event));
+        let message = sent.unwrap_err();
+        let message = message.downcast_ref::<&str>();
+        assert_eq!(message, Some(&"a stored event is not UTF-8 (LED-5)"));
+    }
+}
+
 #[test]
 fn an_event_that_is_not_what_the_proto_says_does_not_decode() {
     let changes: [fn(&mut wire::Event); 7] = [
