@@ -8,6 +8,8 @@ use std::process::{Command, Output, Stdio};
 use cucumber::gherkin::Step;
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
+use ironflowx_proto::wire::FILE_DESCRIPTOR_SET;
+use prost_reflect::DescriptorPool;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -408,24 +410,39 @@ fn version(w: &mut Cli) {
 #[then("its operations are exactly:")]
 fn operations(w: &mut Cli, step: &Step) {
     let answer = w.succeeded();
+    let pool = DescriptorPool::decode(FILE_DESCRIPTOR_SET).unwrap();
+    let cli = pool.get_extension_by_name("ironflowx.v1.cli").unwrap();
+    let summary = pool.get_extension_by_name("ironflowx.v1.summary").unwrap();
+    let proto: BTreeMap<_, _> = pool
+        .services()
+        .flat_map(|service| service.methods().collect::<Vec<_>>())
+        .map(|method| {
+            let options = method.options();
+            let path = options.get_extension(&cli).as_str().unwrap().to_owned();
+            let text = options.get_extension(&summary).as_str().unwrap().to_owned();
+            let rpc = format!("{}/{}", method.parent_service().full_name(), method.name());
+            (path, (rpc, text))
+        })
+        .collect();
     let expected: BTreeMap<_, _> = step.table().unwrap().rows[1..]
         .iter()
         .map(|r| {
+            let path = r[0].as_str();
+            let (rpc, summary) = &proto[path];
+            let changes_state = r[2].parse::<bool>().unwrap();
             (
-                r[0].as_str(),
-                (json!(r[1]), json!(r[2].parse::<bool>().unwrap())),
+                path,
+                json!({
+                    "command": path, "rpc": rpc, "summary": summary,
+                    "scope": r[1], "changes_state": changes_state,
+                }),
             )
         })
         .collect();
     let operations = answer["operations"].as_array().unwrap();
     let actual: BTreeMap<_, _> = operations
         .iter()
-        .map(|op| {
-            (
-                op["command"].as_str().unwrap(),
-                (op["scope"].clone(), op["changes_state"].clone()),
-            )
-        })
+        .map(|op| (op["command"].as_str().unwrap(), op.clone()))
         .collect();
     assert_eq!(operations.len(), expected.len());
     assert_eq!(actual, expected);
@@ -476,17 +493,35 @@ fn write_example(w: &mut Cli, line: String) {
     assert!(schema(&described["output"]).is_valid(&w.succeeded()));
 }
 
+/// A schema must also reject a real answer with one of its guaranteed fields removed.
+fn requires(output: &jsonschema::Validator, answer: &Value, parent: &str, fields: &[&str]) {
+    for field in fields {
+        let mut incomplete = answer.clone();
+        let object = incomplete
+            .pointer_mut(parent)
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        assert!(
+            object.remove(*field).is_some(),
+            "{parent}/{field} was not printed"
+        );
+        assert!(
+            !output.is_valid(&incomplete),
+            "{parent}/{field} is not required"
+        );
+    }
+}
+
 /// SRV-12: what is advertised is what a real engine accepts and the CLI prints.
 #[then("every described example works against a fresh engine with the bootstrap key")]
 fn every_example(_: &mut Cli) {
     let mut w = Cli::new();
     w.run("ironflowx describe", "");
     let overview = w.succeeded();
-    served(&mut w);
-    pointed(&mut w);
-    bootstrap_key(&mut w);
     for op in overview["operations"].as_array().unwrap() {
         let path = op["command"].as_str().unwrap();
+        let mut w = Cli::new();
         w.run(&format!("ironflowx describe {path}"), "");
         let mut described = w.succeeded();
         let input = schema(&described.as_object_mut().unwrap().remove("input").unwrap());
@@ -498,16 +533,39 @@ fn every_example(_: &mut Cli) {
             .unwrap();
         assert_eq!(&described, op);
         assert!(input.is_valid(&example), "{path}: {example}");
+        served(&mut w);
+        pointed(&mut w);
+        bootstrap_key(&mut w);
         w.run(&format!("ironflowx {path} --json -"), &example.to_string());
-        match path {
-            "events get" | "keys revoke" => {
-                assert_eq!(w.ran().status.code(), Some(5), "{path}");
-                assert_eq!(w.envelope()["code"], "not_found", "{path}");
+        if matches!(path, "events get" | "keys revoke") {
+            assert_eq!(w.ran().status.code(), Some(5), "{path}");
+            assert_eq!(w.envelope()["code"], "not_found", "{path}");
+            if path == "keys revoke" {
+                continue;
             }
-            _ => assert!(
-                output.is_valid(&w.succeeded()),
-                "{path}: output fails its schema"
-            ),
+            // The advertised ID is absent. Read a real event to exercise the answer schema.
+            w.run("ironflowx events emit --name describe.probe", "");
+            let emitted = w.succeeded();
+            let id = emitted["event_id"].as_str().unwrap();
+            w.run(&format!("ironflowx events get --event-id {id}"), "");
+        }
+        let answer = w.succeeded();
+        assert!(output.is_valid(&answer), "{path}: output fails its schema");
+        match path {
+            "events get" => requires(&output, &answer, "", &["data", "time"]),
+            "keys create" => {
+                requires(&output, &answer, "", &["info"]);
+                requires(&output, &answer, "/info", &["created_at"]);
+            }
+            "environments list" => requires(&output, &answer, "/environments/0", &["created_at"]),
+            "events emit-batch" => {
+                let items = answer["items"].as_array().unwrap();
+                assert_eq!(items.len(), example["items"].as_array().unwrap().len());
+                for (i, item) in items.iter().enumerate() {
+                    assert!(item.get("ok").is_some(), "{path}: item {i} was refused");
+                }
+            }
+            _ => {}
         }
     }
 }
