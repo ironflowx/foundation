@@ -4,14 +4,15 @@
 # private to ironflowx-cell (architecture.md, "Depends on"), and neither the read store, the runtime
 # nor the wire's libraries may leak through a signature or a trait impl, where a version bump
 # becomes a breaking change. The one exception is the router a door returns, in an unpublished
-# crate. A re-export's line does not say whose type it is, so each is named here: ours.
+# crate. A re-export's line does not say whose type it is, so each is named here: ours. Not caught:
+# one of those names pointed at a dependency's type.
 set -euo pipefail
 crates=$(cd "$(dirname "$0")/../crates" && printf '%s|' * | tr - _)
 # perl: the path's root is what no path and no name precedes. Its $ARGV is perl's.
 # shellcheck disable=SC2016
 found=$(CRATES=${crates%|} perl -ne '
   my $line = $_;
-  if (/^pub use /
+  if (/^pub (use|extern crate) /
       && !/^pub use ironflowx::(authz|cell|core|events|operations|proto|store)$/
       && !/^pub use ironflowx_operations::(Fault|LedgerState|RecoverError|SeedState)$/) {
     print "$ARGV:$.: $_";
@@ -25,7 +26,8 @@ found=$(CRATES=${crates%|} perl -ne '
   }
   close ARGV if eof' "$@")
 if [ -n "$found" ]; then
-  echo "public API naming a dependency's type (wrap it in a private type):"
+  echo "public API naming a dependency's type (wrap it in a private type), or a re-export that" \
+    "$0 does not name:"
   echo "$found"
   exit 1
 fi

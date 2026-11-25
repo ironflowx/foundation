@@ -83,7 +83,8 @@ ci/must-reject.sh rusqlite::error::Error segment_log_core::engine tokio::runtime
   connectrpc::error::ConnectError buffa::error::DecodeError buffa_types::google http::uri::Uri \
   hyper::error::Error hyper_util::client serde_core::ser::Serialize bytes::bytes::Bytes \
   axum::routing::MethodRouter tower::util::BoxService ironflowx_vendor::Handle \
-  ironflowx_proto::ProbeError ironflowx_proto::probe_http connectrpc::client:: -- \
+  ironflowx_proto::ProbeError ironflowx_proto::probe_http connectrpc::client:: \
+  ironflowx_proto::zz_http -- \
   ci/no-dependency-types.sh ci/fixtures/dependency-type.txt
 
 # TEN-3, over every item: rustdoc's JSON of each published crate, private and hidden items included,

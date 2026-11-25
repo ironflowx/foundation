@@ -27,6 +27,8 @@ fn command(data_dir: &Path, listen: &str) -> Command {
 /// A served engine; killed when dropped.
 struct Served {
     child: Child,
+    /// What it has logged so far: its `listening` line.
+    listening: String,
     log: BufReader<ChildStderr>,
     addr: SocketAddr,
 }
@@ -46,14 +48,19 @@ impl Served {
             .spawn()
             .unwrap();
         let mut log = BufReader::new(child.stderr.take().unwrap());
-        let mut line = String::new();
-        log.read_line(&mut line).unwrap();
-        let line: Value = serde_json::from_str(&line).unwrap();
+        let mut listening = String::new();
+        log.read_line(&mut listening).unwrap();
+        let line: Value = serde_json::from_str(&listening).unwrap();
         assert_eq!(line["fields"]["message"], "listening", "{line}");
         let url = line["fields"]["url"].as_str().unwrap();
         let addr: SocketAddr = url.strip_prefix("http://").unwrap().parse().unwrap();
         let addr = SocketAddr::from(([127, 0, 0, 1], addr.port()));
-        let served = Self { child, log, addr };
+        let served = Self {
+            child,
+            listening,
+            log,
+            addr,
+        };
         let started = Instant::now();
         while !get(served.addr, "/ready").starts_with("HTTP/1.0 200 ") {
             assert!(started.elapsed() < Duration::from_secs(30), "not ready");
@@ -62,12 +69,12 @@ impl Served {
         served
     }
 
-    /// Stops it; what it logged after `listening`.
+    /// Stops it; all it logged.
     fn stop(mut self) -> String {
         self.child.kill().unwrap();
-        let mut rest = String::new();
-        self.log.read_to_string(&mut rest).unwrap();
-        rest
+        let mut log = std::mem::take(&mut self.listening);
+        self.log.read_to_string(&mut log).unwrap();
+        log
     }
 }
 

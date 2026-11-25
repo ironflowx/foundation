@@ -1,7 +1,7 @@
 //! The host's accept loop: HTTP/1.1 and cleartext HTTP/2. A connection sends its first request's
 //! head within 10 s, and on HTTP/1.1 each later one within 10 s of its first byte. A later head
-//! that arrives with the request before it (before that one is answered), and later HTTP/2 heads,
-//! count as idle, which has no limit.
+//! that arrives with the request before it (as far as the host has read it when it answers that
+//! one), and later HTTP/2 heads, count as idle, which has no limit.
 
 use std::convert::Infallible;
 use std::io;
@@ -76,7 +76,7 @@ where
 
 /// Times an HTTP/1.1 head from its first byte. hyper's own timer runs from the end of the request
 /// before, which would close an idle connection; the first head has the connection's deadline.
-/// One that arrives before that request is answered is timed from what comes of it after that.
+/// What was read of one before that end counts as idle; what is read after it is timed.
 #[derive(Clone)]
 struct HeadTimer(Arc<AtomicBool>);
 
@@ -260,13 +260,31 @@ mod tests {
         assert_eq!(closed_after(&mut stream).await, None);
         stream.write_all(b"a").await.unwrap();
         assert_10_s(closed_after(&mut stream).await, "more of it");
-        // Before that request is answered.
+    }
+
+    const SLOW: &[u8] = b"GET /slow HTTP/1.1\r\nhost: x\r\n\r\n";
+
+    #[tokio::test(start_paused = true)]
+    async fn a_head_read_before_the_request_before_it_is_answered_counts_as_idle() {
         let mut stream = connect();
-        let slow = b"GET /slow HTTP/1.1\r\nhost: x\r\n\r\n";
-        stream.write_all(slow).await.unwrap();
+        stream.write_all(SLOW).await.unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;
         stream.write_all(b"GET /he").await.unwrap();
         assert_eq!(closed_after(&mut stream).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_rest_of_such_a_head_is_timed_from_that_answer() {
+        let mut stream = connect();
+        stream
+            .write_all(&[SLOW, b"GET /he"].concat())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        stream.write_all(b"a").await.unwrap();
+        // The answer comes a second from now.
+        let after = closed_after(&mut stream).await.unwrap();
+        assert_10_s(Some(after - Duration::from_secs(1)), "its rest");
     }
 
     #[tokio::test(start_paused = true)]
