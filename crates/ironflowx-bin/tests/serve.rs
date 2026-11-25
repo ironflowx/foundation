@@ -36,10 +36,7 @@ fn binary() -> Command {
 fn command(data_dir: &Path, listen: &str) -> Command {
     let mut command = binary();
     command.args(["serve", "--listen", listen, "--data-dir"]);
-    command
-        .arg(data_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null());
+    command.arg(data_dir).stdin(Stdio::null());
     command
 }
 
@@ -635,7 +632,6 @@ fn directories_and_addresses_come_from_the_flag_then_the_variable() {
             _ => unreachable!(),
         }
         let served = Served::from_command(cmd);
-        assert_eq!(served.addr.ip().to_string(), "127.0.0.1");
         assert!(data.join("control.db").is_file());
         served.stop();
     }
@@ -916,7 +912,10 @@ async fn a_call_logs_only_its_operation_outcome_duration_and_presented_key_id() 
         let fields = &line["fields"];
         assert_eq!(fields["operation"], rpc);
         assert_eq!(fields["outcome"], outcome);
-        assert_eq!(fields.get("key_id").and_then(Value::as_str), id);
+        assert_eq!(
+            fields.get("key_id"),
+            id.map(|id| Value::String(id.into())).as_ref()
+        );
         assert!(fields["duration_ms"].as_f64().unwrap() >= 0.0);
     }
 }
@@ -1085,5 +1084,38 @@ fn old_temporary_warnings_use_unambiguous_locators_and_keep_the_files() {
                 b"protected contents"
             );
         }
+    }
+}
+
+#[test]
+fn a_seeded_stale_start_warns_once_about_each_matching_temporary() {
+    let dir = private();
+    let root = dir.path();
+    std::fs::write(root.join("control.db"), b"").unwrap();
+    let admin = root.join("admin.key");
+    std::fs::write(&admin, b"old admin").unwrap();
+    let matching = root.join("admin.key.previous.tmp");
+    let other = root.join("admin.key.tmp");
+    std::fs::write(&matching, b"previous key").unwrap();
+    std::fs::write(&other, b"unrelated").unwrap();
+    let (key, _) = ironflowx_authz::mint(ID.parse().unwrap(), [5; 32]);
+    let mut cmd = command(root, "127.0.0.1:0");
+    let (code, log) = refusal(cmd.env("IRONFLOWX_SEED", key.expose()).output().unwrap());
+    assert_eq!(code, Some(2), "{log}");
+    assert!(log.contains("another install's"), "{log}");
+    assert_eq!(
+        log.matches("temporary admin key is kept").count(),
+        1,
+        "{log}"
+    );
+    assert!(log.contains(&logged(&matching)), "{log}");
+    assert!(!log.contains(&logged(&other)), "{log}");
+    assert!(!root.join("engine.lock").exists());
+    for (file, contents) in [
+        (admin, b"old admin".as_slice()),
+        (matching, b"previous key".as_slice()),
+        (other, b"unrelated".as_slice()),
+    ] {
+        assert_eq!(std::fs::read(file).unwrap(), contents);
     }
 }

@@ -242,17 +242,16 @@ fn prepare(
         .mode(0o700)
         .create(data_dir)
         .map_err(|e| ServeError::DataDir(data_dir.to_owned(), e))?;
+    key_file::warn_temporaries(data_dir);
     let key_path = key_file::path(data_dir);
     if has_seed {
         if key_file::exists(data_dir) && matches!(read_bootstrap(data_dir), Ok(false)) {
             return Err(ServeError::StaleKeyFile(key_path));
         }
-        key_file::warn_temporaries(data_dir);
         return Ok(());
     }
 
     let bootstrap = read_bootstrap(data_dir);
-    key_file::warn_temporaries(data_dir);
     if !matches!(bootstrap, Ok(true)) {
         // There is a second read in open, so even a failed read here may precede a mint.
         match std::fs::symlink_metadata(&key_path) {

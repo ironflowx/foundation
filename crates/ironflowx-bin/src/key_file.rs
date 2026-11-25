@@ -85,8 +85,10 @@ pub fn warn_temporaries(data_dir: &Path) {
         match entry {
             Ok(entry) => {
                 let name = entry.file_name();
-                if name.as_encoded_bytes().starts_with(b"admin.key.")
-                    && name.as_encoded_bytes().ends_with(b".tmp")
+                if name
+                    .as_encoded_bytes()
+                    .strip_prefix(b"admin.key.")
+                    .is_some_and(|rest| rest.ends_with(b".tmp"))
                 {
                     if let Some((path, base)) = locator(data_dir, &name) {
                         tracing::warn!(path, path_base = base, "temporary admin key is kept");
