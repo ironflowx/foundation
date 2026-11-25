@@ -16,12 +16,14 @@ test = false
 
 [dependencies]
 ironflowx-cell.workspace = true
+ironflowx-cli = { path = "../ironflowx-cli" }
 ironflowx-core.workspace = true
 ironflowx-doors = { path = "../ironflowx-doors", features = ["http"] }
 ironflowx-operations.workspace = true
 ironflowx-store.workspace = true
 axum = { version = "0.8.9", default-features = false }
-clap = { version = "4.6.9", default-features = false, features = ["error-context", "help", "std", "usage"] }
+# Exact: ironflowx-cli refuses a clap that prints arguments by what this one does (TEN-3).
+clap = { version = "=4.6.9", default-features = false, features = ["error-context", "help", "std", "usage"] }
 hyper = { version = "1.13.0", default-features = false, features = ["server"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["http1", "http2", "server-auto", "service", "tokio"] }
 tempfile = "3.27.0"
@@ -35,6 +37,8 @@ ironflowx-authz.workspace = true
 ironflowx-core = { workspace = true, features = ["__fault-points"] }
 ironflowx-operations = { workspace = true, features = ["__fault-points"] }
 ironflowx-proto = { workspace = true, features = ["client"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 rusqlite = { version = "0.43.0", default-features = false, features = ["bundled"] }
+rustix = { version = "1.1.6", default-features = false, features = ["pty", "std"] }
 serde_json.workspace = true
 tokio = { version = "1.54.1", default-features = false, features = ["test-util"] }

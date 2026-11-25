@@ -3,6 +3,8 @@
 mod common;
 
 use std::collections::BTreeSet;
+use std::sync::atomic::Ordering::Relaxed;
+use std::time::Duration;
 
 use common::{KEY, serving, whoami};
 use ironflowx_core::{Address, ErrorKind, Secret};
@@ -162,6 +164,35 @@ async fn a_read_no_engine_answers_is_unavailable() {
         assert_eq!((e.kind, e.hint), (ErrorKind::Unavailable, None), "{}", e.message);
         assert!(!e.message.contains(KEY), "{}", e.message);
     }
+}
+
+/// The client ends a call, whatever the engine does, and tells it when.
+#[tokio::test]
+async fn a_call_ends_by_its_timeout() {
+    let late = Duration::from_secs(30);
+    let (addr, operations) = serving(Ok(whoami())).await;
+    operations.hangs.store(true, Relaxed);
+    // One that never answers, and records what it was asked.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let silent = listener.local_addr().unwrap();
+    let asked = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+            assert_ne!(stream.read_buf(&mut head).await.unwrap(), 0);
+        }
+        (stream, String::from_utf8_lossy(&head).to_lowercase())
+    });
+    for addr in [addr, silent] {
+        let client = Client::new(&format!("http://{addr}")).unwrap();
+        let client = client.with_timeout(Duration::from_millis(250));
+        let ended = tokio::time::timeout(late, ask(&client, &call(KEY))).await;
+        let e = ended.expect("in time").unwrap_err();
+        assert_eq!((e.kind, e.hint), (ErrorKind::Unavailable, None));
+    }
+    let asked = tokio::time::timeout(late, asked).await;
+    let (_stream, head) = asked.expect("a call").unwrap();
+    assert!(head.contains("\r\nconnect-timeout-ms: 250\r\n"), "{head}");
 }
 
 #[test]

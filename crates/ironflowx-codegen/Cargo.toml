@@ -1,0 +1,18 @@
+[package]
+name = "ironflowx-codegen"
+description = "Generates the CLI from the proto, at build time. Unpublished."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# No default features: no HTTP client and no TLS, since a schema here refers to no other.
+jsonschema = { version = "0.63.1", default-features = false }
+prost-reflect = { version = "0.16.5", features = ["serde"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+protox = { version = "0.10.0", default-features = false }
+tempfile = "3.27.0"

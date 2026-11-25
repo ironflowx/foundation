@@ -1,6 +1,6 @@
 # Architecture
 
-One environment's commit path and the engine in front of it, as foundation crates linked into a host's or an embedder's process; and the first host, `ironflowx serve`, which serves the engine over HTTP.
+One environment's commit path and the engine in front of it, as foundation crates linked into a host's or an embedder's process; and the first host, `ironflowx serve`, which serves the engine over HTTP, with a CLI that calls one.
 
 ## C1: Context
 
@@ -10,7 +10,7 @@ The engine is a library: a host opens it on a data directory, and every call to 
 
 `ironflowx serve` is a host as a process. Outside it:
 
-- a client calls the engine over HTTP, by Connect, gRPC or gRPC-Web, with a key, and reaches it no other way;
+- a client calls the engine over HTTP, by Connect, gRPC or gRPC-Web, with a key, and reaches it no other way; the CLI, in the same binary, is one, run by an agent in a shell;
 - an orchestrator watches `/health` and `/ready`, with no key;
 - the operator takes the admin key from `admin.key` in the data directory.
 
@@ -24,7 +24,9 @@ Around the engine, not in the diagram, each depending on what its line names:
 
 - `ironflowx-proto`, with a wire feature on: the proto, its generated messages and their mapping, and the proto client. It links `connectrpc` and `buffa`, and at build time `connectrpc-build` and `protox`. With none on, it links only `ironflowx-core`.
 - `ironflowx-doors`: the HTTP door, on `ironflowx-proto` and `ironflowx-core`, and no engine crate (SRV-1). Unpublished.
-- `ironflowx-bin`: the `ironflowx` binary and its host, on `ironflowx-doors`, `ironflowx-operations`, `ironflowx-cell`, `ironflowx-store` and `ironflowx-core`. Unpublished.
+- `ironflowx-cli`: the CLI, on `ironflowx-proto` and `ironflowx-core`, and no engine crate (SRV-1); at build time, on `ironflowx-codegen`. Unpublished.
+- `ironflowx-codegen`: the generator, which `ironflowx-cli`'s `build.rs` calls; on no crate of ours. Unpublished.
+- `ironflowx-bin`: the `ironflowx` binary and its host, on `ironflowx-cli`, `ironflowx-doors`, `ironflowx-operations`, `ironflowx-cell`, `ironflowx-store` and `ironflowx-core`. Unpublished.
 
 ## C3: Modules and seams
 
@@ -38,6 +40,12 @@ In front of the engine, in `ironflowx serve`, a call goes through:
 2. the HTTP door, which decodes it, takes its key from `Authorization`, and converts it to an `Operations` request;
 3. the slot, which answers for the engine until it is open;
 4. the engine, through `Operations`; the answer, or the error, goes back the same way.
+
+A CLI command is a client's side of that:
+
+1. the CLI reads the command line, the key it was given and the engine's URL;
+2. the generated call of the command asks the proto client, through `Operations`, which sends it with the key and the deadline;
+3. the answer, as wire JSON with its defaults, goes to stdout; a failure, as the envelope, to stderr, with its kind's exit code ([CLI](#cli)).
 
 `Operations` is a real seam: the engine in process and the proto client over Connect are its two adapters.
 
@@ -60,11 +68,13 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 | Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time; reports whether it has failed, and signals a ledger fault | `open`, `open_blocking`, `open_existing_blocking`, `submit`, `read`, `state`, `faulted`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
 | Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types, which the wire maps onto (D53) | `Operations` trait and messages | `ironflowx-proto` |
-| Proto | Defines an operation once, on the wire: today `whoami` | `proto/ironflowx/v1/*.proto` | `ironflowx-proto` |
+| Proto | Defines an operation once, on the wire: today `whoami` | `proto/ironflowx/v1/*.proto`: services, messages, the method options `cli`, `summary` and `example`, the field option `json_text` | `ironflowx-proto` (the `.proto` files; compiled, `wire::FILE_DESCRIPTOR_SET`) |
 | Wire mapping | Converts `Operations` requests and answers to and from wire messages, validating what arrives | `TryFrom` for requests, both ways; `From` for answers sent and `TryFrom` for answers received; `OpError` ↔ `ErrorInfo` ↔ the Connect error | `ironflowx-proto` (`wire`, `server`) |
-| Proto client | Calls `Operations` over Connect, sending each `Call`'s key | `Client::new(url)`, `Operations` | `ironflowx-proto` (`client`) |
+| Proto client | Calls `Operations` over Connect, sending each `Call`'s key | `Client::new(url)`, `with_timeout`, `Operations` | `ironflowx-proto` (`client`) |
 | HTTP door | Serves `Operations` over Connect, gRPC and gRPC-Web, with `/health` and `/ready`. Holds no rule | `router(slot)`, `Slot`, `Readiness` | `ironflowx-doors` (`http`) |
 | Host | Turns a data directory and an address into a served engine | `ironflowx serve`, `admin.key`, exit codes | `ironflowx-bin` |
+| CLI | Calls an operation from a shell | The generated commands, today `whoami`; `version`; the envelope and exit codes | `ironflowx-cli` |
+| Generator | Derives the CLI's commands from the proto at build time, and refuses a proto that does not say enough | `generate(descriptor_set, out_dir)`, from `build.rs` | `ironflowx-codegen` |
 | Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records; reports its health and a ledger fault to the host | `Engine::open`, `health`, `faulted`, `close`, `Operations`, `recover_admin_key` | `ironflowx-operations` |
 | Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create` | `ironflowx-authz` |
 | Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `undo_bootstrap`, `mark_ledger_created`, `finish_bootstrap`, `check_seed`, `apply_seed`, `lookup_key`, `record_expiry`, `insert_key`, `insert_recovered`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
@@ -97,7 +107,7 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 | `Operations` | The engine (`Engine`) · the proto client (`Client`) | Both. `Client` carries `whoami`; every other operation is `Internal` from it until its messages join the proto |
 | `Clock` | `HostClock` · `ManualClock`, which a test sets and steps, backwards too | Both, in `ironflowx-cell`. The behaviors and the crash test use `ManualClock` |
 | Control plane | SQLite · a shared database for clusters | SQLite only: hypothetical, so no trait |
-| Ledger, event rules, credentials, door, host | One adapter each | Module interfaces, not seams |
+| Ledger, event rules, credentials, door, host, CLI, generator | One adapter each | Module interfaces, not seams |
 
 The segment log has a storage seam of its own, private to `segment-log-core`; foundation does not reach it.
 
@@ -151,7 +161,10 @@ const fn required_scope(op: Operation) -> Option<Scope>;   // an exhaustive matc
 // RevokeKeyRequest { key_id: String }   // an ID that does not parse is NotFound
 
 // ironflowx-proto, feature "client" (tokio): the proto client. It names no dependency's type.
-impl Client { fn new(url: &str) -> Result<Client, InvalidUrl>; }   // http://host[:port][/path], no user, query or fragment
+impl Client {
+    fn new(url: &str) -> Result<Client, InvalidUrl>;       // http://host[:port][/path], no user, query or fragment
+    fn with_timeout(self, timeout: Duration) -> Client;    // the most each call takes; a new client sets no end
+}
 impl Operations for Client { .. }   // sends Call's key as the Bearer key; Call::anonymous() sends none
 
 // ironflowx-proto, feature "wire": the messages connectrpc-build generates from the protox-compiled set, and their mapping.
@@ -165,6 +178,7 @@ impl From<&OpError> for wire::ErrorInfo { }
 impl TryFrom<wire::ErrorInfo> for OpError { type Error = wire::Undecodable; }       // an unknown kind is no ErrorInfo
 fn wire::connect_error(e: &OpError) -> ConnectError;        // the kind's code, the message, ErrorInfo as a detail
 fn wire::op_error(e: &ConnectError) -> Option<OpError>;     // the engine's own error, if the answer carries one
+const wire::FILE_DESCRIPTOR_SET: &[u8];                     // the compiled proto, imports and custom options included
 
 // ironflowx-doors; `router` behind the feature "http"
 trait Readiness: Send + Sync { fn ready(&self) -> impl Future<Output = Result<(), WaitingOn>> + Send; }
@@ -174,6 +188,14 @@ impl<O: Operations, R: Readiness> Slot<O, R> {              // Starting → Open
     fn open(&self, operations: Arc<O>, readiness: R);       // once; panics on a second
 }
 fn router<O: Operations + 'static, R: Readiness + 'static>(slot: Arc<Slot<O, R>>) -> axum::Router;
+
+// ironflowx-codegen: build time only
+fn generate(descriptor_set: &[u8], out_dir: &Path) -> Result<(), CodegenError>;   // writes out_dir/cli.rs; what it refuses: Proto
+
+// ironflowx-cli. The host adds its commands to `root`, and runs its own.
+fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode>;   // Err: --help printed its text, or a usage error its envelope;
+                                                                 // or clap would print the arguments, so none was read
+fn run(matches: &ArgMatches) -> ExitCode;                        // a command of the CLI's own
 
 // ironflowx-bin (tokio)
 async fn serve(data_dir: &Path, listen: SocketAddr) -> Result<Infallible, ServeError>;
@@ -355,13 +377,15 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 | `Unavailable` | The ledger failed (append, fold, read store, a panic of its writer or of a `read` query, or a `read` that finds its runtime shut down before its query ran) and refuses every call until it is reopened. Reads waiting at the gate end with it | After reopen |
 | `Unavailable` | A control-plane read or write failed during admission or a handler: `lookup_key`, `environment`, `list_keys` or a key change. The call fails closed and changes nothing, but for an [unsettled commit](#after-a-failed-open-or-change) (D48); the engine stays open (D44). A failure to record an expiry is not this: the call keeps its uniform refusal. A `create_key` whose answer was lost may have committed. Once a call has panicked under the control plane's lock (a host `Clock` that panics), every later call that reaches the control plane answers so until the engine is reopened, though its hint still says at once | Yes, at once; after such a panic, after reopen |
 | `Unavailable` | Through a door, the engine is not open yet: every call, with the hint `the engine is starting` | Yes |
-| `Unavailable` | From the proto client, a read that no engine answered: no connection, no answer, a proxy's error, or an answer that does not decode | Yes |
+| `Unavailable` | From the proto client, a read that no engine answered: no connection, no answer, none by the client's timeout, a proxy's error, or an answer that does not decode | Yes |
 | `Unauthenticated` | No key, or an empty one: `authentication required` | No |
 | `Unauthenticated` | A malformed key: `invalid API key`, with the key format in `hint` | No |
 | `Unauthenticated` | An unknown key ID, a wrong secret, a revoked or expired key, or a key of another environment or incarnation: `invalid API key`, the same answer for each, with no hint, whether or not recording an expiry failed (D29, D30). Also a key change whose calling key was revoked or expired before its transaction (D43) | No |
 | `PermissionDenied` | The key lacks the operation's scope: `missing scope: <scope>`, with `hint` saying to create or use a key with that scope (D31) | No |
 | `ResourceExhausted` | `create_key` when 1,000 created keys hold a slot: `key limit reached`, with `hint` saying to revoke keys, expired ones first (D44) | After a revoke, or once an expiry is recorded |
 | `Internal` | From the proto client, an operation it does not carry yet: every one but `whoami`; nothing is sent | No |
+| `Invalid` | From the CLI, before it sends anything: a usage error ([CLI](#cli)) | No |
+| `Internal` | From the CLI: an answer it cannot write to stdout, or one that repeats the key the CLI was given | No |
 
 | Kind | `retryable` | Exit | Connect code |
 |---|---|---|---|
@@ -541,7 +565,7 @@ What `ironflowx serve` adds to it:
 | `<root>/admin.key` | The minted admin key and a newline, mode `0400`. Never overwritten. Deleting it is the operator's call |
 | `<root>/admin.key.<random>.tmp` | Only after a crash while `admin.key` was written: may hold the whole key, mode `0400` |
 
-**Where a secret may appear.** A served engine's key text reaches only these places: `admin.key` and the temporary file it is linked from, and the `Authorization` header of a call.
+**Where a secret may appear.** A served engine's key text reaches only these places: `admin.key` and the temporary file it is linked from, the `Authorization` header of a call, and the variable or the file the CLI was given it in.
 
 A ledger's directory, `<dir>`:
 
@@ -560,14 +584,33 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 | File | Holds |
 |---|---|
 | `identity.proto` | `IdentityService/Whoami`, its request and its answer |
+| `options.proto` | The custom options, which the generator reads |
 | `error.proto` | `ErrorInfo { kind, message, hint }`, the error a call fails with |
+
+| Option | On | Says |
+|---|---|---|
+| `(ironflowx.v1.cli)` | Method | The command, as words in kebab case: `"events emit"`. Required |
+| `(ironflowx.v1.summary)` | Method | One line about it. Required |
+| `(ironflowx.v1.example)` | Method | One request, as wire JSON. Required |
+| `(ironflowx.v1.json_text)` | Field | A `string` that holds JSON text |
+| `idempotency_level = NO_SIDE_EFFECTS` | Method | A read: Connect may call it with GET |
+
+**Generator.** `ironflowx-cli`'s `build.rs` gives `generate` the descriptor set, so a proto it refuses is a build that fails (D52). It refuses:
+
+- a method without a `cli`, a `summary` or an `example` (a blank one is none), a `cli` that is not kebab-case words, a `summary` of more than one line, and a command that is another's, or the group another is in;
+- an example that is not JSON, that its request's schema does not allow, or that does not decode as the request (SRV-12): a 64-bit number, a time or a `oneof` can fail only the latter. The schema is JSON Schema 2020-12, with `additionalProperties: false`: no field the request does not have, at any depth. It requires none, a time is in whole milliseconds, and of a `json_text` field it asks only a string, whose text it does not read;
+- a field, in any message of ours, whose `json_name` is not its own snake_case name (D78);
+- `json_text` on a field that is not a `string`, and a type it has no schema for: today bytes, floats, enums, maps and Google's messages other than `Timestamp`.
+
+It does not know the hand-written commands: one that takes a name of theirs, or starts with it, panics each start of a debug build, the tests' included.
+
+It writes `cli.rs`: each command with its summary, the fields of its answer that need a default, and its call through `Operations`. A request's fields have no flags yet, so a command sends the empty request.
 
 | Rule | Is |
 |---|---|
 | Names | `Operation::rpc()` is `<package>.<Service>/<Method>`: today only `Whoami`'s is served |
-| Field names in JSON | The proto's snake_case names: every multiword field sets `json_name` to its own name (D78). A camelCase name is an unknown field |
+| Field names in JSON | The proto's snake_case names: every multiword field sets `json_name` to its own name (D78). A camelCase name is an unknown field. The generator refuses a field without it |
 | Unknown JSON fields | Ignored, as protobuf does |
-| A read | Says `idempotency_level = NO_SIDE_EFFECTS`, so Connect may call it with GET |
 | Presence | A field whose absence means something (`expires_at`, `hint`) is `optional`; absent is `None` |
 | Times | `google.protobuf.Timestamp`, RFC 3339 in JSON. A stored time outside years 0001–9999, which only an in-process caller or a wrong clock can make, is sent as the nearer bound, `0001-01-01T00:00:00Z` or `9999-12-31T23:59:59.999Z` (D76); the stored value still decides expiry |
 | IDs | Strings in their text form |
@@ -622,7 +665,25 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 
 **Log.** One JSON object per line on stderr, at `info` and above.
 
-**Exit.** 2 for a stale `admin.key` or a command line it cannot read; 1 for any other refusal, whose message is its last log line.
+**Exit.** 2 for a stale `admin.key`; 1 for any other refusal; the message of either is its last log line. A command line it cannot read exits 2, with an envelope ([CLI](#cli)).
+
+## CLI
+
+`ironflowx <command>` calls an engine and prints what it answers. An agent in a shell branches on the exit code and reads JSON (D64, D65).
+
+| Part | Rule |
+|---|---|
+| Commands | One per method of the proto, generated (D52): today `whoami`. Hand-written: `version` here, `serve` in the host |
+| Engine | `--url`, else `IRONFLOWX_URL`, else `http://127.0.0.1:9310`; `http://` only |
+| Key | `--key-file <path>`, else `IRONFLOWX_KEY`, else none, with surrounding whitespace trimmed. Nothing else: the CLI never reads `admin.key` unasked (D61). No key, and an empty one, is a call with no key, which the engine refuses; a file or a variable that is there and empty is still the one that was given. Text that is not UTF-8 is a malformed key |
+| Output | The answer as wire JSON on stdout: one line, or indented if stdout is a terminal. Every field that is not `optional` is printed, defaults included; an absent `optional` field stays absent. (A message field has no default: one that is not `optional` is always set, since the answer printed is mapped from the domain type, D53.) The wire is unchanged. `--help` prints text and exits 0: the one exception |
+| Errors | One line on stderr, the envelope; its kind's [exit code](#errors); nothing on stdout, unless a write to it failed midway. What answered may be no engine, so a message or a hint that repeats 43 characters in a row of the key the CLI was given, as many as a secret has, is not printed, and the envelope says so in its place; nor is an answer that does: `Internal`, also one that holds the caller's own key with reason, as stored event data can. A repeat that was changed (its case, split, encoded or cut shorter) is not found. A message can repeat the URL's path, where no key goes (D55) |
+| Usage errors | An argument that is missing, unknown or of the wrong form, a URL that is not `http://host[:port][/path]`, and a `--key-file` that cannot be read, are `Invalid`, exit 2, and nothing is sent. The message is one line and names a bad argument, its whitespace as single spaces, but `<hidden>` for a word that holds a key's `ixk_` or is as long as a key's secret; it never holds what `--key-file`, `--url` or `IRONFLOWX_URL` was set to, which may be or hold a secret. A build with clap's `debug` feature, which prints each argument as it parses it, reads none: every start is `Invalid`, `clap is built with its debug feature` (TEN-3) |
+| Deadline | 30 s a call, sent as `Connect-Timeout-Ms` and held to by the client too: `Unavailable` after it, for a read |
+
+**The envelope** of a failure: `{"code": …, "message": …, "retryable": …, "hint": …}`. `code` is the kind's name in snake_case, as in `ErrorInfo`; `retryable` is `ErrorKind::retryable()`; `hint` is absent when there is none.
+
+**`version`** prints `{"version": …, "commit": …, "protocol": "ironflowx.v1"}`, and asks no engine. `commit` is the one the binary was built from, or `unknown` if it was not built in a git checkout.
 
 ## Depends on
 
@@ -636,14 +697,17 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 | `getrandom` | A caret range (D26) | `new_env_ref`; a key's secret | OS random source |
 | `sha2`, `subtle`, `base64` | Caret ranges | Credentials: the key digest, its constant-time comparison, the key text | Pure: `ci/purity/ironflowx-authz.allow` names everything they pull in, `libc` included (only `cpufeatures`' CPU detection on AArch64 uses it) |
 | `zeroize` | A caret range | `Secret` is zeroed on drop | In `ironflowx-core.allow` |
-| `tokio` | A caret range (D26) | `spawn_blocking` for open, reads, close, admission and control-plane calls; the submission queue; the read gate; the answer to a submission; the host's runtime and listener | |
+| `tokio` | A caret range (D26) | `spawn_blocking` for open, reads, close, admission and control-plane calls; the submission queue; the read gate; the answer to a submission; the host's runtime and listener; the CLI's runtime | |
 | `connectrpc`, `connectrpc-build` | Caret ranges (0.9.x), without default features: no gzip, no zstd | `ironflowx-proto`'s wire features and `ironflowx-doors`: the server and the client; code from a precompiled descriptor set | Connect, gRPC and gRPC-Web on the same handlers (D50) |
 | `buffa`, `buffa-types` | Caret ranges (0.9.x) | `ironflowx-proto`'s wire features: generated messages, `Timestamp` | |
 | `protox` | A caret range (0.10.x) | `ironflowx-proto`'s build, with a wire feature on | Compiles the proto in Rust; `encode_file_descriptor_set()` keeps custom options (D51) |
+| `prost-reflect` | A caret range (0.16.x) | `ironflowx-codegen`: reads the descriptor set and its custom options, at build time | Keeps options it does not know (D52) |
+| `jsonschema` | A caret range, without default features: it fetches nothing | `ironflowx-codegen`: checks each example, at build time | 2020-12, `format` checked (SRV-12) |
 | `base64`, `http`, `serde` | Caret ranges | `ironflowx-proto`'s wire features: an error detail's value, the client's URL and header, the generated JSON | |
 | `axum` | A caret range | `ironflowx-doors`: `/health` and `/ready` beside the RPCs | |
 | `hyper`, `hyper-util` | Caret ranges | `ironflowx-bin`: the accept loop | hyper times an HTTP/1.1 head with the `Timer` it is given |
-| `clap`, `tracing`, `tracing-subscriber`, `tempfile` | Caret ranges | `ironflowx-bin`: the command line, the log, the temporary key file | |
+| `clap` | Pinned exactly, in two unpublished crates: a later one could keep its tracing and drop the backtrace that shows it, silently | `ironflowx-cli`, `ironflowx-bin`: the command line | A usage error's first paragraph is its message. With its `debug` feature, and only then, an error made from no text prints more than `error: `: a backtrace, by which `parse` knows that clap would print the arguments (TEN-3) |
+| `tracing`, `tracing-subscriber`, `tempfile` | Caret ranges | `ironflowx-bin`: the log, the temporary key file | |
 
 How the ledger uses the log:
 

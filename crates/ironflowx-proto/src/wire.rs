@@ -24,6 +24,11 @@ pub use generated::ironflowx::v1::{ErrorInfo, WhoamiRequest, WhoamiResponse};
 #[cfg(feature = "server")]
 pub use generated::ironflowx::v1::{IdentityService, IdentityServiceServer};
 
+/// The compiled proto, as an encoded `FileDescriptorSet`: every file, its imports and their custom
+/// options.
+#[cfg(feature = "wire")]
+pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptors.bin"));
+
 /// The most a request body or a message holds, in the door and the client.
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 

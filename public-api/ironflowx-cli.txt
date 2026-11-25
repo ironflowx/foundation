@@ -1,0 +1,3 @@
+pub mod ironflowx_cli
+pub fn ironflowx_cli::parse(clap_builder::builder::command::Command) -> core::result::Result<clap_builder::parser::matches::arg_matches::ArgMatches, std::process::ExitCode>
+pub fn ironflowx_cli::run(&clap_builder::parser::matches::arg_matches::ArgMatches) -> std::process::ExitCode

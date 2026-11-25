@@ -3,9 +3,10 @@
 # LED-15, D17 and D36: the pure crates' dependency allowlists, the SequencedTime constructor
 # outside the ledger, SubmitAs::key outside the credentials crate, Grant::submit_as outside the
 # engine, the key digest codec outside the control plane (TEN-4), every crate-wide ban in every
-# clippy.toml; the doors' engine crates (SRV-1); the crash test's fault
-# points in no published build; ci/red.sh, which records test checks landing red; and each check
-# rejecting its fixture. The clippy job enforces the call bans on the real crates.
+# clippy.toml; the doors' and the CLI's engine crates (SRV-1); what the generator refuses (SRV-2,
+# SRV-12); a clap that prints arguments, refused (TEN-3); the crash test's fault points in no
+# published build; ci/red.sh, which records test checks landing red; and each check rejecting its
+# fixture. The clippy job enforces the call bans on the real crates.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -18,7 +19,7 @@ ci/clippy-bans.sh .
 ci/no-digest-codec.sh crates
 # Comments may name the constructor.
 ci/no-key-attribution.sh ci/fixtures/key-attribution-in-comment
-ci/no-engine-deps.sh crates/ironflowx-doors/Cargo.toml
+ci/no-engine-deps.sh crates/ironflowx-doors/Cargo.toml crates/ironflowx-cli/Cargo.toml
 # A dev-dependency does not ship.
 ci/no-engine-deps.sh ci/fixtures/engine-dep/allowed/Cargo.toml
 ci/no-fault-points.sh crates
@@ -62,8 +63,18 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "engine-dep/target-only/Cargo.toml: engine crate: 'ironflowx-authz'" \
     "engine-dep/at-build/Cargo.toml: engine crate: 'ironflowx-events'" \
     "engine-dep/through/Cargo.toml: engine crate: 'ironflowx-operations'" \
-    "engine-dep/facade/Cargo.toml: engine crate: 'ironflowx'" -- \
-    ci/no-engine-deps.sh ci/fixtures/engine-dep/{direct,renamed,optional,target-only,at-build,through,facade}/Cargo.toml
+    "engine-dep/facade/Cargo.toml: engine crate: 'ironflowx'" \
+    "engine-dep/generator/Cargo.toml: linked at run time: 'ironflowx-codegen'" -- \
+    ci/no-engine-deps.sh ci/fixtures/engine-dep/{direct,renamed,optional,target-only,at-build,through,facade,generator}/Cargo.toml
+  # Each refusal fails a build of its own; the package that has no fault builds.
+  cargo test -q --locked -p accepted --manifest-path ci/fixtures/codegen/Cargo.toml
+  ci/must-reject.sh \
+    "no_cli.EventService.Emit: has no (ironflowx.v1.cli)" \
+    "no_summary.EventService.Emit: has no (ironflowx.v1.summary)" \
+    "no_example.EventService.Emit: has no (ironflowx.v1.example)" \
+    "bad_example.EventService.Emit: its (ironflowx.v1.example) fails its schema: " \
+    "no_json_name.EmitRequest.event_name: its json_name, eventName, is not snake_case" -- \
+    cargo build --locked --keep-going --workspace --manifest-path ci/fixtures/codegen/Cargo.toml
   ci/must-reject.sh "incompatible with previous forbid" -- \
     cargo clippy --locked --manifest-path ci/fixtures/allow-past-ban/Cargo.toml -- -D warnings
   ci/must-reject.sh 'disallowed method `ironflowx_core::SequencedTime::from_event_clock`' -- \
@@ -100,6 +111,14 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "target-only/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" -- \
     ci/no-fault-points.sh ci/fixtures/fault-points
 }
+
+# TEN-3: built with clap's tracing, the binary reads no argument.
+CARGO_TARGET_DIR=target/clap-debug cargo build -q --locked -p ironflowx-bin --features clap/debug
+ci/clap-trace.sh target/clap-debug/debug/ironflowx
+for traces in stderr stdout code; do
+  ci/must-reject.sh "clap-trace: ci/fixtures/clap-trace/$traces" -- \
+    ci/clap-trace.sh "ci/fixtures/clap-trace/$traces"
+done
 
 # ci/must-reject.sh takes a pattern in one line of the output, no fewer, no more and no other's.
 ci/must-reject.sh "with 'BadType' in 0 lines" -- \

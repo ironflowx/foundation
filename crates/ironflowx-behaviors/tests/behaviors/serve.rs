@@ -53,8 +53,19 @@ pub fn build() {
     BINARY.set(binary).expect("built once");
 }
 
+/// The binary, with no variable of ours set.
+pub fn command() -> Command {
+    let mut command = Command::new(BINARY.get().expect("the binary is built"));
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("IRONFLOWX_") {
+            command.env_remove(name);
+        }
+    }
+    command
+}
+
 /// A started `ironflowx serve`, killed when dropped, and what it has logged.
-struct Served {
+pub struct Served {
     child: Child,
     log: Arc<Mutex<Vec<String>>>,
     /// Ends once the whole log is in `log`.
@@ -76,14 +87,8 @@ impl Served {
         self.log()
     }
 
-    fn start(data_dir: &Path, listen: &str) -> Self {
-        let mut command = Command::new(BINARY.get().expect("the binary is built"));
-        for (name, _) in std::env::vars_os() {
-            if name.to_string_lossy().starts_with("IRONFLOWX_") {
-                command.env_remove(name);
-            }
-        }
-        let mut child = command
+    pub fn start(data_dir: &Path, listen: &str) -> Self {
+        let mut child = command()
             .args(["serve", "--listen", listen, "--data-dir"])
             .arg(data_dir)
             .stdin(Stdio::null())
@@ -120,12 +125,12 @@ impl Served {
             .collect()
     }
 
-    fn url(&self) -> String {
+    pub fn url(&self) -> String {
         until("listening", || self.listening().into_iter().next())
     }
 
     /// Waits until `/ready` answers 200.
-    fn ready(&self) {
+    pub fn ready(&self) {
         let url = self.url();
         until("ready", || (get(&url, "/ready") == 200).then_some(()));
     }

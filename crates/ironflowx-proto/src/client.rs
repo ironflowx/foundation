@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::net::Ipv6Addr;
+use std::time::Duration;
 
 use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
 use connectrpc::{CompressionRegistry, ConnectError};
@@ -24,6 +25,7 @@ use crate::{
 /// It carries `whoami`; every other operation is `Internal` until its messages join the proto.
 pub struct Client {
     identity: IdentityServiceClient<HttpClient>,
+    timeout: Option<Duration>,
 }
 
 impl fmt::Debug for Client {
@@ -80,12 +82,31 @@ impl Client {
             .with_compression(CompressionRegistry::new());
         Ok(Self {
             identity: IdentityServiceClient::new(HttpClient::plaintext(), config),
+            timeout: None,
         })
+    }
+
+    /// This client, giving each call `timeout`: it ends by then, and the engine is told to stop. A
+    /// new client gives a call no end.
+    #[must_use]
+    pub fn with_timeout(self, timeout: Duration) -> Self {
+        Self {
+            timeout: Some(timeout),
+            ..self
+        }
+    }
+
+    fn options(&self, cx: &Call) -> CallOptions {
+        let options = with_key(cx);
+        match self.timeout {
+            Some(timeout) => options.with_timeout(timeout),
+            None => options,
+        }
     }
 }
 
 /// Sends what `cx` holds: no header, or the key with the Bearer scheme.
-fn options(cx: &Call) -> CallOptions {
+fn with_key(cx: &Call) -> CallOptions {
     let Some(key) = cx.key() else {
         return CallOptions::default();
     };
@@ -129,7 +150,8 @@ impl Operations for Client {
     /// The engine's, unchanged; `Unavailable` if it did not answer.
     async fn whoami(&self, cx: &Call, req: WhoamiRequest) -> Result<Whoami, OpError> {
         let req = req.try_into()?;
-        let answer = self.identity.whoami_with_options(req, options(cx)).await;
+        let options = self.options(cx);
+        let answer = self.identity.whoami_with_options(req, options).await;
         let answer = answer.map_err(|e| read_failed(&e))?.into_owned();
         answer.try_into().map_err(|e: wire::Undecodable| OpError {
             kind: ErrorKind::Unavailable,

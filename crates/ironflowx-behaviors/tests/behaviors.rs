@@ -1,7 +1,10 @@
 //! The behavior scenarios in `docs/behaviors/`, each file on its own World: an engine on a
-//! temporary directory with a `ManualClock` (D20), or, for `serve.feature`, the `ironflowx` binary
-//! on one. Steps call `Operations`, never a URL, but for the binary's `/health` and `/ready`.
+//! temporary directory with a `ManualClock` (D20), or, for `serve.feature` and `cli.feature`, the
+//! `ironflowx` binary on one. Steps call `Operations` or the CLI, never a URL, but for the binary's
+//! `/health` and `/ready`.
 
+#[path = "behaviors/cli.rs"]
+mod cli;
 #[path = "behaviors/serve.rs"]
 mod serve;
 #[path = "behaviors/tenancy.rs"]
@@ -786,6 +789,7 @@ const EVENT_RUNS: usize = 95;
 
 /// Every feature file in `docs/behaviors/` and its scenario declarations.
 const SCENARIOS: &[(&str, usize)] = &[
+    ("cli.feature", 15),
     ("events.feature", 41),
     ("serve.feature", 26),
     ("tenancy.feature", 40),
@@ -831,6 +835,7 @@ async fn main() {
         .await;
     let (tenancy_failed, tenancy_passed) = tenancy::run(Unescaped).await;
     let (serve_failed, serve_passed) = serve::run(Unescaped).await;
+    let (cli_failed, cli_passed) = cli::run(Unescaped).await;
     assert!(!events.execution_has_failed(), "events.feature failed");
     let passed = events.scenarios_stats().passed;
     assert_eq!(passed, EVENT_RUNS, "events.feature: scenarios run");
@@ -842,4 +847,6 @@ async fn main() {
     );
     assert!(!serve_failed, "serve.feature failed");
     assert_eq!(serve_passed, serve::RUNS, "serve.feature: scenarios run");
+    assert!(!cli_failed, "cli.feature failed");
+    assert_eq!(cli_passed, cli::RUNS, "cli.feature: scenarios run");
 }
