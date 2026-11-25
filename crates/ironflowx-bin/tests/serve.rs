@@ -86,6 +86,12 @@ fn get(addr: SocketAddr, path: &str) -> String {
     answer
 }
 
+/// `path` as a log line, which is JSON, holds it.
+fn logged(path: &Path) -> String {
+    let text = serde_json::to_string(path).unwrap();
+    text[1..text.len() - 1].to_owned()
+}
+
 /// Runs a start that must fail: its exit code and its log.
 fn refused(data_dir: &Path, listen: &str) -> (Option<i32>, String) {
     let out = command(data_dir, listen).output().unwrap();
@@ -113,7 +119,7 @@ fn the_first_start_writes_the_key_and_a_later_one_keeps_what_is_there() {
     let written = std::fs::read_to_string(&key_file).unwrap();
     let key = written.strip_suffix('\n').unwrap();
     assert_eq!((key.len(), &key[..4]), (84, "ixk_"));
-    assert!(log.contains(key_file.to_str().unwrap()), "{log}");
+    assert!(log.contains(&logged(&key_file)), "{log}");
     assert!(!log.contains(&key[41..]), "{log}");
     assert!(!log.contains("TLS proxy"), "{log}");
     let names: Vec<_> = std::fs::read_dir(&data_dir)
@@ -245,7 +251,7 @@ fn any_other_refusal_exits_1_and_names_it() {
     for data_dir in [file.join("data"), file, link] {
         let (code, log) = refused(&data_dir, "127.0.0.1:0");
         assert_eq!(code, Some(1), "{log}");
-        let path = data_dir.display();
+        let path = logged(&data_dir);
         assert!(log.contains(&format!("cannot create {path}: ")), "{log}");
     }
 }
