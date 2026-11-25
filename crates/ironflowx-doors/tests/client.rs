@@ -382,43 +382,49 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
     // A WhoamiResponse or a CreateKeyResponse whose first field is "x"; as a page, one that holds
     // a message that does not decode.
     let short = b"\n\x01x";
+    // Each with the Connect code the library makes of it.
     let answers = [
         // Holds nothing, as a revoke's answer does, and a page with nothing.
-        http("200 OK", "application/proto", b""),
+        ("unknown", http("200 OK", "application/proto", b"")),
         // As that, but none of Connect's.
-        http("204 No Content", "application/proto", b""),
-        http("202 Accepted", "application/proto", b""),
-        b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n".to_vec(),
-        http("200 OK", "application/protobuf", b""),
-        http("200 OK", "application/proto, text/html", b""),
+        ("unknown", http("204 No Content", "application/proto", b"")),
+        ("unknown", http("202 Accepted", "application/proto", b"")),
+        ("unknown", b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n".to_vec()),
+        ("unknown", http("200 OK", "application/protobuf", b"")),
+        ("unknown", http("200 OK", "application/proto, text/html", b"")),
         // A created key, in the body of an error that is not the engine's.
-        http("502 Bad Gateway", "application/proto", &key),
-        http("502 Bad Gateway", "application/json", &message),
-        [b"HTTP/1.1 502 Bad Gateway\r\n\r\n", &*key].concat(),
-        vec![],
-        http("401 Unauthorized", "text/html", b"<html>"),
-        http("503 Service Unavailable", "text/html", b"<html>"),
-        http("200 OK", "text/html", b""),
-        http("200 OK", "application/proto", b"\x7f"),
-        http("200 OK", "application/proto", short),
-        http("200 OK", "application/proto", &key),
-        http("200 OK", "application/proto", &cut),
+        ("unavailable", http("502 Bad Gateway", "application/proto", &key)),
+        ("unavailable", http("502 Bad Gateway", "application/json", &message)),
+        ("unavailable", [b"HTTP/1.1 502 Bad Gateway\r\n\r\n", &*key].concat()),
+        ("unavailable", vec![]),
+        ("unauthenticated", http("401 Unauthorized", "text/html", b"<html>")),
+        ("unavailable", http("503 Service Unavailable", "text/html", b"<html>")),
+        ("unknown", http("200 OK", "text/html", b"")),
+        ("internal", http("200 OK", "application/proto", b"\x7f")),
+        ("internal", http("200 OK", "application/proto", short)),
+        ("internal", http("200 OK", "application/proto", &key)),
+        ("internal", http("200 OK", "application/proto", &cut)),
         // ErrorInfo of a kind this client does not know: 'kind' "new".
-        http(
-            "400 Bad Request",
-            "application/json",
-            br#"{"code":"invalid_argument","details":[{"type":"ironflowx.v1.ErrorInfo","value":"CgNuZXc"}]}"#,
+        (
+            "invalid_argument",
+            http(
+                "400 Bad Request",
+                "application/json",
+                br#"{"code":"invalid_argument","details":[{"type":"ironflowx.v1.ErrorInfo","value":"CgNuZXc"}]}"#,
+            ),
         ),
     ];
+    // Decode as messages, which are no answers where an answer needs something.
+    let decoded = [Some(&answers[0]), Some(&answers[14]), Some(&answers[15])];
     let ignored = [Some(&answers[14]), Some(&answers[15])];
     let nothing = Some(&answers[0]);
     for op in Operation::ALL.iter().copied() {
         for answer in std::iter::once(None).chain(answers.iter().map(Some)) {
             let client = match answer {
                 None => Client::new(&closed).unwrap(),
-                Some(answer) => stub(answer.clone()).await,
+                Some((_, answer)) => stub(answer.clone()).await,
             };
-            let shown = answer.map(|a| a.escape_ascii().to_string());
+            let shown = answer.map(|(_, a)| a.escape_ascii().to_string());
             let got = ask_one(&client, &call(KEY), op).await;
             // A revoke's answer holds nothing, so another message is one with fields it ignores.
             if op == Operation::RevokeKey && ignored.contains(&answer) {
@@ -442,20 +448,16 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
             let ended = (e.kind, e.hint.as_deref());
             assert_eq!(ended, unanswered(op), "{op:?} {shown:?}");
             assert!(!e.message.contains(&KEY[41..]), "{}", e.message);
+            // Where a body can hold a key or event data, the code and nothing after it.
             let held = op == Operation::CreateKey || op.rpc().contains("EventService");
-            if held && e.message != "the answer does not decode" {
-                // The Connect code, and nothing after it.
-                let code = e.message.strip_prefix("the engine did not answer: ");
-                let code = code.unwrap_or_else(|| panic!("{}", e.message));
-                let codes = [
-                    "internal",
-                    "invalid_argument",
-                    "unauthenticated",
-                    "unavailable",
-                ];
-                let known =
-                    codes.contains(&code) || ["unknown", "resource_exhausted"].contains(&code);
-                assert!(known, "{op:?} {shown:?}: {code}");
+            let one = !matches!(op, Operation::EmitBatch | Operation::ListEvents);
+            let code = answer.map_or("unavailable", |(code, _)| *code);
+            let message = match decoded.contains(&answer) && one {
+                true => "the answer does not decode".to_owned(),
+                false => format!("the engine did not answer: {code}"),
+            };
+            if held {
+                assert_eq!(e.message, message, "{op:?} {shown:?}");
             }
         }
     }

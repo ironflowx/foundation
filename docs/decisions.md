@@ -8,7 +8,7 @@ From 0.2 on, a milestone's PRD issue assigns its decision numbers up front and e
 
 | # | Since | Decision | Why |
 |---|---|---|---|
-| D1 | 0.1 | `Operations` in 0.1 is `emit`, `emit_batch`, `get_event`, `list_events`, as hand-written Rust types. Data and metadata are bytes that must hold JSON (D22); optional fields are `Option` | Event rules own every data and range check, for every door: duplicate keys, lone surrogates and invalid UTF-8 exist only in the bytes as sent |
+| D1 | 0.1 | `Operations` in 0.1 is `emit`, `emit_batch`, `get_event`, `list_events`, as hand-written Rust types. Data and metadata are bytes that must hold JSON (D22); optional fields are `Option` | Event rules own every data and range check, for every door: duplicate keys, lone surrogates and invalid UTF-8 exist only in the bytes as sent. Of invalid UTF-8, narrowed by D74, as D22 is |
 | D2 | 0.1 | Every `Operations` call takes a `Call`, opaque and empty in 0.1 | The trait does not change shape when 0.2 adds the credential |
 | D3 | 0.1 | Read your writes through a committed head published before the acknowledgment ([Commit and read](architecture.md#commit-and-read)) | One fsync on the acknowledgment path, and read your writes holds across clients |
 | D4 | 0.1 | The append is the segment log's blocking call, made on the writer's own thread | The writer is the log's only writer, so it knows when a commit lands |

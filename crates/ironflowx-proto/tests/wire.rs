@@ -124,6 +124,28 @@ fn the_protos_methods_are_the_operations() {
     assert_eq!(methods, rpcs);
 }
 
+/// D54: what the generator and a client read as JSON text.
+#[test]
+fn event_data_and_metadata_are_json_text() {
+    let pool = prost_reflect::DescriptorPool::decode(wire::FILE_DESCRIPTOR_SET).unwrap();
+    let option = pool.get_extension_by_name("ironflowx.v1.json_text");
+    let option = option.unwrap();
+    let mut fields: Vec<_> = pool
+        .all_messages()
+        .flat_map(|m| m.fields().collect::<Vec<_>>())
+        .filter(|f| f.options().get_extension(&option).as_bool() == Some(true))
+        .map(|f| (f.full_name().to_owned(), f.supports_presence()))
+        .collect();
+    fields.sort();
+    let expected = [
+        "ironflowx.v1.EmitRequest.data",
+        "ironflowx.v1.EmitRequest.metadata",
+        "ironflowx.v1.Event.data",
+        "ironflowx.v1.Event.metadata",
+    ];
+    assert_eq!(fields, expected.map(|name| (name.to_owned(), true)));
+}
+
 fn event() -> Event {
     Event {
         event_id: ID.parse().unwrap(),

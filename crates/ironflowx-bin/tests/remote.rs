@@ -293,7 +293,7 @@ async fn event_data_crosses_every_protocol_byte_for_byte() {
             assert_eq!(one.metadata.as_ref(), Some(metadata), "{read_over}");
         }
     }
-    // Those, and no other.
+    // Those, each under the ID its emit was answered, and no other: newest first.
     let mut listed = Vec::new();
     let mut cursor = None;
     loop {
@@ -303,14 +303,13 @@ async fn event_data_crosses_every_protocol_byte_for_byte() {
         };
         let page = engine.list_events(&key(admin.expose()), request).await;
         let page = page.unwrap();
-        listed.extend(page.events.iter().rev().map(|e| e.event_id.to_string()));
+        listed.extend(page.events.iter().map(|e| e.event_id.to_string()));
         cursor = page.next;
         if cursor.is_none() {
             break;
         }
     }
-    listed.sort();
-    stored.sort();
+    stored.reverse();
     assert_eq!(listed, stored);
 }
 
@@ -329,7 +328,11 @@ async fn the_largest_page_of_events_fits() {
     let item = |i: usize, size: usize| EmitRequest {
         name: "\"".repeat(256),
         // A JSON string of backslashes, where escaping doubles every byte.
-        data: Some(format!("\"{}\"", "\\".repeat(size - 12)).into_bytes()),
+        data: Some({
+            let odd = size % 2;
+            let (a, b) = ("a".repeat(odd), "\\".repeat(size - 12 - odd));
+            format!("\"{a}{b}\"").into_bytes()
+        }),
         metadata: Some(br#"{"a":"\\"}"#.to_vec()),
         version: Some(i32::MAX.into()),
         idempotency_key: Some(format!("{}{i:03}", "\u{1}".repeat(253))),
@@ -369,9 +372,16 @@ async fn the_largest_page_of_events_fits() {
         let answer = EventPage::try_from(answer.unwrap().into_owned());
         assert!(answer == Ok(page.clone()), "{protocol}");
     }
-    // The newest event is two bytes longer than the one that leaves, so the oldest does not fit.
-    emit(vec![item(200, size(0) + 2)]).await;
+    // The newest event is a byte longer than the oldest, which leaves, so the next oldest does not
+    // fit: those two are the next page.
+    emit(vec![item(200, size(0) + 1)]).await;
     let longer = engine.list_events(&cx, request()).await.unwrap();
     assert_eq!(longer.events.len(), 199);
-    assert!(longer.next.is_some());
+    assert_eq!(longer.events[1..], page.events[..198]);
+    let rest = ListEventsRequest {
+        cursor: longer.next,
+        ..request()
+    };
+    let rest = client_of_ours.list_events(&cx, rest).await.unwrap();
+    assert_eq!((&rest.events[..], rest.next), (&page.events[198..], None));
 }

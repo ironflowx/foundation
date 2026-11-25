@@ -101,18 +101,24 @@ const WHOAMI: &str = "POST /ironflowx.v1.IdentityService/Whoami";
 #[tokio::test]
 async fn an_operation_is_served_at_its_rpc() {
     let (addr, operations) = serving(Ok(whoami())).await;
-    for op in Operation::ALL {
+    // That operation's request, so its method.
+    let requests = [
+        format!("{NOTHING:?}"),
+        "EmitBatchRequest { items: [] }".to_owned(),
+        r#"GetEventRequest { event_id: "" }"#.to_owned(),
+        "ListEventsRequest { limit: None, cursor: None }".to_owned(),
+        "WhoamiRequest".to_owned(),
+        "ListEnvironmentsRequest".to_owned(),
+        "CreateKeyRequest { scopes: {}, expires_at: None, label: None }".to_owned(),
+        "ListKeysRequest { limit: None, cursor: None }".to_owned(),
+        r#"RevokeKeyRequest { key_id: "" }"#.to_owned(),
+    ];
+    assert_eq!(requests.len(), Operation::ALL.len());
+    for (op, request) in Operation::ALL.iter().zip(requests) {
         let line = format!("POST /{}", op.rpc());
         let (head, _) = send(addr, &line, &[JSON], b"{}").await;
         assert!(head.starts_with("HTTP/1.0 200 "), "{line}: {head}");
-        // That operation's method, by its request.
-        let asked = operations.take_requests();
-        let method = op.rpc().rsplit('/').next().unwrap();
-        assert_eq!(asked.len(), 1, "{line}");
-        assert!(
-            asked[0].starts_with(&format!("{method}Request")),
-            "{asked:?}"
-        );
+        assert_eq!(operations.take_requests(), [request], "{line}");
     }
     let line = "POST /ironflowx.v1.EventService/GetEvents";
     let (head, _) = send(addr, line, &[JSON], b"{}").await;
@@ -767,18 +773,21 @@ async fn a_page_larger_than_any_fits() {
     let events: Vec<_> = (0..200)
         .map(|i| Event {
             name: "\"".repeat(256),
-            // 3 MiB of data and metadata on the page.
-            data: text(if i == 0 { 15_756 } else { 15_628 }),
-            metadata: Some(text(100)),
+            data: text(if i == 0 { 15_662 } else { 15_534 }),
+            metadata: Some(text(200)),
             // A control character is the longest escape.
             idempotency_key: Some("\u{1}".repeat(256)),
+            // The longest of their fields there are, in JSON and in binary.
+            version: i64::MAX,
+            time: Timestamp::from_millis(-1),
             emitted_by: format!("embedder:{}", "\"".repeat(128)).parse().unwrap(),
-            // With the longest version and time there are.
             ..event()
         })
         .collect();
-    let bytes: usize = events.iter().map(|e| e.data.len() + 100).sum();
-    assert_eq!(bytes, 3 * 1024 * 1024);
+    // 3 MiB, and 6 bytes more an event than it may hold: more than the 2 by which its length
+    // prefixes are shorter than the longest.
+    let bytes: usize = events.iter().map(|e| e.data.len() + 200).sum();
+    assert_eq!(bytes, 3 * 1024 * 1024 + 200 * 6);
     let page = EventPage {
         events,
         next: Some(format!("{}.{}", "f".repeat(32), u64::MAX)),
@@ -788,7 +797,7 @@ async fn a_page_larger_than_any_fits() {
     let (_, json) = send(addr, line, &[JSON], b"{}").await;
     let proto = wire::ListEventsResponse::from(page.clone());
     let sizes = (json.len(), proto.encode_to_vec().len());
-    assert_eq!(sizes, (6_791_931, 3_291_383));
+    assert_eq!(sizes, (6_794_331, 3_293_983));
     for protocol in PROTOCOLS {
         let request = wire::ListEventsRequest::default();
         let answer = events_of(protocol, addr).list_events(request.clone()).await;
