@@ -9,6 +9,7 @@ pub ironflowx_core::ErrorKind::Unauthenticated
 pub ironflowx_core::ErrorKind::Unavailable
 pub ironflowx_core::ErrorKind::Unknown
 impl ironflowx_core::ErrorKind
+pub const fn ironflowx_core::ErrorKind::as_str(self) -> &'static str
 pub const fn ironflowx_core::ErrorKind::exit_code(self) -> u8
 pub const fn ironflowx_core::ErrorKind::retryable(self) -> bool
 impl core::clone::Clone for ironflowx_core::ErrorKind

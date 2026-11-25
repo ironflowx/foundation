@@ -9,9 +9,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 use buffa::Message as _;
 use buffa_types::google::protobuf::Timestamp as WireTime;
+use connectrpc::ConnectError;
 #[cfg(feature = "server")]
-use connectrpc::ErrorDetail;
-use connectrpc::{ConnectError, ErrorCode};
+use connectrpc::{ErrorCode, ErrorDetail};
 use ironflowx_core::{Address, ErrorKind, KeyOrigin, ParseError, Scope, Secret, Timestamp};
 
 use crate::{KeyStatus, OpError};
@@ -649,7 +649,7 @@ fn read_time(at: WireTime) -> Result<Timestamp, Undecodable> {
     Ok(Timestamp::from_millis(millis))
 }
 
-/// Every kind, with its text and its Connect code (architecture.md, Errors).
+/// Every kind (architecture.md, Errors).
 const KINDS: [ErrorKind; 8] = [
     ErrorKind::Invalid,
     ErrorKind::NotFound,
@@ -661,23 +661,24 @@ const KINDS: [ErrorKind; 8] = [
     ErrorKind::Internal,
 ];
 
-const fn kind(kind: ErrorKind) -> (&'static str, ErrorCode) {
+#[cfg(feature = "server")]
+const fn connect_code(kind: ErrorKind) -> ErrorCode {
     match kind {
-        ErrorKind::Invalid => ("invalid", ErrorCode::InvalidArgument),
-        ErrorKind::NotFound => ("not_found", ErrorCode::NotFound),
-        ErrorKind::Unknown => ("unknown", ErrorCode::Unknown),
-        ErrorKind::Unavailable => ("unavailable", ErrorCode::Unavailable),
-        ErrorKind::Unauthenticated => ("unauthenticated", ErrorCode::Unauthenticated),
-        ErrorKind::PermissionDenied => ("permission_denied", ErrorCode::PermissionDenied),
-        ErrorKind::ResourceExhausted => ("resource_exhausted", ErrorCode::ResourceExhausted),
-        ErrorKind::Internal => ("internal", ErrorCode::Internal),
+        ErrorKind::Invalid => ErrorCode::InvalidArgument,
+        ErrorKind::NotFound => ErrorCode::NotFound,
+        ErrorKind::Unknown => ErrorCode::Unknown,
+        ErrorKind::Unavailable => ErrorCode::Unavailable,
+        ErrorKind::Unauthenticated => ErrorCode::Unauthenticated,
+        ErrorKind::PermissionDenied => ErrorCode::PermissionDenied,
+        ErrorKind::ResourceExhausted => ErrorCode::ResourceExhausted,
+        ErrorKind::Internal => ErrorCode::Internal,
     }
 }
 
 impl From<&OpError> for ErrorInfo {
     fn from(e: &OpError) -> Self {
         Self {
-            kind: kind(e.kind).0.to_owned(),
+            kind: e.kind.as_str().to_owned(),
             message: e.message.clone(),
             hint: e.hint.clone(),
             ..Self::default()
@@ -689,7 +690,7 @@ impl TryFrom<ErrorInfo> for OpError {
     type Error = Undecodable;
 
     fn try_from(info: ErrorInfo) -> Result<Self, Undecodable> {
-        let of_text = |k: &ErrorKind| kind(*k).0 == info.kind;
+        let of_text = |k: &ErrorKind| k.as_str() == info.kind;
         Ok(Self {
             kind: KINDS.into_iter().find(of_text).ok_or(Undecodable)?,
             message: info.message,
@@ -701,7 +702,7 @@ impl TryFrom<ErrorInfo> for OpError {
 /// The error a door answers: the kind's code, the message, and [`ErrorInfo`] as a detail.
 #[cfg(feature = "server")]
 pub fn connect_error(e: &OpError) -> ConnectError {
-    ConnectError::new(kind(e.kind).1, e.message.clone())
+    ConnectError::new(connect_code(e.kind), e.message.clone())
         .with_detail(ErrorDetail::from_message(ERROR_INFO, &ErrorInfo::from(e)))
 }
 

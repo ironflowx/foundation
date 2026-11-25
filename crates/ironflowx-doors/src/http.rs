@@ -1,8 +1,12 @@
 //! The HTTP door: Connect, gRPC and gRPC-Web on the same handlers, with `/health` and `/ready`.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use axum::Router;
+use axum::extract::Request;
+use axum::middleware::{self, Next};
+use axum::response::Response as HttpResponse;
 use axum::routing::get;
 use connectrpc::{
     Chain, CompressionRegistry, ConnectError, ConnectRpcService, Encodable, Limits, RequestContext,
@@ -19,7 +23,7 @@ use ironflowx_proto::wire::{
     ListEventsResponse, ListKeysRequest, ListKeysResponse, RevokeKeyRequest, RevokeKeyResponse,
     WhoamiRequest, WhoamiResponse,
 };
-use ironflowx_proto::{Call, OpError, Operations};
+use ironflowx_proto::{Call, OpError, Operation, Operations};
 
 use crate::{Readiness, Slot, WaitingOn};
 
@@ -41,6 +45,44 @@ pub fn router<O: Operations + 'static, R: Readiness + 'static>(slot: Arc<Slot<O,
         .route("/health", get(|| async { StatusCode::OK }))
         .route("/ready", get(move || async move { ready(&slot).await }))
         .fallback_service(rpcs)
+        .layer(middleware::from_fn(log_refusal))
+}
+
+/// Shared with the generated handler through the request extensions. An operation owns its
+/// own log once it is admitted. A wire refusal that doesn't reach the handler has no domain kind.
+#[derive(Clone, Default)]
+struct Dispatch(Arc<OnceLock<DispatchOutcome>>);
+
+enum DispatchOutcome {
+    Admitted,
+    Refused(ErrorKind),
+}
+
+async fn log_refusal(mut req: Request, next: Next) -> HttpResponse {
+    let path = req.uri().path().strip_prefix('/').unwrap_or_default();
+    if !path.starts_with("ironflowx.v1.") {
+        return next.run(req).await;
+    }
+    let operation = Operation::ALL
+        .iter()
+        .find(|op| op.rpc() == path)
+        .map_or("unknown", |op| op.rpc());
+    let dispatch = Dispatch::default();
+    req.extensions_mut().insert(dispatch.clone());
+    let started = Instant::now();
+    let response = next.run(req).await;
+    let outcome = match dispatch.0.get() {
+        Some(DispatchOutcome::Admitted) => return response,
+        Some(DispatchOutcome::Refused(kind)) => kind.as_str(),
+        None => "refused",
+    };
+    tracing::info!(
+        operation,
+        outcome,
+        duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+        "call"
+    );
+    response
 }
 
 type Json = (StatusCode, [(HeaderName, &'static str); 1], &'static str);
@@ -86,14 +128,33 @@ fn refused(e: OpError) -> ConnectError {
 
 struct Door<O: Operations, R: Readiness>(Arc<Slot<O, R>>);
 
+impl<O: Operations, R: Readiness> Door<O, R> {
+    /// Finishes validation before letting the operation take over the call.
+    fn admit<T, U>(&self, ctx: &RequestContext, request: T) -> Result<(&O, U), ConnectError>
+    where
+        T: TryInto<U, Error = OpError>,
+    {
+        let checked = request
+            .try_into()
+            .and_then(|request| self.0.operations().map(|operations| (operations, request)));
+        if let Some(dispatch) = ctx.extensions().get::<Dispatch>() {
+            let outcome = match &checked {
+                Ok(_) => DispatchOutcome::Admitted,
+                Err(e) => DispatchOutcome::Refused(e.kind),
+            };
+            let _ = dispatch.0.set(outcome);
+        }
+        checked.map_err(refused)
+    }
+}
+
 impl<O: Operations + 'static, R: Readiness + 'static> EventService for Door<O, R> {
     async fn emit<'a>(
         &'a self,
         ctx: RequestContext,
         request: ServiceRequest<'_, EmitRequest>,
     ) -> ServiceResult<impl Encodable<EmitResponse> + Send + use<'a, O, R>> {
-        let request = request.to_owned_message().try_into().map_err(refused)?;
-        let operations = self.0.operations().map_err(refused)?;
+        let (operations, request) = self.admit(&ctx, request.to_owned_message())?;
         let answer = operations.emit(&call(ctx.headers()), request).await;
         Response::ok(EmitResponse::from(answer.map_err(refused)?))
     }
@@ -103,8 +164,7 @@ impl<O: Operations + 'static, R: Readiness + 'static> EventService for Door<O, R
         ctx: RequestContext,
         request: ServiceRequest<'_, EmitBatchRequest>,
     ) -> ServiceResult<impl Encodable<EmitBatchResponse> + Send + use<'a, O, R>> {
-        let request = request.to_owned_message().try_into().map_err(refused)?;
-        let operations = self.0.operations().map_err(refused)?;
+        let (operations, request) = self.admit(&ctx, request.to_owned_message())?;
         let answer = operations.emit_batch(&call(ctx.headers()), request).await;
         Response::ok(EmitBatchResponse::from(answer.map_err(refused)?))
     }
@@ -114,8 +174,7 @@ impl<O: Operations + 'static, R: Readiness + 'static> EventService for Door<O, R
         ctx: RequestContext,
         request: ServiceRequest<'_, GetEventRequest>,
     ) -> ServiceResult<impl Encodable<Event> + Send + use<'a, O, R>> {
-        let request = request.to_owned_message().try_into().map_err(refused)?;
-        let operations = self.0.operations().map_err(refused)?;
+        let (operations, request) = self.admit(&ctx, request.to_owned_message())?;
         let answer = operations.get_event(&call(ctx.headers()), request).await;
         Response::ok(Event::from(answer.map_err(refused)?))
     }
@@ -125,8 +184,7 @@ impl<O: Operations + 'static, R: Readiness + 'static> EventService for Door<O, R
         ctx: RequestContext,
         request: ServiceRequest<'_, ListEventsRequest>,
     ) -> ServiceResult<impl Encodable<ListEventsResponse> + Send + use<'a, O, R>> {
-        let request = request.to_owned_message().try_into().map_err(refused)?;
-        let operations = self.0.operations().map_err(refused)?;
+        let (operations, request) = self.admit(&ctx, request.to_owned_message())?;
         let answer = operations.list_events(&call(ctx.headers()), request).await;
         Response::ok(ListEventsResponse::from(answer.map_err(refused)?))
     }
@@ -138,8 +196,7 @@ impl<O: Operations + 'static, R: Readiness + 'static> IdentityService for Door<O
         ctx: RequestContext,
         request: ServiceRequest<'_, WhoamiRequest>,
     ) -> ServiceResult<impl Encodable<WhoamiResponse> + Send + use<'a, O, R>> {
-        let request = request.to_owned_message().try_into().map_err(refused)?;
-        let operations = self.0.operations().map_err(refused)?;
+        let (operations, request) = self.admit(&ctx, request.to_owned_message())?;
         let answer = operations.whoami(&call(ctx.headers()), request).await;
         Response::ok(WhoamiResponse::from(answer.map_err(refused)?))
     }
@@ -151,8 +208,7 @@ impl<O: Operations + 'static, R: Readiness + 'static> EnvironmentService for Doo
         ctx: RequestContext,
         request: ServiceRequest<'_, ListEnvironmentsRequest>,
     ) -> ServiceResult<impl Encodable<ListEnvironmentsResponse> + Send + use<'a, O, R>> {
-        let request = request.to_owned_message().try_into().map_err(refused)?;
-        let operations = self.0.operations().map_err(refused)?;
+        let (operations, request) = self.admit(&ctx, request.to_owned_message())?;
         let answer = operations
             .list_environments(&call(ctx.headers()), request)
             .await;
@@ -166,8 +222,7 @@ impl<O: Operations + 'static, R: Readiness + 'static> KeyService for Door<O, R> 
         ctx: RequestContext,
         request: ServiceRequest<'_, CreateKeyRequest>,
     ) -> ServiceResult<impl Encodable<CreateKeyResponse> + Send + use<'a, O, R>> {
-        let request = request.to_owned_message().try_into().map_err(refused)?;
-        let operations = self.0.operations().map_err(refused)?;
+        let (operations, request) = self.admit(&ctx, request.to_owned_message())?;
         let answer = operations.create_key(&call(ctx.headers()), request).await;
         Response::ok(CreateKeyResponse::from(answer.map_err(refused)?))
     }
@@ -177,8 +232,7 @@ impl<O: Operations + 'static, R: Readiness + 'static> KeyService for Door<O, R> 
         ctx: RequestContext,
         request: ServiceRequest<'_, ListKeysRequest>,
     ) -> ServiceResult<impl Encodable<ListKeysResponse> + Send + use<'a, O, R>> {
-        let request = request.to_owned_message().try_into().map_err(refused)?;
-        let operations = self.0.operations().map_err(refused)?;
+        let (operations, request) = self.admit(&ctx, request.to_owned_message())?;
         let answer = operations.list_keys(&call(ctx.headers()), request).await;
         Response::ok(ListKeysResponse::from(answer.map_err(refused)?))
     }
@@ -188,8 +242,7 @@ impl<O: Operations + 'static, R: Readiness + 'static> KeyService for Door<O, R> 
         ctx: RequestContext,
         request: ServiceRequest<'_, RevokeKeyRequest>,
     ) -> ServiceResult<impl Encodable<RevokeKeyResponse> + Send + use<'a, O, R>> {
-        let request = request.to_owned_message().try_into().map_err(refused)?;
-        let operations = self.0.operations().map_err(refused)?;
+        let (operations, request) = self.admit(&ctx, request.to_owned_message())?;
         let answer = operations.revoke_key(&call(ctx.headers()), request).await;
         Response::ok(RevokeKeyResponse::from(answer.map_err(refused)?))
     }

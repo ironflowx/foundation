@@ -16,6 +16,7 @@ ironflowx-proto = { workspace = true, features = ["client", "wire"] }
 serde_json.workspace = true
 jsonschema = { version = "0.63.1", default-features = false }
 prost-reflect = "0.16.5"
+rusqlite = { version = "0.43.0", default-features = false, features = ["bundled"] }
 connectrpc = { version = "0.9.1", default-features = false, features = ["client", "json"] }
 cucumber = "0.23.0"
 tempfile = "3.27.0"

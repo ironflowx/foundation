@@ -1070,6 +1070,21 @@ fn on_a_terminal(mut command: Command) -> String {
 }
 
 #[test]
+fn a_terminal_gets_an_indented_seed() {
+    let text = on_a_terminal(command(&["seed", "generate"]));
+    let labels: Vec<_> = text
+        .lines()
+        .map(|line| line.split_once(": ").map_or(line, |p| p.0))
+        .collect();
+    assert_eq!(labels, ["{", r#"  "key""#, r#"  "key_id""#, "}"]);
+    let seed: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        seed["key"].as_str().unwrap().get(4..40),
+        seed["key_id"].as_str()
+    );
+}
+
+#[test]
 fn a_terminal_gets_indented_output() {
     let served = Served::answering(Ok(whoami()));
     let expected = r#"{
@@ -1217,7 +1232,49 @@ fn a_usage_error_is_an_envelope() {
         (
             &[][..],
             "'ironflowx' requires a subcommand but one was not provided \
-             [subcommands: serve, version, describe, environments, events, whoami, keys]",
+             [subcommands: serve, seed, version, describe, environments, events, whoami, keys]",
+        ),
+        (
+            &["seed"],
+            "'ironflowx seed' requires a subcommand but one was not provided [subcommands: generate]",
+        ),
+        (&["seed", "nope"], "unrecognized subcommand 'nope'"),
+        (&["seed", "generate", "x"], "unexpected argument 'x' found"),
+        (&["serve", "--key"], "unexpected argument '--key' found"),
+        (
+            &["serve", "--seed-file"],
+            "a value is required for '--seed-file <PATH>' but none was supplied",
+        ),
+        (
+            &["serve", "--log-level"],
+            "a value is required for '--log-level <LEVEL>' but none was supplied \
+             [possible values: off, error, warn, info, debug, trace]",
+        ),
+        (
+            &["serve", "--log-format"],
+            "a value is required for '--log-format <FORMAT>' but none was supplied \
+             [possible values: json, text]",
+        ),
+        (
+            &["serve", "--log-level", "bad"],
+            "invalid value 'bad' for '--log-level <LEVEL>' \
+             [possible values: off, error, warn, info, debug, trace]",
+        ),
+        (
+            &["serve", "--log-format", "bad"],
+            "invalid value 'bad' for '--log-format <FORMAT>' [possible values: json, text]",
+        ),
+        (
+            &["serve", "--log-level", "info", "--log-level", "warn"],
+            "the argument '--log-level <LEVEL>' cannot be used multiple times",
+        ),
+        (
+            &["serve", "--log-format", "text", "--log-format", "json"],
+            "the argument '--log-format <FORMAT>' cannot be used multiple times",
+        ),
+        (
+            &["serve", "--seed-file", "first", "--seed-file", "second"],
+            "the argument '--seed-file <PATH>' cannot be used multiple times",
         ),
         (&["nope"], "unrecognized subcommand 'nope'"),
         (&["describe", "health"], "unrecognized subcommand 'health'"),

@@ -4,12 +4,13 @@
 #[path = "../../../ironflowx-operations/tests/leak/mod.rs"]
 mod leak;
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -36,11 +37,12 @@ use tempfile::TempDir;
 /// The scenarios whose work has landed: every one must run and pass.
 const REGISTERED: &[&str] = &[
     "HOST-001", "HOST-006", "HOST-016", "HOST-021", "HOST-022", "HOST-023", "HOST-024", "HOST-025",
-    "HOST-026", "HOST-027", "HOST-029",
+    "HOST-026", "HOST-027", "HOST-029", "HOST-002", "HOST-003", "HOST-004", "HOST-005", "HOST-009",
+    "HOST-010", "HOST-011", "HOST-013", "HOST-014", "HOST-015", "HOST-019", "HOST-030",
 ];
 
 /// How many scenarios run, an outline once per example, so no example goes unnoticed.
-pub const RUNS: usize = 28;
+pub const RUNS: usize = 43;
 
 const LATE: Duration = Duration::from_secs(30);
 
@@ -102,9 +104,11 @@ impl Served {
     }
 
     pub fn start(data_dir: &Path, listen: &str) -> Self {
-        let mut child = command()
-            .args(["serve", "--listen", listen, "--data-dir"])
-            .arg(data_dir)
+        Self::start_command(&mut serve_command(data_dir, listen))
+    }
+
+    pub fn start_command(command: &mut Command) -> Self {
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -125,7 +129,7 @@ impl Served {
         }
     }
 
-    fn log(&self) -> String {
+    pub fn log(&self) -> String {
         self.log.lock().unwrap().join("\n")
     }
 
@@ -195,6 +199,11 @@ fn post_json(url: &str, rpc: &str, key: &str, body: &str) -> Value {
 pub struct Serve {
     served: Option<Served>,
     dir: TempDir,
+    refused_start: Option<Output>,
+    taken: Option<TcpListener>,
+    seed: Option<String>,
+    control_before: Option<Vec<u8>>,
+    start_environment: BTreeMap<&'static str, PathBuf>,
     /// The admin key's text.
     key: Option<String>,
     answer: Option<Result<WhoamiResponse, ConnectError>>,
@@ -266,6 +275,11 @@ impl Serve {
         std::fs::set_permissions(dir.path(), PermissionsExt::from_mode(0o700)).unwrap();
         Self {
             served: None,
+            refused_start: None,
+            taken: None,
+            seed: None,
+            control_before: None,
+            start_environment: BTreeMap::new(),
             dir,
             key: None,
             answer: None,
@@ -285,6 +299,25 @@ impl Serve {
 
     fn serve(&mut self, listen: &str) {
         self.served = Some(Served::start(&self.data_dir(), listen));
+    }
+
+    fn refused(&mut self, cmd: &mut Command) {
+        let out = cmd.output().unwrap();
+        assert_eq!(out.stdout, b"");
+        self.refused_start = Some(out);
+    }
+
+    fn start_error(&self) -> (i32, Value) {
+        let out = self.refused_start.as_ref().expect("a refusal");
+        let log = std::str::from_utf8(&out.stderr).unwrap();
+        let envelope = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        (out.status.code().unwrap(), envelope)
+    }
+
+    fn seed_file(&self) -> PathBuf {
+        let file = self.dir.path().join("seed");
+        std::fs::write(&file, format!(" {}\n", self.seed.as_deref().unwrap())).unwrap();
+        file
     }
 
     fn served(&self) -> &Served {
@@ -381,6 +414,11 @@ fn no_variables(_: &mut Serve) {}
 #[when("the engine is served on the data directory")]
 fn served(w: &mut Serve) {
     w.serve("127.0.0.1:0");
+}
+
+#[when("the engine is served on it")]
+fn refused_start(w: &mut Serve) {
+    w.refused(&mut serve_command(&w.data_dir(), "127.0.0.1:0"));
 }
 
 #[when(expr = "the engine is served on {string}")]
@@ -791,6 +829,342 @@ async fn only_the_bootstrap_key(w: &mut Serve) {
     let bootstrap = w.key()[4..40].parse().unwrap();
     assert_eq!(keys, [(bootstrap, KeyOrigin::Minted)]);
     assert_eq!(page.next, None);
+}
+
+pub fn serve_command(data_dir: &Path, listen: &str) -> Command {
+    let mut cmd = command();
+    cmd.args(["serve", "--listen", listen, "--data-dir"])
+        .arg(data_dir);
+    cmd
+}
+
+fn new_seed() -> String {
+    let out = command().args(["seed", "generate"]).output().unwrap();
+    assert_eq!((out.status.code(), out.stderr), (Some(0), vec![]));
+    let json: Value = serde_json::from_slice(&out.stdout).unwrap();
+    json["key"].as_str().unwrap().to_owned()
+}
+
+#[given("the engine was served once and stopped")]
+fn was_served(w: &mut Serve) {
+    served_with_key(w);
+    w.served.take().unwrap().stop();
+}
+
+#[given(r#"the operator kept the key from "admin.key" and deleted the file"#)]
+fn deleted_key(w: &mut Serve) {
+    assert_eq!(w.key().len(), 84);
+    std::fs::remove_file(w.data_dir().join("admin.key")).unwrap();
+}
+
+#[when("the engine is served again")]
+fn served_again(w: &mut Serve) {
+    w.serve("127.0.0.1:0");
+}
+
+#[then(r#""admin.key" does not exist"#)]
+fn no_key_file(w: &mut Serve) {
+    w.served().ready();
+    assert!(!w.data_dir().join("admin.key").exists());
+}
+
+#[then("the kept key still authenticates")]
+#[then(r#"the seed key authenticates with scopes "read", "write" and "admin""#)]
+async fn authenticates(w: &mut Serve) {
+    let client = Client::new(&w.served().url()).unwrap();
+    let key = w.seed.as_deref().or(w.key.as_deref()).unwrap();
+    let cx = Call::with_key(Secret::new(key.to_owned()));
+    let me = client
+        .whoami(&cx, ironflowx_proto::WhoamiRequest {})
+        .await
+        .unwrap();
+    assert_eq!(me.key_id.to_string(), key[4..40]);
+    assert_eq!(me.scopes, [Scope::Read, Scope::Write, Scope::Admin].into());
+}
+
+#[given(r#"a seed key made with "ironflowx seed generate""#)]
+#[given("a seed key A in a file named by --seed-file")]
+fn generated_seed(w: &mut Serve) {
+    w.seed = Some(new_seed());
+}
+
+#[when(regex = "^the engine is served with the seed given (.*)$")]
+fn serve_seed(w: &mut Serve, source: String) {
+    let mut cmd = serve_command(&w.data_dir(), "127.0.0.1:0");
+    match source.as_str() {
+        "in a file named by --seed-file" => {
+            cmd.arg("--seed-file").arg(w.seed_file());
+        }
+        "in a file named by IRONFLOWX_SEED_FILE" => {
+            cmd.env("IRONFLOWX_SEED_FILE", w.seed_file());
+        }
+        "as the value of IRONFLOWX_SEED" => {
+            cmd.env("IRONFLOWX_SEED", w.seed.as_ref().unwrap());
+        }
+        _ => unreachable!(),
+    }
+    w.served = Some(Served::start_command(&mut cmd));
+}
+
+#[given("a seed key B as the value of IRONFLOWX_SEED")]
+fn another_seed(w: &mut Serve) {
+    w.client_key = Some(new_seed());
+}
+
+#[given(r#""not-a-key-but-secret" as the value of IRONFLOWX_SEED"#)]
+fn malformed_seed(w: &mut Serve) {
+    w.client_key = Some("not-a-key-but-secret".into());
+}
+
+#[when("the engine is served")]
+fn start_with_inputs(w: &mut Serve) {
+    let mut cmd = serve_command(&w.data_dir(), "127.0.0.1:0");
+    if let Some(key) = &w.client_key {
+        cmd.env("IRONFLOWX_SEED", key);
+        if w.seed.is_some() {
+            cmd.arg("--seed-file").arg(w.seed_file());
+        }
+        w.refused(&mut cmd);
+    } else if w.taken.is_some() {
+        let listen = w.taken.as_ref().unwrap().local_addr().unwrap().to_string();
+        w.refused(&mut serve_command(&w.data_dir(), &listen));
+    } else {
+        w.served = Some(Served::start_command(cmd.envs(&w.start_environment)));
+    }
+}
+
+#[then(expr = "serve exits with code {int} and an envelope with code {string}")]
+fn exit_kind(w: &mut Serve, code: i32, kind: String) {
+    let (actual, envelope) = w.start_error();
+    assert_eq!(actual, code);
+    assert_eq!(envelope["code"], kind);
+}
+
+#[then(r#"serve exits with code 8 and an envelope with code "unavailable" and retryable true"#)]
+fn unavailable(w: &mut Serve) {
+    exit_kind(w, 8, "unavailable".into());
+    assert_eq!(w.start_error().1["retryable"], true);
+}
+
+#[then("the data directory does not exist")]
+fn no_directory(w: &mut Serve) {
+    assert!(!w.data_dir().exists());
+}
+
+#[then("serve exits with code 2 and an envelope that names the key format")]
+fn seed_format(w: &mut Serve) {
+    exit_kind(w, 2, "invalid".into());
+    assert!(
+        w.start_error().1["message"]
+            .as_str()
+            .unwrap()
+            .contains("ixk_<key-id>_<secret>")
+    );
+}
+
+#[then(expr = "neither stderr nor stdout contains {string}")]
+fn secret_is_absent(w: &mut Serve, secret: String) {
+    let out = w.refused_start.as_ref().unwrap();
+    for bytes in [&out.stderr, &out.stdout] {
+        assert!(!std::str::from_utf8(bytes).unwrap().contains(&secret));
+    }
+}
+
+#[given("another process listens on the address the engine is given")]
+fn address_taken(w: &mut Serve) {
+    w.taken = Some(TcpListener::bind("127.0.0.1:0").unwrap());
+}
+
+#[given("the engine is served on the data directory")]
+fn first_engine(w: &mut Serve) {
+    served_with_key(w);
+}
+
+#[when("a second engine is served on the same data directory and another address")]
+fn second_engine(w: &mut Serve) {
+    w.refused(&mut serve_command(&w.data_dir(), "127.0.0.1:0"));
+}
+
+#[then(r#"the second exits with code 8 and an envelope with code "unavailable""#)]
+fn second_unavailable(w: &mut Serve) {
+    exit_kind(w, 8, "unavailable".into());
+}
+
+#[then("the first still answers calls")]
+async fn first_still_answers(w: &mut Serve) {
+    authenticates(w).await;
+}
+
+#[given("a data directory whose control plane has another format version")]
+async fn different_format(w: &mut Serve) {
+    use ironflowx_operations::{Engine, HostClock};
+    let dir = w.data_dir();
+    let opened = Engine::open(&dir, HostClock, None).await.unwrap();
+    opened.engine.close().await;
+    std::fs::remove_dir_all(dir.join("ledgers")).unwrap();
+    std::fs::create_dir(dir.join("ledgers")).unwrap();
+    let control = dir.join("control.db");
+    let db = rusqlite::Connection::open(&control).unwrap();
+    db.execute_batch("UPDATE meta SET format = 2").unwrap();
+    drop(db);
+    w.control_before = Some(std::fs::read(control).unwrap());
+}
+
+#[then(
+    r#"serve exits with code 1 and an envelope with code "internal" that names the format version"#
+)]
+fn format_refusal(w: &mut Serve) {
+    exit_kind(w, 1, "internal".into());
+    assert_eq!(
+        w.start_error().1["message"],
+        "the control plane is in another format version"
+    );
+}
+
+#[then(r#""control.db" and "ledgers/" are unchanged"#)]
+fn still_other_format(w: &mut Serve) {
+    assert_eq!(
+        std::fs::read(w.data_dir().join("control.db")).unwrap(),
+        *w.control_before.as_ref().unwrap()
+    );
+    assert_eq!(
+        std::fs::read_dir(w.data_dir().join("ledgers"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[then(regex = "^the log (does|does not) warn that keys travel in clear without a TLS proxy$")]
+fn cleartext_warning(w: &mut Serve, expected: String) {
+    w.served().ready();
+    assert_eq!(
+        w.served()
+            .log()
+            .contains("keys travel in clear without a TLS proxy"),
+        expected == "does"
+    );
+}
+
+#[given(r#"IRONFLOWX_LISEN is set to "127.0.0.1:0""#)]
+fn unknown_setting(w: &mut Serve) {
+    w.start_environment
+        .insert("IRONFLOWX_LISEN", "127.0.0.1:0".into());
+}
+
+#[then("the log warns once that IRONFLOWX_LISEN is not a setting")]
+fn setting_warning(w: &mut Serve) {
+    w.served().ready();
+    let log = w.served.take().unwrap().stop();
+    assert_eq!(log.matches("IRONFLOWX_LISEN is not a setting").count(), 1);
+}
+
+#[given("IRONFLOWX_DATA_DIR names directory A")]
+fn directory_a(w: &mut Serve) {
+    w.start_environment
+        .insert("IRONFLOWX_DATA_DIR", w.dir.path().join("a"));
+}
+
+#[when("the engine is served with --data-dir naming directory B")]
+fn directory_b(w: &mut Serve) {
+    let mut cmd = serve_command(&w.data_dir(), "127.0.0.1:0");
+    w.served = Some(Served::start_command(cmd.envs(&w.start_environment)));
+}
+
+#[then("directory B holds the engine and directory A does not exist")]
+fn only_directory_b(w: &mut Serve) {
+    w.served().ready();
+    assert!(w.data_dir().join("control.db").is_file());
+    assert!(!w.dir.path().join("a").exists());
+}
+
+#[given(r#"a data directory holding only an "admin.key" file"#)]
+fn stale_key(w: &mut Serve) {
+    std::fs::create_dir(w.data_dir()).unwrap();
+    std::fs::write(w.data_dir().join("admin.key"), b"previous installation").unwrap();
+}
+
+#[then(r#"serve exits with code 2 and an envelope that names "admin.key""#)]
+fn stale_exit(w: &mut Serve) {
+    exit_kind(w, 2, "invalid".into());
+    assert!(
+        w.start_error().1["message"]
+            .as_str()
+            .unwrap()
+            .contains("admin.key")
+    );
+}
+
+#[then(r#"the data directory holds only that "admin.key", unchanged"#)]
+fn stale_kept(w: &mut Serve) {
+    let data_dir = w.data_dir();
+    assert_eq!(
+        std::fs::read(data_dir.join("admin.key")).unwrap(),
+        b"previous installation"
+    );
+    assert_eq!(std::fs::read_dir(data_dir).unwrap().count(), 1);
+}
+
+#[given(
+    "the engine was served with seed key A, which created an admin key K and was revoked by K, and stopped"
+)]
+async fn revoked_seed(w: &mut Serve) {
+    generated_seed(w);
+    serve_seed(w, "as the value of IRONFLOWX_SEED".into());
+    w.served().ready();
+    let client = Client::new(&w.served().url()).unwrap();
+    let seed = w.seed.as_ref().unwrap();
+    let a = Call::with_key(Secret::new(seed.to_owned()));
+    let k = client
+        .create_key(
+            &a,
+            ironflowx_proto::CreateKeyRequest {
+                scopes: [Scope::Admin].into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let k = Call::with_key(k.key);
+    client
+        .revoke_key(
+            &k,
+            ironflowx_proto::RevokeKeyRequest {
+                key_id: seed[4..40].into(),
+            },
+        )
+        .await
+        .unwrap();
+    w.served.take().unwrap().stop();
+}
+
+#[when("the engine is served with seed key A")]
+fn restart_with_seed(w: &mut Serve) {
+    serve_seed(w, "as the value of IRONFLOWX_SEED".into());
+}
+
+#[then("the log warns that the seed is revoked")]
+fn seed_warning(w: &mut Serve) {
+    until("seed revoked", || {
+        w.served()
+            .log()
+            .contains("the seed is revoked")
+            .then_some(())
+    });
+}
+
+#[then("key A is refused as an invalid key")]
+async fn old_seed_refused(w: &mut Serve) {
+    let client = Client::new(&w.served().url()).unwrap();
+    let cx = Call::with_key(Secret::new(w.seed.as_ref().unwrap().to_owned()));
+    let error = client
+        .whoami(&cx, ironflowx_proto::WhoamiRequest {})
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (error.kind, error.message.as_str()),
+        (ErrorKind::Unauthenticated, "invalid API key")
+    );
 }
 
 pub async fn run(parser: super::Unescaped) -> (bool, usize) {

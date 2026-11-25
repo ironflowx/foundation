@@ -40,7 +40,7 @@ pub use admission::Authorized;
 pub use ironflowx_authz::SeedState;
 pub use ironflowx_cell::{Fault, HostClock, LedgerState, OpenError};
 pub use ironflowx_store::{RecoverError, StoreError};
-pub use open::{EngineError, is_bootstrapped};
+pub use open::{EngineError, generate_seed, is_bootstrapped, key_id};
 pub use recover::recover_admin_key;
 
 /// An open data directory: its control plane, its environment's ledger and the root's lock.

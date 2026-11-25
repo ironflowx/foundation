@@ -337,6 +337,22 @@ fn ledger_dir(root: &Path, env: EnvRef) -> PathBuf {
     root.join("ledgers").join(env.id().to_string())
 }
 
+/// Makes a seed for a host to deliver. It grants nothing until an engine takes it as a seed.
+///
+/// # Panics
+///
+/// If the OS random source fails.
+pub fn generate_seed() -> (KeyId, Secret) {
+    let (id, secret, _) = new_key();
+    (id, secret)
+}
+
+/// The presented key's ID, only if the complete key format is valid.
+/// The key is not verified against an engine.
+pub fn key_id(key: &Secret) -> Option<KeyId> {
+    parse(key).ok().map(|parts| parts.id)
+}
+
 /// A fresh key: a UUIDv7 ID and 256 bits from the OS random source.
 pub(crate) fn new_key() -> (KeyId, Secret, KeyDigest) {
     let id = uuid7();

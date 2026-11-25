@@ -82,5 +82,7 @@ pub ironflowx_operations::Opened::engine: ironflowx_operations::Engine
 pub ironflowx_operations::Opened::lost_secret: bool
 pub ironflowx_operations::Opened::minted: core::option::Option<ironflowx_core::secret::Secret>
 pub ironflowx_operations::Opened::seed: core::option::Option<ironflowx_authz::SeedState>
+pub fn ironflowx_operations::generate_seed() -> (ironflowx_core::id::KeyId, ironflowx_core::secret::Secret)
 pub fn ironflowx_operations::is_bootstrapped(&std::path::Path) -> core::result::Result<bool, ironflowx_operations::EngineError>
+pub fn ironflowx_operations::key_id(&ironflowx_core::secret::Secret) -> core::option::Option<ironflowx_core::id::KeyId>
 pub fn ironflowx_operations::recover_admin_key(&std::path::Path, impl ironflowx_core::time::Clock) -> core::result::Result<ironflowx_core::secret::Secret, ironflowx_store::RecoverError>

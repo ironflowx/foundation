@@ -1262,6 +1262,7 @@ dependencies = [
  "ironflowx-proto",
  "jsonschema",
  "prost-reflect",
+ "rusqlite",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1368,6 +1369,7 @@ dependencies = [
  "ironflowx-doors",
  "ironflowx-proto",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -5,6 +5,7 @@
 
 mod accept;
 mod key_file;
+mod logging;
 
 use std::convert::Infallible;
 use std::fmt;
@@ -15,11 +16,13 @@ use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::sync::Arc;
 
-use ironflowx_core::ErrorKind;
+use ironflowx_core::{ErrorKind, KeyId, Secret};
 use ironflowx_doors::{Readiness, Slot, WaitingOn, router};
 use ironflowx_operations::{
-    ControlPlaneState, Engine, EngineError, HostClock, LedgerState, Opened, is_bootstrapped,
+    ControlPlaneState, Engine, EngineError, HostClock, LedgerState, OpenError, Opened, SeedState,
+    StoreError, is_bootstrapped, key_id,
 };
+use ironflowx_proto::OpError;
 
 /// Why a host did not serve.
 #[derive(Debug)]
@@ -28,37 +31,89 @@ pub enum ServeError {
     StaleKeyFile(PathBuf),
     Listen(io::Error),
     DataDir(PathBuf, io::Error),
+    KeyLookup(PathBuf, io::Error),
     Engine(EngineError),
+    Probe(PathBuf, io::Error),
     /// The engine opened and minted a key, which could not be written to `admin.key`.
-    KeyFile(PathBuf, io::Error),
+    KeyFile(PathBuf, io::Error, KeyId),
 }
 
 impl ServeError {
     /// The process's exit code.
-    pub const fn exit_code(&self) -> u8 {
+    pub fn exit_code(&self) -> u8 {
+        self.kind().exit_code()
+    }
+
+    /// The refusal the binary writes after its log.
+    pub fn envelope(&self) -> OpError {
+        OpError {
+            kind: self.kind(),
+            message: self.to_string(),
+            hint: match self {
+                Self::KeyFile(_, _, id) => {
+                    Some(format!("run ironflowx recover-key, then revoke {id}"))
+                }
+                _ => None,
+            },
+        }
+    }
+
+    fn kind(&self) -> ErrorKind {
         match self {
             Self::StaleKeyFile(_) => ErrorKind::Invalid,
-            Self::Listen(_) | Self::DataDir(..) | Self::Engine(_) | Self::KeyFile(..) => {
-                ErrorKind::Internal
-            }
+            Self::KeyLookup(..) => ErrorKind::Unavailable,
+            Self::Listen(e) if e.kind() == io::ErrorKind::AddrInUse => ErrorKind::Unavailable,
+            Self::Listen(_) => ErrorKind::Invalid,
+            Self::DataDir(..) | Self::Probe(..) | Self::KeyFile(..) => ErrorKind::Internal,
+            Self::Engine(e) => engine_kind(e),
         }
-        .exit_code()
+    }
+}
+
+const fn engine_kind(error: &EngineError) -> ErrorKind {
+    match error {
+        EngineError::MalformedSeed | EngineError::NotAnEngineRoot | EngineError::SeedConflict => {
+            ErrorKind::Invalid
+        }
+        EngineError::Format | EngineError::Orphaned | EngineError::LedgerMissing => {
+            ErrorKind::Internal
+        }
+        EngineError::Locked | EngineError::Io(_) => ErrorKind::Unavailable,
+        EngineError::Ledger(e) => match e {
+            OpenError::WrongIncarnation
+            | OpenError::Format
+            | OpenError::Corrupt
+            | OpenError::Missing => ErrorKind::Internal,
+            OpenError::Locked | OpenError::Io(_) => ErrorKind::Unavailable,
+        },
+        EngineError::Store(e) => match e {
+            StoreError::Format => ErrorKind::Internal,
+            StoreError::Failed(_) => ErrorKind::Unavailable,
+        },
     }
 }
 
 impl fmt::Display for ServeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::StaleKeyFile(path) => write!(
-                f,
+        let message = match self {
+            Self::StaleKeyFile(path) => format!(
                 "{} is another install's: no engine of this data directory wrote it",
                 path.display()
             ),
-            Self::Listen(e) => write!(f, "cannot listen: {e}"),
-            Self::DataDir(path, e) => write!(f, "cannot create {}: {e}", path.display()),
-            Self::Engine(e) => e.fmt(f),
-            Self::KeyFile(path, e) => write!(f, "cannot write {}: {e}", path.display()),
-        }
+            Self::Listen(e) => format!("cannot listen: {e}"),
+            Self::DataDir(path, e) => format!("cannot create {}: {e}", path.display()),
+            Self::KeyLookup(path, e) => format!("cannot inspect {}: {e}", path.display()),
+            Self::Engine(e @ EngineError::MalformedSeed) => return e.fmt(f),
+            Self::Engine(e) => e.to_string(),
+            Self::Probe(path, e) => format!(
+                "cannot probe writes and hard links in {}: {e}",
+                key_file::diagnostic_directory(path)
+            ),
+            Self::KeyFile(path, e, id) => {
+                format!("cannot write {} for minted key {id}: {e}", path.display())
+            }
+        };
+        f.write_str(&logging::public_text(&message))
     }
 }
 
@@ -71,13 +126,29 @@ impl std::error::Error for ServeError {}
 /// [`ServeError`], before anything is served or the data directory changed for a stale
 /// `admin.key` without a `control.db` and for an address it cannot listen on.
 pub async fn serve(data_dir: &Path, listen: SocketAddr) -> Result<Infallible, ServeError> {
+    serve_with_seed(data_dir, listen, None).await
+}
+
+/// Like [`serve`], with a seed the host supplies.
+///
+/// # Errors
+///
+/// As [`serve`], also for a malformed seed before the listener is bound.
+pub async fn serve_with_seed(
+    data_dir: &Path,
+    listen: SocketAddr,
+    seed: Option<Secret>,
+) -> Result<Infallible, ServeError> {
+    if seed.as_ref().is_some_and(|key| key_id(key).is_none()) {
+        return Err(ServeError::Engine(EngineError::MalformedSeed));
+    }
     let listener = bind(data_dir, listen)?;
-    run(listener, data_dir).await
+    run_with_seed(listener, data_dir, seed).await
 }
 
 /// The steps before the data directory is touched (D62).
 fn bind(data_dir: &Path, listen: SocketAddr) -> Result<TcpListener, ServeError> {
-    if key_file::exists(data_dir) && !data_dir.join("control.db").exists() {
+    if key_file::exists(data_dir) && matches!(data_dir.join("control.db").try_exists(), Ok(false)) {
         return Err(ServeError::StaleKeyFile(key_file::path(data_dir)));
     }
     let listener = TcpListener::bind(listen)
@@ -96,6 +167,14 @@ fn bind(data_dir: &Path, listen: SocketAddr) -> Result<TcpListener, ServeError> 
 ///
 /// As [`serve`].
 pub async fn run(listener: TcpListener, data_dir: &Path) -> Result<Infallible, ServeError> {
+    run_with_seed(listener, data_dir, None).await
+}
+
+async fn run_with_seed(
+    listener: TcpListener,
+    data_dir: &Path,
+    seed: Option<Secret>,
+) -> Result<Infallible, ServeError> {
     let listener = listener
         .set_nonblocking(true)
         .and_then(|()| tokio::net::TcpListener::from_std(listener))
@@ -105,27 +184,46 @@ pub async fn run(listener: TcpListener, data_dir: &Path) -> Result<Infallible, S
     let mut accepting = pin!(accept::connections(listener, router(slot.clone())));
     let engine = tokio::select! {
         never = &mut accepting => match never {},
-        opened = open(data_dir) => Arc::new(opened?),
+        opened = open(data_dir, seed) => Arc::new(opened?),
     };
-    slot.open(engine.clone(), EngineReadiness(engine));
+    slot.open(
+        Arc::new(logging::Logged(engine.clone())),
+        EngineReadiness(engine),
+    );
     match accepting.await {}
 }
 
 /// Opens the engine in `data_dir`, creating it if it is missing, and writes a key it minted.
-async fn open(data_dir: &Path) -> Result<Engine, ServeError> {
+async fn open(data_dir: &Path, seed: Option<Secret>) -> Result<Engine, ServeError> {
     let dir = data_dir.to_owned();
-    blocking(move || prepare(&dir)).await?;
-    let Opened { engine, minted, .. } = Engine::open(data_dir, HostClock, None)
+    let has_seed = seed.is_some();
+    blocking(move || prepare(&dir, has_seed, is_bootstrapped)).await?;
+    let Opened {
+        engine,
+        minted,
+        lost_secret,
+        seed,
+    } = Engine::open(data_dir, HostClock, seed)
         .await
         .map_err(ServeError::Engine)?;
+    if lost_secret {
+        tracing::warn!("an earlier start minted a key nobody received; this open revoked it");
+    }
+    if seed == Some(SeedState::Revoked) {
+        tracing::warn!("the seed is revoked");
+    }
     if let Some(key) = minted {
         let dir = data_dir.to_owned();
         let path = key_file::path(data_dir);
+        let id = key_id(&key).expect("the engine minted a key");
         match blocking(move || key_file::write(&dir, &key)).await {
-            Ok(()) => tracing::info!(path = %path.display(), "the admin key is written"),
+            Ok(()) => {
+                tracing::info!(path = %logging::public_text(&path.to_string_lossy()), "the admin key is written")
+            }
             Err(e) => {
                 engine.close().await;
-                return Err(ServeError::KeyFile(path, e));
+                tracing::error!(key_id = %id, "run ironflowx recover-key, then revoke the minted key ID");
+                return Err(ServeError::KeyFile(path, e, id));
             }
         }
     }
@@ -134,15 +232,41 @@ async fn open(data_dir: &Path) -> Result<Engine, ServeError> {
 
 /// Creates the data directory, and refuses an `admin.key` that no open of it wrote: one writes it
 /// only once the bootstrap is marked.
-fn prepare(data_dir: &Path) -> Result<(), ServeError> {
+fn prepare(
+    data_dir: &Path,
+    has_seed: bool,
+    mut read_bootstrap: impl FnMut(&Path) -> Result<bool, EngineError>,
+) -> Result<(), ServeError> {
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(data_dir)
         .map_err(|e| ServeError::DataDir(data_dir.to_owned(), e))?;
-    // The open answers what a failed read means.
-    if key_file::exists(data_dir) && matches!(is_bootstrapped(data_dir), Ok(false)) {
-        return Err(ServeError::StaleKeyFile(key_file::path(data_dir)));
+    key_file::warn_temporaries(data_dir);
+    let key_path = key_file::path(data_dir);
+    if has_seed {
+        if key_file::exists(data_dir) && matches!(read_bootstrap(data_dir), Ok(false)) {
+            return Err(ServeError::StaleKeyFile(key_path));
+        }
+        return Ok(());
+    }
+
+    let bootstrap = read_bootstrap(data_dir);
+    if !matches!(bootstrap, Ok(true)) {
+        // There is a second read in open, so even a failed read here may precede a mint.
+        match std::fs::symlink_metadata(&key_path) {
+            Ok(_) => {
+                // A host could have marked the bootstrap and published between the two reads.
+                bootstrap.map_err(ServeError::Engine)?;
+                return match read_bootstrap(data_dir).map_err(ServeError::Engine)? {
+                    true => Ok(()),
+                    false => Err(ServeError::StaleKeyFile(key_path)),
+                };
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(ServeError::KeyLookup(key_path, e)),
+        }
+        key_file::probe(data_dir).map_err(|e| ServeError::Probe(data_dir.to_owned(), e))?;
     }
     Ok(())
 }
@@ -174,6 +298,119 @@ mod tests {
     use ironflowx_proto::{Call, EmitRequest, ListEnvironmentsRequest, Operations as _};
 
     use super::*;
+
+    #[test]
+    fn every_open_refusal_has_its_table_code() {
+        let io = || io::Error::other("fault");
+        for (error, expected) in [
+            (EngineError::MalformedSeed, 2),
+            (EngineError::NotAnEngineRoot, 2),
+            (EngineError::Locked, 8),
+            (EngineError::Format, 1),
+            (EngineError::Orphaned, 1),
+            (EngineError::LedgerMissing, 1),
+            (EngineError::SeedConflict, 2),
+            (EngineError::Io(io()), 8),
+            (EngineError::Store(StoreError::Format), 1),
+            (EngineError::Store(StoreError::Failed("fault".into())), 8),
+            (EngineError::Ledger(OpenError::Locked), 8),
+            (EngineError::Ledger(OpenError::WrongIncarnation), 1),
+            (EngineError::Ledger(OpenError::Format), 1),
+            (EngineError::Ledger(OpenError::Corrupt), 1),
+            (EngineError::Ledger(OpenError::Missing), 1),
+            (EngineError::Ledger(OpenError::Io(io())), 8),
+        ] {
+            let error = ServeError::Engine(error);
+            assert_eq!(error.exit_code(), expected, "{error}");
+            assert_eq!(error.envelope().kind.exit_code(), expected, "{error}");
+        }
+    }
+
+    #[test]
+    fn publication_after_an_unmarked_read_is_not_called_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut winner = None;
+        let ready = prepare(data_dir, false, |dir| {
+            let marked = is_bootstrapped(dir);
+            if winner.is_none() {
+                assert!(matches!(marked, Ok(false)));
+                let opened = runtime
+                    .block_on(Engine::open(dir, HostClock, None))
+                    .unwrap();
+                key_file::write(dir, opened.minted.as_ref().unwrap()).unwrap();
+                winner = Some(opened);
+            }
+            marked
+        });
+        assert!(ready.is_ok(), "{ready:?}");
+        let lock = runtime.block_on(Engine::open(data_dir, HostClock, None));
+        assert!(matches!(lock, Err(EngineError::Locked)));
+        let winner = winner.unwrap();
+        let key = std::fs::read_to_string(key_file::path(data_dir)).unwrap();
+        assert!(key.trim_end() == winner.minted.as_ref().unwrap().expose());
+        runtime.block_on(winner.engine.close());
+    }
+
+    #[tokio::test]
+    async fn an_absent_destination_can_be_probed_after_a_transient_read_error() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        for finishing in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let data_dir = dir.path();
+            let control = data_dir.join("control.db");
+            if finishing {
+                let opened = Engine::open(data_dir, HostClock, None).await.unwrap();
+                opened.engine.close().await;
+                let db = rusqlite::Connection::open(&control).unwrap();
+                let unmark = "UPDATE environments SET ledger_created_at = NULL";
+                assert_eq!(db.execute(unmark, []).unwrap(), 1);
+            }
+            let db = rusqlite::Connection::open(&control).unwrap();
+            db.execute_batch("PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE;")
+                .unwrap();
+            let mut locker = Some(db);
+            let result = prepare(data_dir, false, |dir| {
+                let db = locker
+                    .take()
+                    .expect("only one read when the key name is absent");
+                let state = is_bootstrapped(dir);
+                assert!(matches!(state, Err(EngineError::Store(_))), "{state:?}");
+                db.execute_batch("ROLLBACK").unwrap();
+                drop(db);
+                state
+            });
+            result.unwrap();
+            assert!(!is_bootstrapped(data_dir).unwrap());
+            assert!(!key_file::exists(data_dir));
+            assert!(!std::fs::read_dir(data_dir).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .as_encoded_bytes()
+                    .starts_with(b".admin-key-probe.")
+            }));
+
+            // With no write permission, the same inconclusive branch must fail at the probe.
+            let blocked = std::fs::Permissions::from_mode(0o500);
+            std::fs::set_permissions(data_dir, blocked).unwrap();
+            let result = prepare(data_dir, false, |_| {
+                Err(EngineError::Store(StoreError::Failed(
+                    "database is locked".into(),
+                )))
+            });
+            std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(matches!(result, Err(ServeError::Probe(..))), "{result:?}");
+            assert!(!is_bootstrapped(data_dir).unwrap());
+
+            let opened = Engine::open(data_dir, HostClock, None).await.unwrap();
+            assert!(opened.minted.is_some());
+            assert_eq!(opened.lost_secret, finishing);
+            opened.engine.close().await;
+        }
+    }
 
     /// SRV-9: each part of the engine's health that keeps `/ready` from 200.
     #[tokio::test]
