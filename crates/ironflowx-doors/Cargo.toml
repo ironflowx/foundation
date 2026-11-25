@@ -1,0 +1,22 @@
+[package]
+name = "ironflowx-doors"
+description = "The doors an Ironflow X engine is called through, HTTP first. Unpublished."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# No engine crate: ci/no-engine-deps.sh (SRV-1).
+[dependencies]
+ironflowx-core.workspace = true
+ironflowx-proto = { workspace = true, features = ["server"] }
+axum = { version = "0.8.9", default-features = false }
+connectrpc = { version = "0.9.1", default-features = false, features = ["json"] }
+http = { version = "1.5.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+ironflowx-proto = { workspace = true, features = ["client"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "http2", "tokio"] }
+connectrpc = { version = "0.9.1", default-features = false, features = ["client"] }
+tokio = { version = "1.54.1", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread"] }

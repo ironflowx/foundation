@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package ironflowx.v1;
+
+// A failed call, as the engine answered it: a Connect error detail.
+message ErrorInfo {
+  // The error kind in snake_case: "invalid", "permission_denied".
+  string kind = 1;
+  string message = 2;
+  // What to do about it, when there is something.
+  optional string hint = 3;
+}

@@ -12,12 +12,14 @@ ironflowx-core.workspace = true
 ironflowx-cell.workspace = true
 ironflowx-events.workspace = true
 ironflowx-operations.workspace = true
-ironflowx-proto.workspace = true
+ironflowx-proto = { workspace = true, features = ["client", "wire"] }
 serde_json.workspace = true
+connectrpc = { version = "0.9.1", default-features = false, features = ["client", "json"] }
 cucumber = "0.23.0"
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "macros"] }
 futures = { version = "0.3.34", default-features = false }
+http = { version = "1.5.0", default-features = false }
 
 [[test]]
 name = "behaviors"

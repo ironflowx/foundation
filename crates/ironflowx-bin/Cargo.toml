@@ -1,0 +1,39 @@
+[package]
+name = "ironflowx-bin"
+description = "The `ironflowx` binary: the host that serves an engine. Unpublished."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ironflowx"
+path = "src/main.rs"
+# Its page would overwrite the facade's, of the same name.
+doc = false
+test = false
+
+[dependencies]
+ironflowx-cell.workspace = true
+ironflowx-core.workspace = true
+ironflowx-doors = { path = "../ironflowx-doors" }
+ironflowx-operations.workspace = true
+ironflowx-store.workspace = true
+axum = { version = "0.8.9", default-features = false }
+clap = { version = "4.6.9", default-features = false, features = ["error-context", "help", "std", "usage"] }
+hyper = { version = "1.13.0", default-features = false, features = ["server"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["http1", "http2", "server-auto", "service", "tokio"] }
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tracing = { version = "0.1.44", default-features = false }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "json"] }
+
+[dev-dependencies]
+ironflowx-authz.workspace = true
+# For tests/starting.rs's fault hook; a dev-dependency does not ship.
+ironflowx-core = { workspace = true, features = ["__fault-points"] }
+ironflowx-operations = { workspace = true, features = ["__fault-points"] }
+ironflowx-proto = { workspace = true, features = ["client"] }
+rusqlite = { version = "0.43.0", default-features = false, features = ["bundled"] }
+serde_json.workspace = true
