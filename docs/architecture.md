@@ -597,9 +597,11 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 **Generator.** `ironflowx-cli`'s `build.rs` gives `generate` the descriptor set, so a proto it refuses is a build that fails (D52). It refuses:
 
 - a method without a `cli`, a `summary` or an `example` (a blank one is none), a `cli` that is not kebab-case words, a `summary` of more than one line, and a command that is another's, or the group another is in;
-- an example that is not JSON, that its request's schema does not allow, or that does not decode as the request (SRV-12): a 64-bit number, a time or a `oneof` can fail only the latter. The schema is JSON Schema 2020-12, with `additionalProperties: false`: no field the request does not have, at any depth. It requires none, and of a `json_text` field it asks only a string, whose text it does not read;
+- an example that is not JSON, that its request's schema does not allow, or that does not decode as the request (SRV-12): a 64-bit number, a time or a `oneof` can fail only the latter. The schema is JSON Schema 2020-12, with `additionalProperties: false`: no field the request does not have, at any depth. It requires none, a time is in whole milliseconds, and of a `json_text` field it asks only a string, whose text it does not read;
 - a field, in any message of ours, whose `json_name` is not its own snake_case name (D78);
 - `json_text` on a field that is not a `string`, and a type it has no schema for: today bytes, floats, enums, maps and Google's messages other than `Timestamp`.
+
+It does not know the hand-written commands: one that takes a name of theirs panics each start of a debug build, the tests' included.
 
 It writes `cli.rs`: each command with its summary, the fields of its answer that need a default, and its call through `Operations`. A request's fields have no flags yet, so a command sends the empty request.
 
@@ -673,9 +675,9 @@ It writes `cli.rs`: each command with its summary, the fields of its answer that
 | Commands | One per method of the proto, generated (D52): today `whoami`. Hand-written: `version` here, `serve` in the host |
 | Engine | `--url`, else `IRONFLOWX_URL`, else `http://127.0.0.1:9310`; `http://` only |
 | Key | `--key-file <path>`, else `IRONFLOWX_KEY`, else none, with surrounding whitespace trimmed. Nothing else: the CLI never reads `admin.key` unasked (D61). No key, and an empty one, is a call with no key, which the engine refuses; a file or a variable that is there and empty is still the one that was given. Text that is not UTF-8 is a malformed key |
-| Output | The answer as wire JSON on stdout: one line, or indented if stdout is a terminal. Every field that is not `optional` is printed, defaults included; an absent `optional` field stays absent. The wire is unchanged. `--help` prints text and exits 0: the one exception |
+| Output | The answer as wire JSON on stdout: one line, or indented if stdout is a terminal. Every field that is not `optional` is printed, defaults included; an absent `optional` field stays absent. (A message field has no default: one that is not `optional` is always set, since the answer printed is mapped from the domain type, D53.) The wire is unchanged. `--help` prints text and exits 0: the one exception |
 | Errors | One line on stderr, the envelope; its kind's [exit code](#errors); nothing on stdout, unless a write to it failed midway. A message or hint that repeats the key the call sent has `<key>` in its place: what answered may be no engine |
-| Usage errors | An argument that is missing, unknown or of the wrong form, a URL that is not `http://host[:port][/path]`, and a `--key-file` that cannot be read, are `Invalid`, exit 2, and nothing is sent. The message is one line and names a bad argument, its whitespace as single spaces, unless it holds a key's `ixk_`; it never holds what `--key-file`, `--url` or `IRONFLOWX_URL` was set to, which may be or hold a secret |
+| Usage errors | An argument that is missing, unknown or of the wrong form, a URL that is not `http://host[:port][/path]`, and a `--key-file` that cannot be read, are `Invalid`, exit 2, and nothing is sent. The message is one line and names a bad argument, its whitespace as single spaces, but `<hidden>` for a word that holds a key's `ixk_` or is as long as a key's secret; it never holds what `--key-file`, `--url` or `IRONFLOWX_URL` was set to, which may be or hold a secret |
 | Deadline | 30 s a call, sent as `Connect-Timeout-Ms` and held to by the client too: `Unavailable` after it, for a read |
 
 **The envelope** of a failure: `{"code": …, "message": …, "retryable": …, "hint": …}`. `code` is the kind's name in snake_case, as in `ErrorInfo`; `retryable` is `ErrorKind::retryable()`; `hint` is absent when there is none.

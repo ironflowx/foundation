@@ -210,7 +210,12 @@ fn shape(field: &FieldDescriptor) -> Result<(Value, Option<Value>), CodegenError
             (json!({"type": "string", "pattern": "^[0-9]+$"}), json!("0"))
         }
         Kind::Message(m) if m.full_name() == "google.protobuf.Timestamp" => (
-            json!({"type": "string", "format": "date-time"}),
+            // In whole milliseconds, as the wire takes one.
+            json!({
+                "type": "string",
+                "format": "date-time",
+                "pattern": r"^[^.]*(\.[0-9]{1,3}0*)?[^.0-9][^.]*$",
+            }),
             Value::Null,
         ),
         Kind::Message(m) if ours(&m) && !m.is_map_entry() => (object(&m)?, Value::Null),
@@ -227,6 +232,8 @@ fn shape(field: &FieldDescriptor) -> Result<(Value, Option<Value>), CodegenError
 }
 
 /// The JSON Schema of `message` in wire JSON, where every field may be left out.
+// shortcut: a message that holds itself overflows the stack, so the build fails without naming it;
+// refuse it by name when a request or an answer needs one.
 fn object(message: &MessageDescriptor) -> Result<Value, CodegenError> {
     let mut properties = serde_json::Map::new();
     for field in message.fields() {

@@ -21,6 +21,11 @@ const DEADLINE: Duration = Duration::from_secs(30);
 /// What every key starts with.
 const KEY_PREFIX: &str = "ixk_";
 
+/// How long a key's secret is, the part after its ID.
+const SECRET_LEN: usize = 43;
+
+const DEFAULT_URL: &str = "http://127.0.0.1:9310";
+
 /// A command the generator found in the proto.
 struct Command {
     /// Its words, as `events emit`.
@@ -66,14 +71,9 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
         // Its first paragraph; the rest is the usage.
         let text = e.render().to_string();
         let first = text.split("\n\n").next().unwrap_or_default();
-        // A key given where none goes is not printed (TEN-3).
-        let hide = |word| {
-            if str::contains(word, KEY_PREFIX) {
-                "'<key>'"
-            } else {
-                word
-            }
-        };
+        // A key given where none goes, or the end of one, is not printed (TEN-3).
+        let key = |word: &str| word.contains(KEY_PREFIX) || word.len() >= SECRET_LEN;
+        let hide = |word| if key(word) { "<hidden>" } else { word };
         let words: Vec<_> = first.split_whitespace().map(hide).collect();
         let message = words.join(" ");
         end(Err(OpError {
@@ -85,13 +85,19 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
 
 /// Runs the CLI's own command that [`parse`] found: the process's exit code.
 pub fn run(matches: &ArgMatches) -> ExitCode {
+    let (command, leaf) = chosen(matches);
+    end(answer(&command, leaf).and_then(|a| print(&a)))
+}
+
+/// The words of the command that was parsed, and its own arguments.
+fn chosen(matches: &ArgMatches) -> (String, &ArgMatches) {
     let mut words = Vec::new();
     let mut leaf = matches;
     while let Some((word, inner)) = leaf.subcommand() {
         words.push(word);
         leaf = inner;
     }
-    end(answer(&words.join(" "), leaf).and_then(|a| print(&a)))
+    (words.join(" "), leaf)
 }
 
 /// A command that is nothing without one of its subcommands.
@@ -110,12 +116,9 @@ fn add(parent: clap::Command, words: &[&'static str], command: &Command) -> clap
         return parent.subcommand(
             clap::Command::new(*word)
                 .about(command.summary)
-                .arg(
-                    Arg::new("url")
-                        .value_name("URL")
-                        .long("url")
-                        .help("The engine to call; else IRONFLOWX_URL, else http://127.0.0.1:9310"),
-                )
+                .arg(Arg::new("url").value_name("URL").long("url").help(format!(
+                    "The engine to call; else IRONFLOWX_URL, else {DEFAULT_URL}"
+                )))
                 .arg(
                     Arg::new("key-file")
                         .long("key-file")
@@ -166,7 +169,7 @@ fn url(flag: Option<String>, variable: Option<OsString>) -> (&'static str, Strin
         (Some(url), _) => ("--url", url),
         // Text that is not UTF-8 is no URL; nor is an empty one.
         (None, Some(url)) => ("IRONFLOWX_URL", url.into_string().unwrap_or_default()),
-        (None, None) => ("the default", "http://127.0.0.1:9310".to_owned()),
+        (None, None) => ("the default", DEFAULT_URL.to_owned()),
     }
 }
 
@@ -224,9 +227,7 @@ fn print(answer: &Value) -> Result<(), OpError> {
     } else {
         answer.to_string()
     };
-    writeln!(out, "{text}")
-        .and_then(|()| out.flush())
-        .map_err(|e| unprinted(&e))
+    writeln!(out, "{text}").map_err(|e| unprinted(&e))
 }
 
 /// The exit code of an answer printed, or of a failure, once its envelope is.
@@ -286,21 +287,28 @@ mod tests {
             });
         let root = group(root);
         root.clone().debug_assert();
-        for (args, ok) in [
-            ("whoami", true),
-            ("keys list --url x --key-file y", true),
-            ("keys revoke", true),
-            ("a b c", true),
-            ("keys", false),
-            ("keys nope", false),
-            ("keys help", false),
-            ("a b", false),
-            ("list", false),
-            ("keys --url x list", false),
+        for (args, found) in [
+            ("whoami", Some("whoami")),
+            ("keys list --url x --key-file y", Some("keys list")),
+            ("keys revoke --url x", Some("keys revoke")),
+            ("a b c", Some("a b c")),
+            ("keys", None),
+            ("keys nope", None),
+            ("keys help", None),
+            ("a b", None),
+            ("list", None),
+            ("keys --url x list", None),
         ] {
-            let args = format!("ironflowx {args}");
-            let parsed = root.clone().try_get_matches_from(args.split(' '));
-            assert_eq!(parsed.is_ok(), ok, "{args}");
+            let line = format!("ironflowx {args}");
+            let parsed = root.clone().try_get_matches_from(line.split(' ')).ok();
+            let got = parsed.as_ref().map(chosen);
+            assert_eq!(got.as_ref().map(|(c, _)| &**c), found, "{args}");
+            let url = got.and_then(|(_, leaf)| leaf.get_one::<String>("url"));
+            assert_eq!(
+                url.is_some(),
+                found.is_some() && args.contains("--url"),
+                "{args}"
+            );
         }
     }
 

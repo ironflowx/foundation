@@ -20,7 +20,7 @@ use ironflowx_proto::{OpError, Whoami};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use serde_json::{Value, json};
 
-/// The CLI in `dir`, with no variable of ours set.
+/// The CLI, with no variable of ours set.
 fn command(args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ironflowx"));
     for (name, _) in std::env::vars_os() {
@@ -249,11 +249,23 @@ fn a_usage_error_is_an_envelope() {
             &["whoami", "--url", "http://h", "--url", "http://h"],
             "the argument '--url <URL>' cannot be used multiple times",
         ),
-        (&["whoami", KEY], "unexpected argument '<key>' found"),
-        (&[KEY], "unrecognized subcommand '<key>'"),
+        (&["whoami", KEY], "unexpected argument <hidden> found"),
+        (&[KEY], "unrecognized subcommand <hidden>"),
         (
             &["serve", "--listen", KEY],
-            "invalid value '<key>' for '--listen <ADDRESS>': invalid socket address syntax",
+            "invalid value <hidden> for '--listen <ADDRESS>': invalid socket address syntax",
+        ),
+        // What a key ends with: its secret, or that and the ID before it.
+        (
+            &["whoami", &KEY[41..]],
+            "unexpected argument <hidden> found",
+        ),
+        (&["whoami", &KEY[4..]], "unexpected argument <hidden> found"),
+        (&["whoami", "ixk_x"], "unexpected argument <hidden> found"),
+        // An ID is no secret.
+        (
+            &["whoami", &KEY[4..40]],
+            "unexpected argument '0190b5f0-0000-7000-8000-000000000001' found",
         ),
         (
             &["whoami", "--key=ixk_x"],

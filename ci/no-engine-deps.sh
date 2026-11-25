@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Usage: ci/no-engine-deps.sh <Cargo.toml...>
 # SRV-1: fails if a package at <Cargo.toml> depends, directly or not, with any feature and on any
-# target, on an ironflowx crate other than ironflowx-core and ironflowx-proto, or, at build time only,
-# the generator: a door and the CLI hold no rule, so they link no engine crate, nor the facade, which
-# re-exports them. Dev-dependencies do not ship.
+# target, on an ironflowx crate other than ironflowx-core and ironflowx-proto, or, at build time
+# only, the generator: a door and the CLI hold no rule, so they link no engine crate, nor the
+# facade, which re-exports them. Dev-dependencies do not ship.
 # Not caught, and not in this repo: an engine crate under another name, or its code copied in.
 set -euo pipefail
 status=0
