@@ -339,20 +339,24 @@ impl Ledger {
     ///
     /// # Panics
     ///
-    /// Outside a tokio runtime.
+    /// Outside a tokio runtime, or on one that has shut down.
     pub async fn close(mut self) {
+        // The closure owns the writer: one that never runs drops the ledger, which joins it.
+        tokio::task::spawn_blocking(move || self.join())
+            .await
+            .expect("drop does not panic");
+    }
+
+    /// Ends the queue and waits for the writer. A panic of its own teardown fails the ledger.
+    fn join(&mut self) {
         #[cfg(any(test, feature = "__fault-points"))]
         self.faults.release_fold();
-        let writer = self.writer.take();
         drop(self.jobs.take());
-        tokio::task::spawn_blocking(move || {
-            if let Some(writer) = writer {
-                let _ = writer.join();
-            }
-            drop(self);
-        })
-        .await
-        .expect("drop does not panic");
+        if let Some(writer) = self.writer.take()
+            && writer.join().is_err()
+        {
+            fail(&self.progress);
+        }
     }
 }
 
@@ -363,12 +367,7 @@ impl Ledger {
 impl Drop for Ledger {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::SeqCst);
-        #[cfg(any(test, feature = "__fault-points"))]
-        self.faults.release_fold();
-        drop(self.jobs.take());
-        if let Some(writer) = self.writer.take() {
-            let _ = writer.join();
-        }
+        self.join();
         self.progress.send_modify(|p| p.closed = true);
     }
 }

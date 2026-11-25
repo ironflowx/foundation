@@ -81,20 +81,23 @@ async fn a_fault_is_signalled_with_no_call_in_flight_and_shows_in_a_health_under
         idempotency_key: None,
     };
     engine.emit(&k, event).await.expect("acknowledged");
-    writer_stopped.recv().unwrap();
+    let late = Duration::from_secs(10);
+    writer_stopped.recv_timeout(late).expect("AfterAck reached");
 
     // A lookup reads the clock under the control plane's lock, so health waits for it.
     let (stop, lookup_stopped, end_lookup) = Stop::new();
     *clock.0.lock().unwrap() = Some(stop);
     let mut lookup = Box::pin(engine.whoami(&k, WhoamiRequest {}));
     assert!(!ready(lookup.as_mut()));
-    lookup_stopped.recv().unwrap();
+    lookup_stopped
+        .recv_timeout(late)
+        .expect("the lookup reads the clock");
     let mut health = Box::pin(engine.health());
     assert!(!ready(health.as_mut()));
     assert!(!ready(pending.as_mut()), "open");
 
     kill_writer.send(()).unwrap();
-    let signalled = tokio::time::timeout(Duration::from_secs(10), task).await;
+    let signalled = tokio::time::timeout(late, task).await;
     signalled.expect("signalled").unwrap();
     assert!(ready(pending));
     assert!(!ready(health.as_mut()), "held");

@@ -95,8 +95,8 @@ impl Engine {
     /// Reads the control plane once, then whether the ledger has failed, for the host's readiness.
     /// Not an operation: it takes no key, and reads no key record and no event (TEN-1).
     ///
-    /// It waits for the control plane's lock, as every call does, so a key change waiting for
-    /// another process's write lock holds it for seconds: the host bounds the wait.
+    /// It waits for the control plane's lock, which a key change waiting for another process's
+    /// write lock holds for seconds. It has no deadline: a host that needs one sets it.
     ///
     /// # Panics
     ///
@@ -129,7 +129,7 @@ impl Engine {
     ///
     /// # Panics
     ///
-    /// Outside a tokio runtime.
+    /// Outside a tokio runtime, or on one that has shut down.
     pub async fn close(self) {
         self.ledger.close().await;
     }
