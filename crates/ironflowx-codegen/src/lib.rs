@@ -131,8 +131,8 @@ fn read_method(method: &MethodDescriptor) -> Result<Method, CodegenError> {
             .ok_or_else(|| refused(at, format!("has no (ironflowx.v1.{name})")))
     };
     let command = text("cli")?;
-    let word = |w: &str| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase() || b == b'-');
-    if !command.split(' ').all(word) || command.split(' ').any(|w| w.starts_with('-')) {
+    let part = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_lowercase());
+    if !command.split([' ', '-']).all(part) {
         return Err(refused(
             at,
             "its (ironflowx.v1.cli) is not kebab-case words",
@@ -155,6 +155,9 @@ fn read_method(method: &MethodDescriptor) -> Result<Method, CodegenError> {
         let why = format!("its (ironflowx.v1.example) fails its schema: {e}");
         return Err(refused(at, why));
     }
+    // What a schema does not say: a 64-bit number's bounds, a time's years, one of a oneof.
+    DynamicMessage::deserialize(method.input(), &example)
+        .map_err(|e| refused(at, format!("its (ironflowx.v1.example) is no request: {e}")))?;
     Ok(Method {
         name: snake_case(method.name()),
         command,

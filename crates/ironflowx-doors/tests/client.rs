@@ -177,10 +177,11 @@ async fn a_call_ends_by_its_timeout() {
     let silent = listener.local_addr().unwrap();
     let asked = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
-        let mut request = [0; 4096];
-        let n = stream.read(&mut request).await.unwrap();
-        let head = String::from_utf8_lossy(&request[..n]).to_lowercase();
-        (stream, head)
+        let mut head = Vec::new();
+        while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+            assert_ne!(stream.read_buf(&mut head).await.unwrap(), 0);
+        }
+        (stream, String::from_utf8_lossy(&head).to_lowercase())
     });
     for addr in [addr, silent] {
         let client = Client::new(&format!("http://{addr}")).unwrap();

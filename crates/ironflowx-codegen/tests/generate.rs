@@ -143,7 +143,8 @@ fn a_method_of_a_set_without_the_options_is_refused() {
 #[test]
 fn a_command_is_kebab_case_words() {
     for command in [
-        "Do", "do it ", " do", "do  it", "-do", "do --it", "do_it", "do\tit", "dö",
+        "Do", "do it ", " do", "do  it", "-do", "do-", "do--it", "do -it", "do --it", "do_it",
+        "do\tit", "dö",
     ] {
         let options = format!("option (ironflowx.v1.cli) = {command:?}; {SUMMARY} {EXAMPLE}");
         let refused = generate(&method(&options, "", "")).unwrap_err();
@@ -197,12 +198,16 @@ fn an_example_its_schema_refuses_is_refused() {
         uint32 count = 7;
         uint64 large = 8;
         int32 small = 9;
+        oneof one { string left = 10; string right = 11; }
         message Inner { string id = 1; }
     "#;
     for good in [
         "{}",
         r#"{"name":"","on":true,"tags":[],"inner":{},"big":"-9","count":0,"large":"0","small":-1}"#,
         r#"{"tags":["a"],"inner":{"id":"x"},"at":"2026-01-02T03:04:05.678Z","count":4294967295}"#,
+        r#"{"big":"9223372036854775807","large":"18446744073709551615","right":"a"}"#,
+        r#"{"big":"-9223372036854775808","at":"0001-01-01T00:00:00Z"}"#,
+        r#"{"at":"9999-12-31T23:59:59.999Z"}"#,
     ] {
         let body = method(&example(good), request, "");
         assert!(generate(&body).is_ok(), "{good}");
@@ -229,6 +234,18 @@ fn an_example_its_schema_refuses_is_refused() {
     ] {
         let refused = generate(&method(&example(bad), request, "")).unwrap_err();
         let why = "t.S.Do: its (ironflowx.v1.example) fails its schema: ";
+        assert!(refused.starts_with(why), "{bad}: {refused}");
+    }
+    // What the schema does not say, its message does.
+    for bad in [
+        r#"{"big":"9223372036854775808"}"#,
+        r#"{"big":"-9223372036854775809"}"#,
+        r#"{"large":"18446744073709551616"}"#,
+        r#"{"at":"0000-01-01T00:00:00Z"}"#,
+        r#"{"left":"a","right":"b"}"#,
+    ] {
+        let refused = generate(&method(&example(bad), request, "")).unwrap_err();
+        let why = "t.S.Do: its (ironflowx.v1.example) is no request: ";
         assert!(refused.starts_with(why), "{bad}: {refused}");
     }
     let refused = generate(&method(&example("{"), "", "")).unwrap_err();

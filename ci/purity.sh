@@ -63,8 +63,9 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "engine-dep/target-only/Cargo.toml: engine crate: 'ironflowx-authz'" \
     "engine-dep/at-build/Cargo.toml: engine crate: 'ironflowx-events'" \
     "engine-dep/through/Cargo.toml: engine crate: 'ironflowx-operations'" \
-    "engine-dep/facade/Cargo.toml: engine crate: 'ironflowx'" -- \
-    ci/no-engine-deps.sh ci/fixtures/engine-dep/{direct,renamed,optional,target-only,at-build,through,facade}/Cargo.toml
+    "engine-dep/facade/Cargo.toml: engine crate: 'ironflowx'" \
+    "engine-dep/generator/Cargo.toml: linked at run time: 'ironflowx-codegen'" -- \
+    ci/no-engine-deps.sh ci/fixtures/engine-dep/{direct,renamed,optional,target-only,at-build,through,facade,generator}/Cargo.toml
   # Each refusal fails a build of its own; the package that has no fault builds.
   cargo test -q --locked -p accepted --manifest-path ci/fixtures/codegen/Cargo.toml
   ci/must-reject.sh \

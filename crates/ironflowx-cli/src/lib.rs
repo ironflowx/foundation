@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::ffi::OsString;
 use std::io::{self, IsTerminal as _, Write as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -16,6 +17,9 @@ use serde_json::{Value, json};
 
 /// The most a call takes.
 const DEADLINE: Duration = Duration::from_secs(30);
+
+/// What every key starts with.
+const KEY_PREFIX: &str = "ixk_";
 
 /// A command the generator found in the proto.
 struct Command {
@@ -64,7 +68,7 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
         let first = text.split("\n\n").next().unwrap_or_default();
         // A key given where none goes is not printed (TEN-3).
         let hide = |word| {
-            if str::contains(word, "ixk_") {
+            if str::contains(word, KEY_PREFIX) {
                 "'<key>'"
             } else {
                 word
@@ -142,22 +146,28 @@ fn answer(command: &str, matches: &ArgMatches) -> Result<Value, OpError> {
         .enable_all()
         .build()
         .map_err(|e| internal(format!("no runtime: {e}")))?;
-    let mut answer = runtime.block_on(generated::call(command, &client, &cx))?;
+    let mut answer = runtime
+        .block_on(generated::call(command, &client, &cx))
+        .map_err(|e| without_key(e, &cx))?;
     let known = generated::COMMANDS.iter().find(|c| c.path == command);
     complete(&mut answer, known.expect("a command it called").answer);
     Ok(answer)
 }
 
 fn client(matches: &ArgMatches) -> Result<Client, OpError> {
-    let (given, url) = match matches.get_one::<String>("url") {
-        Some(url) => ("--url", url.clone()),
-        // Text that is not UTF-8 is no URL; nor is an empty one.
-        None => match std::env::var_os("IRONFLOWX_URL") {
-            Some(url) => ("IRONFLOWX_URL", url.into_string().unwrap_or_default()),
-            None => ("the default", "http://127.0.0.1:9310".to_owned()),
-        },
-    };
+    let flag = matches.get_one::<String>("url").cloned();
+    let (given, url) = url(flag, std::env::var_os("IRONFLOWX_URL"));
     Client::new(&url).map_err(|e| invalid(format!("{given} is {e}")))
+}
+
+/// The URL to call, and what gave it.
+fn url(flag: Option<String>, variable: Option<OsString>) -> (&'static str, String) {
+    match (flag, variable) {
+        (Some(url), _) => ("--url", url),
+        // Text that is not UTF-8 is no URL; nor is an empty one.
+        (None, Some(url)) => ("IRONFLOWX_URL", url.into_string().unwrap_or_default()),
+        (None, None) => ("the default", "http://127.0.0.1:9310".to_owned()),
+    }
 }
 
 /// The key given, and no other: never `admin.key` (D61).
@@ -174,6 +184,17 @@ fn credential(matches: &ArgMatches) -> Result<Call, OpError> {
     // Text that is not UTF-8 is no well-formed key; nor is what replaces it.
     let key = String::from_utf8_lossy(&key).trim().to_owned();
     Ok(Call::with_key(Secret::new(key)))
+}
+
+/// `e`, whose text may come from no engine, without the key it was sent (TEN-3).
+fn without_key(mut e: OpError, cx: &Call) -> OpError {
+    let key = cx.key().map(Secret::expose);
+    // Any other text is no one's key, and may be in any message.
+    if let Some(key) = key.filter(|k| k.contains(KEY_PREFIX)) {
+        e.message = e.message.replace(key, "<key>");
+        e.hint = e.hint.map(|hint| hint.replace(key, "<key>"));
+    }
+    e
 }
 
 /// Adds the fields that hold their defaults, which wire JSON leaves out, so an absent one is always
@@ -281,6 +302,17 @@ mod tests {
             let parsed = root.clone().try_get_matches_from(args.split(' '));
             assert_eq!(parsed.is_ok(), ok, "{args}");
         }
+    }
+
+    #[test]
+    fn the_url_is_the_flags_or_else_the_variables_or_else_the_default() {
+        let flag = || Some("f".to_owned());
+        let variable = || Some(OsString::from("v"));
+        assert_eq!(url(flag(), variable()), ("--url", "f".to_owned()));
+        assert_eq!(url(flag(), None), ("--url", "f".to_owned()));
+        assert_eq!(url(None, variable()), ("IRONFLOWX_URL", "v".to_owned()));
+        let default = "http://127.0.0.1:9310".to_owned();
+        assert_eq!(url(None, None), ("the default", default));
     }
 
     /// D65: a default is added wherever wire JSON leaves one out, and nothing else.

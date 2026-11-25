@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::process::{Output, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
@@ -172,11 +172,18 @@ fn fails(w: &mut Cli, exit: i32, code: String) {
     regex = r#"^stdout is a JSON object with "version", "commit" and "protocol" "ironflowx.v1"$"#
 )]
 fn version(w: &mut Cli) {
-    let answer = w.answer();
-    let text = |name: &str| !answer[name].as_str().expect("a string").is_empty();
-    assert!(text("version") && text("commit"), "{answer}");
-    assert_eq!(answer["protocol"], "ironflowx.v1");
-    assert_eq!(answer.as_object().expect("an object").len(), 3);
+    let head = Command::new("git").args(["rev-parse", "HEAD"]).output();
+    let head = head.ok().filter(|out| out.status.success());
+    let commit = head.map_or_else(
+        || "unknown".into(),
+        |out| String::from_utf8(out.stdout).unwrap(),
+    );
+    let expected = json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "commit": commit.trim(),
+        "protocol": "ironflowx.v1",
+    });
+    assert_eq!(w.answer(), expected);
     assert_eq!(w.ran().status.code(), Some(0));
 }
 

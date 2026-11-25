@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read as _, Write as _};
-use std::net::{SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -201,6 +201,28 @@ fn every_kind_is_one_envelope_and_one_exit_code() {
     }
 }
 
+/// TEN-3: what answers may be no engine, and repeat what it was sent.
+#[test]
+fn a_key_an_answer_repeats_is_not_printed() {
+    let served = Served::answering(Ok(whoami()));
+    for (key, message, hint) in [
+        (KEY, "no such key: '<key>'", "use another than <key><key>"),
+        // Not a key's, so any message may hold it.
+        ("e", "no such key: 'e'", "use another than ee"),
+    ] {
+        served.answers(Err(OpError {
+            kind: ErrorKind::Unauthenticated,
+            message: format!("no such key: '{key}'"),
+            hint: Some(format!("use another than {key}{key}")),
+        }));
+        let out = served.whoami().env("IRONFLOWX_KEY", key).output().unwrap();
+        let expected = json!({
+            "code": "unauthenticated", "message": message, "hint": hint, "retryable": false,
+        });
+        assert_eq!(envelope(&out), (expected, 3));
+    }
+}
+
 #[test]
 fn a_usage_error_is_an_envelope() {
     let dir = tempfile::tempdir().unwrap();
@@ -368,15 +390,24 @@ fn the_engine_is_the_one_the_flag_or_else_the_variable_names() {
 #[test]
 fn a_call_is_given_30_seconds() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{addr}");
     let head = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        let mut head = [0; 4096];
-        let n = stream.read(&mut head).unwrap();
-        stream.write_all(b"HTTP/1.1 503 x\r\n\r\n").unwrap();
-        String::from_utf8_lossy(&head[..n]).to_lowercase()
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            if stream.read(&mut byte).unwrap() == 0 {
+                break;
+            }
+            head.extend(byte);
+        }
+        let _ = stream.write_all(b"HTTP/1.1 503 x\r\n\r\n");
+        String::from_utf8(head).unwrap().to_lowercase()
     });
     let out = command(&["whoami", "--url", &url]).output().unwrap();
+    // If it never called, this ends the wait.
+    drop(TcpStream::connect(addr));
     let head = head.join().unwrap();
     assert!(head.contains("\r\nconnect-timeout-ms: 30000\r\n"), "{head}");
     let (envelope, exit) = envelope(&out);

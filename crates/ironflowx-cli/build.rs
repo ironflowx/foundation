@@ -1,6 +1,6 @@
 //! Generates the commands from the proto (D52), and names the commit for `version`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
@@ -10,10 +10,11 @@ fn main() {
         println!("cargo::error={e}");
     }
     println!("cargo::rerun-if-changed=build.rs");
-    // Each commit and checkout writes one of them.
-    for name in ["HEAD", "logs/HEAD"] {
-        let path = git(&["rev-parse", "--path-format=absolute", "--git-path", name]);
-        if let Some(path) = path.filter(|p| Path::new(p).exists()) {
+    // A checkout writes HEAD, and a commit the branch it names, if any. Cargo takes a file that is
+    // not there, as a packed branch's is not, for a changed one.
+    let branch = git(&["symbolic-ref", "-q", "HEAD"]);
+    for name in ["HEAD"].into_iter().chain(branch.as_deref()) {
+        if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", name]) {
             println!("cargo::rerun-if-changed={path}");
         }
     }
