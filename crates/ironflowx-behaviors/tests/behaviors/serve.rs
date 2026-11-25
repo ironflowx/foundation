@@ -38,11 +38,12 @@ use tempfile::TempDir;
 const REGISTERED: &[&str] = &[
     "HOST-001", "HOST-006", "HOST-016", "HOST-021", "HOST-022", "HOST-023", "HOST-024", "HOST-025",
     "HOST-026", "HOST-027", "HOST-029", "HOST-002", "HOST-003", "HOST-004", "HOST-005", "HOST-009",
-    "HOST-010", "HOST-011", "HOST-013", "HOST-014", "HOST-015", "HOST-019", "HOST-030",
+    "HOST-010", "HOST-011", "HOST-013", "HOST-014", "HOST-015", "HOST-017", "HOST-018", "HOST-019",
+    "HOST-030",
 ];
 
 /// How many scenarios run, an outline once per example, so no example goes unnoticed.
-pub const RUNS: usize = 43;
+pub const RUNS: usize = 46;
 
 const LATE: Duration = Duration::from_secs(30);
 
@@ -200,6 +201,7 @@ pub struct Serve {
     served: Option<Served>,
     dir: TempDir,
     refused_start: Option<Output>,
+    recovery: Option<Output>,
     taken: Option<TcpListener>,
     seed: Option<String>,
     control_before: Option<Vec<u8>>,
@@ -276,6 +278,7 @@ impl Serve {
         Self {
             served: None,
             refused_start: None,
+            recovery: None,
             taken: None,
             seed: None,
             control_before: None,
@@ -426,6 +429,7 @@ fn served_on(w: &mut Serve, listen: String) {
     w.serve(&listen);
 }
 
+#[given(r#"the engine is served and "admin.key" is still there"#)]
 #[given("the engine is served and an admin key is known")]
 #[given("the engine is served and a client holds the bootstrap key")]
 fn served_with_key(w: &mut Serve) {
@@ -819,6 +823,7 @@ fn second_is_error(w: &mut Serve, message: String) {
     assert_eq!(results(w)[1], Err(refused));
 }
 
+#[then(r#"with the key in "admin.key", listing keys shows no key with origin "recovered""#)]
 #[then("listing keys shows only the bootstrap key")]
 async fn only_the_bootstrap_key(w: &mut Serve) {
     let client = Client::new(&w.served().url()).unwrap();
@@ -851,6 +856,7 @@ fn was_served(w: &mut Serve) {
     w.served.take().unwrap().stop();
 }
 
+#[given(r#""admin.key" was deleted"#)]
 #[given(r#"the operator kept the key from "admin.key" and deleted the file"#)]
 fn deleted_key(w: &mut Serve) {
     assert_eq!(w.key().len(), 84);
@@ -880,6 +886,122 @@ async fn authenticates(w: &mut Serve) {
         .unwrap();
     assert_eq!(me.key_id.to_string(), key[4..40]);
     assert_eq!(me.scopes, [Scope::Read, Scope::Write, Scope::Admin].into());
+}
+
+#[given("the engine is served and its bootstrap key revoked itself")]
+async fn revoked_bootstrap(w: &mut Serve) {
+    served_with_key(w);
+    let client = Client::new(&w.served().url()).unwrap();
+    let cx = Call::with_key(Secret::new(w.key().to_owned()));
+    let key_id = w.key()[4..40].to_owned();
+    client
+        .revoke_key(&cx, ironflowx_proto::RevokeKeyRequest { key_id })
+        .await
+        .unwrap();
+}
+
+#[when(r#""ironflowx recover-key" runs on the data directory"#)]
+#[when(r#""ironflowx recover-key" runs on the data directory and no other flag"#)]
+fn recover_to_file(w: &mut Serve) {
+    recover(w, false);
+}
+
+#[when(r#""ironflowx recover-key" runs on the data directory and --stdout"#)]
+fn recover_to_stdout(w: &mut Serve) {
+    recover(w, true);
+}
+
+fn recover(w: &mut Serve, stdout: bool) {
+    let mut cmd = command();
+    cmd.args(["recover-key", "--data-dir"]).arg(w.data_dir());
+    if stdout {
+        cmd.arg("--stdout");
+    }
+    w.recovery = Some(cmd.output().unwrap());
+}
+
+#[then(r#""admin.key", with mode "0400", holds a key that authenticates with scopes "read", "write" and "admin""#)]
+async fn recovered_file(w: &mut Serve) {
+    check_recovery(w, false).await;
+}
+
+#[then(r#"the "key" field of its JSON output holds a key that authenticates with scopes "read", "write" and "admin""#)]
+async fn recovered_stdout(w: &mut Serve) {
+    check_recovery(w, true).await;
+}
+
+async fn check_recovery(w: &mut Serve, stdout: bool) {
+    let out = w.recovery.take().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let bootstrap = w.key.take().unwrap();
+    if stdout {
+        assert!(!w.data_dir().join("admin.key").exists());
+        let json: Value = serde_json::from_slice(&out.stdout).expect("a JSON key object");
+        let key = json["key"].as_str().expect("a key");
+        assert_eq!(key.len(), 84);
+        assert_eq!(json["key_id"], &key[4..40]);
+        w.key = Some(key.to_owned());
+    } else {
+        assert!(out.stdout.is_empty());
+        file_mode(w, "admin.key".into(), "0400".into());
+        w.read_key();
+    }
+    assert_eq!(
+        leak::leak(
+            std::str::from_utf8(&out.stderr).unwrap(),
+            [w.key(), &bootstrap]
+        ),
+        None
+    );
+    authenticates(w).await;
+}
+
+#[then(r#"listing keys shows it with origin "recovered""#)]
+async fn recovered_origin(w: &mut Serve) {
+    let client = Client::new(&w.served().url()).unwrap();
+    let cx = Call::with_key(Secret::new(w.key().to_owned()));
+    let page = client
+        .list_keys(&cx, ListKeysRequest::default())
+        .await
+        .unwrap();
+    let keys: Vec<_> = page.keys.iter().map(|k| (k.key_id, k.origin)).collect();
+    assert_eq!(keys.len(), 2);
+    assert_eq!(
+        keys[0],
+        (w.key()[4..40].parse().unwrap(), KeyOrigin::Recovered)
+    );
+    assert_eq!(keys[1].1, KeyOrigin::Minted);
+    assert_eq!(page.next, None);
+    let log = w.served.take().unwrap().stop();
+    assert_eq!(leak::leak(&log, [w.key()]), None);
+    for file in leak::files(&w.data_dir()) {
+        if file.0 != Path::new("admin.key") {
+            assert_eq!(leak::leak_in(&file, [w.key()]), None);
+        }
+    }
+}
+
+#[then("it exits with code 2 and an envelope whose hint names --stdout")]
+fn existing_recovery_file(w: &mut Serve) {
+    let out = w.recovery.as_ref().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    let json: Value = serde_json::from_slice(&out.stderr).expect("a stderr envelope");
+    assert_eq!(json["code"], "invalid");
+    assert_eq!(json["retryable"], false);
+    assert!(json["hint"].as_str().unwrap().contains("--stdout"));
+    assert_eq!(
+        leak::leak(std::str::from_utf8(&out.stderr).unwrap(), [w.key()]),
+        None
+    );
+}
+
+#[then(r#""admin.key" is unchanged"#)]
+fn unchanged_key(w: &mut Serve) {
+    let path = w.data_dir().join("admin.key");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.strip_suffix('\n') == Some(w.key()));
+    assert_eq!(mode(&path), "0400");
 }
 
 #[given(r#"a seed key made with "ironflowx seed generate""#)]

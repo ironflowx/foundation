@@ -15,6 +15,8 @@ impl core::fmt::Debug for ironflowx_bin::ServeError
 pub fn ironflowx_bin::ServeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for ironflowx_bin::ServeError
 pub fn ironflowx_bin::ServeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn ironflowx_bin::generate_seed() -> core::result::Result<(), ironflowx_proto::OpError>
+pub fn ironflowx_bin::recover_key(&std::path::Path, bool) -> core::result::Result<(), ironflowx_proto::OpError>
 pub async fn ironflowx_bin::run(std::net::tcp::TcpListener, &std::path::Path) -> core::result::Result<core::convert::Infallible, ironflowx_bin::ServeError>
 pub async fn ironflowx_bin::serve(&std::path::Path, core::net::socket_addr::SocketAddr) -> core::result::Result<core::convert::Infallible, ironflowx_bin::ServeError>
 pub async fn ironflowx_bin::serve_with_seed(&std::path::Path, core::net::socket_addr::SocketAddr, core::option::Option<ironflowx_core::secret::Secret>) -> core::result::Result<core::convert::Infallible, ironflowx_bin::ServeError>

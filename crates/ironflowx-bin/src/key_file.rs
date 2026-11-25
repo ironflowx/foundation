@@ -26,18 +26,30 @@ pub fn write(data_dir: &Path, key: &Secret) -> io::Result<()> {
         .prefix("admin.key.")
         .suffix(".tmp")
         .permissions(Permissions::from_mode(0o400))
-        .tempfile_in(data_dir)?;
+        .tempfile_in(data_dir)
+        .map_err(tempfile_error)?;
     // The process umask may have taken the owner's bit too.
     temporary
         .as_file()
         .set_permissions(Permissions::from_mode(0o400))?;
-    temporary.write_all(key.expose().as_bytes())?;
-    temporary.write_all(b"\n")?;
-    temporary.as_file().sync_all()?;
+    let file = temporary.as_file_mut();
+    file.write_all(key.expose().as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
     // Not a rename, which would replace an `admin.key`.
     std::fs::hard_link(temporary.path(), path(data_dir))?;
-    temporary.close()?;
+    close_temporary(temporary)?;
     File::open(data_dir)?.sync_all()
+}
+
+fn close_temporary(temporary: tempfile::NamedTempFile) -> io::Result<()> {
+    temporary.close().map_err(tempfile_error)
+}
+
+// Tempfile wraps filesystem errors with its own rendering of the path. The caller already
+// supplies a safe locator. Keep the error kind without including the wrapped path.
+fn tempfile_error(error: io::Error) -> io::Error {
+    error.kind().into()
 }
 
 const RELATIVE: &str = "configured data directory";
@@ -119,7 +131,8 @@ fn probe_with_link(
     let mut temporary = tempfile::Builder::new()
         .prefix(".admin-key-probe.")
         .permissions(Permissions::from_mode(0o400))
-        .tempfile_in(data_dir)?;
+        .tempfile_in(data_dir)
+        .map_err(tempfile_error)?;
     let mut link = temporary.path().as_os_str().to_owned();
     link.push(".link");
     let link = PathBuf::from(link);
@@ -129,7 +142,7 @@ fn probe_with_link(
             .as_file()
             .set_permissions(Permissions::from_mode(0o400))?;
         // The final file holds an 84-byte key and a newline.
-        temporary.write_all(&[0; 85])?;
+        temporary.as_file_mut().write_all(&[0; 85])?;
         temporary.as_file().sync_all()?;
         link_file(temporary.path(), &link)
     })();
@@ -174,6 +187,33 @@ fn failed_removal(path: &Path) -> Option<(std::ffi::OsString, io::Error)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writer_creation_error_omits_the_private_tempfile_path() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("quoted\"root");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, Permissions::from_mode(0o500)).unwrap();
+        let (_, key) = ironflowx_operations::generate_seed();
+        let result = write(&dir, &key);
+        std::fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.to_string(), "permission denied");
+        assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn writer_close_error_omits_the_private_tempfile_path() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("quoted\"root");
+        std::fs::create_dir(&dir).unwrap();
+        let temporary = tempfile::NamedTempFile::new_in(&dir).unwrap();
+        std::fs::remove_file(temporary.path()).unwrap();
+        let error = close_temporary(temporary).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(error.to_string(), "entity not found");
+    }
 
     #[test]
     fn the_probe_keeps_an_entry_it_could_not_link_over() {
