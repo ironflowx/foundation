@@ -38,10 +38,10 @@ fn refused(at: &str, why: impl fmt::Display) -> CodegenError {
 ///
 /// # Errors
 ///
-/// [`CodegenError`] for a method without a `cli`, a `summary` or an `example`, or with a command that
-/// clashes with another's; an example its request's schema refuses; a field whose `json_name` is not its
-/// snake_case name (D78); a type the generator does not know; a set that does not decode; and
-/// `cli.rs` not written.
+/// [`CodegenError`] for a method without a `cli`, a `summary` or an `example`, or with a command
+/// that clashes with another's; an example its request's schema refuses; a field whose `json_name`
+/// is not its snake_case name (D78); a type the generator does not know; a set that does not
+/// decode; and `cli.rs` not written.
 pub fn generate(descriptor_set: &[u8], out_dir: &Path) -> Result<(), CodegenError> {
     let code = render(&read(descriptor_set)?);
     let path = out_dir.join("cli.rs");

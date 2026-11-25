@@ -4,8 +4,9 @@
 # outside the ledger, SubmitAs::key outside the credentials crate, Grant::submit_as outside the
 # engine, the key digest codec outside the control plane (TEN-4), every crate-wide ban in every
 # clippy.toml; the doors' and the CLI's engine crates (SRV-1); what the generator refuses (SRV-2,
-# SRV-12); the crash test's fault points in no published build; ci/red.sh, which records test checks landing red; and each check
-# rejecting its fixture. The clippy job enforces the call bans on the real crates.
+# SRV-12); the crash test's fault points in no published build; ci/red.sh, which records test checks
+# landing red; and each check rejecting its fixture. The clippy job enforces the call bans on the
+# real crates.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
