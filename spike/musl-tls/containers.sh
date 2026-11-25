@@ -34,9 +34,11 @@ in_alpine=(docker run --rm --network host --tmpfs /data -v "$work/spike:/spike:r
 
 echo "== no glibc in either container"
 id=$(docker create sp160-scratch /spike); docker export "$id" | tar -t; docker rm "$id" >/dev/null
+# shellcheck disable=SC2016
 passes "alpine has no glibc" "glibc files: 0" -- docker run --rm "$alpine" sh -c \
   'echo "glibc files: $(find / -xdev \( -name "ld-linux*" -o -name "libc.so.6" -o -name "libc-2*" \) | wc -l)"; ls /lib/ld-* ; cat /etc/alpine-release'
-passes "alpine's ldd" "spike" -- "${in_alpine[@]}" "$alpine" ldd /spike
+echo "== recorded, not checked: what alpine's ldd, which is its loader, says of a static binary"
+"${in_alpine[@]}" "$alpine" ldd /spike 2>&1 || echo "exit $?"
 # Docker's own code for a program it cannot start.
 echo "== control: the glibc build starts in neither"
 for where in "${scratch[*]} sp160-scratch" "${in_alpine[*]} $alpine"; do
@@ -65,7 +67,7 @@ ca=(-v "$work/ca.pem:/ca.pem:ro" -e SSL_CERT_FILE=/ca.pem)
 
 passes  "alpine's roots, a public server: trusted" "answered HTTP/2.0 200 OK" -- "${in_alpine[@]}" "$alpine" /spike https "$public"
 refuses "alpine's roots, the test server: refused" "$unknown" -- "${in_alpine[@]}" "$alpine" /spike https "$private"
-passes  "the test root, the test server: trusted" "200" -- "${in_alpine[@]}" "${ca[@]}" "$alpine" /spike https "$private"
+passes  "the test root, the test server: trusted" "answered HTTP/1.0 200" -- "${in_alpine[@]}" "${ca[@]}" "$alpine" /spike https "$private"
 refuses "the test root, a public server: refused" "$unknown" -- "${in_alpine[@]}" "${ca[@]}" "$alpine" /spike https "$public"
 refuses "the test root, the test server by another name: refused" "NotValidForName" -- "${in_alpine[@]}" "${ca[@]}" "$alpine" /spike https https://127.0.0.1:9443/
 passes  "the runner's roots, a public server: trusted" "200 OK" -- ./spike https "$public"
@@ -79,7 +81,7 @@ passes  "control, scratch given the roots by SSL_CERT_FILE: trusted" "200 OK" --
   "${scratch[@]}" -v "$bundle:/roots.pem:ro" -e SSL_CERT_FILE=/roots.pem sp160-scratch /spike https "$public"
 passes  "control, scratch given the roots at $bundle: trusted" "200 OK" -- \
   "${scratch[@]}" -v "$bundle:$bundle:ro" sp160-scratch /spike https "$public"
-passes  "control, scratch given the test root, the test server: trusted" "200" -- \
+passes  "control, scratch given the test root, the test server: trusted" "answered HTTP/1.0 200" -- \
   "${scratch[@]}" "${ca[@]}" sp160-scratch /spike https "$private"
 
 echo "== control: a server that is not there is not read as refused"

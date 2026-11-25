@@ -35,7 +35,8 @@ must_fail() { # <set> <reason>
 }
 must_fail "ca-certificates, curl and rustup's" "linker \`cc\` not found"
 apt-get -qq install -y --no-install-recommends gcc >/dev/null 2>&1
-must_fail "gcc" "cannot find"
+# GNU ld says "cannot find", rust-lld (x86-64) "cannot open".
+must_fail "gcc" " Scrt1.o: No such file or directory"
 apt-get -qq install -y --no-install-recommends libc6-dev >/dev/null 2>&1
 must_fail "gcc, libc6-dev" "error occurred in cc-rs: failed to find tool \"$(uname -m)-linux-musl-gcc\""
 apt-get -qq install -y --no-install-recommends musl-tools >/dev/null 2>&1
