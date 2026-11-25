@@ -1,9 +1,11 @@
 //! The Ironflow X control plane: which tenants, projects, environments and keys exist, in
 //! `<root>/control.db` (SQLite).
 //!
-//! Blocking: the engine calls it under `spawn_blocking`, a recovery on its caller's thread. Every
-//! change is one transaction that takes SQLite's write lock first (TEN-11); one that needs now
-//! then reads it from the clock it is given.
+//! The engine uses this crate. Apps that open an engine use `ironflowx-operations`.
+//!
+//! Blocking: the engine's async methods call it under `spawn_blocking`. The bootstrap query and
+//! admin-key recovery use their caller's thread. Every change is one transaction that takes
+//! SQLite's write lock first (TEN-11); one that needs now then reads it from the clock it is given.
 //!
 //! One whose commit SQLite fails after writing it to the WAL is unsettled (D48): no open
 //! connection sees it, but the next open of the file may find it landed, whole, unless a write

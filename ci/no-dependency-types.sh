@@ -14,7 +14,7 @@ found=$(CRATES=${crates%|} perl -ne '
   my $line = $_;
   if (/^pub (use|extern crate) /
       && !/^pub use ironflowx::(authz|cell|core|events|operations|proto|store)$/
-      && !/^pub use ironflowx_operations::(Fault|LedgerState|RecoverError|SeedState)$/) {
+      && !/^pub use ironflowx_operations::(Fault|HostClock|LedgerState|OpenError|RecoverError|SeedState|StoreError)$/) {
     print "$ARGV:$.: $_";
     next;
   }

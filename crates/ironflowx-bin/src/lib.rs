@@ -15,11 +15,11 @@ use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::sync::Arc;
 
-use ironflowx_cell::{HostClock, LedgerState};
 use ironflowx_core::ErrorKind;
 use ironflowx_doors::{Readiness, Slot, WaitingOn, router};
-use ironflowx_operations::{ControlPlaneState, Engine, EngineError, Opened};
-use ironflowx_store::{BootstrapState, ControlPlane};
+use ironflowx_operations::{
+    ControlPlaneState, Engine, EngineError, HostClock, LedgerState, Opened, is_bootstrapped,
+};
 
 /// Why a host did not serve.
 #[derive(Debug)]
@@ -140,16 +140,9 @@ fn prepare(data_dir: &Path) -> Result<(), ServeError> {
         .mode(0o700)
         .create(data_dir)
         .map_err(|e| ServeError::DataDir(data_dir.to_owned(), e))?;
-    if key_file::exists(data_dir) {
-        match ControlPlane::bootstrap_state(&data_dir.join("control.db")) {
-            // The open answers what a failed read means.
-            Ok(BootstrapState::Marked { .. }) | Err(_) => {}
-            Ok(
-                BootstrapState::NoFile
-                | BootstrapState::Unbootstrapped
-                | BootstrapState::Unmarked { .. },
-            ) => return Err(ServeError::StaleKeyFile(key_file::path(data_dir))),
-        }
+    // The open answers what a failed read means.
+    if key_file::exists(data_dir) && matches!(is_bootstrapped(data_dir), Ok(false)) {
+        return Err(ServeError::StaleKeyFile(key_file::path(data_dir)));
     }
     Ok(())
 }

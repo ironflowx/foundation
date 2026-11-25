@@ -27,9 +27,7 @@ use ironflowx_proto::{
     ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation, Operations,
     RevokeKeyRequest, Whoami, WhoamiRequest,
 };
-use ironflowx_store::{
-    ControlPlane, EnvironmentRecord, KeyChangeError, KeyRow, NewKey, StoreError,
-};
+use ironflowx_store::{ControlPlane, EnvironmentRecord, KeyChangeError, KeyRow, NewKey};
 
 /// A page of keys when none is asked for, and the most one page holds: one page can show
 /// every key the cap allows.
@@ -40,9 +38,9 @@ const KEY_CAP: u32 = 1_000;
 
 pub use admission::Authorized;
 pub use ironflowx_authz::SeedState;
-pub use ironflowx_cell::{Fault, LedgerState};
-pub use ironflowx_store::RecoverError;
-pub use open::EngineError;
+pub use ironflowx_cell::{Fault, HostClock, LedgerState, OpenError};
+pub use ironflowx_store::{RecoverError, StoreError};
+pub use open::{EngineError, is_bootstrapped};
 pub use recover::recover_admin_key;
 
 /// An open data directory: its control plane, its environment's ledger and the root's lock.
