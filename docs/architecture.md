@@ -193,7 +193,8 @@ fn router<O: Operations + 'static, R: Readiness + 'static>(slot: Arc<Slot<O, R>>
 fn generate(descriptor_set: &[u8], out_dir: &Path) -> Result<(), CodegenError>;   // writes out_dir/cli.rs; what it refuses: Proto
 
 // ironflowx-cli. The host adds its commands to `root`, and runs its own.
-fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode>;   // Err: --help printed its text, or a usage error its envelope
+fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode>;   // Err: --help printed its text, or a usage error its envelope;
+                                                                 // or clap would print the arguments, so none was read
 fn run(matches: &ArgMatches) -> ExitCode;                        // a command of the CLI's own
 
 // ironflowx-bin (tokio)
@@ -677,7 +678,7 @@ It writes `cli.rs`: each command with its summary, the fields of its answer that
 | Key | `--key-file <path>`, else `IRONFLOWX_KEY`, else none, with surrounding whitespace trimmed. Nothing else: the CLI never reads `admin.key` unasked (D61). No key, and an empty one, is a call with no key, which the engine refuses; a file or a variable that is there and empty is still the one that was given. Text that is not UTF-8 is a malformed key |
 | Output | The answer as wire JSON on stdout: one line, or indented if stdout is a terminal. Every field that is not `optional` is printed, defaults included; an absent `optional` field stays absent. (A message field has no default: one that is not `optional` is always set, since the answer printed is mapped from the domain type, D53.) The wire is unchanged. `--help` prints text and exits 0: the one exception |
 | Errors | One line on stderr, the envelope; its kind's [exit code](#errors); nothing on stdout, unless a write to it failed midway. What answered may be no engine, so a message or hint that repeats the key the call sent has `<key>` in its place, and an answer that does is not printed: `Internal`. A message can repeat the URL's path, where no key goes (D55) |
-| Usage errors | An argument that is missing, unknown or of the wrong form, a URL that is not `http://host[:port][/path]`, and a `--key-file` that cannot be read, are `Invalid`, exit 2, and nothing is sent. The message is one line and names a bad argument, its whitespace as single spaces, but `<hidden>` for a word that holds a key's `ixk_` or is as long as a key's secret; it never holds what `--key-file`, `--url` or `IRONFLOWX_URL` was set to, which may be or hold a secret |
+| Usage errors | An argument that is missing, unknown or of the wrong form, a URL that is not `http://host[:port][/path]`, and a `--key-file` that cannot be read, are `Invalid`, exit 2, and nothing is sent. The message is one line and names a bad argument, its whitespace as single spaces, but `<hidden>` for a word that holds a key's `ixk_` or is as long as a key's secret; it never holds what `--key-file`, `--url` or `IRONFLOWX_URL` was set to, which may be or hold a secret. A build with clap's `debug` feature, which prints each argument as it parses it, reads none: every start is `Invalid`, `clap is built with its debug feature` (TEN-3) |
 | Deadline | 30 s a call, sent as `Connect-Timeout-Ms` and held to by the client too: `Unavailable` after it, for a read |
 
 **The envelope** of a failure: `{"code": …, "message": …, "retryable": …, "hint": …}`. `code` is the kind's name in snake_case, as in `ErrorInfo`; `retryable` is `ErrorKind::retryable()`; `hint` is absent when there is none.
@@ -705,7 +706,7 @@ It writes `cli.rs`: each command with its summary, the fields of its answer that
 | `base64`, `http`, `serde` | Caret ranges | `ironflowx-proto`'s wire features: an error detail's value, the client's URL and header, the generated JSON | |
 | `axum` | A caret range | `ironflowx-doors`: `/health` and `/ready` beside the RPCs | |
 | `hyper`, `hyper-util` | Caret ranges | `ironflowx-bin`: the accept loop | hyper times an HTTP/1.1 head with the `Timer` it is given |
-| `clap` | A caret range | `ironflowx-cli`, `ironflowx-bin`: the command line | A usage error's first paragraph is its message |
+| `clap` | Pinned exactly, in two unpublished crates: a later one could keep its tracing and drop the backtrace that shows it, silently | `ironflowx-cli`, `ironflowx-bin`: the command line | A usage error's first paragraph is its message. With its `debug` feature, and only then, an error made from no text prints more than `error: `: a backtrace, by which `parse` knows that clap would print the arguments (TEN-3) |
 | `tracing`, `tracing-subscriber`, `tempfile` | Caret ranges | `ironflowx-bin`: the log, the temporary key file | |
 
 How the ledger uses the log:

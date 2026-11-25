@@ -22,7 +22,8 @@ ironflowx-doors = { path = "../ironflowx-doors", features = ["http"] }
 ironflowx-operations.workspace = true
 ironflowx-store.workspace = true
 axum = { version = "0.8.9", default-features = false }
-clap = { version = "4.6.9", default-features = false, features = ["error-context", "help", "std", "usage"] }
+# Exact: ironflowx-cli refuses a clap that prints arguments by what this one does (TEN-3).
+clap = { version = "=4.6.9", default-features = false, features = ["error-context", "help", "std", "usage"] }
 hyper = { version = "1.13.0", default-features = false, features = ["server"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["http1", "http2", "server-auto", "service", "tokio"] }
 tempfile = "3.27.0"

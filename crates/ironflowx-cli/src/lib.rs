@@ -55,8 +55,14 @@ mod generated {
 ///
 /// # Errors
 ///
-/// What the process exits with: `--help` has printed its text, or a usage error its envelope.
+/// What the process exits with: `--help` has printed its text, or a usage error its envelope; or
+/// clap would print the arguments, so none was read.
 pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
+    // A clap that traces its parsing prints each argument before one can be hidden (TEN-3).
+    // One that changes this text refuses every start, and the message names the wrong cause.
+    if clap::Error::raw(clap::error::ErrorKind::Io, "").to_string() != "error: " {
+        return Err(end(Err(invalid("clap is built with its debug feature"))));
+    }
     let root = root.subcommand(
         clap::Command::new("version").about("Show the version, the commit and the protocol"),
     );

@@ -4,9 +4,9 @@
 # outside the ledger, SubmitAs::key outside the credentials crate, Grant::submit_as outside the
 # engine, the key digest codec outside the control plane (TEN-4), every crate-wide ban in every
 # clippy.toml; the doors' and the CLI's engine crates (SRV-1); what the generator refuses (SRV-2,
-# SRV-12); the crash test's fault points in no published build; ci/red.sh, which records test checks
-# landing red; and each check rejecting its fixture. The clippy job enforces the call bans on the
-# real crates.
+# SRV-12); a clap that prints arguments, refused (TEN-3); the crash test's fault points in no
+# published build; ci/red.sh, which records test checks landing red; and each check rejecting its
+# fixture. The clippy job enforces the call bans on the real crates.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -111,6 +111,14 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "target-only/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" -- \
     ci/no-fault-points.sh ci/fixtures/fault-points
 }
+
+# TEN-3: built with clap's tracing, the binary reads no argument.
+CARGO_TARGET_DIR=target/clap-debug cargo build -q --locked -p ironflowx-bin --features clap/debug
+ci/clap-trace.sh target/clap-debug/debug/ironflowx
+for traces in stderr stdout code; do
+  ci/must-reject.sh "clap-trace: ci/fixtures/clap-trace/$traces" -- \
+    ci/clap-trace.sh "ci/fixtures/clap-trace/$traces"
+done
 
 # ci/must-reject.sh takes a pattern in one line of the output, no fewer, no more and no other's.
 ci/must-reject.sh "with 'BadType' in 0 lines" -- \
