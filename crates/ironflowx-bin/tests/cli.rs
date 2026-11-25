@@ -591,6 +591,11 @@ fn what_is_no_request_is_a_usage_error() {
             json("null"),
             decoding("invalid type: null, expected struct EmitRequest at line 1 column 4"),
         ),
+        // What decoding would ignore, unread.
+        (
+            json(r#"{"name":"a.b","nope":1e400}"#),
+            decoding("number out of range at line 1 column 26"),
+        ),
         // The decoder's own: not a later one of two.
         (
             json(r#"{"idempotency_key":"a","idempotency_key":"b"}"#),

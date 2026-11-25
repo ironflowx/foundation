@@ -831,6 +831,7 @@ mod tests {
             (&["--a-name", ""], json!({"a_name": ""})),
             (&["--a-name", "@x"], json!({"a_name": "@x"})),
             (&["--a-name=-x"], json!({"a_name": "-x"})),
+            (&["--a-name", "true"], json!({"a_name": "true"})),
             (&["--on", "true"], json!({"on": true})),
             (&["--on", "false"], json!({"on": false})),
             (&["--on", "1"], json!({"on": "1"})),
