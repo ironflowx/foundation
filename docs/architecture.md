@@ -576,7 +576,7 @@ What `ironflowx serve` adds to it:
 | Where | Holds |
 |---|---|
 | `<root>/admin.key` | The minted admin key and a newline, mode `0400`. Never overwritten. Deleting it is the operator's call |
-| `<root>/admin.key.<random>.tmp` | The temporary file used to publish the key, mode `0400`. A leftover may hold the only copy. The host warns with its path and keeps it |
+| `<root>/admin.key.<random>.tmp` | The temporary file used to publish the key, mode `0400`. A leftover may hold the only copy. The host warns once and keeps it. A warning identifies its path when safe |
 | `<root>/.admin-key-probe.<random>` and its `.link` | Dummy zero bytes only, mode `0400`. A live probe removes its own entries unless the OS refuses cleanup, in which case the error names the paths |
 
 **Where a secret may appear.** A served engine's key text reaches only these places: `admin.key` and the temporary file it is linked from, the `Authorization` header of a call, the `CreateKey` answer on the wire, stdout of `keys create` and `seed generate`, and the variable or file given to the CLI or host. A key's text sent where no key goes is data, as any: a label is stored and listed (the CLI refuses to create a key whose label holds its own), and a text that does not decode can be repeated to its sender.
@@ -690,24 +690,31 @@ With `client-tls`, `Client` calls an `https` URL as it does an `http` one. It tr
 A flag beats its variable. A seed file and an inline seed are two sources and are refused together.
 The host trims surrounding whitespace off a seed and validates it before binding. An empty variable
 is a value and is refused. The host warns once for each unread `IRONFLOWX_*` variable, naming the
-variable without its value. `IRONFLOWX_URL` and `IRONFLOWX_KEY` are known CLI variables. There is no
+variable without its value. It hides names that could carry credentials or arbitrary bytes.
+`IRONFLOWX_URL` and `IRONFLOWX_KEY` are known CLI variables. There is no
 settings file.
 
 **Start.** In order:
 
 1. Read and validate settings and any seed. Bad settings, a malformed seed or an unreadable seed file exit 2.
-2. If the data directory holds `admin.key` and no `control.db`, exit 2: a stale key file, from another install.
+2. If the data directory holds `admin.key` and `control.db` is confirmed absent, exit 2: a stale key file, from another install.
 3. Bind the listen address. In use exits 8, any other bind error exits 2. No file has been written (D62).
 4. Log `listening` with the bound URL, also when port 0 picked the address. An address that is not loopback also logs a warning that keys travel in clear without a TLS proxy (D59).
 5. Serve `/health` and the door, the slot `Starting`.
-6. Create the data directory, and what is missing above it, asking for mode `0700`. Warn about leftover `admin.key.*.tmp` paths and keep them. Only a confirmed unmarked bootstrap with an occupied `admin.key` is stale (exit 2). A seeded start leaves a bootstrap read error for the open. A seedless start on an unmarked or unreadable bootstrap checks the destination with `symlink_metadata`: an occupied name, including a dangling link, yields the stale refusal or the original read error, respectively. A lookup error other than not found is a refusal. When the destination is absent, probe before opening. If a healthy marked root has an occupied key path and the first read fails transiently, retry the start after the failure clears.
+6. Create the data directory, and what is missing above it, asking for mode `0700`. Warn once about each leftover `admin.key.*.tmp` and keep it. Only a confirmed unmarked bootstrap with an occupied `admin.key` is stale (exit 2). For a seedless start, confirm the unmarked state after seeing the name is occupied, since another host can mark and publish concurrently. A seeded start leaves a bootstrap read error for the open. A seedless start on an unmarked or unreadable bootstrap checks the destination with `symlink_metadata`: an occupied name, including a dangling link, yields the stale refusal or the original read error, respectively. A lookup error other than not found is a refusal. When the destination is absent, probe before opening. If a healthy marked root has an occupied key path and the first read fails transiently, retry the start after the failure clears.
 7. Open with `Engine::open(data_dir, HostClock, seed)`. Warn if it revoked an earlier minted key whose secret was lost, or if the supplied seed is revoked. Write a minted key to `admin.key` and log its path. On failure log the minted key ID and the instruction to run `ironflowx recover-key` and revoke that ID, close the engine and exit 1. Set the slot `Open` on success.
 
 **Pre-mint probe.** Write and sync dummy data in the data directory, hard-link it, then remove
 both probe-created names and sync the directory. Attempt cleanup of each created name even after
 an earlier failure, and keep any existing entry that the probe hit in a collision. If the OS refuses
-removal, report each path whose removal failed. Any probe failure exits 1 before open, with nothing
-minted.
+removal, name each failed removal by an exact safe absolute path or an exact filename relative to
+the configured data directory. Any probe failure exits 1 before open, with nothing minted.
+
+The host uses an absolute locator in these warnings and errors only when the configured directory
+is absolute and the locator is unambiguous and safe to print. Otherwise it names the file relative
+to the configured data directory. When an old temporary's name itself cannot be shown safely,
+the warning says the name was withheld and directs the operator to inspect `admin.key.*.tmp`
+in the configured data directory locally.
 
 `is_bootstrapped` reads the control plane without creating a directory or database. It answers
 `true` for a marked bootstrap and `false` for a missing control plane, a control plane that
@@ -730,7 +737,8 @@ not check the ledger. SQLite can rebuild `control.db-shm` from a WAL left by a c
 At `info`, the host logs one line per call, with the operation, duration, outcome kind and the
 presented key's ID, if the key is well formed. The ID is recorded even for a key the engine refuses.
 Before `Operations`, the door logs a refusal without a key ID. A transport refusal before the
-door can determine a domain kind has outcome `refused`. Logs carry no key, seed, event data or
+door can determine a domain kind has outcome `refused`. It labels an unknown RPC in
+`ironflowx.v1` as `unknown` without recording its path. Logs carry no key, seed, event data or
 metadata. In a diagnostic path or message, the host hides words that could be credentials and
 escapes control characters. The refusal's envelope is the last stderr line, regardless of the log format or level.
 
@@ -746,7 +754,7 @@ Host errors use the same table as the CLI, from `ErrorKind::exit_code()`.
 | 8 | `unavailable` | Address in use, engine or ledger lock or I/O error, control-plane fault, destination lookup error |
 
 **Seed generation.** `ironflowx seed generate` prints one JSON object with `key` and `key_id`.
-It opens no engine and writes no file.
+It indents the object on a terminal. It opens no engine and writes no file.
 
 ## CLI
 

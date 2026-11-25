@@ -14,8 +14,8 @@ use ironflowx_cell::new_env_ref;
 use ironflowx_core::{ErrorKind, Scope, Secret};
 use ironflowx_operations::{Engine, HostClock};
 use ironflowx_proto::{
-    Call, Client, CreateKeyRequest, KeyStatus, ListEnvironmentsRequest, ListKeysRequest, OpError,
-    Operations as _, RevokeKeyRequest, WhoamiRequest,
+    Call, Client, CreateKeyRequest, EmitRequest, KeyStatus, ListEnvironmentsRequest,
+    ListKeysRequest, OpError, Operations as _, RevokeKeyRequest, WhoamiRequest,
 };
 use ironflowx_store::{Bootstrap, ControlPlane};
 use leak::{files, leak, leak_in};
@@ -848,27 +848,52 @@ async fn a_call_logs_only_its_operation_outcome_duration_and_presented_key_id() 
         assert_eq!(answer.map(|_| ()).map_err(|e| e.kind), expected);
     }
 
-    let body = "{\"event_data_marker\"";
+    client
+        .emit(
+            &Call::with_key(Secret::new(key.to_owned())),
+            EmitRequest {
+                name: "log.test".into(),
+                data: Some(br#""accepted_event_data_marker""#.to_vec()),
+                metadata: Some(br#"{"meta":"accepted_event_metadata_marker"}"#.to_vec()),
+                version: None,
+                idempotency_key: None,
+            },
+        )
+        .await
+        .unwrap();
+
     let rpc = ironflowx_proto::Operation::Emit.rpc();
-    let mut socket = TcpStream::connect(served.addr).unwrap();
-    write!(
-        socket,
-        "POST /{rpc} HTTP/1.0\r\nauthorization: Bearer {key}\r\n\
-         content-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
-        body.len()
-    )
-    .unwrap();
-    let mut reply = String::new();
-    socket.read_to_string(&mut reply).unwrap();
-    assert!(
-        reply.starts_with("HTTP/1.0 400 "),
-        "{}",
-        reply.lines().next().unwrap()
-    );
+    let rejected = "ironflowx.v1.IdentityService/unknown_operation_marker";
+    for (operation, body, status) in [
+        (rpc, "{\"event_data_marker\"", "HTTP/1.0 400 "),
+        (rejected, "{}", "HTTP/1.0 404 "),
+    ] {
+        let mut socket = TcpStream::connect(served.addr).unwrap();
+        write!(
+            socket,
+            "POST /{operation} HTTP/1.0\r\nauthorization: Bearer {key}\r\n\
+             content-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut reply = String::new();
+        socket.read_to_string(&mut reply).unwrap();
+        assert!(
+            reply.starts_with(status),
+            "{}",
+            reply.lines().next().unwrap()
+        );
+    }
     let log = served.stop();
     assert_eq!(leak(&log, [key, other]), None);
     assert!(!log.contains(&malformed), "{log}");
-    assert!(!log.contains("event_data_marker"), "{log}");
+    for marker in [
+        "event_data_marker",
+        "accepted_event_metadata_marker",
+        "unknown_operation_marker",
+    ] {
+        assert!(!log.contains(marker), "{log}");
+    }
     assert!(!log.contains("connectrpc"), "{log}");
     let lines: Vec<_> = log
         .lines()
@@ -882,7 +907,9 @@ async fn a_call_logs_only_its_operation_outcome_duration_and_presented_key_id() 
         (whoami, "unauthenticated", None),
         (whoami, "unauthenticated", None),
         (whoami, "success", Some(&key[4..40])),
+        (rpc, "success", Some(&key[4..40])),
         (rpc, "refused", None),
+        ("unknown", "refused", None),
     ];
     assert_eq!(lines.len(), expected.len(), "{log}");
     for (line, (rpc, outcome, id)) in lines.into_iter().zip(expected) {
@@ -917,5 +944,146 @@ fn a_credential_pasted_in_a_data_path_is_hidden_in_logs_and_envelopes() {
         let log = Served::start(&root, "127.0.0.1:0").stop();
         assert!(!log.contains(input), "a credential reached a startup log");
         assert!(log.contains("<hidden>/admin.key"), "{log}");
+    }
+}
+
+#[test]
+fn a_control_plane_lookup_error_is_not_a_missing_database() {
+    let dir = private();
+    let control = dir.path().join("control.db");
+    std::os::unix::fs::symlink("control.db", &control).unwrap();
+    std::fs::write(dir.path().join("admin.key"), b"existing key file").unwrap();
+    let (code, log) = refused(dir.path(), "127.0.0.1:0");
+    assert_eq!(code, Some(8), "{log}");
+    assert!(!log.contains("another install's"), "{log}");
+    assert_eq!(
+        std::fs::read_link(control).unwrap(),
+        Path::new("control.db")
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("admin.key")).unwrap(),
+        b"existing key file"
+    );
+    assert!(!dir.path().join("engine.lock").exists());
+}
+
+#[test]
+fn listening_uses_the_exact_address_selected_by_flags_and_variables() {
+    let dir = private();
+    std::fs::write(dir.path().join("control.db"), "not a database").unwrap();
+    let flag_port = TcpListener::bind("127.0.0.1:0").unwrap();
+    let var_port = TcpListener::bind("127.0.0.1:0").unwrap();
+    let flag = flag_port.local_addr().unwrap().to_string();
+    let variable = var_port.local_addr().unwrap().to_string();
+    for (use_flag, use_var, expected) in [
+        (true, false, &flag),
+        (false, true, &variable),
+        (true, true, &flag),
+    ] {
+        let mut cmd = binary();
+        cmd.args(["serve", "--data-dir"]).arg(dir.path());
+        if use_flag {
+            cmd.args(["--listen", &flag]);
+        }
+        if use_var {
+            cmd.env("IRONFLOWX_LISTEN", &variable);
+        }
+
+        let (code, log) = refusal(cmd.output().unwrap());
+        assert_eq!(code, Some(8), "{log}");
+        let envelope: Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        let message = envelope["message"].as_str().unwrap();
+        assert!(
+            message.starts_with(&format!("cannot listen: {expected}: ")),
+            "{message}"
+        );
+        assert!(!dir.path().join("engine.lock").exists());
+    }
+}
+
+#[test]
+fn old_temporary_warnings_use_unambiguous_locators_and_keep_the_files() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let parent = private();
+    let dir_42 = "a".repeat(42);
+    let dir_43 = "a".repeat(43);
+    let dir_80 = "a".repeat(80);
+    let credential = format!("{}A", "B".repeat(42));
+    let supported = |name: &OsStr| !cfg!(target_os = "macos") || name.to_str().is_some();
+    let cases = [
+        (OsStr::new("safe"), false, true),
+        (OsStr::new(&dir_42), false, true),
+        (OsStr::new(&dir_43), false, false),
+        (OsStr::new(&dir_80), false, false),
+        (OsStr::new(&credential), false, false),
+        (OsStr::new("relative"), true, false),
+        (OsStr::new("newline\nroot"), false, false),
+        (OsStr::from_bytes(b"non-utf8-\xff"), false, false),
+    ];
+    for (root_name, relative_flag, absolute) in cases.into_iter().filter(|row| supported(row.0)) {
+        let root = parent.path().join(root_name);
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("control.db"), b"not a database").unwrap();
+        let safe = "admin.key.leftover.tmp";
+        let names = [
+            OsStr::new("admin.key.ixk_must_hide.tmp"),
+            OsStr::new("admin.key.with\nnewline.tmp"),
+            OsStr::new("admin.key.literal\\n.tmp"),
+            OsStr::from_bytes(b"admin.key.invalid-\xff.tmp"),
+        ];
+        let concealed = || names.into_iter().filter(|name| supported(name));
+        for name in std::iter::once(OsStr::new(safe)).chain(concealed()) {
+            std::fs::write(root.join(name), b"protected contents").unwrap();
+        }
+        let configured = if relative_flag {
+            Path::new(root_name)
+        } else {
+            &root
+        };
+        for format in ["json", "text"] {
+            let mut cmd = command(configured, "127.0.0.1:0");
+            cmd.current_dir(parent.path())
+                .args(["--log-format", format]);
+            let (code, log) = refusal(cmd.output().unwrap());
+            assert_eq!(code, Some(8), "{log}");
+            assert_eq!(
+                log.matches("temporary admin key is kept").count(),
+                1 + concealed().count(),
+                "{log}"
+            );
+            assert_eq!(
+                log.matches("inspect admin.key.*.tmp").count(),
+                concealed().count(),
+                "{log}"
+            );
+            assert!(!log.contains("protected contents"), "{log}");
+            assert!(
+                !log.contains("ixk_must_hide"),
+                "printed a credential-shaped name"
+            );
+            assert!(
+                !log.contains("newline.tmp") && !log.contains("invalid-"),
+                "{log}"
+            );
+            let visible = log.lines().find(|line| line.contains(safe)).unwrap();
+            if absolute {
+                assert!(
+                    visible.contains(root.join(safe).to_str().unwrap()),
+                    "{visible}"
+                );
+                assert!(!visible.contains("path_base"), "{visible}");
+            } else {
+                assert!(visible.contains("configured data directory"), "{visible}");
+                assert!(!visible.contains("/admin.key.leftover.tmp"), "{visible}");
+            }
+        }
+        for name in std::iter::once(OsStr::new(safe)).chain(concealed()) {
+            assert_eq!(
+                std::fs::read(root.join(name)).unwrap(),
+                b"protected contents"
+            );
+        }
     }
 }

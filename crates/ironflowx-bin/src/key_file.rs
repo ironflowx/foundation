@@ -1,5 +1,6 @@
 //! `admin.key`: the whole key or nothing, never over another (D60, SRV-7).
 
+use std::ffi::OsStr;
 use std::fs::{File, Permissions};
 use std::io::{self, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
@@ -39,6 +40,34 @@ pub fn write(data_dir: &Path, key: &Secret) -> io::Result<()> {
     File::open(data_dir)?.sync_all()
 }
 
+const RELATIVE: &str = "configured data directory";
+
+/// Exact text safe in both the JSON and text diagnostics.
+fn diagnostic_path(path: &OsStr) -> Option<&str> {
+    let text = path.to_str()?;
+    let printable = text.bytes().all(|b| b.is_ascii_graphic() || b == b' ');
+    (printable && !text.contains(['\\', '"', '\'']) && public_text(text) == text).then_some(text)
+}
+
+pub fn diagnostic_directory(data_dir: &Path) -> &str {
+    if data_dir.is_absolute() {
+        diagnostic_path(data_dir.as_os_str()).unwrap_or("the configured data directory")
+    } else {
+        "the configured data directory"
+    }
+}
+
+fn locator(data_dir: &Path, name: &OsStr) -> Option<(String, Option<&'static str>)> {
+    let filename = diagnostic_path(name)?;
+    if data_dir.is_absolute() {
+        let path = data_dir.join(name);
+        if let Some(absolute) = diagnostic_path(path.as_os_str()) {
+            return Some((absolute.to_owned(), None));
+        }
+    }
+    Some((filename.to_owned(), Some(RELATIVE)))
+}
+
 /// Warns about names left by another writer or a crash. They may hold the only copy of a key.
 pub fn warn_temporaries(data_dir: &Path) {
     let entries = match std::fs::read_dir(data_dir) {
@@ -59,10 +88,14 @@ pub fn warn_temporaries(data_dir: &Path) {
                 if name.as_encoded_bytes().starts_with(b"admin.key.")
                     && name.as_encoded_bytes().ends_with(b".tmp")
                 {
-                    tracing::warn!(
-                        path = %public_text(&entry.path().to_string_lossy()),
-                        "temporary admin key is kept"
-                    );
+                    if let Some((path, base)) = locator(data_dir, &name) {
+                        tracing::warn!(path, path_base = base, "temporary admin key is kept");
+                    } else {
+                        tracing::warn!(
+                            "temporary admin key is kept with its name withheld; inspect \
+                             admin.key.*.tmp in the configured data directory locally"
+                        );
+                    }
                 }
             }
             Err(e) => {
@@ -100,22 +133,40 @@ fn probe_with_link(
     })();
 
     // Only a successful link gives us a second name to remove. Always try the first one too.
-    let unlink = test.as_ref().ok().and_then(|()| {
-        std::fs::remove_file(&link)
-            .err()
-            .map(|e| format!("cannot remove {}: {e}", link.display()))
-    });
-    let close = temporary.close().err().map(|e| e.to_string());
-    let cleanup: Vec<_> = [unlink, close].into_iter().flatten().collect();
+    let link_failure = test.is_ok().then(|| failed_removal(&link)).flatten();
+    let source_failure = failed_removal(temporary.path());
+    // Both unlinks are explicit so errors carry just the OS cause, without tempfile's path.
+    temporary.disable_cleanup(true);
+    let cleanup: Vec<_> = [link_failure, source_failure]
+        .into_iter()
+        .flatten()
+        .map(|(name, cause)| {
+            let (path, base) = locator(data_dir, &name).expect("safe generated probe name");
+            let cause = public_text(&cause.to_string());
+            match base {
+                Some(base) => format!("cannot remove {path} (relative to the {base}): {cause}"),
+                None => format!("cannot remove {path}: {cause}"),
+            }
+        })
+        .collect();
     if !cleanup.is_empty() {
         let cleanup = cleanup.join("; ");
         return Err(match test {
             Ok(()) => io::Error::other(cleanup),
-            Err(e) => io::Error::other(format!("{e}; cleanup: {cleanup}")),
+            Err(e) => io::Error::other(format!(
+                "{}; cleanup: {cleanup}",
+                public_text(&e.to_string())
+            )),
         });
     }
     test?;
     File::open(data_dir)?.sync_all()
+}
+
+fn failed_removal(path: &Path) -> Option<(std::ffi::OsString, io::Error)> {
+    std::fs::remove_file(path)
+        .err()
+        .map(|cause| (path.file_name().expect("generated name").to_owned(), cause))
 }
 
 #[cfg(test)]
@@ -144,26 +195,64 @@ mod tests {
 
     #[test]
     fn the_probe_reports_both_paths_if_the_os_refuses_cleanup() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut paths = None;
-        let result = probe_with_link(dir.path(), |source, link| {
-            std::fs::hard_link(source, link)?;
-            paths = Some([source.to_owned(), link.to_owned()]);
-            std::fs::set_permissions(dir.path(), Permissions::from_mode(0o500))
-        });
-        std::fs::set_permissions(dir.path(), Permissions::from_mode(0o700)).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        for root in [
+            temp.path().join("safe"),
+            temp.path().join("a".repeat(80)),
+            temp.path().join("A".repeat(43)),
+        ] {
+            std::fs::create_dir(&root).unwrap();
+            let mut paths = None;
+            let result = probe_with_link(&root, |source, link| {
+                std::fs::hard_link(source, link)?;
+                paths = Some([source.to_owned(), link.to_owned()]);
+                std::fs::set_permissions(&root, Permissions::from_mode(0o500))
+            });
+            std::fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
 
-        let error = result.unwrap_err().to_string();
-        let [source, link] = paths.unwrap();
-        assert!(error.contains(&format!("at path {source:?}")), "{error}");
-        assert!(
-            error.contains(&format!("cannot remove {}:", link.display())),
-            "{error}"
-        );
-        for path in [source, link] {
-            assert_eq!(std::fs::read(path).unwrap(), [0; 85]);
+            let refused = crate::ServeError::Probe(root.clone(), result.unwrap_err());
+            let envelope = refused.envelope();
+            assert_eq!(refused.exit_code(), 1);
+            assert_eq!(envelope.kind, ironflowx_core::ErrorKind::Internal);
+            let error = envelope.message;
+            for path in paths.unwrap() {
+                let removal = if root.ends_with("safe") {
+                    format!("cannot remove {}:", path.display())
+                } else {
+                    format!(
+                        "cannot remove {} (relative to the configured data directory):",
+                        path.file_name().unwrap().to_str().unwrap()
+                    )
+                };
+                assert!(error.contains(&removal), "{error}");
+                assert_eq!(std::fs::read(path).unwrap(), [0; 85]);
+            }
+            assert!(!root.join("control.db").exists());
+            assert!(!path(&root).exists());
         }
-        assert!(!dir.path().join("control.db").exists());
-        assert!(!path(dir.path()).exists());
+    }
+
+    #[test]
+    fn a_locator_uses_the_configured_root_and_withholds_ambiguous_names() {
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let name = OsStr::new("admin.key.leftover.tmp");
+        let expected = Some((name.to_str().unwrap().into(), Some(RELATIVE)));
+        for root in [
+            OsStr::new("./data"),
+            OsStr::new("/line\nbreak"),
+            OsStr::new("/literal\\n"),
+            OsStr::from_bytes(b"/byte\xff"),
+        ] {
+            assert_eq!(locator(Path::new(root), name), expected);
+        }
+        for withheld in [
+            OsStr::new("admin.key.ixk_opaque.tmp"),
+            OsStr::new("admin.key.line\nbreak.tmp"),
+            OsStr::new("admin.key.literal\\n.tmp"),
+            OsStr::from_bytes(b"admin.key.\xff.tmp"),
+        ] {
+            assert_eq!(locator(Path::new("/data"), withheld), None);
+        }
     }
 }

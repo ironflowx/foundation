@@ -59,14 +59,14 @@ enum DispatchOutcome {
 }
 
 async fn log_refusal(mut req: Request, next: Next) -> HttpResponse {
-    let operation = req
-        .uri()
-        .path()
-        .strip_prefix('/')
-        .and_then(|path| Operation::ALL.iter().find(|op| op.rpc() == path));
-    let Some(operation) = operation else {
+    let path = req.uri().path().strip_prefix('/').unwrap_or_default();
+    if !path.starts_with("ironflowx.v1.") {
         return next.run(req).await;
-    };
+    }
+    let operation = Operation::ALL
+        .iter()
+        .find(|op| op.rpc() == path)
+        .map_or("unknown", |op| op.rpc());
     let dispatch = Dispatch::default();
     req.extensions_mut().insert(dispatch.clone());
     let started = Instant::now();
@@ -77,7 +77,7 @@ async fn log_refusal(mut req: Request, next: Next) -> HttpResponse {
         None => "refused",
     };
     tracing::info!(
-        operation = operation.rpc(),
+        operation,
         outcome,
         duration_ms = started.elapsed().as_secs_f64() * 1000.0,
         "call"

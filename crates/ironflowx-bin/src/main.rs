@@ -2,7 +2,7 @@
 
 mod settings;
 
-use std::io::{self, Write as _};
+use std::io::{self, IsTerminal as _, Write as _};
 use std::process::ExitCode;
 
 use clap::{ArgMatches, Command};
@@ -73,12 +73,17 @@ fn run_serve(args: &ArgMatches) -> Result<(), OpError> {
 fn generate_seed() -> Result<(), OpError> {
     let (id, key) = ironflowx_operations::generate_seed();
     // The key format needs no JSON escaping. Write it straight to its intended destination.
-    writeln!(
-        io::stdout(),
-        r#"{{"key":"{}","key_id":"{id}"}}"#,
-        key.expose()
-    )
-    .map_err(|e| internal(format!("cannot write to stdout: {e}")))
+    let mut out = io::stdout().lock();
+    let result = if out.is_terminal() {
+        writeln!(
+            out,
+            "{{\n  \"key\": \"{}\",\n  \"key_id\": \"{id}\"\n}}",
+            key.expose()
+        )
+    } else {
+        writeln!(out, r#"{{"key":"{}","key_id":"{id}"}}"#, key.expose())
+    };
+    result.map_err(|e| internal(format!("cannot write to stdout: {e}")))
 }
 
 fn internal(message: String) -> OpError {

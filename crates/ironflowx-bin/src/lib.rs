@@ -107,7 +107,7 @@ impl fmt::Display for ServeError {
             Self::Engine(e) => e.to_string(),
             Self::Probe(path, e) => format!(
                 "cannot probe writes and hard links in {}: {e}",
-                path.display()
+                key_file::diagnostic_directory(path)
             ),
             Self::KeyFile(path, e, id) => {
                 format!("cannot write {} for minted key {id}: {e}", path.display())
@@ -148,7 +148,7 @@ pub async fn serve_with_seed(
 
 /// The steps before the data directory is touched (D62).
 fn bind(data_dir: &Path, listen: SocketAddr) -> Result<TcpListener, ServeError> {
-    if key_file::exists(data_dir) && !data_dir.join("control.db").exists() {
+    if key_file::exists(data_dir) && matches!(data_dir.join("control.db").try_exists(), Ok(false)) {
         return Err(ServeError::StaleKeyFile(key_file::path(data_dir)));
     }
     let listener = TcpListener::bind(listen)
@@ -235,7 +235,7 @@ async fn open(data_dir: &Path, seed: Option<Secret>) -> Result<Engine, ServeErro
 fn prepare(
     data_dir: &Path,
     has_seed: bool,
-    read_bootstrap: impl FnOnce(&Path) -> Result<bool, EngineError>,
+    mut read_bootstrap: impl FnMut(&Path) -> Result<bool, EngineError>,
 ) -> Result<(), ServeError> {
     std::fs::DirBuilder::new()
         .recursive(true)
@@ -257,10 +257,12 @@ fn prepare(
         // There is a second read in open, so even a failed read here may precede a mint.
         match std::fs::symlink_metadata(&key_path) {
             Ok(_) => {
-                return Err(match bootstrap {
-                    Err(error) => ServeError::Engine(error),
-                    Ok(_) => ServeError::StaleKeyFile(key_path),
-                });
+                // A host could have marked the bootstrap and published between the two reads.
+                bootstrap.map_err(ServeError::Engine)?;
+                return match read_bootstrap(data_dir).map_err(ServeError::Engine)? {
+                    true => Ok(()),
+                    false => Err(ServeError::StaleKeyFile(key_path)),
+                };
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(ServeError::KeyLookup(key_path, e)),
@@ -325,6 +327,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn publication_after_an_unmarked_read_is_not_called_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut winner = None;
+        let ready = prepare(data_dir, false, |dir| {
+            let marked = is_bootstrapped(dir);
+            if winner.is_none() {
+                assert!(matches!(marked, Ok(false)));
+                let opened = runtime
+                    .block_on(Engine::open(dir, HostClock, None))
+                    .unwrap();
+                key_file::write(dir, opened.minted.as_ref().unwrap()).unwrap();
+                winner = Some(opened);
+            }
+            marked
+        });
+        assert!(ready.is_ok(), "{ready:?}");
+        let lock = runtime.block_on(Engine::open(data_dir, HostClock, None));
+        assert!(matches!(lock, Err(EngineError::Locked)));
+        let winner = winner.unwrap();
+        let key = std::fs::read_to_string(key_file::path(data_dir)).unwrap();
+        assert!(key.trim_end() == winner.minted.as_ref().unwrap().expose());
+        runtime.block_on(winner.engine.close());
+    }
+
     #[tokio::test]
     async fn an_absent_destination_can_be_probed_after_a_transient_read_error() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -343,7 +372,11 @@ mod tests {
             let db = rusqlite::Connection::open(&control).unwrap();
             db.execute_batch("PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE;")
                 .unwrap();
+            let mut locker = Some(db);
             let result = prepare(data_dir, false, |dir| {
+                let db = locker
+                    .take()
+                    .expect("only one read when the key name is absent");
                 let state = is_bootstrapped(dir);
                 assert!(matches!(state, Err(EngineError::Store(_))), "{state:?}");
                 db.execute_batch("ROLLBACK").unwrap();
