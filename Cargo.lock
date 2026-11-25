@@ -1234,6 +1234,7 @@ dependencies = [
  "ironflowx-operations",
  "ironflowx-proto",
  "ironflowx-store",
+ "tokio",
 ]
 
 [[package]]

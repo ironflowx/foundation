@@ -38,6 +38,15 @@ step with_protoc ci/must-reject.sh "protoc did not run" "buf did not run" -- \
   ci/no-protoc.sh cargo build --locked --manifest-path "$needs/Cargo.toml"
 # CI's crash-test budget, whatever a replay left in the shell.
 step env -u CRASH_SEED CRASH_KILLS=100 cargo test --workspace --locked
+step env IRONFLOWX_FACADE_FEATURES=none cargo test -p ironflowx --locked --test features
+step ci/no-facade-http.sh
+step ci/must-reject.sh "dependency 'connectrpc'" "dependency 'http'" "dependency 'hyper'" \
+  "dependency 'hyper-util'" "dependency 'rustls'" "dependency 'rustls-native-certs'" -- \
+  ci/no-facade-http.sh --features client-tls
+step env IRONFLOWX_FACADE_FEATURES=client cargo test -p ironflowx --locked --features client \
+  --test features --example whoami
+step env IRONFLOWX_FACADE_FEATURES=client-tls cargo test -p ironflowx --locked --features client-tls \
+  --test features --example whoami
 step env NO_CLIENT_TLS=1 cargo test -p ironflowx-proto --locked --test client
 step cargo test -p ironflowx-proto --locked --test client --features client-tls,rustls/ring
 step cargo test -p ironflowx-events -p ironflowx-cli --locked --features serde_json/arbitrary_precision

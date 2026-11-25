@@ -65,3 +65,21 @@ tokio = { version = "1", default-features = false, features = ["rt"] }
 ```
 
 [`examples/embed`](https://github.com/ironflowx/foundation/blob/v0.2.0/examples/embed/src/main.rs) bootstraps an engine, emits an event, reads it back with a read-only key and sees that key's emit refused. A 0.1 ledger directory does not open in 0.2 ([changelog](https://github.com/ironflowx/foundation/blob/main/CHANGELOG.md)).
+
+### Call a served engine
+
+In the upcoming 0.3 release, add the `client` feature to your `ironflowx` dependency to use `ironflowx::proto::Client` over HTTP. Use `client-tls` instead for HTTPS, with roots from the system's trust store. Both features are off by default, so an embedder can still build without the HTTP stack. `Engine` and `Client` both implement `Operations`.
+
+From this checkout, start the host on loopback with a fresh data directory.
+
+```sh
+cargo run --locked -p ironflowx-bin -- serve --listen 127.0.0.1:8080 --data-dir ./whoami-demo
+```
+
+Once the host is ready, run the example in another terminal.
+
+```sh
+cargo run --locked -p ironflowx --features client --example whoami -- http://127.0.0.1:8080 ./whoami-demo/admin.key
+```
+
+The [example](https://github.com/ironflowx/foundation/blob/main/crates/ironflowx/examples/whoami.rs) asks `whoami` and prints the calling key's ID and scopes.
