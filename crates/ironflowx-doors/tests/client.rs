@@ -329,6 +329,43 @@ async fn an_answer_holds_at_most_16_mib() {
     assert_eq!((refused.kind, refused.hint), (ErrorKind::Unavailable, None));
 }
 
+/// The Errors table: the engine sees none of it.
+#[tokio::test]
+async fn a_request_over_16_mib_is_not_the_engines() {
+    let (addr, operations) = serving(Ok(whoami())).await;
+    let client = Client::new(&format!("http://{addr}")).unwrap();
+    // The fields of each message, their tags and lengths, around what fills it.
+    let emit = |size: usize| EmitRequest {
+        name: "a".into(),
+        data: Some(vec![b'1'; size - 3 - 5]),
+        metadata: None,
+        version: None,
+        idempotency_key: None,
+    };
+    let get = |size: usize| GetEventRequest {
+        event_id: "x".repeat(size - 5),
+    };
+    let most = 16 * 1024 * 1024;
+    assert_eq!(client.emit(&call(KEY), emit(most)).await, Ok(emitted()));
+    let items = |size: usize| EmitBatchRequest {
+        items: vec![emit(size - 5)],
+    };
+    // A batch of one item, which the engine here answers as another: its count is not the one sent.
+    let sent = client.emit_batch(&call(KEY), items(most)).await;
+    assert_eq!(sent.unwrap_err().kind, ErrorKind::Unknown);
+    assert_eq!(client.get_event(&call(KEY), get(most)).await, Ok(event()));
+    assert_eq!(operations.take().len(), 3);
+
+    let ended = |e: OpError| (e.kind, e.hint);
+    let e = client.emit(&call(KEY), emit(most + 1)).await.unwrap_err();
+    assert_eq!(ended(e), (ErrorKind::Unknown, None));
+    let e = client.emit_batch(&call(KEY), items(most + 1)).await;
+    assert_eq!(ended(e.unwrap_err()), (ErrorKind::Unknown, None));
+    let e = client.get_event(&call(KEY), get(most + 1)).await;
+    assert_eq!(ended(e.unwrap_err()), (ErrorKind::Unavailable, None));
+    assert_eq!(operations.take(), []);
+}
+
 /// Answers one request with `answer`, then closes.
 async fn stub(answer: Vec<u8>) -> Client {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -382,7 +419,7 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
     // A WhoamiResponse or a CreateKeyResponse whose first field is "x"; as a page, one that holds
     // a message that does not decode.
     let short = b"\n\x01x";
-    // Each with the Connect code the library makes of it.
+    // Each with the Connect code of the failure it is.
     let answers = [
         // Holds nothing, as a revoke's answer does, and a page with nothing.
         ("unknown", http("200 OK", "application/proto", b"")),

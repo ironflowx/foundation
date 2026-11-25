@@ -14,7 +14,8 @@ use ironflowx_doors::{Readiness, Slot, WaitingOn, router};
 use ironflowx_operations::{Engine, Opened};
 use ironflowx_proto::wire::{self, EventServiceClient};
 use ironflowx_proto::{
-    Client, EmitBatchRequest, EmitRequest, Event, EventPage, ListEventsRequest, Operations as _,
+    Client, EmitBatchRequest, EmitRequest, Event, EventPage, GetEventRequest, ListEventsRequest,
+    Operations as _,
 };
 use refusals::{clock, key};
 
@@ -340,7 +341,8 @@ async fn the_largest_page_of_events_fits() {
     let emit = async |items: Vec<EmitRequest>| {
         let request = EmitBatchRequest { items };
         let answer = client_of_ours.emit_batch(&cx, request).await.unwrap();
-        assert!(answer.items.iter().all(Result::is_ok), "{answer:?}");
+        let ids = answer.items.into_iter().map(|item| item.unwrap().event_id);
+        ids.collect::<Vec<_>>()
     };
     // 3 MiB of data and metadata in 200 events.
     let size = |i| if i == 0 { 15_856 } else { 15_728 };
@@ -374,9 +376,12 @@ async fn the_largest_page_of_events_fits() {
     }
     // The newest event is a byte longer than the oldest, which leaves, so the next oldest does not
     // fit: those two are the next page.
-    emit(vec![item(200, size(0) + 1)]).await;
+    let newest = emit(vec![item(200, size(0) + 1)]).await[0].to_string();
+    let newest = GetEventRequest { event_id: newest };
+    let newest = engine.get_event(&cx, newest).await.unwrap();
     let longer = engine.list_events(&cx, request()).await.unwrap();
     assert_eq!(longer.events.len(), 199);
+    assert_eq!(longer.events[0], newest);
     assert_eq!(longer.events[1..], page.events[..198]);
     let rest = ListEventsRequest {
         cursor: longer.next,

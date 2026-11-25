@@ -777,7 +777,7 @@ async fn a_page_larger_than_any_fits() {
             metadata: Some(text(200)),
             // A control character is the longest escape.
             idempotency_key: Some("\u{1}".repeat(256)),
-            // The longest of their fields there are, in JSON and in binary.
+            // Longer, in JSON and in binary, than any the rules admit.
             version: i64::MAX,
             time: Timestamp::from_millis(-1),
             emitted_by: format!("embedder:{}", "\"".repeat(128)).parse().unwrap(),
