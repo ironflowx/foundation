@@ -129,7 +129,8 @@ impl Engine {
     ///
     /// # Panics
     ///
-    /// Outside a tokio runtime, or on one that has shut down: the engine is dropped then.
+    /// Outside a tokio runtime, or on one that has shut down: the engine is dropped then, its
+    /// ledger's queue already ended.
     pub async fn close(self) {
         self.ledger.close().await;
     }

@@ -194,7 +194,7 @@ impl ControlPlane {
 
 // ironflowx-cell (tokio)
 impl Ledger {
-    // open, read and close panic outside a tokio runtime; close also on one that has shut down, dropping the ledger
+    // open, read and close panic outside a tokio runtime; open and close also on one that has shut down, and close drops the ledger then
     async fn open(dir: &Path, env: EnvRef, clock: impl Clock + Send + 'static) -> Result<Ledger, OpenError>;
     // As open, on the calling thread, outside a runtime too
     fn open_blocking(dir: &Path, env: EnvRef, clock: impl Clock + Send + 'static) -> Result<Ledger, OpenError>;

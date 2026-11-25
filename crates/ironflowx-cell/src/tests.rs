@@ -1507,8 +1507,8 @@ fn a_read_on_a_runtime_that_shut_down_fails_the_ledger() {
     assert_eq!(ledger.state(), LedgerState::Unavailable);
 }
 
-/// A close whose runtime shut down before its blocking work began ends as a drop does, which joins
-/// the writer: only a join finds the panic of its end.
+/// A close first polled on a runtime that has shut down drops the ledger, which joins the writer:
+/// only a join finds the panic of its end.
 #[test]
 fn a_close_on_a_runtime_that_shut_down_joins_the_writer() {
     let dir = tempfile::tempdir().unwrap();
@@ -1523,7 +1523,7 @@ fn a_close_on_a_runtime_that_shut_down_joins_the_writer() {
     assert!(ready(faulted));
 }
 
-/// Tells each reading; its drop, as the writer ends, ends what it tells.
+/// Its drop, as the writer ends, ends the receiver's wait.
 struct Telling(std::sync::mpsc::Sender<()>);
 
 impl ironflowx_core::Clock for Telling {

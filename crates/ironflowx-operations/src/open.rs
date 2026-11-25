@@ -209,7 +209,7 @@ impl Engine {
     ///
     /// # Panics
     ///
-    /// Outside a tokio runtime, or if the OS random source fails.
+    /// Outside a tokio runtime or on one that has shut down, or if the OS random source fails.
     pub async fn open(
         root: &Path,
         clock: impl Clock + Clone + Send + Sync + 'static,

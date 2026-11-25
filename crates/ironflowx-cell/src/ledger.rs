@@ -161,7 +161,7 @@ impl Ledger {
     ///
     /// # Panics
     ///
-    /// Outside a tokio runtime.
+    /// Outside a tokio runtime, or on one that has shut down.
     pub async fn open(
         dir: &Path,
         env: EnvRef,
@@ -339,7 +339,8 @@ impl Ledger {
     ///
     /// # Panics
     ///
-    /// Outside a tokio runtime, or on one that has shut down: the ledger is dropped then.
+    /// Outside a tokio runtime, or on one that has shut down: the ledger is dropped then, its queue
+    /// already ended.
     pub async fn close(mut self) {
         self.end_queue();
         // The closure owns the writer: one that never runs drops the ledger, which joins it.
