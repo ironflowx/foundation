@@ -1259,6 +1259,7 @@ dependencies = [
  "ironflowx-events",
  "ironflowx-operations",
  "ironflowx-proto",
+ "jsonschema",
  "serde_json",
  "tempfile",
  "tokio",

@@ -5,6 +5,7 @@ use std::fmt;
 use std::io::Write as _;
 use std::process::{Command, Output, Stdio};
 
+use cucumber::gherkin::Step;
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
 use serde_json::{Value, json};
@@ -14,12 +15,12 @@ use super::serve::{Served, command};
 
 /// The scenarios whose work has landed: every one must run and pass.
 const REGISTERED: &[&str] = &[
-    "CLI-001", "CLI-002", "CLI-003", "CLI-004", "CLI-006", "CLI-007", "CLI-013", "CLI-014",
-    "CLI-015", "CLI-016",
+    "CLI-001", "CLI-002", "CLI-003", "CLI-004", "CLI-006", "CLI-007", "CLI-008", "CLI-009",
+    "CLI-010", "CLI-013", "CLI-014", "CLI-015", "CLI-016",
 ];
 
 /// How many scenarios run, an outline once per example, so no example goes unnoticed.
-pub const RUNS: usize = 18;
+pub const RUNS: usize = 21;
 
 #[derive(World)]
 #[world(init = Self::new)]
@@ -402,6 +403,113 @@ fn version(w: &mut Cli) {
     });
     assert_eq!(w.answer(), expected);
     assert_eq!(w.ran().status.code(), Some(0));
+}
+
+#[then("its operations are exactly:")]
+fn operations(w: &mut Cli, step: &Step) {
+    let answer = w.succeeded();
+    let expected: BTreeMap<_, _> = step.table().unwrap().rows[1..]
+        .iter()
+        .map(|r| {
+            (
+                r[0].as_str(),
+                (json!(r[1]), json!(r[2].parse::<bool>().unwrap())),
+            )
+        })
+        .collect();
+    let operations = answer["operations"].as_array().unwrap();
+    let actual: BTreeMap<_, _> = operations
+        .iter()
+        .map(|op| {
+            (
+                op["command"].as_str().unwrap(),
+                (op["scope"].clone(), op["changes_state"].clone()),
+            )
+        })
+        .collect();
+    assert_eq!(operations.len(), expected.len());
+    assert_eq!(actual, expected);
+}
+
+#[then("its exit codes are exactly:")]
+fn exit_codes(w: &mut Cli, step: &Step) {
+    let expected: Vec<_> = step.table().unwrap().rows[1..]
+        .iter()
+        .map(|r| json!({"code": r[0].parse::<u8>().unwrap(), "kind": r[1], "retryable": r[2].parse::<bool>().unwrap()}))
+        .collect();
+    assert_eq!(w.succeeded()["exit_codes"], json!(expected));
+}
+
+fn schema(value: &Value) -> jsonschema::Validator {
+    assert_eq!(
+        value["$schema"],
+        "https://json-schema.org/draft/2020-12/schema"
+    );
+    assert_eq!(value["additionalProperties"], false);
+    jsonschema::options()
+        .should_validate_formats(true)
+        .build(value)
+        .unwrap()
+}
+
+#[then("stdout holds an input schema, an output schema and an example")]
+fn describes_an_operation(w: &mut Cli) {
+    let answer = w.succeeded();
+    schema(&answer["input"]);
+    schema(&answer["output"]);
+    assert!(answer["example"].is_object());
+}
+
+#[then("the example is valid against the input schema")]
+fn valid_example(w: &mut Cli) {
+    let answer = w.succeeded();
+    assert!(schema(&answer["input"]).is_valid(&answer["example"]));
+}
+
+#[then(
+    regex = r#"^with IRONFLOWX_KEY holding a "write" key, "(ironflowx events emit --json)" given the example exits with code 0$"#
+)]
+fn write_example(w: &mut Cli, line: String) {
+    let described = w.succeeded();
+    holds_a_key(w, "write".to_owned(), String::new());
+    w.run(&format!("{line} -"), &described["example"].to_string());
+    assert!(schema(&described["output"]).is_valid(&w.succeeded()));
+}
+
+/// SRV-12: what is advertised is what a real engine accepts and the CLI prints.
+#[then("every described example works against a fresh engine with the bootstrap key")]
+fn every_example(_: &mut Cli) {
+    let mut w = Cli::new();
+    w.run("ironflowx describe", "");
+    let overview = w.succeeded();
+    served(&mut w);
+    pointed(&mut w);
+    bootstrap_key(&mut w);
+    for op in overview["operations"].as_array().unwrap() {
+        let path = op["command"].as_str().unwrap();
+        w.run(&format!("ironflowx describe {path}"), "");
+        let mut described = w.succeeded();
+        let input = schema(&described.as_object_mut().unwrap().remove("input").unwrap());
+        let output = schema(&described.as_object_mut().unwrap().remove("output").unwrap());
+        let example = described
+            .as_object_mut()
+            .unwrap()
+            .remove("example")
+            .unwrap();
+        assert_eq!(&described, op);
+        assert!(input.is_valid(&example), "{path}: {example}");
+        w.run(&format!("ironflowx {path} --json -"), &example.to_string());
+        match path {
+            "events get" | "keys revoke" => {
+                assert_eq!(w.ran().status.code(), Some(5), "{path}");
+                assert_eq!(w.envelope()["code"], "not_found", "{path}");
+            }
+            _ => assert!(
+                output.is_valid(&w.succeeded()),
+                "{path}: output fails its schema"
+            ),
+        }
+    }
 }
 
 pub async fn run(parser: super::Unescaped) -> (bool, usize) {

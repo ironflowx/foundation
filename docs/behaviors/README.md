@@ -6,12 +6,12 @@ What a client observes. Invariants that no single example can show are in [`../i
 
 | File | Scenarios | IDs |
 |---|---|---|
-| [`cli.feature`](cli.feature) | 15 | Calling CLI-001–002, CLI-013–014 · keys CLI-006–007 · errors CLI-003–004, CLI-015 · describe CLI-008–010 · skills, seeds, version CLI-011–012, CLI-016 |
+| [`cli.feature`](cli.feature) | 14 | Calling CLI-001–002, CLI-013–014 · keys CLI-006–007 · errors CLI-003–004, CLI-015 · describe CLI-008–010 · seeds, version CLI-012, CLI-016 |
 | [`events.feature`](events.feature) | 41 | Emit EVT-001–009 · gates EVT-010–017, EVT-038–039 · batch EVT-020–025 · idempotency EVT-030–037 · reading EVT-040–055 · read your writes EVT-060–062 |
 | [`serve.feature`](serve.feature) | 26 | First start and the bootstrap key HOST-001–005, HOST-017–019, HOST-030 · health HOST-006 · starting, stopping, refusing HOST-009–013, HOST-016 · settings HOST-014–015 · the wire HOST-021–027, HOST-029 |
 | [`tenancy.feature`](tenancy.feature) | 40 | Bootstrap and open ACC-001–018 · authentication ACC-020–024 · scopes ACC-030–032 · creating and listing keys ACC-040–047 · revoking and expiry ACC-050–054 · who emitted ACC-060–061 |
 
-IDs missing from these ranges are unassigned (CLI-005 too), except EVT-005 and HOST-028, which are retired.
+IDs missing from these ranges are unassigned (CLI-005 too), except EVT-005, HOST-028 and CLI-011, which are retired.
 
 Each scenario of 0.1, in `events.feature`, is mapped to the spec stories that own it in [Spec 4, "Behavior coverage"](https://github.com/ironflowx/foundation/blob/93f0bb261276d7522180d7307464256239a44030/docs/milestones/0.1-ledger/specs/04-ledger.md#behavior-coverage). The [coverage sweep](https://github.com/ironflowx/foundation/blob/a192bdb8f63e08ef85cf4549ffeac8c3f3dc7907/docs/behaviors/coverage.md), a dated planning record of the first release, lists the items deferred to later releases for when they are drafted.
 

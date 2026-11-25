@@ -2,7 +2,7 @@
 # Conventions, adapters and what is out of scope: README.md. The rules these scenarios sample:
 # architecture.md, "CLI".
 
-Feature: CLI: generated commands, one envelope, describe and skills
+Feature: CLI: generated commands, one envelope, and describe
 
   Background:
     Given the engine is served on a fresh data directory
@@ -102,7 +102,8 @@ Feature: CLI: generated commands, one envelope, describe and skills
 
   @CLI-008 @release-0.3 @door:cli
   Scenario: describe lists every operation with its scope, and nothing else
-    Given no key is given and IRONFLOWX_URL names an address where nothing listens
+    Given no key is given
+    And IRONFLOWX_URL names an address where nothing listens
     When "ironflowx describe" runs
     Then it exits with code 0
     And its operations are exactly:
@@ -123,6 +124,7 @@ Feature: CLI: generated commands, one envelope, describe and skills
     Then stdout holds an input schema, an output schema and an example
     And the example is valid against the input schema
     And with IRONFLOWX_KEY holding a "write" key, "ironflowx events emit --json" given the example exits with code 0
+    And every described example works against a fresh engine with the bootstrap key
 
   @CLI-010 @release-0.3 @door:cli
   Scenario: describe publishes the exit-code table
@@ -139,18 +141,7 @@ Feature: CLI: generated commands, one envelope, describe and skills
       | 7    | resource_exhausted | false     |
       | 8    | unavailable        | true      |
 
-  # ---- Skills, seeds, version ----
-
-  @CLI-011 @release-0.3 @door:cli
-  Scenario Outline: The embedded skill names every command
-    When "ironflowx skills <args>" runs
-    Then <where> is a SKILL.md named "ironflowx" whose front matter carries the binary's version
-    And it names every command "ironflowx describe" lists, each with its scope
-
-    Examples:
-      | args               | where                          |
-      |                    | stdout                         |
-      | --write ./skills   | "./skills/ironflowx/SKILL.md"  |
+  # ---- Seeds, version ----
 
   @CLI-012 @release-0.3 @door:cli
   Scenario: A generated seed is a key the engine accepts

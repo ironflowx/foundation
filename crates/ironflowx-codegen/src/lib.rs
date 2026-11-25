@@ -9,7 +9,7 @@ use prost_reflect::{
     DescriptorPool, DynamicMessage, FieldDescriptor, Kind, MessageDescriptor, MethodDescriptor,
     Value as OptionValue,
 };
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 /// Why a descriptor set generates nothing: the method or field, and what is wrong with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,11 +54,14 @@ struct Method {
     /// As the `Operations` method is named.
     name: String,
     command: String,
+    rpc: String,
     summary: String,
     example: Value,
     request: String,
     /// The JSON Schema of the wire request.
     input: Value,
+    /// The JSON Schema of the answer as the CLI prints it.
+    output: Value,
     /// The request's fields, as the CLI's `Field`s.
     asked: String,
     answer: String,
@@ -137,13 +140,13 @@ fn read_method(method: &MethodDescriptor) -> Result<Method, CodegenError> {
     let example = text("example")?;
     let example: Value = serde_json::from_str(&example)
         .map_err(|e| refused(at, format!("its (ironflowx.v1.example) is not JSON: {e}")))?;
-    let input = object(&method.input())?;
-    let schema = jsonschema::options()
+    let input = schema(&method.input(), Shape::Input)?;
+    let validator = jsonschema::options()
         .with_draft(jsonschema::Draft::Draft202012)
         .should_validate_formats(true)
         .build(&input)
         .expect("a schema this generates is one");
-    if let Err(e) = schema.validate(&example) {
+    if let Err(e) = validator.validate(&example) {
         let why = format!("its (ironflowx.v1.example) fails its schema: {e}");
         return Err(refused(at, why));
     }
@@ -153,13 +156,15 @@ fn read_method(method: &MethodDescriptor) -> Result<Method, CodegenError> {
     Ok(Method {
         name: snake_case(method.name()),
         command,
+        rpc: format!("{}/{}", method.parent_service().full_name(), method.name()),
         summary,
         example,
         request: method.input().name().to_owned(),
         input,
-        asked: fields(&method.input())?,
+        output: schema(&method.output(), Shape::Output)?,
+        asked: fields(&method.input()),
         answer: method.output().name().to_owned(),
-        printed: fields(&method.output())?,
+        printed: fields(&method.output()),
     })
 }
 
@@ -179,73 +184,148 @@ fn json_text(field: &FieldDescriptor) -> bool {
     option(&pool, &field.options(), "json_text") == Some(OptionValue::Bool(true))
 }
 
-/// A field's JSON Schema, and the default it has when it is not set: none, if it has presence.
-fn shape(field: &FieldDescriptor) -> Result<(Value, Option<Value>), CodegenError> {
-    let json_text = json_text(field);
-    let (schema, default) = match field.kind() {
-        Kind::String if json_text => (
-            json!({"contentMediaType": "application/json", "type": "string"}),
-            json!(""),
-        ),
-        _ if json_text => return Err(refused(field.full_name(), "JSON text is a string")),
-        Kind::String => (json!({"type": "string"}), json!("")),
-        Kind::Bool => (json!({"type": "boolean"}), json!(false)),
-        Kind::Int32 | Kind::Sint32 | Kind::Sfixed32 => (
-            json!({"maximum": i32::MAX, "minimum": i32::MIN, "type": "integer"}),
-            json!(0),
-        ),
-        Kind::Uint32 | Kind::Fixed32 => (
-            json!({"maximum": u32::MAX, "minimum": 0, "type": "integer"}),
-            json!(0),
-        ),
-        // As protobuf prints them.
-        Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => (
-            json!({"pattern": "^-?[0-9]+$", "type": "string"}),
-            json!("0"),
-        ),
-        Kind::Uint64 | Kind::Fixed64 => {
-            (json!({"pattern": "^[0-9]+$", "type": "string"}), json!("0"))
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    Input,
+    Output,
+}
+
+fn schema(message: &MessageDescriptor, shape: Shape) -> Result<Value, CodegenError> {
+    let mut root = object(message, shape)?;
+    root["$schema"] = json!("https://json-schema.org/draft/2020-12/schema");
+    Ok(root)
+}
+
+/// A field's JSON Schema, or that of each item for a repeated field.
+fn property(field: &FieldDescriptor, shape: Shape) -> Result<Value, CodegenError> {
+    let schema = match field.kind() {
+        Kind::String if json_text(field) => match shape {
+            Shape::Input => json!({"contentMediaType": "application/json", "type": "string"}),
+            Shape::Output => json!(true),
+        },
+        _ if json_text(field) => return Err(refused(field.full_name(), "JSON text is a string")),
+        Kind::String => json!({"type": "string"}),
+        Kind::Bool => json!({"type": "boolean"}),
+        Kind::Int32 | Kind::Sint32 | Kind::Sfixed32 => {
+            json!({"maximum": i32::MAX, "minimum": i32::MIN, "type": "integer"})
         }
-        Kind::Message(m) if m.full_name() == "google.protobuf.Timestamp" => (
+        Kind::Uint32 | Kind::Fixed32 => {
+            json!({"maximum": u32::MAX, "minimum": 0, "type": "integer"})
+        }
+        // As protobuf prints them.
+        Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => {
+            json!({"pattern": "^-?[0-9]+$", "type": "string"})
+        }
+        Kind::Uint64 | Kind::Fixed64 => json!({"pattern": "^[0-9]+$", "type": "string"}),
+        Kind::Message(m) if m.full_name() == "google.protobuf.Timestamp" => {
             // In whole milliseconds, as the wire takes one.
             json!({
                 "format": "date-time",
                 "pattern": r"^[^.]*(\.[0-9]{1,3}0*)?[^.0-9][^.]*$",
                 "type": "string",
-            }),
-            Value::Null,
-        ),
-        Kind::Message(m) if ours(&m) && !m.is_map_entry() => (object(&m)?, Value::Null),
+            })
+        }
+        Kind::Message(m) if ours(&m) && !m.is_map_entry() => object(&m, shape)?,
         kind => {
             let why = format!("the generator does not know the type {kind:?}");
             return Err(refused(field.full_name(), why));
         }
     };
+    let schema = domain_property(field, schema);
     Ok(if field.is_list() {
-        (json!({"items": schema, "type": "array"}), Some(json!([])))
+        json!({"items": schema, "type": "array"})
     } else {
-        (schema, (!field.supports_presence()).then_some(default))
+        schema
     })
 }
 
-/// The JSON Schema of `message` in wire JSON, where every field may be left out.
+/// Restrictions of the domain types that the wire mapping reads and prints.
+fn domain_property(field: &FieldDescriptor, mut schema: Value) -> Value {
+    match field.full_name() {
+        "ironflowx.v1.ListEventsRequest.limit" | "ironflowx.v1.ListKeysRequest.limit" => {
+            schema["minimum"] = json!(1);
+        }
+        "ironflowx.v1.CreateKeyRequest.scopes"
+        | "ironflowx.v1.KeyInfo.scopes"
+        | "ironflowx.v1.WhoamiResponse.scopes" => {
+            schema["enum"] = json!(["read", "write", "admin"]);
+        }
+        "ironflowx.v1.RevokeKeyRequest.key_id"
+        | "ironflowx.v1.WhoamiResponse.key_id"
+        | "ironflowx.v1.KeyInfo.key_id"
+        | "ironflowx.v1.KeyInfo.created_by"
+        | "ironflowx.v1.GetEventRequest.event_id"
+        | "ironflowx.v1.Event.event_id"
+        | "ironflowx.v1.EmitResponse.event_id"
+        | "ironflowx.v1.Environment.project_id" => {
+            schema["pattern"] =
+                json!("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
+        }
+        _ => {}
+    }
+    schema
+}
+
+/// Each object is closed. Requests can omit fields at the protobuf layer.
 // shortcut: a message that holds itself overflows the stack, so the build fails without naming it;
 // refuse it by name when a request or an answer needs one.
-fn object(message: &MessageDescriptor) -> Result<Value, CodegenError> {
-    let mut properties = serde_json::Map::new();
+fn object(message: &MessageDescriptor, shape: Shape) -> Result<Value, CodegenError> {
+    let mut properties = Map::new();
+    let mut required = Vec::new();
     for field in message.fields() {
-        properties.insert(field.json_name().to_owned(), shape(&field)?.0);
+        let name = field.json_name();
+        properties.insert(name.to_owned(), property(&field, shape)?);
+        if shape == Shape::Output && always_printed(&field) {
+            required.push(name.to_owned());
+        }
     }
-    Ok(json!({"additionalProperties": false, "properties": properties, "type": "object"}))
+    let mut schema =
+        json!({"additionalProperties": false, "properties": properties, "type": "object"});
+    if !required.is_empty() {
+        schema["required"] = json!(required);
+    }
+    if shape == Shape::Output && message.full_name() == "ironflowx.v1.EmitBatchItem" {
+        schema["oneOf"] = json!([{"required": ["ok"]}, {"required": ["error"]}]);
+    }
+    Ok(schema)
+}
+
+/// Defaults are completed by the CLI. These fields with presence are set by wire conversion.
+fn always_printed(field: &FieldDescriptor) -> bool {
+    !field.supports_presence()
+        || matches!(
+            field.full_name(),
+            "ironflowx.v1.CreateKeyResponse.info"
+                | "ironflowx.v1.Environment.created_at"
+                | "ironflowx.v1.Event.data"
+                | "ironflowx.v1.Event.time"
+                | "ironflowx.v1.KeyInfo.created_at"
+        )
+}
+
+/// The JSON default that the CLI adds when wire JSON omits it.
+fn default(field: &FieldDescriptor) -> Option<&'static str> {
+    if field.is_list() {
+        return Some("[]");
+    }
+    if field.supports_presence() {
+        return None;
+    }
+    Some(match field.kind() {
+        Kind::String => r#""""#,
+        Kind::Bool => "false",
+        Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 | Kind::Uint64 | Kind::Fixed64 => r#""0""#,
+        _ => "0",
+    })
 }
 
 /// The message's fields, as code: the CLI's `Field`s.
-fn fields(message: &MessageDescriptor) -> Result<String, CodegenError> {
+fn fields(message: &MessageDescriptor) -> String {
     let mut code = Vec::new();
     for field in message.fields() {
-        let default = shape(&field)?.1.map(|v| v.to_string());
+        let default = default(&field);
         let kind = match field.kind() {
-            Kind::Message(m) if ours(&m) => format!("Message({})", fields(&m)?),
+            Kind::Message(m) if ours(&m) => format!("Message({})", fields(&m)),
             Kind::Bool => "Bool".to_owned(),
             _ if json_text(&field) => "JsonText".to_owned(),
             _ => "Text".to_owned(),
@@ -255,7 +335,7 @@ fn fields(message: &MessageDescriptor) -> Result<String, CodegenError> {
             "Field {{ name: {name:?}, kind: Kind::{kind}, list: {list}, default: {default:?} }}"
         ));
     }
-    Ok(format!("&[{}]", code.join(", ")))
+    format!("&[{}]", code.join(", "))
 }
 
 /// The code the CLI includes beside its own `Command`, `Field` and `Kind`.
@@ -266,19 +346,21 @@ fn render(methods: &[Method]) -> String {
         let Method {
             name,
             command,
+            rpc,
             summary,
             example,
             request,
             input,
+            output,
             asked,
             answer,
             printed,
         } = m;
-        // What is checked and not yet read goes in as comments.
+        let (input, output, example) = (input.to_string(), output.to_string(), example.to_string());
         writeln!(
             commands,
-            "    // Input: {input}\n    // Example: {example}\n    \
-             Command {{ path: {command:?}, summary: {summary:?}, request: {asked}, \
+            "    Command {{ path: {command:?}, summary: {summary:?}, rpc: {rpc:?}, \
+             input: {input:?}, output: {output:?}, example: {example:?}, request: {asked}, \
              answer: {printed}, \
              refusal: |v| serde_json::from_value::<wire::{request}>(v).err() }},"
         )

@@ -1,5 +1,5 @@
-//! The CLI: an engine's operations as commands, generated from the proto, and `version`
-//! (architecture.md, "CLI"). An answer is JSON on stdout; a failure is one envelope on stderr and
+//! The CLI: operations generated from the proto, plus `describe` and `version`
+//! (architecture.md, "CLI"). An answer is JSON on stdout. A failure is one envelope on stderr and
 //! its kind's exit code (D64, D65).
 
 #![forbid(unsafe_code)]
@@ -31,6 +31,8 @@ const KEY_PREFIX: &str = "ixk_";
 /// How long a key's secret is, the part after its ID.
 const SECRET_LEN: usize = 43;
 
+const PROTOCOL: &str = "ironflowx.v1";
+
 const DEFAULT_URL: &str = "http://127.0.0.1:9310";
 
 /// A command the generator found in the proto.
@@ -38,6 +40,10 @@ struct Command {
     /// Its words, as `events emit`.
     path: &'static str,
     summary: &'static str,
+    rpc: &'static str,
+    input: &'static str,
+    output: &'static str,
+    example: &'static str,
     request: &'static [Field],
     answer: &'static [Field],
     /// Why wire JSON is no such request; `None`: it is one.
@@ -62,6 +68,8 @@ enum Kind {
     Message(&'static [Field]),
 }
 
+mod describe;
+
 mod generated {
     use ironflowx_proto::{Call, Client, OpError, Operations as _, wire};
 
@@ -82,9 +90,11 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
     if clap::Error::raw(clap::error::ErrorKind::Io, "").to_string() != "error: " {
         return Err(end(Err(invalid("clap is built with its debug feature"))));
     }
-    let root = root.subcommand(
-        clap::Command::new("version").about("Show the version, the commit and the protocol"),
-    );
+    let root = root
+        .subcommand(
+            clap::Command::new("version").about("Show the version, the commit and the protocol"),
+        )
+        .subcommand(describe::command());
     // Apart from the hand-written ones, so that clap refuses a name both have.
     let generated = generated::COMMANDS.iter();
     let generated = generated.fold(clap::Command::new("generated"), |all, command| {
@@ -163,38 +173,43 @@ fn group(command: clap::Command) -> clap::Command {
 }
 
 fn add(parent: clap::Command, words: &[&'static str], command: &Command) -> clap::Command {
+    let word = words.last().expect("a command has a word");
+    let leaf = clap::Command::new(*word)
+        .about(command.summary)
+        .args(flags(command).map(|f| flag(command, f)))
+        .arg(
+            Arg::new("json")
+                .long("json")
+                .value_name("JSON")
+                .help("The whole request, in place of its flags: JSON, @<file> or -, stdin")
+                .conflicts_with_all(flags(command).map(|f| f.name)),
+        )
+        .arg(Arg::new("url").value_name("URL").long("url").help(format!(
+            "The engine to call; else IRONFLOWX_URL, else {DEFAULT_URL}"
+        )))
+        .arg(
+            Arg::new("key-file")
+                .long("key-file")
+                .value_name("PATH")
+                .help("The file that holds the key; else IRONFLOWX_KEY holds it")
+                .value_parser(value_parser!(PathBuf)),
+        );
+    add_path(parent, words, leaf)
+}
+
+/// Adds a leaf command, sharing group names with other commands of this tree.
+fn add_path(parent: clap::Command, words: &[&'static str], leaf: clap::Command) -> clap::Command {
     let [word, rest @ ..] = words else {
         unreachable!("a command has a word");
     };
     if rest.is_empty() {
-        return parent.subcommand(
-            clap::Command::new(*word)
-                .about(command.summary)
-                .args(flags(command).map(|f| flag(command, f)))
-                .arg(
-                    Arg::new("json")
-                        .long("json")
-                        .value_name("JSON")
-                        .help("The whole request, in place of its flags: JSON, @<file> or -, stdin")
-                        .conflicts_with_all(flags(command).map(|f| f.name)),
-                )
-                .arg(Arg::new("url").value_name("URL").long("url").help(format!(
-                    "The engine to call; else IRONFLOWX_URL, else {DEFAULT_URL}"
-                )))
-                .arg(
-                    Arg::new("key-file")
-                        .long("key-file")
-                        .value_name("PATH")
-                        .help("The file that holds the key; else IRONFLOWX_KEY holds it")
-                        .value_parser(value_parser!(PathBuf)),
-                ),
-        );
+        return parent.subcommand(leaf);
     }
     let parent = match parent.find_subcommand(word) {
         Some(_) => parent,
         None => parent.subcommand(group(clap::Command::new(*word))),
     };
-    parent.mut_subcommand(word, |group| add(group, rest, command))
+    parent.mut_subcommand(word, |group| add_path(group, rest, leaf))
 }
 
 /// The fields of the request that have a flag.
@@ -397,9 +412,15 @@ fn answer(command: &str, matches: &ArgMatches) -> Result<String, OpError> {
         let version = json!({
             "version": env!("CARGO_PKG_VERSION"),
             "commit": env!("IRONFLOWX_COMMIT"),
-            "protocol": "ironflowx.v1",
+            "protocol": PROTOCOL,
         });
         return render(&version, &Kind::Message(&[]), indent);
+    }
+    if command == "describe" {
+        return render(&describe::answer(None), &Kind::Text, indent);
+    }
+    if let Some(path) = command.strip_prefix("describe ") {
+        return render(&describe::answer(Some(path)), &Kind::Text, indent);
     }
     let known = generated::COMMANDS.iter().find(|c| c.path == command);
     let known = known.expect("a command it found");
@@ -614,6 +635,10 @@ mod tests {
         let command = |path| Command {
             path,
             summary: "",
+            rpc: "",
+            input: "",
+            output: "",
+            example: "",
             request: &[],
             answer: &[],
             refusal: |_| None,
@@ -979,6 +1004,10 @@ mod tests {
         let command = Command {
             path: "do",
             summary: "",
+            rpc: "",
+            input: "",
+            output: "",
+            example: "",
             request: REQUEST,
             answer: &[],
             // As one that knows no such name, in whichever field.
