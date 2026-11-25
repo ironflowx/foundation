@@ -166,9 +166,8 @@ fn answer(command: &str, matches: &ArgMatches) -> Result<Value, OpError> {
     let mut answer = runtime
         .block_on(generated::call(command, &client, &cx))
         .map_err(|e| without_secret(e, &cx))?;
-    let text = answer.to_string();
-    if sent_secrets(&cx).any(|secret| text.contains(secret)) {
-        let message = "the answer repeats the key it was asked with, so it is not printed";
+    if repeats_secret(&answer.to_string(), &cx) {
+        let message = "the answer is not printed, since it repeats the key the call sent";
         return Err(internal(message.to_owned()));
     }
     let known = generated::COMMANDS.iter().find(|c| c.path == command);
@@ -208,20 +207,25 @@ fn credential(matches: &ArgMatches) -> Result<Call, OpError> {
     Ok(Call::with_key(Secret::new(key)))
 }
 
-/// What `cx` holds that could be a key's secret: the end of each run as long as one, without what
-/// may be around it, as quotes are. Anything shorter is no one's secret, and may be in any answer.
-fn sent_secrets(cx: &Call) -> impl Iterator<Item = &str> {
-    let key = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
-    let text = cx.key().map_or("", Secret::expose);
-    text.split(move |c| !key(c))
-        .filter_map(|run| run.get(run.len().checked_sub(SECRET_LEN)?..))
+/// Whether `text` holds as many bytes in a row of the key `cx` sends as a key's secret has (TEN-3).
+/// Fewer are no one's secret, and may be in any answer; a repeat that was changed is not found.
+fn repeats_secret(text: &str, cx: &Call) -> bool {
+    let key = cx.key().map_or("", Secret::expose).as_bytes();
+    // A part that is not text is of a key that is never sent as it is.
+    key.windows(SECRET_LEN)
+        .filter_map(|part| str::from_utf8(part).ok())
+        .any(|part| text.contains(part))
 }
 
-/// `e`, whose text may come from no engine, without the secret it was sent (TEN-3).
+/// `e`, whose text may come from no engine, without one that repeats the secret it was sent.
 fn without_secret(mut e: OpError, cx: &Call) -> OpError {
-    for secret in sent_secrets(cx) {
-        e.message = e.message.replace(secret, "<key>");
-        e.hint = e.hint.map(|hint| hint.replace(secret, "<key>"));
+    for text in [Some(&mut e.message), e.hint.as_mut()]
+        .into_iter()
+        .flatten()
+    {
+        if repeats_secret(text, cx) {
+            *text = "not printed, since it repeats the key the call sent".to_owned();
+        }
     }
     e
 }

@@ -205,59 +205,74 @@ fn every_kind_is_one_envelope_and_one_exit_code() {
 #[test]
 fn a_key_an_answer_repeats_is_not_printed() {
     let served = Served::answering(Ok(whoami()));
-    // Its ID is no secret.
-    let end = format!("{}<key>", &KEY[..41]);
+    let other = KEY.replace('A', "B");
     // As one in a file of variables can be.
     let quoted = format!("'{KEY}'");
-    let cut = &KEY[..43];
-    let both = format!("{},{KEY}", KEY.replace('A', "B"));
-    for (given, key, hidden) in [
-        (KEY, KEY, &*end),
-        (KEY, &KEY[41..], "<key>"),
-        (&quoted, KEY, &end),
-        (cut, cut, "<key>"),
-        // Without the start of its prefix, and the second of two.
-        (&KEY[1..], &KEY[1..], &end[1..]),
-        (&both, KEY, &end),
+    let (listed, joined, longer) = (
+        format!("{other},{KEY}"),
+        format!("{other}{KEY}"),
+        format!("{KEY}x"),
+    );
+    for (sent, repeated, hidden) in [
+        (KEY, KEY, true),
+        // Its secret alone, all but the last of it, and one less than that.
+        (KEY, &KEY[41..], true),
+        (KEY, &KEY[..83], true),
+        (KEY, &KEY[42..], false),
+        // Its ID is no secret.
+        (KEY, &KEY[4..40], false),
+        (&*quoted, KEY, true),
+        (&longer, &KEY[41..], true),
+        (&listed, KEY, true),
+        (&joined, &KEY[41..], true),
+        (&joined, &other[41..], true),
+        (&KEY[1..], &KEY[1..], true),
+        (&KEY[..43], &KEY[..43], true),
         // Too short to hold a secret, so any message may hold it.
-        (&KEY[..42], &KEY[..42], &KEY[..42]),
-        ("ixk_", "ixk_", "ixk_"),
-        ("e", "e", "e"),
+        (&KEY[..42], &KEY[..42], false),
+        ("ixk_", "ixk_", false),
+        ("e", "e", false),
+        ("", "", false),
     ] {
-        served.answers(Err(OpError {
-            kind: ErrorKind::Unauthenticated,
-            message: format!("no such key: '{key}'"),
-            hint: Some(format!("use another than {key} {key}")),
-        }));
-        let out = served
-            .whoami()
-            .env("IRONFLOWX_KEY", given)
-            .output()
-            .unwrap();
-        let message = format!("no such key: '{hidden}'");
-        let hint = format!("use another than {hidden} {hidden}");
-        let expected = json!({
-            "code": "unauthenticated", "message": message, "hint": hint, "retryable": false,
-        });
-        assert_eq!(envelope(&out), (expected, 3));
-
+        let mut command = served.whoami();
+        command.env("IRONFLOWX_KEY", sent);
+        let mut output = || command.output().unwrap();
+        // A message or a hint, whichever repeats it.
+        for (in_message, in_hint) in [(true, true), (true, false), (false, true)] {
+            let text = |repeats| format!("no '{}'", if repeats { repeated } else { "key" });
+            let printed = |repeats| match repeats && hidden {
+                true => "not printed, since it repeats the key the call sent".to_owned(),
+                false => text(repeats),
+            };
+            served.answers(Err(OpError {
+                kind: ErrorKind::Unauthenticated,
+                message: text(in_message),
+                hint: Some(text(in_hint)),
+            }));
+            let expected = json!({
+                "code": "unauthenticated",
+                "message": printed(in_message),
+                "hint": printed(in_hint),
+                "retryable": false,
+            });
+            let given = format!("{sent} sent, {repeated} repeated");
+            assert_eq!(envelope(&output()), (expected, 3), "{given}");
+        }
         // Nor in an answer, whose one free text is the environment's name.
         served.answers(Ok(Whoami {
-            environment: Address::new("default", &format!("a{key}")),
+            environment: Address::new("default", &format!("a{repeated}")),
             ..whoami()
         }));
-        let out = served
-            .whoami()
-            .env("IRONFLOWX_KEY", given)
-            .output()
-            .unwrap();
-        if hidden == key {
-            let answer: Value = serde_json::from_str(stdout(&out)).unwrap();
-            assert_eq!(answer["environment"], format!("default/a{key}"));
-        } else {
-            let message = "the answer repeats the key it was asked with, so it is not printed";
+        let out = output();
+        let given = format!("{sent} sent, {repeated} repeated");
+        if hidden {
+            let message = "the answer is not printed, since it repeats the key the call sent";
             let expected = json!({"code": "internal", "message": message, "retryable": false});
-            assert_eq!(envelope(&out), (expected, 1));
+            assert_eq!(envelope(&out), (expected, 1), "{given}");
+        } else {
+            let answer: Value = serde_json::from_str(stdout(&out)).unwrap();
+            let environment = format!("default/a{repeated}");
+            assert_eq!(answer["environment"], environment, "{given}");
         }
     }
 }
