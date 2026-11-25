@@ -523,7 +523,7 @@ Seen with a fault-injecting VFS that fails the WAL's sync (macOS, [#135](https:/
 
 ## What is stored
 
-The engine and the ledger set no file modes, so the process umask applies, and encrypt nothing: the host keeps the directory private. `ironflowx serve` creates it, and what is missing above it, with mode `0700`, whatever the umask; a directory that is there keeps its mode. Who can read it reads every event; who can write it has an admin's authority. A ledger has no delete and no retention.
+The engine and the ledger set no file modes, so the process umask applies, and encrypt nothing: the host keeps the directory private. `ironflowx serve` creates it, and what is missing above it, asking for mode `0700`; a directory that is there keeps its mode. A umask that takes one of the owner's bits leaves a new one narrower, and such a start exits 1 unless it runs as root (root without the capability to override permissions exits 1 too); a setgid parent passes its bit on (Linux). Who can read it reads every event; who can write it has an admin's authority. A ledger has no delete and no retention.
 
 An engine's data directory, `<root>`:
 
@@ -605,7 +605,7 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 2. Bind the listen address. Nothing in the data directory is touched before (D62).
 3. Log `listening` with the bound URL, also when port 0 picked the address. An address that is not loopback also logs a warning that keys travel in clear without a TLS proxy (D59).
 4. Serve `/health` and the door, the slot `Starting`.
-5. Create the data directory, and what is missing above it, with mode `0700`. If it holds `admin.key` and its bootstrap is not marked (`ControlPlane::bootstrap_state`), exit 2: no open before the mark wrote that file, so it is stale. An error of that read is left for the open. Then `Engine::open(data_dir, HostClock, None)`.
+5. Create the data directory, and what is missing above it, asking for mode `0700` ([What is stored](#what-is-stored)). If it holds `admin.key` and its bootstrap is not marked (`ControlPlane::bootstrap_state`), exit 2: no open before the mark wrote that file, so it is stale. An error of that read is left for the open. Then `Engine::open(data_dir, HostClock, None)`.
 6. Write a minted key to `admin.key` and log its path, never the key. If it cannot be written, close the engine and exit 1; the key stays stored, its secret lost ([Engine open](#engine-open), "Recovery").
 7. Set the slot `Open`.
 

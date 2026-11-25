@@ -267,7 +267,14 @@ fn a_silent_connection_is_closed() {
     assert_eq!(stream.read(&mut [0]).unwrap(), 0);
 }
 
-/// Under a umask, which takes some of the owner's bits too.
+fn wait_for(path: &Path) {
+    let started = Instant::now();
+    while !path.exists() && started.elapsed() < Duration::from_secs(30) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// `serve` under `umask`.
 fn under_umask(umask: &str, data_dir: &Path) -> Child {
     let shell = "umask $2; exec \"$0\" serve --listen 127.0.0.1:0 --data-dir \"$1\"";
     Command::new("sh")
@@ -280,22 +287,15 @@ fn under_umask(umask: &str, data_dir: &Path) -> Child {
 }
 
 #[test]
-fn what_the_host_creates_for_its_data_is_its_owners_whatever_the_umask() {
-    for umask in ["0000", "0277", "0477", "0777"] {
-        let dir = tempfile::tempdir().unwrap();
-        let above = dir.path().join("above");
-        let data_dir = above.join("data");
-        let mut child = under_umask(umask, &data_dir);
-        let lock = data_dir.join("engine.lock");
-        let started = Instant::now();
-        // The engine may not open, its own files being the umask's.
-        while !lock.exists() && started.elapsed() < Duration::from_secs(30) {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-        assert_eq!((mode(&above), mode(&data_dir)), (0o700, 0o700), "{umask}");
-    }
+fn a_directory_above_the_data_directory_is_private_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let above = dir.path().join("above");
+    let data_dir = above.join("data");
+    let mut child = under_umask("0000", &data_dir);
+    wait_for(&data_dir.join("admin.key"));
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!((mode(&above), mode(&data_dir)), (0o700, 0o700));
 }
 
 #[test]
@@ -312,10 +312,7 @@ fn the_key_file_is_its_owners_to_read_whatever_the_umask() {
     assert_eq!(control.execute(unmark, []).unwrap(), 1);
     drop(control);
     let mut child = under_umask("0477", dir.path());
-    let started = Instant::now();
-    while !key_file.exists() && started.elapsed() < Duration::from_secs(30) {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_for(&key_file);
     let _ = child.kill();
     let _ = child.wait();
     assert_eq!(mode(&key_file), 0o400);
