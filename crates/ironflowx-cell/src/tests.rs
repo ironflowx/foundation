@@ -1507,20 +1507,48 @@ fn a_read_on_a_runtime_that_shut_down_fails_the_ledger() {
     assert_eq!(ledger.state(), LedgerState::Unavailable);
 }
 
-/// A close whose runtime shut down before its blocking work began ends as a drop does: it joins the
-/// writer before the ledger has closed, so a fault of what the writer finishes still counts.
+/// A close whose runtime shut down before its blocking work began ends as a drop does, which joins
+/// the writer: only a join finds the panic of its end.
 #[test]
 fn a_close_on_a_runtime_that_shut_down_joins_the_writer() {
     let dir = tempfile::tempdir().unwrap();
     let rt = runtime();
-    let ledger = rt.block_on(open(dir.path(), new_env_ref()));
-    ledger.hold_fold();
-    ledger.fail_next_fold();
-    rt.block_on(emit(&ledger, named("a"))).unwrap();
+    let ledger = rt.block_on(Ledger::open(dir.path(), new_env_ref(), PanicsOnDrop));
+    let ledger = ledger.unwrap();
     let faulted = std::pin::pin!(ledger.faulted());
     let handle = rt.handle().clone();
     drop(rt);
     let close = std::panic::AssertUnwindSafe(|| handle.block_on(ledger.close()));
     std::panic::catch_unwind(close).unwrap_err();
     assert!(ready(faulted));
+}
+
+/// Tells each reading; its drop, as the writer ends, ends what it tells.
+struct Telling(std::sync::mpsc::Sender<()>);
+
+impl ironflowx_core::Clock for Telling {
+    fn now(&self) -> Timestamp {
+        let _ = self.0.send(());
+        Timestamp::from_millis(T)
+    }
+}
+
+/// A close ends the queue before its blocking work has a thread: the only one here is busy until
+/// the writer has ended.
+#[test]
+fn a_close_ends_the_queue_without_a_blocking_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tell, told) = std::sync::mpsc::channel();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .enable_time()
+        .build()
+        .unwrap();
+    let closed = rt.block_on(async {
+        let ledger = Ledger::open(dir.path(), new_env_ref(), Telling(tell)).await;
+        tokio::task::spawn_blocking(move || while told.recv().is_ok() {});
+        tokio::time::timeout(Duration::from_secs(10), ledger.unwrap().close()).await
+    });
+    rt.shutdown_background();
+    closed.expect("the close ended the queue");
 }
