@@ -446,6 +446,11 @@ fn operations(w: &mut Cli, step: &Step) {
         .collect();
     assert_eq!(operations.len(), expected.len());
     assert_eq!(actual, expected);
+    w.run("ironflowx version", "");
+    let version = w.succeeded();
+    for field in ["version", "protocol"] {
+        assert_eq!(answer.get(field), version.get(field), "catalog {field}");
+    }
 }
 
 #[then("its exit codes are exactly:")]
@@ -566,6 +571,54 @@ fn every_example(_: &mut Cli) {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+#[then("the published inputs enforce the wire limits, scopes and IDs")]
+fn input_edges(_: &mut Cli) {
+    const ID: &str = "0190b5f0-0000-7000-8000-000000000001";
+    let pages = [json!({"limit": 1}), json!({"limit": u32::MAX})];
+    let bad_pages = [
+        json!({"limit": 0}),
+        json!({"limit": u64::from(u32::MAX) + 1}),
+    ];
+    let mut w = Cli::new();
+    for (path, accepted, refused) in [
+        ("events list", pages.clone(), bad_pages.clone()),
+        ("keys list", pages, bad_pages),
+        (
+            "keys create",
+            [
+                json!({"scopes": []}),
+                json!({"scopes": ["read", "write", "admin"]}),
+            ],
+            [json!({"scopes": ["owner"]}), json!({"scopes": ["READ"]})],
+        ),
+        (
+            "events get",
+            [json!({}), json!({"event_id": ID})],
+            [
+                json!({"event_id": "bad"}),
+                json!({"event_id": ID.to_uppercase()}),
+            ],
+        ),
+        (
+            "keys revoke",
+            [json!({}), json!({"key_id": ID})],
+            [
+                json!({"key_id": "bad"}),
+                json!({"key_id": ID.to_uppercase()}),
+            ],
+        ),
+    ] {
+        w.run(&format!("ironflowx describe {path}"), "");
+        let input = schema(&w.succeeded()["input"]);
+        for value in accepted {
+            assert!(input.is_valid(&value), "{path} input refused {value}");
+        }
+        for value in refused {
+            assert!(!input.is_valid(&value), "{path} input accepted {value}");
         }
     }
 }
