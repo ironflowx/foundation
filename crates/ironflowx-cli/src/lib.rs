@@ -81,8 +81,12 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
         let text = e.render().to_string();
         let first = text.split("\n\n").next().unwrap_or_default();
         // A key given where none goes, or the end of one, is not printed (TEN-3).
-        let key =
-            |word: &str| word.contains(KEY_PREFIX) || word.trim_matches('\'').len() >= SECRET_LEN;
+        let key = |word: &str| {
+            // Without clap's quotes, one on each side.
+            let bare = word.strip_prefix('\'').unwrap_or(word);
+            let bare = bare.strip_suffix('\'').unwrap_or(bare);
+            word.contains(KEY_PREFIX) || bare.len() >= SECRET_LEN
+        };
         let hide = |word| if key(word) { "<hidden>" } else { word };
         let words: Vec<_> = first.split_whitespace().map(hide).collect();
         let message = words.join(" ");
@@ -161,9 +165,9 @@ fn answer(command: &str, matches: &ArgMatches) -> Result<Value, OpError> {
         .map_err(|e| internal(format!("no runtime: {e}")))?;
     let mut answer = runtime
         .block_on(generated::call(command, &client, &cx))
-        .map_err(|e| without_key(e, &cx))?;
+        .map_err(|e| without_secret(e, &cx))?;
     let text = answer.to_string();
-    if sent_keys(&cx).any(|key| text.contains(key)) {
+    if sent_secrets(&cx).any(|secret| text.contains(secret)) {
         let message = "the answer repeats the key it was asked with, so it is not printed";
         return Err(internal(message.to_owned()));
     }
@@ -204,20 +208,20 @@ fn credential(matches: &ArgMatches) -> Result<Call, OpError> {
     Ok(Call::with_key(Secret::new(key)))
 }
 
-/// What `cx` holds that is as long as a key's secret, without what may be around it, as quotes are.
-/// Anything shorter is no one's secret, and may be in any answer.
-fn sent_keys(cx: &Call) -> impl Iterator<Item = &str> {
+/// What `cx` holds that could be a key's secret: the end of each run as long as one, without what
+/// may be around it, as quotes are. Anything shorter is no one's secret, and may be in any answer.
+fn sent_secrets(cx: &Call) -> impl Iterator<Item = &str> {
     let key = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     let text = cx.key().map_or("", Secret::expose);
     text.split(move |c| !key(c))
-        .filter(|run| run.len() >= SECRET_LEN)
+        .filter_map(|run| run.get(run.len().checked_sub(SECRET_LEN)?..))
 }
 
-/// `e`, whose text may come from no engine, without the key it was sent (TEN-3).
-fn without_key(mut e: OpError, cx: &Call) -> OpError {
-    for key in sent_keys(cx) {
-        e.message = e.message.replace(key, "<key>");
-        e.hint = e.hint.map(|hint| hint.replace(key, "<key>"));
+/// `e`, whose text may come from no engine, without the secret it was sent (TEN-3).
+fn without_secret(mut e: OpError, cx: &Call) -> OpError {
+    for secret in sent_secrets(cx) {
+        e.message = e.message.replace(secret, "<key>");
+        e.hint = e.hint.map(|hint| hint.replace(secret, "<key>"));
     }
     e
 }

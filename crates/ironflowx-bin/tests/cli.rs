@@ -205,17 +205,20 @@ fn every_kind_is_one_envelope_and_one_exit_code() {
 #[test]
 fn a_key_an_answer_repeats_is_not_printed() {
     let served = Served::answering(Ok(whoami()));
+    // Its ID is no secret.
+    let end = format!("{}<key>", &KEY[..41]);
     // As one in a file of variables can be.
     let quoted = format!("'{KEY}'");
     let cut = &KEY[..43];
     let both = format!("{},{KEY}", KEY.replace('A', "B"));
     for (given, key, hidden) in [
-        (KEY, KEY, "<key>"),
-        (&quoted, KEY, "<key>"),
+        (KEY, KEY, &*end),
+        (KEY, &KEY[41..], "<key>"),
+        (&quoted, KEY, &end),
         (cut, cut, "<key>"),
         // Without the start of its prefix, and the second of two.
-        (&KEY[1..], &KEY[1..], "<key>"),
-        (&both, KEY, "<key>"),
+        (&KEY[1..], &KEY[1..], &end[1..]),
+        (&both, KEY, &end),
         // Too short to hold a secret, so any message may hold it.
         (&KEY[..42], &KEY[..42], &KEY[..42]),
         ("ixk_", "ixk_", "ixk_"),
@@ -263,6 +266,7 @@ fn a_key_an_answer_repeats_is_not_printed() {
 fn a_usage_error_is_an_envelope() {
     let dir = tempfile::tempdir().unwrap();
     let data_dir = dir.path().join("data");
+    let own = format!("'{}", &KEY[42..]);
     for (args, message) in [
         (
             &[][..],
@@ -302,6 +306,8 @@ fn a_usage_error_is_an_envelope() {
         ),
         (&["whoami", &KEY[4..]], "unexpected argument <hidden> found"),
         (&["whoami", "ixk_x"], "unexpected argument <hidden> found"),
+        // Clap's quotes do not count; its own do.
+        (&["whoami", &own], "unexpected argument <hidden> found"),
         // An ID is no secret.
         (
             &["whoami", &KEY[4..40]],
