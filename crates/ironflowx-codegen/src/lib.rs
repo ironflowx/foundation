@@ -59,19 +59,11 @@ struct Method {
     request: String,
     /// The JSON Schema of the wire request.
     input: Value,
+    /// The request's fields, as the CLI's `Field`s.
+    asked: String,
     answer: String,
-    /// The answer's fields that need something before they are printed.
-    printed: Vec<Printed>,
-}
-
-/// What printing a field of an answer needs.
-#[derive(Debug, PartialEq)]
-struct Printed {
-    name: String,
-    /// The JSON text of its default, which the wire leaves out; `None` for a field with presence.
-    default: Option<String>,
-    /// The fields of the message, or of each of the messages, it holds.
-    fields: Vec<Printed>,
+    /// The answer's, likewise.
+    printed: String,
 }
 
 fn read(descriptor_set: &[u8]) -> Result<Vec<Method>, CodegenError> {
@@ -165,8 +157,9 @@ fn read_method(method: &MethodDescriptor) -> Result<Method, CodegenError> {
         example,
         request: method.input().name().to_owned(),
         input,
+        asked: fields(&method.input())?,
         answer: method.output().name().to_owned(),
-        printed: printed(&method.output())?,
+        printed: fields(&method.output())?,
     })
 }
 
@@ -181,10 +174,14 @@ fn snake_case(name: &str) -> String {
     out
 }
 
+fn json_text(field: &FieldDescriptor) -> bool {
+    let pool = field.parent_message().parent_pool().clone();
+    option(&pool, &field.options(), "json_text") == Some(OptionValue::Bool(true))
+}
+
 /// A field's JSON Schema, and the default it has when it is not set: none, if it has presence.
 fn shape(field: &FieldDescriptor) -> Result<(Value, Option<Value>), CodegenError> {
-    let pool = field.parent_message().parent_pool().clone();
-    let json_text = option(&pool, &field.options(), "json_text") == Some(OptionValue::Bool(true));
+    let json_text = json_text(field);
     let (schema, default) = match field.kind() {
         Kind::String if json_text => (
             json!({"contentMediaType": "application/json", "type": "string"}),
@@ -242,26 +239,26 @@ fn object(message: &MessageDescriptor) -> Result<Value, CodegenError> {
     Ok(json!({"additionalProperties": false, "properties": properties, "type": "object"}))
 }
 
-fn printed(message: &MessageDescriptor) -> Result<Vec<Printed>, CodegenError> {
-    let mut fields = Vec::new();
+/// The message's fields, as code: the CLI's `Field`s.
+fn fields(message: &MessageDescriptor) -> Result<String, CodegenError> {
+    let mut code = Vec::new();
     for field in message.fields() {
         let default = shape(&field)?.1.map(|v| v.to_string());
-        let inner = match field.kind() {
-            Kind::Message(m) if ours(&m) => printed(&m)?,
-            _ => Vec::new(),
+        let kind = match field.kind() {
+            Kind::Message(m) if ours(&m) => format!("Message({})", fields(&m)?),
+            Kind::Bool => "Bool".to_owned(),
+            _ if json_text(&field) => "JsonText".to_owned(),
+            _ => "Text".to_owned(),
         };
-        if default.is_some() || !inner.is_empty() {
-            fields.push(Printed {
-                name: field.json_name().to_owned(),
-                default,
-                fields: inner,
-            });
-        }
+        let (name, list) = (field.json_name(), field.is_list());
+        code.push(format!(
+            "Field {{ name: {name:?}, kind: Kind::{kind}, list: {list}, default: {default:?} }}"
+        ));
     }
-    Ok(fields)
+    Ok(format!("&[{}]", code.join(", ")))
 }
 
-/// The code the CLI includes beside its own `Command` and `Field`.
+/// The code the CLI includes beside its own `Command`, `Field` and `Kind`.
 fn render(methods: &[Method]) -> String {
     let mut commands = String::new();
     let mut arms = String::new();
@@ -273,21 +270,25 @@ fn render(methods: &[Method]) -> String {
             example,
             request,
             input,
+            asked,
             answer,
             printed,
         } = m;
-        let fields = fields(printed);
         // What is checked and not yet read goes in as comments.
         writeln!(
             commands,
             "    // Input: {input}\n    // Example: {example}\n    \
-             Command {{ path: {command:?}, summary: {summary:?}, answer: {fields} }},"
+             Command {{ path: {command:?}, summary: {summary:?}, request: {asked}, \
+             answer: {printed}, \
+             refusal: |v| serde_json::from_value::<wire::{request}>(v).err() }},"
         )
         .expect("a string takes any text");
         writeln!(
             arms,
             "        {command:?} => {{\n            \
-             let request = wire::{request}::default().try_into()?;\n            \
+             let request: wire::{request} = \
+             serde_json::from_str(request).map_err(|e| undecoded(&e))?;\n            \
+             let request = request.try_into()?;\n            \
              let answer = wire::{answer}::from(client.{name}(cx, request).await?);\n            \
              serde_json::to_value(answer)\n        }}"
         )
@@ -297,19 +298,10 @@ fn render(methods: &[Method]) -> String {
         "// @generated by ironflowx-codegen from the proto.\n\n\
          /// Every method of the proto.\n\
          pub(crate) const COMMANDS: &[Command] = &[\n{commands}];\n\n\
-         /// Calls the operation of `command`: its answer, in wire JSON.\n\
-         pub(crate) async fn call(command: &str, client: &Client, cx: &Call) \
+         /// Calls the operation of `command` with `request`, in wire JSON: its answer, likewise.\n\
+         pub(crate) async fn call(command: &str, client: &Client, cx: &Call, request: &str) \
          -> Result<serde_json::Value, OpError> {{\n    Ok(match command {{\n{arms}        \
          other => unreachable!(\"{{other}} is not in COMMANDS\"),\n    }}\n    \
          .expect(\"a wire message is JSON\"))\n}}\n"
     )
-}
-
-fn fields(printed: &[Printed]) -> String {
-    let each = printed.iter().map(|p| {
-        let Printed { name, default, .. } = p;
-        let fields = fields(&p.fields);
-        format!("Field {{ name: {name:?}, default: {default:?}, fields: {fields} }}")
-    });
-    format!("&[{}]", each.collect::<Vec<_>>().join(", "))
 }
