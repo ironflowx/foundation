@@ -214,23 +214,34 @@ fn each_command_prints_its_operations_answer() {
     }
 }
 
-/// SRV-11: what an agent branches on where no engine answers.
+/// SRV-11: what an agent branches on where no engine answers: whether the call may have run.
 #[test]
 fn a_state_change_no_engine_answers_is_unknown() {
     // Takes each connection and closes it.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
+    let dropped = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || listener.incoming().for_each(drop));
-    for (args, code, hint) in [
-        (["events", "get"], "unavailable", None),
-        (["events", "list"], "unavailable", None),
-        (["events", "emit"], "unknown", None),
-        (["events", "emit-batch"], "unknown", None),
-        (["environments", "list"], "unavailable", None),
-        (["keys", "list"], "unavailable", None),
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let closed = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    for (args, hint) in [
+        (["events", "get"], None),
+        (["events", "list"], None),
+        (
+            ["events", "emit"],
+            Some("check first what landed: a retry may store a second event"),
+        ),
+        (
+            ["events", "emit-batch"],
+            Some(
+                "retry unchanged only if every item had an idempotency key and keeps it; \
+                 else check first what landed",
+            ),
+        ),
+        (["environments", "list"], None),
+        (["keys", "list"], None),
         (
             ["keys", "create"],
-            "unknown",
             Some(
                 "the key may be stored: list the keys before the retry, and again after the \
                  engine reopens; revoke the one no holder has",
@@ -238,23 +249,107 @@ fn a_state_change_no_engine_answers_is_unknown() {
         ),
         (
             ["keys", "revoke"],
-            "unknown",
             Some("retry: revoking a revoked key succeeds, and one that revoked itself is refused"),
         ),
     ] {
-        let mut command = command(&args);
-        command.env("IRONFLOWX_URL", &url);
-        let out = command.env("IRONFLOWX_KEY", KEY).output().unwrap();
-        let (envelope, exit) = envelope(&out);
-        let unknown = code == "unknown";
-        assert_eq!(exit, if unknown { 6 } else { 8 }, "{args:?}");
-        assert_eq!(envelope["code"], code, "{args:?}");
-        assert_eq!(envelope["retryable"], !unknown, "{args:?}");
-        assert_eq!(
-            envelope.get("hint").and_then(Value::as_str),
-            hint,
-            "{args:?}"
-        );
+        let call = |url: &str| {
+            let mut command = command(&args);
+            command.env("IRONFLOWX_URL", url);
+            let out = command.env("IRONFLOWX_KEY", KEY).output().unwrap();
+            let (envelope, exit) = envelope(&out);
+            let code = envelope["code"].as_str().unwrap().to_owned();
+            let retryable = envelope["retryable"].as_bool().unwrap();
+            let hint = envelope.get("hint").map(|h| h.as_str().unwrap().to_owned());
+            (code, retryable, hint, exit)
+        };
+        let unavailable = ("unavailable".to_owned(), true, None, 8);
+        assert_eq!(call(&closed), unavailable, "{args:?}");
+        let ended = match hint {
+            Some(hint) => ("unknown".to_owned(), false, Some(hint.to_owned()), 6),
+            None => unavailable,
+        };
+        assert_eq!(call(&dropped), ended, "{args:?}");
+    }
+}
+
+/// A TLS proxy of `to`, for `localhost`, with the certificate in `tests/tls`: its port.
+async fn tls_proxy(to: String) -> u16 {
+    use tokio_rustls::rustls::ServerConfig;
+    use tokio_rustls::rustls::crypto::aws_lc_rs::default_provider;
+    use tokio_rustls::rustls::pki_types::pem::PemObject as _;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    let cert = CertificateDer::from_pem_file(CERT).unwrap();
+    let key = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/tls/key.pem");
+    let key = PrivateKeyDer::from_pem_file(key).unwrap();
+    let config = ServerConfig::builder_with_provider(default_provider().into())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], key)
+        .unwrap();
+    let tls = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            // A client that does not trust it ends the handshake.
+            if let Ok(mut stream) = tls.accept(stream).await {
+                let mut engine = tokio::net::TcpStream::connect(&to).await.unwrap();
+                let _ = tokio::io::copy_bidirectional(&mut stream, &mut engine).await;
+            }
+        }
+    });
+    port
+}
+
+const CERT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/tls/cert.pem");
+
+/// SRV-4, over TLS. `SSL_CERT_FILE` stands for the system's store, in the child alone: the roots
+/// are read from it in the store's place, on macOS too.
+#[test]
+fn a_server_the_systems_store_does_not_trust_is_unavailable() {
+    let served = Served::answering(Ok(whoami()));
+    let engine = served.url.strip_prefix("http://").unwrap().to_owned();
+    let port = served._runtime.block_on(tls_proxy(engine.clone()));
+    let url = format!("https://localhost:{port}");
+    let call = |args: &[&str], url: &str, roots: Option<&str>| {
+        let mut command = command(args);
+        command
+            .env_remove("SSL_CERT_FILE")
+            .env_remove("SSL_CERT_DIR");
+        if let Some(roots) = roots {
+            command.env("SSL_CERT_FILE", roots);
+        }
+        command.args(["--url", url]).env("IRONFLOWX_KEY", KEY);
+        command.output().unwrap()
+    };
+    for args in [
+        ["events", "emit"],
+        ["events", "emit-batch"],
+        ["events", "list"],
+        ["keys", "create"],
+        ["keys", "revoke"],
+    ] {
+        let out = call(&args, &url, Some(CERT));
+        assert_eq!(out.status.code(), Some(0), "{args:?} {out:?}");
+        assert_eq!(served.operations.take(), [Some(KEY.to_owned())]);
+        let other_name = format!("https://127.0.0.1:{port}");
+        let plain = format!("https://{engine}");
+        for (url, roots) in [
+            (&url, None),
+            (&url, Some("no such file")),
+            (&other_name, Some(CERT)),
+            (&plain, Some(CERT)),
+        ] {
+            let (envelope, exit) = envelope(&call(&args, url, roots));
+            let code = envelope["code"].as_str();
+            let retryable = envelope["retryable"].as_bool();
+            let ended = (code, retryable, exit);
+            let unavailable = (Some("unavailable"), Some(true), 8);
+            assert_eq!(ended, unavailable, "{args:?} {url} {roots:?}");
+            assert_eq!(envelope.get("hint"), None, "{args:?} {url} {roots:?}");
+        }
+        assert_eq!(served.operations.take(), []);
     }
 }
 
@@ -570,7 +665,7 @@ fn the_engine_is_the_one_the_flag_or_else_the_variable_names() {
     assert_eq!(served.key_sent(&mut by_flag), None);
     assert_eq!(served.key_sent(&mut served.whoami()), None);
 
-    let form = "a URL of the form http://host[:port][/path]";
+    let form = "a URL of the form http[s]://host[:port][/path]";
     for given in [
         &b""[..],
         b"127.0.0.1:9310",

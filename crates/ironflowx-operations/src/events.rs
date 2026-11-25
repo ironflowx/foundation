@@ -24,13 +24,27 @@ fn refused(r: Refusal) -> OpError {
     }
 }
 
-pub(crate) fn submit_error(e: SubmitError) -> OpError {
+/// What to do about a submission whose outcome is unknown: only an idempotency key keeps a retry
+/// from storing a second event.
+pub(crate) const fn if_unknown(req: &EmitRequest) -> &'static str {
+    match req.idempotency_key {
+        Some(_) => "reopen the engine, then retry with the same idempotency key",
+        None => "reopen the engine, then check first what landed: a retry may store a second event",
+    }
+}
+
+/// As [`if_unknown`], of a batch.
+pub(crate) const BATCH_IF_UNKNOWN: &str = "reopen the engine, then retry unchanged only if every \
+                                           item had an idempotency key and keeps it; else check \
+                                           first what landed";
+
+pub(crate) fn submit_error(e: SubmitError, if_unknown: &str) -> OpError {
     match e {
         SubmitError::Refused(r) => refused(r),
         SubmitError::Unknown => OpError {
             kind: ErrorKind::Unknown,
-            message: "the outcome is unknown; retry with the idempotency key after reopen".into(),
-            hint: Some("reopen the engine, then retry with the same idempotency key".into()),
+            message: "the outcome is unknown".into(),
+            hint: Some(if_unknown.into()),
         },
         SubmitError::Unavailable => unavailable(),
     }

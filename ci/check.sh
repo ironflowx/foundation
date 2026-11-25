@@ -38,6 +38,8 @@ step with_protoc ci/must-reject.sh "protoc did not run" "buf did not run" -- \
   ci/no-protoc.sh cargo build --locked --manifest-path "$needs/Cargo.toml"
 # CI's crash-test budget, whatever a replay left in the shell.
 step env -u CRASH_SEED CRASH_KILLS=100 cargo test --workspace --locked
+step env NO_CLIENT_TLS=1 cargo test -p ironflowx-proto --locked --test client
+step cargo test -p ironflowx-proto --locked --test client --features client-tls,rustls/ring
 step cargo test -p ironflowx-events --locked --features serde_json/arbitrary_precision
 step cargo deny check
 step ci/purity.sh

@@ -19,7 +19,9 @@ wire = ["__wire"]
 # `wire`, and the generated service traits a door implements.
 server = ["wire"]
 # The proto client. It names no dependency's type.
-client = ["__wire", "connectrpc/client"]
+client = ["__wire", "connectrpc/client", "dep:hyper-util"]
+# `client`, calling `https` URLs too. It trusts the roots of the system's store.
+client-tls = ["client", "connectrpc/client-tls", "dep:rustls", "dep:rustls-native-certs"]
 # Internal: what the three above share.
 __wire = [
   "dep:base64",
@@ -40,6 +42,9 @@ buffa-types = { version = "0.9.2", default-features = false, features = ["std", 
 # No default features: no gzip and no zstd.
 connectrpc = { version = "0.9.1", default-features = false, features = ["json"], optional = true }
 http = { version = "1.5.0", default-features = false, features = ["std"], optional = true }
+hyper-util = { version = "0.1.21", default-features = false, features = ["client-legacy"], optional = true }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"], optional = true }
+rustls-native-certs = { version = "0.8.5", optional = true }
 serde = { version = "1.0.229", default-features = false, features = ["derive"], optional = true }
 
 [build-dependencies]
