@@ -97,7 +97,7 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
         }
         let text = e.render().to_string();
         // What clap adds after it, on lines of their own; an argument can hold an empty one.
-        let after = ["\n\nUsage: ", "\n\n  tip: ", "\n\nFor more information"];
+        let after = ["\n\nUsage: ", "\n\nFor more information"];
         let ends = after.into_iter().filter_map(|a| text.find(a));
         let first = &text[..ends.min().unwrap_or(text.len())];
         let message = without_keys(first);
@@ -358,7 +358,7 @@ impl<'de> Visitor<'de> for &Check<'_> {
         };
         while let Some(name) = object.next_key::<String>()? {
             let Some(field) = fields.iter().find(|f| f.name == name) else {
-                let name = match name.split_whitespace().any(is_key) {
+                let name = match is_key(&name) {
                     true => "<hidden>",
                     false => &name,
                 };
