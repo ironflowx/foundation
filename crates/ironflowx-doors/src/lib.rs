@@ -3,15 +3,16 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "http")]
 mod http;
 
+#[cfg(feature = "http")]
 pub use http::router;
 
 use std::future::Future;
 use std::sync::{Arc, OnceLock};
 
-use ironflowx_core::ErrorKind;
-use ironflowx_proto::{OpError, Operations};
+use ironflowx_proto::Operations;
 
 /// What a host that cannot serve calls yet waits for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,23 +47,5 @@ impl<O: Operations, R: Readiness> Slot<O, R> {
     pub fn open(&self, operations: Arc<O>, readiness: R) {
         let first = self.0.set((operations, readiness)).is_ok();
         assert!(first, "a slot opens once");
-    }
-
-    fn operations(&self) -> Result<&O, OpError> {
-        match self.0.get() {
-            Some((operations, _)) => Ok(operations),
-            None => Err(OpError {
-                kind: ErrorKind::Unavailable,
-                message: "the engine is unavailable".into(),
-                hint: Some("the engine is starting".into()),
-            }),
-        }
-    }
-
-    async fn ready(&self) -> Result<(), WaitingOn> {
-        match self.0.get() {
-            Some((_, readiness)) => readiness.ready().await,
-            None => Err(WaitingOn::Open),
-        }
     }
 }

@@ -42,7 +42,7 @@ The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It 
 | Left out | Where |
 |---|---|
 | The scenarios of `serve.feature` that are not in `REGISTERED`; `events.feature` and `tenancy.feature` through the proto client | Later in 0.3 |
-| Timestamps on the wire, a limit the wire cannot carry, invalid UTF-8 in an idempotency key | Later in 0.3 |
+| The times of keys and events on the wire, a limit the wire cannot carry, invalid UTF-8 in an idempotency key | Later in 0.3 |
 | Emits from a run, the version a function receives, paging back, totals, filters, listing event names | 0.4 |
 | The CLI | Later in 0.3 |
 | Approval requests | 0.7 |

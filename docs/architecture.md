@@ -63,7 +63,7 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 | Proto | Defines an operation once, on the wire: today `whoami` | `proto/ironflowx/v1/*.proto` | `ironflowx-proto` |
 | Wire mapping | Converts `Operations` requests and answers to and from wire messages, validating what arrives | `TryFrom` for requests, both ways; `From` for answers sent and `TryFrom` for answers received; `OpError` ↔ `ErrorInfo` ↔ the Connect error | `ironflowx-proto` (`wire`, `server`) |
 | Proto client | Calls `Operations` over Connect, sending each `Call`'s key | `Client::new(url)`, `Operations` | `ironflowx-proto` (`client`) |
-| HTTP door | Serves `Operations` over Connect, gRPC and gRPC-Web, with `/health` and `/ready`. Holds no rule | `router(slot)`, `Slot`, `Readiness` | `ironflowx-doors` |
+| HTTP door | Serves `Operations` over Connect, gRPC and gRPC-Web, with `/health` and `/ready`. Holds no rule | `router(slot)`, `Slot`, `Readiness` | `ironflowx-doors` (`http`) |
 | Host | Turns a data directory and an address into a served engine | `ironflowx serve`, `admin.key`, exit codes | `ironflowx-bin` |
 | Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records; reports its health and a ledger fault to the host | `Engine::open`, `health`, `faulted`, `close`, `Operations`, `recover_admin_key` | `ironflowx-operations` |
 | Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create` | `ironflowx-authz` |
@@ -166,7 +166,7 @@ impl TryFrom<wire::ErrorInfo> for OpError { type Error = wire::Undecodable; }   
 fn wire::connect_error(e: &OpError) -> ConnectError;        // the kind's code, the message, ErrorInfo as a detail
 fn wire::op_error(e: &ConnectError) -> Option<OpError>;     // the engine's own error, if the answer carries one
 
-// ironflowx-doors
+// ironflowx-doors; `router` behind the feature "http"
 trait Readiness: Send + Sync { fn ready(&self) -> impl Future<Output = Result<(), WaitingOn>> + Send; }
 // WaitingOn  Open | ControlPlane | Ledger
 impl<O: Operations, R: Readiness> Slot<O, R> {              // Starting → Open

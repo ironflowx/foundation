@@ -1,6 +1,7 @@
 //! The proto client: [`Operations`] over the network, through a door.
 
 use std::fmt;
+use std::net::Ipv6Addr;
 
 use connectrpc::ConnectError;
 use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
@@ -53,17 +54,22 @@ impl Client {
     /// or a fragment.
     pub fn new(url: &str) -> Result<Self, InvalidUrl> {
         let uri: Uri = url.parse().map_err(|_| InvalidUrl)?;
-        let host = uri.authority().ok_or(InvalidUrl)?;
-        if uri.scheme() != Some(&Scheme::HTTP)
-            || host.host().is_empty()
-            // No user, and a port that is one: `Uri` takes any digits, or none, after the colon.
-            || host.as_str() != host.port_u16().map_or_else(
-                || host.host().to_owned(),
-                |port| format!("{}:{port}", host.host()),
-            )
-            // `Uri` drops a fragment as it parses.
-            || url.contains(['?', '#'])
-        {
+        let authority = uri.authority().ok_or(InvalidUrl)?;
+        let host = authority.host();
+        // `Uri` takes any text in brackets, and any after the host's colon.
+        let address = match host.strip_prefix('[') {
+            Some(v6) => v6.trim_end_matches(']').parse::<Ipv6Addr>().is_ok(),
+            None => !host.is_empty(),
+        };
+        // `None` after a user.
+        let port = match authority.as_str().strip_prefix(host) {
+            Some("") => true,
+            Some(port) => authority.port_u16().is_some() && !port.contains('+'),
+            None => false,
+        };
+        // `Uri` drops a fragment as it parses.
+        let bare = !url.contains(['?', '#']);
+        if uri.scheme() != Some(&Scheme::HTTP) || !(address && port && bare) {
             return Err(InvalidUrl);
         }
         let config = ClientConfig::new(uri).with_default_max_message_size(wire::MAX_MESSAGE);

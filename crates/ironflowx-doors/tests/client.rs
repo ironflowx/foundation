@@ -173,6 +173,8 @@ fn a_url_is_http_with_a_host_and_no_user_query_or_fragment() {
         "http://[::1]:9310",
         "http://proxy.example/ironflow",
         "http://h:65535",
+        "http://h:0080",
+        "http://[::ffff:127.0.0.1]",
     ] {
         assert!(Client::new(url).is_ok(), "{url}");
     }
@@ -194,6 +196,16 @@ fn a_url_is_http_with_a_host_and_no_user_query_or_fragment() {
         "http://h:",
         "http://h:65536",
         "http://h:x",
+        "http://h:+80",
+        "http://h:-1",
+        "http://[bad]:80",
+        "http://[::1",
+        "http://[::1]x",
+        "http://[]",
+        "http://[::1]]",
+        "http://[fe80::1%25en0]",
+        "http://u@[::1]:80",
+        "http://h@h",
         "http:// h",
         "http://h /",
     ] {

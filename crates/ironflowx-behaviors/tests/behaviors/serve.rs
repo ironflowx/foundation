@@ -7,6 +7,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use connectrpc::client::{
@@ -33,7 +34,7 @@ static BINARY: OnceLock<PathBuf> = OnceLock::new();
 
 /// Builds the binary, as an operator would: Cargo gives a test a binary's path only within its own
 /// package.
-fn build() -> PathBuf {
+pub fn build() {
     let out = Command::new(env!("CARGO"))
         .args(["build", "-p", "ironflowx-bin", "--locked"])
         .arg("--message-format=json")
@@ -42,25 +43,37 @@ fn build() -> PathBuf {
         .output()
         .unwrap();
     assert!(out.status.success(), "ironflowx-bin builds");
-    String::from_utf8(out.stdout)
+    let binary = String::from_utf8(out.stdout)
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .filter(|m| m["target"]["name"] == "ironflowx" && m["target"]["kind"][0] == "bin")
         .find_map(|m| m["executable"].as_str().map(PathBuf::from))
-        .expect("cargo names the binary")
+        .expect("cargo names the binary");
+    BINARY.set(binary).expect("built once");
 }
 
 /// A started `ironflowx serve`, killed when dropped, and what it has logged.
 struct Served {
     child: Child,
     log: Arc<Mutex<Vec<String>>>,
+    /// Ends once the whole log is in `log`.
+    reader: Option<JoinHandle<()>>,
 }
 
 impl Drop for Served {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+impl Served {
+    /// Stops it; all it logged.
+    fn stop(mut self) -> String {
+        self.child.kill().unwrap();
+        self.reader.take().unwrap().join().unwrap();
+        self.log()
     }
 }
 
@@ -83,12 +96,16 @@ impl Served {
         let stderr = BufReader::new(child.stderr.take().unwrap());
         let log = Arc::<Mutex<Vec<String>>>::default();
         let kept = log.clone();
-        std::thread::spawn(move || {
+        let reader = std::thread::spawn(move || {
             for line in stderr.lines().map_while(Result::ok) {
                 kept.lock().unwrap().push(line);
             }
         });
-        Self { child, log }
+        Self {
+            child,
+            log,
+            reader: Some(reader),
+        }
     }
 
     fn log(&self) -> String {
@@ -278,9 +295,10 @@ fn file_mode(w: &mut Serve, name: String, expected: String) {
 #[then(expr = "the log names the path of {string} and does not contain the key")]
 fn log_names(w: &mut Serve, name: String) {
     w.read_key();
-    let log = w.served().log();
     let path = w.data_dir().join(name);
-    assert!(log.contains(path.to_str().unwrap()), "{log}");
+    let path = path.to_str().unwrap();
+    until("logged", || w.served().log().contains(path).then_some(()));
+    let log = w.served().log();
     assert!(!log.contains(&w.key()[41..]), "{log}");
 }
 
@@ -295,6 +313,9 @@ async fn key_scopes(w: &mut Serve) {
     let all = [Scope::Read, Scope::Write, Scope::Admin];
     assert_eq!(me.scopes, all.into());
     assert_eq!(me.expires_at, None);
+    // The log, once it is whole.
+    let log = w.served.take().expect("a served engine").stop();
+    assert!(!log.contains(&w.key()[41..]), "{log}");
 }
 
 #[then(regex = r#"^the log has one "listening" line whose URL answers GET "/health" with 200$"#)]
@@ -373,7 +394,6 @@ fn refused(w: &mut Serve, message: String) {
 }
 
 pub async fn run(parser: super::Unescaped) -> (bool, usize) {
-    BINARY.set(build()).expect("built once");
     let writer = Serve::cucumber::<&str>()
         .with_parser(parser)
         .fail_on_skipped()

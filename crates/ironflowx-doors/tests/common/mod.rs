@@ -50,8 +50,7 @@ impl Recording {
 }
 
 impl Operations for Recording {
-    async fn whoami(&self, cx: &Call, req: WhoamiRequest) -> Result<Whoami, OpError> {
-        assert_eq!(req, WhoamiRequest {});
+    async fn whoami(&self, cx: &Call, _: WhoamiRequest) -> Result<Whoami, OpError> {
         let key = cx.key().map(|k| k.expose().to_owned());
         self.keys.lock().unwrap().push(key);
         if self.hangs.load(Relaxed) {

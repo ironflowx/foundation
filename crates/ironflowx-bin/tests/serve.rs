@@ -244,88 +244,43 @@ fn an_address_off_this_machine_warns_that_keys_travel_in_clear() {
     assert_eq!(message, "keys travel in clear without a TLS proxy");
 }
 
-/// How long after its last byte the host closes a connection that sent `first`, waited `idle` after
-/// its answer, then sent `then`; `None` if it is still open after 15 s.
-fn closed_after(addr: SocketAddr, first: &[u8], idle: Duration, then: &[u8]) -> Option<Duration> {
-    let mut stream = TcpStream::connect(addr).unwrap();
-    stream.write_all(first).unwrap();
-    if !then.is_empty() || !idle.is_zero() {
-        let mut answer = [0; 1024];
-        assert_ne!(stream.read(&mut answer).unwrap(), 0);
-        std::thread::sleep(idle);
-        stream.write_all(then).unwrap();
-    }
-    let sent = Instant::now();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(15)))
-        .unwrap();
-    let mut rest = Vec::new();
-    match stream.read_to_end(&mut rest) {
-        Ok(_) => Some(sent.elapsed()),
-        // Closed with bytes of ours unread.
-        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => Some(sent.elapsed()),
-        Err(_) => None,
-    }
-}
-
-/// A name, what is sent, how long to wait after its answer, what is sent then, and whether the host
-/// closes.
-type Probe = (&'static str, &'static [u8], Duration, &'static [u8], bool);
-
-/// The Wire table's "Timeouts" row: a head within 10 s, and no limit on an idle connection.
+/// The deadline of `accept.rs`'s tests, on a real connection.
 #[test]
-fn a_head_is_read_within_10_s_and_an_idle_connection_has_no_limit() {
+fn a_silent_connection_is_closed() {
     let dir = tempfile::tempdir().unwrap();
     let served = Served::start(dir.path(), "127.0.0.1:0");
-    let addr = served.addr;
-    const WHOLE: &[u8] = b"GET /health HTTP/1.1\r\nhost: x\r\n\r\n";
-    let now = Duration::ZERO;
-    let cases: [Probe; 7] = [
-        ("silent", b"", now, b"", true),
-        (
-            "part of a head",
-            b"GET /health HTTP/1.1\r\nhost",
-            now,
-            b"",
-            true,
-        ),
-        ("part of HTTP/2's preface", b"PRI * HTT", now, b"", true),
-        (
-            "HTTP/2's preface",
-            b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
-            now,
-            b"",
-            true,
-        ),
-        ("part of a later head", WHOLE, now, b"G", true),
-        (
-            "the same, after an idle time",
-            WHOLE,
-            Duration::from_secs(11),
-            b"G",
-            true,
-        ),
-        ("idle", WHOLE, Duration::from_millis(1), b"", false),
-    ];
-    let probes = cases.map(|(name, first, idle, then, closes)| {
-        let probe = std::thread::spawn(move || closed_after(addr, first, idle, then));
-        (name, closes, probe)
-    });
-    for (name, closes, probe) in probes {
-        let after = probe.join().unwrap();
-        let expected = Duration::from_secs(9)..Duration::from_secs(14);
-        let closed = after.is_some_and(|t| expected.contains(&t));
-        assert!(
-            closed == closes && after.is_some() == closes,
-            "{name}: {after:?}"
-        );
+    let mut stream = TcpStream::connect(served.addr).unwrap();
+    let late = Some(Duration::from_secs(30));
+    stream.set_read_timeout(late).unwrap();
+    assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+}
+
+/// Under a umask that takes the owner's bits too.
+#[test]
+fn the_key_file_is_its_owners_to_read_whatever_the_umask() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_file = dir.path().join("admin.key");
+    // A bootstrap left unmarked, its ledger built: the next open mints and makes no other file.
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let open = Engine::open(dir.path(), HostClock, None);
+    let engine = runtime.block_on(open).unwrap().engine;
+    runtime.block_on(engine.close());
+    let control = rusqlite::Connection::open(dir.path().join("control.db")).unwrap();
+    let unmark = "UPDATE environments SET ledger_created_at = NULL";
+    assert_eq!(control.execute(unmark, []).unwrap(), 1);
+    drop(control);
+    let shell = "umask 0477; exec \"$0\" serve --listen 127.0.0.1:0 --data-dir \"$1\"";
+    let mut child = Command::new("sh")
+        .args(["-c", shell, env!("CARGO_BIN_EXE_ironflowx")])
+        .arg(dir.path())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    while !key_file.exists() && started.elapsed() < Duration::from_secs(30) {
+        std::thread::sleep(Duration::from_millis(10));
     }
-    // It is still served.
-    let mut stream = TcpStream::connect(addr).unwrap();
-    for _ in 0..2 {
-        stream.write_all(WHOLE).unwrap();
-        let mut answer = [0; 1024];
-        let n = stream.read(&mut answer).unwrap();
-        assert!(answer[..n].starts_with(b"HTTP/1.1 200 "));
-    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(mode(&key_file), 0o400);
 }

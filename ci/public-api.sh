@@ -20,6 +20,7 @@ for crate in "${published[@]}" ironflowx-behaviors ironflowx-bin ironflowx-crash
   # types and follow their 0.x versions.
   features=()
   [ "$crate" != ironflowx-proto ] || features=(--features client)
+  [ "$crate" != ironflowx-doors ] || features=(--features http)
   # -ss keeps derived impls, so a new derive (an Ord, a From) shows in the diff. Hidden items
   # are documented too, so a second #[doc(hidden)] constructor shows.
   RUSTDOCFLAGS="-Zunstable-options --document-hidden-items" cargo "+$NIGHTLY" public-api --color never -p "$crate" "${features[@]+"${features[@]}"}" -ss > "public-api/$crate.txt"
@@ -80,7 +81,8 @@ ci/must-reject.sh Ledger::open find_after ffi_open EnvironmentId::lookup \
   cell::any_where cell::opener -- ci/no-bare-env-id.sh ci/fixtures/bare-environment-id.txt
 ci/must-reject.sh rusqlite::error::Error segment_log_core::engine tokio::runtime uuid::Uuid \
   connectrpc::error::ConnectError buffa::error::DecodeError buffa_types::google http::uri::Uri \
-  hyper::error::Error hyper_util::client -- \
+  hyper::error::Error hyper_util::client serde_core::ser::Serialize bytes::bytes::Bytes \
+  axum::routing::MethodRouter tower::util::BoxService -- \
   ci/no-dependency-types.sh ci/fixtures/dependency-type.txt
 
 # TEN-3, over every item: rustdoc's JSON of each published crate, private and hidden items included,

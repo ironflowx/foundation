@@ -13,7 +13,7 @@ use connectrpc::{ErrorCode, Protocol};
 use ironflowx_core::ErrorKind;
 use ironflowx_doors::{Slot, WaitingOn};
 use ironflowx_proto::wire::{self, IdentityServiceClient, WhoamiRequest, WhoamiResponse};
-use ironflowx_proto::{OpError, Whoami};
+use ironflowx_proto::{OpError, Operation, Whoami};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 
@@ -69,6 +69,23 @@ async fn send(
 
 const WHOAMI: &str = "POST /ironflowx.v1.IdentityService/Whoami";
 
+/// SRV-2: what is served, at the name its operation has.
+#[tokio::test]
+async fn an_operation_is_served_at_its_rpc() {
+    let (addr, operations) = serving(Ok(whoami())).await;
+    for op in Operation::ALL {
+        let line = format!("POST /{}", op.rpc());
+        let (head, _) = send(addr, &line, &[JSON], b"{}").await;
+        let served = *op == Operation::Whoami;
+        let status = if served { "200" } else { "404" };
+        assert!(
+            head.starts_with(&format!("HTTP/1.0 {status} ")),
+            "{line}: {head}"
+        );
+        assert_eq!(operations.take().len(), usize::from(served), "{line}");
+    }
+}
+
 /// SRV-1: one call in, unchanged, and its answer out, on every protocol.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_call_and_its_answer_cross_every_protocol() {
@@ -85,16 +102,15 @@ async fn a_call_and_its_answer_cross_every_protocol() {
     }
 }
 
+const ANSWER: &str = r#"{"key_id":"0190b5f0-0000-7000-8000-000000000001","scopes":["read","admin"],"environment":"default/main","expires_at":"2027-01-15T08:00:00.123Z"}"#;
+
 /// D78: the proto's own names, and the time in RFC 3339, whole milliseconds.
 #[tokio::test]
 async fn the_json_names_are_the_protos() {
     let (addr, _) = serving(Ok(whoami())).await;
     let (head, body) = send(addr, WHOAMI, &[JSON], b"{}").await;
     assert!(head.starts_with("HTTP/1.0 200 "), "{head}");
-    assert_eq!(
-        body,
-        r#"{"key_id":"0190b5f0-0000-7000-8000-000000000001","scopes":["read","admin"],"environment":"default/main","expires_at":"2027-01-15T08:00:00.123Z"}"#
-    );
+    assert_eq!(body, ANSWER);
 }
 
 /// SRV-3: kind, message and hint, on every protocol, under the kind's Connect code.
@@ -280,16 +296,16 @@ async fn a_request_body_holds_at_most_16_mib() {
 async fn nothing_is_compressed() {
     let (addr, operations) = serving(Ok(whoami())).await;
     for encoding in [b"gzip".as_slice(), b"zstd"] {
-        let (head, _) = send(addr, WHOAMI, &[JSON, ("content-encoding", encoding)], b"{}").await;
+        let headers = [JSON, ("content-encoding", encoding)];
+        let (head, _) = send(addr, WHOAMI, &headers, b"{}").await;
         assert!(head.starts_with("HTTP/1.0 501 "), "{head}");
         assert_eq!(operations.take(), []);
-        let (head, body) = send(addr, WHOAMI, &[JSON, ("accept-encoding", encoding)], b"{}").await;
-        assert!(
-            !head.to_ascii_lowercase().contains("content-encoding"),
-            "{head}"
-        );
-        assert!(body.starts_with('{'), "{body}");
-        operations.take();
+        let headers = [JSON, ("accept-encoding", encoding)];
+        let (head, body) = send(addr, WHOAMI, &headers, b"{}").await;
+        assert!(head.starts_with("HTTP/1.0 200 "), "{head}");
+        assert!(!head.contains("content-encoding"), "{head}");
+        assert_eq!(body, ANSWER);
+        assert_eq!(operations.take(), [None]);
     }
 }
 

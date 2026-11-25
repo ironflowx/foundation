@@ -812,6 +812,7 @@ fn discover() {
 #[tokio::main]
 async fn main() {
     discover();
+    serve::build();
     let events = Env::cucumber::<&str>()
         .with_parser(Unescaped)
         // `close`, not a drop: dropping joins the writer thread on the runtime.

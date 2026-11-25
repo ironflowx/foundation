@@ -24,6 +24,10 @@ pub fn write(data_dir: &Path, key: &Secret) -> io::Result<()> {
         .suffix(".tmp")
         .permissions(Permissions::from_mode(0o400))
         .tempfile_in(data_dir)?;
+    // The process umask may have taken the owner's bit too.
+    temporary
+        .as_file()
+        .set_permissions(Permissions::from_mode(0o400))?;
     temporary.write_all(key.expose().as_bytes())?;
     temporary.write_all(b"\n")?;
     temporary.as_file().sync_all()?;

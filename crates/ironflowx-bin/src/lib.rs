@@ -12,6 +12,7 @@ use std::io;
 use std::net::{SocketAddr, TcpListener};
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
+use std::pin::pin;
 use std::sync::Arc;
 
 use ironflowx_cell::{HostClock, LedgerState};
@@ -100,13 +101,14 @@ pub async fn run(listener: TcpListener, data_dir: &Path) -> Result<Infallible, S
         .and_then(|()| tokio::net::TcpListener::from_std(listener))
         .map_err(ServeError::Listen)?;
     let slot = Arc::new(Slot::starting());
-    let accepting = tokio::spawn(accept::connections(listener, router(slot.clone())));
-    let engine = Arc::new(open(data_dir).await?);
+    // Not a task: a refusal drops the listener and every connection.
+    let mut accepting = pin!(accept::connections(listener, router(slot.clone())));
+    let engine = tokio::select! {
+        never = &mut accepting => match never {},
+        opened = open(data_dir) => Arc::new(opened?),
+    };
     slot.open(engine.clone(), EngineReadiness(engine));
-    match accepting.await {
-        Ok(never) => match never {},
-        Err(panic) => std::panic::resume_unwind(panic.into_panic()),
-    }
+    match accepting.await {}
 }
 
 /// Opens the engine in `data_dir`, creating it if it is missing, and writes a key it minted.

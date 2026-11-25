@@ -10,3 +10,7 @@ pub fn ironflowx_proto::Client::time(buffa_types::google::protobuf::Timestamp)
 pub fn ironflowx_proto::Client::of(http::uri::Uri) -> Self
 impl core::convert::From<hyper::error::Error> for ironflowx_proto::InvalidUrl
 pub ironflowx_proto::Client::transport: hyper_util::client::legacy::Client
+impl serde_core::ser::Serialize for ironflowx_proto::InvalidUrl
+pub fn ironflowx_proto::Client::bytes(&self) -> bytes::bytes::Bytes
+pub fn ironflowx_doors::service() -> axum::routing::MethodRouter
+pub fn ironflowx_doors::router<O>(ironflowx_doors::Slot<O>, tower::util::BoxService) -> axum::routing::Router

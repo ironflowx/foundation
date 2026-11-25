@@ -17,16 +17,24 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::Notify;
+use tokio::task::JoinSet;
 
 const HEAD: Duration = Duration::from_secs(10);
 
+/// Accepts and serves until dropped, which ends every connection.
 pub async fn connections(listener: TcpListener, router: Router) -> Infallible {
+    let mut open = JoinSet::new();
     loop {
-        match listener.accept().await {
+        let accepted = tokio::select! {
+            accepted = listener.accept() => accepted,
+            Some(_) = open.join_next() => continue,
+        };
+        match accepted {
             Ok((stream, _)) => {
-                tokio::spawn(connection(stream, router.clone()));
+                let _ = stream.set_nodelay(true);
+                open.spawn(connection(stream, router.clone()));
             }
             // The peer's fault, or too many open files: neither ends the loop.
             Err(e) => {
@@ -37,8 +45,10 @@ pub async fn connections(listener: TcpListener, router: Router) -> Infallible {
     }
 }
 
-async fn connection(stream: TcpStream, router: Router) {
-    let _ = stream.set_nodelay(true);
+async fn connection<S>(stream: S, router: Router)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let read = Arc::new(AtomicBool::new(false));
     let mut server = auto::Builder::new(TokioExecutor::new());
     server
@@ -106,12 +116,12 @@ impl Future for HeadSleep {
 impl Sleep for HeadSleep {}
 
 /// A connection that notes when bytes were read from it.
-struct Noted {
-    stream: TcpStream,
+struct Noted<S> {
+    stream: S,
     read: Arc<AtomicBool>,
 }
 
-impl AsyncRead for Noted {
+impl<S: AsyncRead + Unpin> AsyncRead for Noted<S> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -123,7 +133,7 @@ impl AsyncRead for Noted {
     }
 }
 
-impl AsyncWrite for Noted {
+impl<S: AsyncWrite + Unpin> AsyncWrite for Noted<S> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -150,5 +160,91 @@ impl AsyncWrite for Noted {
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::routing::get;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream, duplex};
+    use tokio::time::{Instant, timeout};
+
+    use super::*;
+
+    const WHOLE: &[u8] = b"GET /health HTTP/1.1\r\nhost: x\r\n\r\n";
+    const HOUR: Duration = Duration::from_secs(3_600);
+
+    fn connect() -> DuplexStream {
+        let (ours, theirs) = duplex(64 * 1024);
+        let router = Router::new().route("/health", get(|| async {}));
+        tokio::spawn(connection(theirs, router));
+        ours
+    }
+
+    async fn answered(stream: &mut DuplexStream) {
+        stream.write_all(WHOLE).await.unwrap();
+        let mut answer = [0; 1024];
+        let n = stream.read(&mut answer).await.unwrap();
+        assert!(answer[..n].starts_with(b"HTTP/1.1 200 "));
+    }
+
+    /// How long from now until the host closes; `None` if it is open in an hour.
+    async fn closed_after(stream: &mut DuplexStream) -> Option<Duration> {
+        let from = Instant::now();
+        let mut rest = Vec::new();
+        let closed = timeout(HOUR, stream.read_to_end(&mut rest)).await;
+        closed.ok().map(|_| from.elapsed())
+    }
+
+    /// 10 s, to the timer's millisecond.
+    fn assert_10_s(after: Option<Duration>, name: &str) {
+        let after = after.map(|t| t.as_millis());
+        assert!(matches!(after, Some(10_000 | 10_001)), "{name}: {after:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_connection_has_10_s_for_its_first_head() {
+        for first in [
+            "",
+            "GET /health HTTP/1.1\r\nhost",
+            "PRI * HTT",
+            "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
+        ] {
+            let mut stream = connect();
+            stream.write_all(first.as_bytes()).await.unwrap();
+            assert_10_s(closed_after(&mut stream).await, first);
+        }
+        // Each byte in time, the whole head not.
+        let mut stream = connect();
+        for byte in &WHOLE[..9] {
+            stream.write_all(&[*byte]).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        let after = closed_after(&mut stream).await.unwrap();
+        assert_10_s(Some(after + Duration::from_secs(9)), "a byte a second");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_later_head_has_10_s_from_its_first_byte() {
+        for idle in [Duration::ZERO, Duration::from_secs(9), HOUR] {
+            let mut stream = connect();
+            for _ in 0..2 {
+                answered(&mut stream).await;
+                tokio::time::sleep(idle).await;
+            }
+            stream.write_all(b"G").await.unwrap();
+            tokio::time::sleep(Duration::from_secs(9)).await;
+            stream.write_all(b"E").await.unwrap();
+            let after = closed_after(&mut stream).await.unwrap();
+            assert_10_s(Some(after + Duration::from_secs(9)), &format!("{idle:?}"));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_connection_has_no_limit() {
+        let mut stream = connect();
+        answered(&mut stream).await;
+        assert_eq!(closed_after(&mut stream).await, None);
+        answered(&mut stream).await;
     }
 }

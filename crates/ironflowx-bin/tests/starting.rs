@@ -108,13 +108,18 @@ async fn the_slot_answers_until_the_engine_is_open_and_the_key_is_written() {
     let data_dir = dir.path().join("other");
     let key_file = data_dir.join("admin.key");
     let (reached, go) = barrier();
-    let (listener, _) = bound();
+    let (listener, addr) = bound();
     let host = tokio::spawn({
         let data_dir = data_dir.clone();
         async move { run(listener, &data_dir).await }
     });
     reached.recv_timeout(LATE).expect("the open is held");
     std::fs::write(&key_file, "another's").unwrap();
+    let mut kept_alive = std::net::TcpStream::connect(addr).unwrap();
+    let mut health = [0; 1024];
+    write!(kept_alive, "GET /health HTTP/1.1\r\nhost: x\r\n\r\n").unwrap();
+    let n = kept_alive.read(&mut health).unwrap();
+    assert!(health[..n].starts_with(b"HTTP/1.1 200 "));
     go.send(()).unwrap();
     let refused = host.await.unwrap().unwrap_err();
     assert!(
@@ -125,6 +130,10 @@ async fn the_slot_answers_until_the_engine_is_open_and_the_key_is_written() {
     assert_eq!(refused.exit_code(), 1);
     assert_eq!(std::fs::read_to_string(&key_file).unwrap(), "another's");
     assert_eq!(temporaries(&data_dir), 0);
+    // It serves nothing any more, and its address is free.
+    kept_alive.set_read_timeout(Some(LATE)).unwrap();
+    assert_eq!(kept_alive.read(&mut health).unwrap(), 0);
+    TcpListener::bind(addr).unwrap();
     // The engine was closed: its root is free, and bootstrapped, so `admin.key` is not stale.
     let (listener, addr) = bound();
     tokio::spawn(async move { run(listener, &data_dir).await });

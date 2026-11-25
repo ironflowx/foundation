@@ -9,11 +9,11 @@ use connectrpc::{
 };
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use http::{HeaderMap, HeaderName, StatusCode};
-use ironflowx_core::Secret;
+use ironflowx_core::{ErrorKind, Secret};
 use ironflowx_proto::wire::{
     self, IdentityService, IdentityServiceServer, WhoamiRequest, WhoamiResponse,
 };
-use ironflowx_proto::{Call, Operations};
+use ironflowx_proto::{Call, OpError, Operations};
 
 use crate::{Readiness, Slot, WaitingOn};
 
@@ -45,6 +45,26 @@ async fn ready<O: Operations, R: Readiness>(slot: &Slot<O, R>) -> Json {
         ),
     };
     (status, [(CONTENT_TYPE, "application/json")], body)
+}
+
+impl<O: Operations, R: Readiness> Slot<O, R> {
+    fn operations(&self) -> Result<&O, OpError> {
+        match self.0.get() {
+            Some((operations, _)) => Ok(operations),
+            None => Err(OpError {
+                kind: ErrorKind::Unavailable,
+                message: "the engine is unavailable".into(),
+                hint: Some("the engine is starting".into()),
+            }),
+        }
+    }
+
+    async fn ready(&self) -> Result<(), WaitingOn> {
+        match self.0.get() {
+            Some((_, readiness)) => readiness.ready().await,
+            None => Err(WaitingOn::Open),
+        }
+    }
 }
 
 struct Door<O: Operations, R: Readiness>(Arc<Slot<O, R>>);
