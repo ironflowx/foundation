@@ -103,5 +103,5 @@ fn call(headers: &HeaderMap) -> Call {
 
 /// A credential that is no Bearer key is a malformed key, which `Operations` answers as such.
 fn malformed() -> Call {
-    Call::with_key(Secret::new("malformed".to_owned()))
+    Call::with_key(Secret::new(wire::MALFORMED_KEY.to_owned()))
 }

@@ -21,7 +21,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
 
-const HEAD: Duration = Duration::from_secs(10);
+const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Accepts and serves until dropped, which ends every connection.
 pub async fn connections(listener: TcpListener, router: Router) -> Infallible {
@@ -54,7 +54,7 @@ where
     server
         .http1()
         .timer(HeadTimer(read.clone()))
-        .header_read_timeout(HEAD);
+        .header_read_timeout(HEAD_TIMEOUT);
     let arrived = Arc::new(Notify::new());
     let (router, request) = (TowerToHyperService::new(router), arrived.clone());
     let service = service_fn(move |head| {
@@ -68,7 +68,7 @@ where
         biased;
         _ = &mut serving => return,
         () = arrived.notified() => {}
-        () = tokio::time::sleep(HEAD) => return,
+        () = tokio::time::sleep(HEAD_TIMEOUT) => return,
     }
     let _ = serving.await;
 }
@@ -108,7 +108,7 @@ impl Future for HeadSleep {
         }
         let sleep = self
             .sleep
-            .get_or_insert_with(|| Box::pin(tokio::time::sleep(HEAD)));
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(HEAD_TIMEOUT)));
         sleep.as_mut().poll(cx)
     }
 }

@@ -90,7 +90,7 @@ fn options(cx: &Call) -> CallOptions {
     let sent = if key.bytes().all(|b| b.is_ascii_graphic()) {
         key
     } else {
-        "malformed"
+        wire::MALFORMED_KEY
     };
     let mut value =
         HeaderValue::from_str(&format!("Bearer {sent}")).expect("ASCII with no control");

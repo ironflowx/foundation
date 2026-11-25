@@ -127,10 +127,17 @@ async fn every_error_crosses_every_protocol() {
         (ErrorKind::Unavailable, ErrorCode::Unavailable),
         (ErrorKind::Internal, ErrorCode::Internal),
     ] {
-        for hint in [None, Some("créez une clé\nwith scope read".to_owned())] {
+        for (message, hint) in [
+            ("missing scope: réad % \"x\"".to_owned(), None),
+            ("m".repeat(4_096), None),
+            (
+                String::new(),
+                Some("créez une clé\nwith scope read".to_owned()),
+            ),
+        ] {
             let sent = OpError {
                 kind,
-                message: "missing scope: réad % \"x\"".into(),
+                message,
                 hint,
             };
             *operations.answer.lock().unwrap() = Err(sent.clone());

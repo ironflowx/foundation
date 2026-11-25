@@ -27,6 +27,9 @@ pub use generated::ironflowx::v1::{IdentityService, IdentityServiceServer};
 /// The most a request body or a message holds, in the door and the client.
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 
+/// Sent for a credential that is no key, so the engine answers it as malformed.
+pub const MALFORMED_KEY: &str = "malformed";
+
 const ERROR_INFO: &str = "ironflowx.v1.ErrorInfo";
 
 /// An answer whose fields are not what the proto says they hold.

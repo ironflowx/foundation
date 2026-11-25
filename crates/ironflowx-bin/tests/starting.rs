@@ -57,7 +57,7 @@ async fn written(path: &Path) -> String {
 
 const LATE: Duration = Duration::from_secs(10);
 
-/// One test, since the barrier is the process's: SRV-9's opening state, then a key that cannot be
+/// One test of both, since the barrier is the process's: SRV-9's opening state, then a key that cannot be
 /// written.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_slot_answers_until_the_engine_is_open_and_the_key_is_written() {
@@ -134,7 +134,7 @@ async fn the_slot_answers_until_the_engine_is_open_and_the_key_is_written() {
     kept_alive.set_read_timeout(Some(LATE)).unwrap();
     assert_eq!(kept_alive.read(&mut health).unwrap(), 0);
     TcpListener::bind(addr).unwrap();
-    // The engine was closed: its root is free, and bootstrapped, so `admin.key` is not stale.
+    // Nothing holds the root any more, and it is bootstrapped, so `admin.key` is not stale.
     let (listener, addr) = bound();
     tokio::spawn(async move { run(listener, &data_dir).await });
     for _ in 0..1_000 {
@@ -144,6 +144,21 @@ async fn the_slot_answers_until_the_engine_is_open_and_the_key_is_written() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("the engine is not ready");
+}
+
+/// What `serve` refuses before it binds, `run` refuses too.
+#[tokio::test]
+async fn a_key_file_without_a_control_plane_is_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_file = dir.path().join("admin.key");
+    std::fs::write(&key_file, "another's").unwrap();
+    let refused = run(bound().0, dir.path()).await.unwrap_err();
+    assert!(
+        matches!(&refused, ServeError::StaleKeyFile(path) if *path == key_file),
+        "{refused}"
+    );
+    assert_eq!(refused.exit_code(), 2);
+    assert!(!dir.path().join("engine.lock").exists());
 }
 
 fn temporaries(dir: &Path) -> usize {

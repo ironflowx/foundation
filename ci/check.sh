@@ -26,10 +26,12 @@ step ci/must-reject.sh "ci/fixtures/comment-width/long.sh:3:" "ci/fixtures/comme
   ci/comment-width.sh ci/fixtures/comment-width
 step ci/comment-width.sh ci/fixtures/comment-width-ok
 step cargo clippy --workspace --all-targets --locked -- -D warnings
-step ci/no-protoc.sh cargo build --workspace --locked
+step ci/no-protoc.sh cargo build --workspace --all-targets --locked
 needs=ci/fixtures/needs-protoc
 with_protoc() {
-  PATH="$PWD/$needs/bin:$PATH" PROTOC="$PWD/$needs/bin/protoc" BUF="$PWD/$needs/bin/buf" "$@"
+  local in=$PWD/$needs
+  PATH="$in/has-protoc:$in/has-buf:$PATH" PROTOC="$in/has-protoc/protoc" \
+    BUF="$in/has-buf/buf" "$@"
 }
 step with_protoc cargo build --locked --manifest-path "$needs/Cargo.toml"
 step with_protoc ci/must-reject.sh "protoc did not run" "buf did not run" -- \
