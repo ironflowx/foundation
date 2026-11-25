@@ -297,10 +297,9 @@ fn file_mode(w: &mut Serve, name: String, expected: String) {
 fn log_names(w: &mut Serve, name: String) {
     w.read_key();
     let path = w.data_dir().join(name);
-    // As a log line, which is JSON, holds it.
-    let text = serde_json::to_string(&path).unwrap();
-    let path = &text[1..text.len() - 1];
-    until("logged", || w.served().log().contains(path).then_some(()));
+    // As a log line holds it: a JSON string, its quotes included.
+    let path = serde_json::to_string(&path.to_string_lossy()).unwrap();
+    until("logged", || w.served().log().contains(&path).then_some(()));
     let log = w.served().log();
     assert!(!log.contains(&w.key()[41..]), "{log}");
 }

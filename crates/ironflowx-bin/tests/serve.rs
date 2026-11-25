@@ -86,10 +86,9 @@ fn get(addr: SocketAddr, path: &str) -> String {
     answer
 }
 
-/// `path` as a log line, which is JSON, holds it.
+/// `path` as a log line holds it: a JSON string, its quotes included.
 fn logged(path: &Path) -> String {
-    let text = serde_json::to_string(path).unwrap();
-    text[1..text.len() - 1].to_owned()
+    serde_json::to_string(&path.to_string_lossy()).unwrap()
 }
 
 /// Runs a start that must fail: its exit code and its log.
@@ -252,6 +251,7 @@ fn any_other_refusal_exits_1_and_names_it() {
         let (code, log) = refused(&data_dir, "127.0.0.1:0");
         assert_eq!(code, Some(1), "{log}");
         let path = logged(&data_dir);
+        let path = &path[1..path.len() - 1];
         assert!(log.contains(&format!("cannot create {path}: ")), "{log}");
     }
 }
