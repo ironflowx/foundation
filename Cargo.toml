@@ -28,3 +28,9 @@ serde_core = { version = "1.0.229", default-features = false, features = ["std"]
 # Exact pin: the 127-depth rule relies on serde_json's internal recursion limit of 128.
 # float_roundtrip: correctly rounded floats, so a number just past f64::MAX is out of range.
 serde_json = { version = "=1.0.154", default-features = false, features = ["std", "float_roundtrip"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

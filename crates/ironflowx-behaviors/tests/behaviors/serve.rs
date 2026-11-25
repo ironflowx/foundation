@@ -31,6 +31,7 @@ use ironflowx_proto::{
     Call, Client, EmitBatchResponse, EmitResponse, ListEventsRequest, ListKeysRequest, OpError,
     Operation, Operations as _,
 };
+use rustix::process::{Pid, Signal, kill_process};
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -38,11 +39,11 @@ use tempfile::TempDir;
 const REGISTERED: &[&str] = &[
     "HOST-001", "HOST-006", "HOST-016", "HOST-021", "HOST-022", "HOST-023", "HOST-024", "HOST-025",
     "HOST-026", "HOST-027", "HOST-029", "HOST-002", "HOST-003", "HOST-004", "HOST-005", "HOST-009",
-    "HOST-010", "HOST-011", "HOST-013", "HOST-014", "HOST-015", "HOST-019", "HOST-030",
+    "HOST-010", "HOST-011", "HOST-012", "HOST-013", "HOST-014", "HOST-015", "HOST-019", "HOST-030",
 ];
 
 /// How many scenarios run, an outline once per example, so no example goes unnoticed.
-pub const RUNS: usize = 43;
+pub const RUNS: usize = 44;
 
 const LATE: Duration = Duration::from_secs(30);
 
@@ -214,6 +215,8 @@ pub struct Serve {
     emitted: Option<Result<EmitResponse, ConnectError>>,
     batch: Option<Result<EmitBatchResponse, ConnectError>>,
     event: Option<Event>,
+    acknowledged: Vec<ironflowx_core::EventId>,
+    signalled: Option<Instant>,
 }
 
 impl fmt::Debug for Serve {
@@ -289,6 +292,8 @@ impl Serve {
             emitted: None,
             batch: None,
             event: None,
+            acknowledged: Vec::new(),
+            signalled: None,
         }
     }
 
@@ -1184,4 +1189,76 @@ pub async fn run(parser: super::Unescaped) -> (bool, usize) {
         .await;
     let passed = writer.scenarios_stats().passed;
     (writer.execution_has_failed(), passed)
+}
+
+#[given("the engine is served and a client emitted 100 events and saw each acknowledged")]
+async fn acknowledged_events(w: &mut Serve) {
+    served_with_key(w);
+    let client = Client::new(&w.served().url()).unwrap();
+    let call = Call::with_key(Secret::new(w.key().to_owned()));
+    for _ in 0..100 {
+        let event = client
+            .emit(
+                &call,
+                ironflowx_proto::EmitRequest {
+                    name: "order.placed".into(),
+                    data: None,
+                    metadata: None,
+                    version: None,
+                    idempotency_key: None,
+                },
+            )
+            .await
+            .unwrap();
+        w.acknowledged.push(event.event_id);
+    }
+}
+
+#[when("serve receives SIGTERM")]
+fn signal(w: &mut Serve) {
+    w.signalled = Some(Instant::now());
+    kill_process(Pid::from_child(&w.served().child), Signal::TERM).unwrap();
+}
+
+#[then("serve exits with code 0 within 11 seconds")]
+async fn stopped(w: &mut Serve) {
+    let deadline = w.signalled.unwrap() + Duration::from_secs(11);
+    let mut served = w.served.take().unwrap();
+    loop {
+        assert!(
+            Instant::now() <= deadline,
+            "serve did not stop within 11 seconds"
+        );
+        if let Some(status) = served.child.try_wait().unwrap() {
+            assert_eq!(status.code(), Some(0));
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[then("after the engine is served again, all 100 events read back")]
+async fn still_there(w: &mut Serve) {
+    served_again(w);
+    w.served().ready();
+    let client = Client::new(&w.served().url()).unwrap();
+    let call = Call::with_key(Secret::new(w.key().to_owned()));
+    let page = client
+        .list_events(
+            &call,
+            ListEventsRequest {
+                limit: std::num::NonZeroU32::new(200),
+                cursor: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.next, None);
+    assert_eq!(
+        page.events
+            .into_iter()
+            .map(|event| event.event_id)
+            .collect::<Vec<_>>(),
+        w.acknowledged.iter().rev().copied().collect::<Vec<_>>()
+    );
 }

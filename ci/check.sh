@@ -38,6 +38,7 @@ step with_protoc ci/must-reject.sh "protoc did not run" "buf did not run" -- \
   ci/no-protoc.sh cargo build --locked --manifest-path "$needs/Cargo.toml"
 # CI's crash-test budget, whatever a replay left in the shell.
 step env -u CRASH_SEED CRASH_KILLS=100 cargo test --workspace --locked
+step ci/serve-lifecycle.sh
 step env IRONFLOWX_FACADE_FEATURES=none cargo test -p ironflowx --locked --test features
 step ci/no-facade-http.sh
 step ci/must-reject.sh "dependency 'connectrpc'" "dependency 'http'" "dependency 'hyper'" \

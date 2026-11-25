@@ -10,7 +10,7 @@ mod http;
 pub use http::router;
 
 use std::future::Future;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use ironflowx_proto::Operations;
 
@@ -30,22 +30,40 @@ pub trait Readiness: Send + Sync {
     fn ready(&self) -> impl Future<Output = Result<(), WaitingOn>> + Send;
 }
 
-/// Where a host puts the engine once it is open; the doors answer for it until then.
-pub struct Slot<O: Operations, R: Readiness>(OnceLock<(Arc<O>, R)>);
+/// Where a host puts the engine once it is open. The door admits calls only while open.
+pub struct Slot<O: Operations, R: Readiness>(Mutex<State<O, R>>);
+
+enum State<O, R> {
+    Starting,
+    Open(Arc<O>, Arc<R>),
+    Draining,
+    Closed,
+}
 
 impl<O: Operations, R: Readiness> Slot<O, R> {
     /// A slot whose engine is not open yet.
     pub const fn starting() -> Self {
-        Self(OnceLock::new())
+        Self(Mutex::new(State::Starting))
     }
 
     /// Serves calls through `operations` from now on.
     ///
     /// # Panics
     ///
-    /// If the slot is open already.
+    /// If the slot has left Starting.
     pub fn open(&self, operations: Arc<O>, readiness: R) {
-        let first = self.0.set((operations, readiness)).is_ok();
-        assert!(first, "a slot opens once");
+        let mut state = self.0.lock().expect("slot lock");
+        assert!(matches!(*state, State::Starting), "a slot opens once");
+        *state = State::Open(operations, Arc::new(readiness));
+    }
+
+    /// Refuses further admissions. Already admitted calls keep their references.
+    pub fn drain(&self) {
+        *self.0.lock().expect("slot lock") = State::Draining;
+    }
+
+    /// Marks the slot closed, before the host closes the engine.
+    pub fn close(&self) {
+        *self.0.lock().expect("slot lock") = State::Closed;
     }
 }

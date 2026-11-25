@@ -25,7 +25,7 @@ use ironflowx_proto::wire::{
 };
 use ironflowx_proto::{Call, OpError, Operation, Operations};
 
-use crate::{Readiness, Slot, WaitingOn};
+use crate::{Readiness, Slot, State, WaitingOn};
 
 /// The HTTP door of the engine in `slot`: its RPCs, `/health` and `/ready`.
 pub fn router<O: Operations + 'static, R: Readiness + 'static>(slot: Arc<Slot<O, R>>) -> Router {
@@ -103,22 +103,26 @@ async fn ready<O: Operations, R: Readiness>(slot: &Slot<O, R>) -> Json {
 }
 
 impl<O: Operations, R: Readiness> Slot<O, R> {
-    fn operations(&self) -> Result<&O, OpError> {
-        match self.0.get() {
-            Some((operations, _)) => Ok(operations),
-            None => Err(OpError {
-                kind: ErrorKind::Unavailable,
-                message: "the engine is unavailable".into(),
-                hint: Some("the engine is starting".into()),
-            }),
-        }
+    fn operations(&self) -> Result<Arc<O>, OpError> {
+        let state = self.0.lock().expect("slot lock");
+        let hint = match &*state {
+            State::Open(operations, _) => return Ok(operations.clone()),
+            State::Starting => "the engine is starting",
+            State::Draining | State::Closed => "the engine is stopping",
+        };
+        Err(OpError {
+            kind: ErrorKind::Unavailable,
+            message: "the engine is unavailable".into(),
+            hint: Some(hint.into()),
+        })
     }
 
     async fn ready(&self) -> Result<(), WaitingOn> {
-        match self.0.get() {
-            Some((_, readiness)) => readiness.ready().await,
-            None => Err(WaitingOn::Open),
-        }
+        let readiness = match &*self.0.lock().expect("slot lock") {
+            State::Open(_, readiness) => readiness.clone(),
+            _ => return Err(WaitingOn::Open),
+        };
+        readiness.ready().await
     }
 }
 
@@ -130,7 +134,7 @@ struct Door<O: Operations, R: Readiness>(Arc<Slot<O, R>>);
 
 impl<O: Operations, R: Readiness> Door<O, R> {
     /// Finishes validation before letting the operation take over the call.
-    fn admit<T, U>(&self, ctx: &RequestContext, request: T) -> Result<(&O, U), ConnectError>
+    fn admit<T, U>(&self, ctx: &RequestContext, request: T) -> Result<(Arc<O>, U), ConnectError>
     where
         T: TryInto<U, Error = OpError>,
     {

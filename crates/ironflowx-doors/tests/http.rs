@@ -971,3 +971,27 @@ fn a_slot_opens_once() {
         slot.open(Recording::answering(Ok(whoami())), Ready(state));
     }
 }
+
+#[tokio::test]
+async fn draining_and_closed_slots_refuse_on_every_protocol() {
+    let stopping = OpError {
+        kind: ErrorKind::Unavailable,
+        message: "the engine is unavailable".into(),
+        hint: Some("the engine is stopping".into()),
+    };
+    for transition in [Slot::drain, Slot::close] {
+        let slot = Arc::new(Slot::starting());
+        let operations = Recording::answering(Ok(whoami()));
+        slot.open(operations.clone(), Ready(Arc::new(Mutex::new(Ok(())))));
+        let addr = serve(slot.clone()).await;
+        transition(&slot);
+        for protocol in PROTOCOLS {
+            let response = client_of(protocol, addr)
+                .whoami_with_options(WhoamiRequest::default(), bearer())
+                .await;
+            let error = response.unwrap_err();
+            assert_eq!(wire::op_error(&error), Some(stopping.clone()), "{protocol}");
+        }
+        assert!(operations.take_requests().is_empty());
+    }
+}

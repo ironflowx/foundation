@@ -187,9 +187,11 @@ const wire::FILE_DESCRIPTOR_SET: &[u8];                     // the compiled prot
 // ironflowx-doors; `router` behind the feature "http"
 trait Readiness: Send + Sync { fn ready(&self) -> impl Future<Output = Result<(), WaitingOn>> + Send; }
 // WaitingOn  Open | ControlPlane | Ledger
-impl<O: Operations, R: Readiness> Slot<O, R> {              // Starting → Open
+impl<O: Operations, R: Readiness> Slot<O, R> {              // Starting → Open → Draining → Closed
     const fn starting() -> Self;
-    fn open(&self, operations: Arc<O>, readiness: R);       // once; panics on a second
+    fn open(&self, operations: Arc<O>, readiness: R);       // once, while Starting
+    fn drain(&self);                                       // can also stop from Starting
+    fn close(&self);
 }
 fn router<O: Operations + 'static, R: Readiness + 'static>(slot: Arc<Slot<O, R>>) -> axum::Router;
 
@@ -384,7 +386,7 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 | `Unknown` | The append's outcome is unknown; the ledger is now `Unavailable` | After reopen, only if it has an idempotency key, or every item of its batch has one. On the retry, a valid item whose key is already stored returns its original event, a new key stores one event, and a refused item is refused again. An item without a key may store a second event, so check first. The hint says which: of an `emit` by whether it has a key, of an `emit_batch` both |
 | `Unavailable` | The ledger failed (append, fold, read store, a panic of its writer or of a `read` query, or a `read` that finds its runtime shut down before its query ran) and refuses every call until it is reopened. Reads waiting at the gate end with it | After reopen |
 | `Unavailable` | A control-plane read or write failed during admission or a handler: `lookup_key`, `environment`, `list_keys` or a key change. The call fails closed and changes nothing, but for an [unsettled commit](#after-a-failed-open-or-change) (D48), so the hint of a `create_key` whose transaction failed says to list the keys before the retry, and to list them again after a reopen; the engine stays open (D44). A failure to record an expiry is not this: the call keeps its uniform refusal. A `create_key` whose answer was lost may have committed. Once a call has panicked under the control plane's lock (a host `Clock` that panics), every later call that reaches the control plane answers so until the engine is reopened, though its hint still says at once | Yes, at once; a `create_key` whose transaction failed, once the keys are listed, which show an unsettled one only after a reopen; after such a panic, after reopen |
-| `Unavailable` | Through a door, the engine is not open yet: every call the wire can carry, with the hint `the engine is starting` | Yes |
+| `Unavailable` | Through a door, the engine is not open yet: every call the wire can carry, with the hint `the engine is starting` or, while stopping, `the engine is stopping` | Yes |
 | `Unavailable` | From the proto client, any call whose connection never opened, a server whose certificate is not trusted included: nothing ran | Yes |
 | `Unavailable` | From the proto client, a read that no engine answered ([Wire](#wire), rule 2): the connection dropped, no answer by the client's timeout, a proxy's error, or an answer that does not decode or is over 16 MiB. The message names the HTTP status, the Connect code, or that the answer does not decode, and nothing of the body, which can hold event data | Yes |
 | `Unknown` | From the proto client, `emit` or `emit_batch` in any of the cases of the row above; or a batch answered with another number of results than it has items | At once, but only with the same idempotency key, on every item of a batch; without one, check first. The hint says which, as the engine's own does |
@@ -656,7 +658,8 @@ It writes `cli.rs`: each command with its RPC name, summary, input and output sc
 | Timeouts | A connection sends its first request's head within 10 s, and on HTTP/1.1 each later one within 10 s of its first byte. A later head that arrives with the request before it (as far as the host has read it when it answers that one), and later HTTP/2 heads, count as idle; no idle limit of its own (a proxy sets one); `Connect-Timeout-Ms` is honored; no deadline of its own, on `/ready` either |
 | Door | Holds no rule: decode, convert (`TryFrom`), call `Operations` once, convert back (SRV-1). A request that does not decode is `invalid_argument` before its key is read |
 | Errors | The kind's [Connect code](#errors), the message, and `ErrorInfo` as a detail, on every protocol. gRPC carries all of it in trailers, the message three times and once percent-encoded, so an error whose trailers pass its client's limit on them loses its `ErrorInfo`, then fails: `connectrpc`'s own client reads a message of 4,096 ASCII letters whole, loses the `ErrorInfo` of 4,096 `%` or 8,192 ASCII letters, and fails at 16,384. No error of the engine is that long. Any other answer without `ErrorInfo` is the library's or a proxy's |
-| While opening | Every call the wire can carry ([Proto](#proto)) answers `Unavailable`, hint `the engine is starting` |
+| While opening or draining | Every call the wire can carry ([Proto](#proto)) answers `Unavailable`, hint `the engine is starting` or `the engine is stopping`. Wire decoding and conversion still precede the slot check |
+| Panics | The dev and release profiles build with `panic = "abort"` (D63). A panic ends the process. A writer panic can abort before it signals a ledger fault. The infallible event conversion can panic on a damaged `read.db` row with non-UTF-8 data or metadata. It reports a fixed message with no event bytes. Normal writes validate the text before storing it (LED-5). A restart alone can leave such a damaged row in place |
 
 `Client` speaks Connect binary. **How it classifies a failure** of a call it sent or tried to send (its own refusals are in [Errors](#errors)), first match wins (D56, SRV-4):
 
@@ -732,6 +735,23 @@ not check the ledger. SQLite can rebuild `control.db-shm` from a WAL left by a c
 
 `/ready` asks the engine on each request and has no deadline of its own, so it can answer as late as `Engine::health` does ([Commit and read](#commit-and-read)): a prober sets its own.
 
+**Stop.** SIGINT, SIGTERM or `Engine::faulted()` starts a drain (D63, D72).
+The slot stops admitting and the listener closes. Existing connections can still receive
+the stopping refusal while requests in flight drain. The host allows up to 10 seconds, including
+time to flush responses and close connections, then drops outstanding request futures, including
+HTTP/2 handlers. It marks the slot closed and awaits `Engine::close` before shutting down the
+runtime. Closing joins the ledger writer, which finishes queued submissions and the fold; event
+acknowledgments already followed `fsync`. A dropped read can still hold `read.db` after engine
+close until its blocking query ends or the process exits. A detached control-plane write still
+uses a single SQLite transaction (D48, TEN-11).
+
+A signal during open lets it finish, including publishing any minted key, then closes the engine.
+A second signal received during shutdown exits 1 immediately. The operating system can coalesce
+identical pending signals. A signal alone exits 0. A ledger fault present when close starts exits 8,
+even when a signal started the drain. A control-plane failure makes `/ready` answer
+503 `control_plane` and serving continues. Restart runs the ledger's usual open and replay.
+A sealed ledger opens again and faults on any emit that appends (D19). Serve it read-only.
+
 **Logs.** JSON lines on stderr by default, or text with `--log-format text`.
 `--log-level` takes `off`, `error`, `warn`, `info`, `debug` or `trace`.
 At `info`, the host logs one line per call, with the operation, duration, outcome kind and the
@@ -746,12 +766,13 @@ escapes control characters. The refusal's envelope is the last stderr line, rega
 
 Host errors use the same table as the CLI, from `ErrorKind::exit_code()`.
 
-| Exit | Kind | Host refusals |
+| Exit | Kind | Host outcome |
 |---|---|---|
-| 1 | `internal` | Engine or ledger format, orphaned engine, missing ledger, wrong incarnation, corrupt ledger, data directory creation failure, failed pre-mint probe, key-file publication failure |
+| 0 | Success | Stopped by a signal |
+| 1 | `internal` | Engine or ledger format, orphaned engine, missing ledger, wrong incarnation, corrupt ledger, data directory creation failure, failed pre-mint probe, key-file publication failure, signal registration failure. A second signal also exits 1 immediately |
 | 2 | `invalid` | Bad settings, malformed or unreadable seed, a directory belonging to a ledger, a seed conflict, stale `admin.key`, bind error other than address in use |
 | 3–7 | [Call errors](#errors) | Calls only |
-| 8 | `unavailable` | Address in use, engine or ledger lock or I/O error, control-plane fault, destination lookup error |
+| 8 | `unavailable` | Address in use, engine or ledger lock or I/O error, control-plane fault at open, destination lookup error, a ledger fault before close |
 
 **Seed generation.** `ironflowx seed generate` prints one JSON object with `key` and `key_id`.
 It indents the object on a terminal. It opens no engine and writes no file.
