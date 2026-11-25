@@ -48,8 +48,8 @@ fn halves(key: &str) -> [Vec<u8>; 4] {
 /// it: what one usual call to std's formatting gives; or within base64 of any text that holds it,
 /// such as a header, where the groups of 3 it fills are enough: from 12 bytes, fewer than a half,
 /// which is stricter and harmless. In no other form: not with a `char` for each byte, unless in a
-/// path, nor as hex with anything else between, nor in base64 that is wrapped into shorter lines
-/// (of 16 characters, say), nor in base64 of base64.
+/// path, nor as hex with anything else between. It can miss base64 that is wrapped into shorter
+/// lines (of 16 characters, say), and base64 of base64.
 pub fn leak<'a>(text: &str, keys: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
     let list: String = text.split_whitespace().collect();
     let list = list.to_lowercase().replace("0x", "");
@@ -60,7 +60,7 @@ pub fn leak<'a>(text: &str, keys: impl IntoIterator<Item = &'a str>) -> Option<&
             let as_is = latin1(&half);
             let each = |f: fn(&u8) -> String| half.iter().map(f).collect::<Vec<_>>();
             let in_base64 = as_is.replace('-', "+").replace('_', "/");
-            if text.contains(&as_is) || standard.contains(&in_base64) {
+            if text.contains(&as_is) || text.contains(&in_base64) {
                 return Some("a secret's text");
             }
             // Wherever its groups of 3 begin.
