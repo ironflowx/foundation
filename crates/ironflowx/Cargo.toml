@@ -11,6 +11,10 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
+[features]
+client = ["ironflowx-proto/client"]
+client-tls = ["client", "ironflowx-proto/client-tls"]
+
 [dependencies]
 ironflowx-core.workspace = true
 ironflowx-events.workspace = true
@@ -19,3 +23,11 @@ ironflowx-cell.workspace = true
 ironflowx-authz.workspace = true
 ironflowx-store.workspace = true
 ironflowx-operations.workspace = true
+
+[dev-dependencies]
+# The runtime for examples/whoami.rs. The proto client supplies the I/O and timer features.
+tokio = { version = "1.54.1", default-features = false, features = ["rt"] }
+
+[[example]]
+name = "whoami"
+required-features = ["client"]

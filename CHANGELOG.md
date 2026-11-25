@@ -20,6 +20,7 @@ Each release lists what it adds and changes. All published crates share one vers
 - **`describe`** ([#150](https://github.com/ironflowx/foundation/issues/150)): the CLI lists every operation with its scope, summary and whether it changes state, together with the exit codes. Ask about one operation for its wire request and printed answer schemas, and a request example. Both commands work without a key or a running engine. D67, D82.
 
 - **Host through the engine** ([#174](https://github.com/ironflowx/foundation/issues/174)): `ironflowx-operations` exports `is_bootstrapped`, a blocking read of the bootstrap mark that creates no directory or database, and re-exports `HostClock`, `OpenError` and `StoreError`. The binary uses the engine to check whether a bootstrap is marked before it accepts an existing `admin.key`. The binary drops its direct normal dependencies on the ledger and control plane crates, and CI checks that boundary.
+- **Proto client through the facade** ([#175](https://github.com/ironflowx/foundation/issues/175)): `ironflowx` gains opt-in `client` and `client-tls` features. An embedder can use `ironflowx::proto::Client` as its `Operations` adapter over HTTP, or over HTTPS with `client-tls`. Both features are off by default.
 
 ## 0.2.0 - 2026-11-24
 

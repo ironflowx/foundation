@@ -73,6 +73,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: cargo test --workspace --locked
+      # Isolate the facade, without the workspace CLI's effect on the proto client's features.
+      - run: cargo test -p ironflowx --locked --test features
+        env:
+          IRONFLOWX_FACADE_FEATURES: none
+      - name: Facade defaults build without the HTTP stack
+        run: |
+          ci/no-facade-http.sh
+          ci/must-reject.sh "dependency 'connectrpc'" "dependency 'http'" "dependency 'hyper'" \
+            "dependency 'hyper-util'" "dependency 'rustls'" "dependency 'rustls-native-certs'" -- \
+            ci/no-facade-http.sh --features client-tls
+      - run: cargo test -p ironflowx --locked --features client --test features --example whoami
+        env:
+          IRONFLOWX_FACADE_FEATURES: client
+      - run: cargo test -p ironflowx --locked --features client-tls --test features --example whoami
+        env:
+          IRONFLOWX_FACADE_FEATURES: client-tls
       # The workspace's CLI switches `client-tls` on; without it an `https` URL is no client's.
       - run: cargo test -p ironflowx-proto --locked --test client
         env:

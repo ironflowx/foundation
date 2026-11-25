@@ -1,8 +1,9 @@
 # CI checks
 
-`.github/workflows/ci.yml` runs these on every PR; the `main` ruleset requires each job but `soak`. Every
-check script here, but for the snapshot comparison in `public-api.sh`, is proven by a fixture in
-`fixtures/` that it must reject (`must-reject.sh`), so one that silently stops working fails CI.
+`.github/workflows/ci.yml` runs these on every PR. The `main` ruleset requires each job but `soak`.
+Every check script here, except the snapshot comparison in `public-api.sh`, has a fixture it must
+reject. Fixtures can be dedicated files under `fixtures/` or builds configured to trigger the
+check. `must-reject.sh` checks that each fixture fails for the expected reason.
 
 `ci/check.sh` runs every job below but `soak` locally, in order, and stops at the first failure: run it
 before you push. `git config core.hooksPath .githooks` makes `git push` run it. The root
@@ -25,6 +26,14 @@ skips what is already done. Rehearse it first with
 | `doc-pins` | D16: docs name only the `segment-log-core` version `crates/ironflowx-cell/Cargo.toml` pins (tag-pinned links) | `ci/doc-pins.sh` | Re-pin the printed links to the new tag, or drop the version from the line |
 | `soak` | The crash test's longer soak before publishing: `inputs.kills` seeded kills (10000 by default) on Linux and macOS. Runs only when started by hand, with every other job, and is not required | `gh workflow run ci --ref <branch> -f kills=10000`; on your machine, `env -u CRASH_SEED CRASH_KILLS=10000 cargo test -p ironflowx-crash-test --locked --test crash seeded_random_kills` | Replay the printed `CRASH_SEED=<seed> CRASH_KILLS=1` and fix the ledger, the open or the key change it fails in |
 | `lint-ci` | actionlint and shellcheck over the workflow, `ci/*.sh` and `.githooks/*`; the `main` ruleset requires exactly the jobs of `ci.yml` but `soak` (`ci/required-checks.sh`, which reads the live ruleset) | `actionlint && shellcheck -x ci/*.sh .githooks/* && ci/required-checks.sh` | Fix the script; for a job, add it to the ruleset's required checks, or remove it there |
+
+The `test` job also builds and tests the facade in three separate Cargo invocations, with its
+default features, with `client`, and with `client-tls`. Each asserts exactly which facade features
+are on. Both client builds compile the `whoami` example and check the schemes the client accepts.
+Separate invocations keep the workspace's CLI from switching on the proto client's TLS support.
+`ci/no-facade-http.sh` also checks the default facade dependency graph for the HTTP and TLS
+packages used by the proto client. The facade with `client-tls` enabled supplies its rejecting
+fixture.
 
 ## Pure crates
 
