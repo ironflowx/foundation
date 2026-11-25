@@ -32,9 +32,10 @@ pub fn write(data_dir: &Path, key: &Secret) -> io::Result<()> {
     temporary
         .as_file()
         .set_permissions(Permissions::from_mode(0o400))?;
-    temporary.write_all(key.expose().as_bytes())?;
-    temporary.write_all(b"\n")?;
-    temporary.as_file().sync_all()?;
+    let file = temporary.as_file_mut();
+    file.write_all(key.expose().as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
     // Not a rename, which would replace an `admin.key`.
     std::fs::hard_link(temporary.path(), path(data_dir))?;
     temporary.close().map_err(tempfile_error)?;
@@ -137,7 +138,7 @@ fn probe_with_link(
             .as_file()
             .set_permissions(Permissions::from_mode(0o400))?;
         // The final file holds an 84-byte key and a newline.
-        temporary.write_all(&[0; 85])?;
+        temporary.as_file_mut().write_all(&[0; 85])?;
         temporary.as_file().sync_all()?;
         link_file(temporary.path(), &link)
     })();

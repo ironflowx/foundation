@@ -137,7 +137,7 @@ async fn a_failed_probe_leaves_no_recovered_key() {
 
 #[test]
 fn failed_probe_prints_only_the_safe_directory_locator() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir_in("/tmp").unwrap();
     for (name, absolute) in [
         ("quoted\"root", true),
         ("back\\slash", true),
@@ -161,6 +161,58 @@ fn failed_probe_prints_only_the_safe_directory_locator() {
         assert_eq!(
             error["message"],
             format!("cannot probe writes and hard links in {locator}: permission denied")
+        );
+        assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn a_short_probe_write_keeps_its_diagnostic_path_safe() {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    use std::os::unix::process::CommandExt as _;
+
+    const ROOT: &str = "IRONFLOWX_TEST_RECOVERY_SHORT_PROBE_ROOT";
+    if let Some(root) = std::env::var_os(ROOT) {
+        setrlimit(
+            Resource::Fsize,
+            Rlimit {
+                current: Some(84),
+                maximum: getrlimit(Resource::Fsize).maximum,
+            },
+        )
+        .unwrap();
+        panic!(
+            "cannot launch recovery: {}",
+            recovery(Path::new(&root)).exec()
+        );
+    }
+
+    let temp = tempfile::tempdir_in("/tmp").unwrap();
+    for (name, printable) in [("quoted\"root", false), ("ordinary", true)] {
+        let dir = temp.path().join(name);
+        std::fs::create_dir(&dir).unwrap();
+        // Ignore SIGXFSZ so the 85-byte write reports EFBIG after creating the temporary.
+        let out = Command::new("/bin/sh")
+            .args(["-c", "trap '' XFSZ && exec \"$@\"", "short-probe"])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "a_short_probe_write_keeps_its_diagnostic_path_safe",
+            ])
+            .env(ROOT, &dir)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        let error: Value = serde_json::from_slice(&out.stderr).expect("one stderr envelope");
+        let locator = if printable {
+            dir.to_str().unwrap()
+        } else {
+            "the configured data directory"
+        };
+        let cause = std::io::Error::from(rustix::io::Errno::FBIG);
+        assert_eq!(
+            error["message"],
+            format!("cannot probe writes and hard links in {locator}: {cause}")
         );
         assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0);
     }
