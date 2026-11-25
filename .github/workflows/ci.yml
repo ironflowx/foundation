@@ -75,6 +75,8 @@ jobs:
       - run: cargo test --workspace --locked
       # The workspace's CLI switches `client-tls` on; without it an `https` URL is no client's.
       - run: cargo test -p ironflowx-proto --locked --test client
+        env:
+          NO_CLIENT_TLS: 1
       # Feature unification can switch arbitrary_precision on in any embedder's build; numbers then reach the event rules' visitor as text.
       - run: cargo test -p ironflowx-events --locked --features serde_json/arbitrary_precision
 

@@ -394,6 +394,12 @@ async fn a_request_over_16_mib_is_not_sent() {
         };
         assert_eq!(refused, expected);
     }
+    // As one too large for protobuf: 2 GiB less a byte, and its field's tag and length.
+    let huge = RevokeKeyRequest {
+        key_id: "x".repeat(i32::MAX as usize),
+    };
+    let refused = client.revoke_key(&cx, huge).await.unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::ResourceExhausted);
     // Nor did it try: no door is there.
     let client = closed().await;
     let refused = client.emit(&cx, emit(over)).await.unwrap_err();
@@ -407,17 +413,25 @@ async fn closed() -> Client {
     Client::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap()
 }
 
-/// Answers one request with `answer`, then closes.
-async fn stub(answer: Vec<u8>) -> Client {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut request = [0; 4096];
-        let _ = stream.read(&mut request).await;
-        stream.write_all(&answer).await.unwrap();
-    });
-    Client::new(&format!("http://{addr}")).unwrap()
+/// A server of one port, whose connections leave no other in use.
+struct Stub(Arc<TcpListener>);
+
+impl Stub {
+    async fn new() -> Self {
+        Self(Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap()))
+    }
+
+    /// A client whose one request is answered with `answer`; then the connection closes.
+    fn answering(&self, answer: Vec<u8>) -> Client {
+        let listener = self.0.clone();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).await;
+            stream.write_all(&answer).await.unwrap();
+        });
+        Client::new(&format!("http://{}", self.0.local_addr().unwrap())).unwrap()
+    }
 }
 
 /// What a call that may have run ends as, where no engine answered it. Every item sent here has a
@@ -450,12 +464,6 @@ fn unanswered(op: Operation) -> (ErrorKind, Option<&'static str>) {
     }
 }
 
-/// Whether a message of `op` names the Connect code alone: what answers it can hold a key or
-/// event data.
-fn held(op: Operation) -> bool {
-    op == Operation::CreateKey || op.rpc().contains("EventService")
-}
-
 fn http(status: &str, kind: &str, body: &[u8]) -> Vec<u8> {
     let len = body.len();
     let head =
@@ -475,17 +483,16 @@ async fn a_call_that_never_connects_is_unavailable() {
         let e = ask_one(&client, &call(KEY), op).await.unwrap_err();
         let ended = (e.kind, e.hint);
         assert_eq!(ended, (ErrorKind::Unavailable, None), "{op:?}");
-        if held(op) {
-            assert_eq!(e.message, "the engine did not answer: unavailable");
-        }
+        assert_eq!(e.message, "the engine did not answer: unavailable");
     }
 }
 
 /// SRV-4, rule 2: no answer, or one that is not the engine's own: a read is `Unavailable`, a state
-/// change `Unknown`, and no message holds a key (TEN-3) or what can be an event's data. One made
-/// from an HTTP status names it.
+/// change `Unknown`, and no message holds anything of a body, which can hold a key (TEN-3) or an
+/// event's data. One made from an HTTP status names it.
 #[tokio::test]
 async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
+    let stub = Stub::new().await;
     // A CreateKeyResponse's key, then no information, or some cut short.
     let key = [b"\n\x54", CREATED.as_bytes()].concat();
     let message = format!(r#"{{"code":"unavailable","message":"{CREATED}"}}"#);
@@ -496,7 +503,15 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
     let chunked = b"HTTP/1.1 502 Bad Gateway\r\n\r\n";
     let gzip = b"HTTP/1.1 200 OK\r\ncontent-type: application/proto\r\ncontent-encoding: gzip\r\n\
                  content-length: 1\r\n\r\nx";
-    let unfinished = b"HTTP/1.1 501 x\r\ncontent-length: 99\r\n\r\n{\"code\":\"unimplemented\"}";
+    let refusal = br#"{"code":"invalid_argument"}"#.as_slice();
+    let head = |head: &str, body: &[u8]| {
+        let head = format!(
+            "HTTP/1.1 400 x\r\n{head}content-length: {}\r\n\r\n",
+            body.len()
+        );
+        [head.as_bytes(), body].concat()
+    };
+    let unfinished = b"HTTP/1.1 501 x\r\ncontent-type: application/json\r\ncontent-length: 99\r\n\r\n{\"code\":\"unimplemented\"}";
     // ErrorInfo of a kind this client does not know: 'kind' "new".
     let new_kind = r#"{"code":"invalid_argument","details":[{"type":"ironflowx.v1.ErrorInfo","value":"CgNuZXc"}]}"#;
     // Each with the HTTP status its message names, or the Connect code of the failure it is.
@@ -528,7 +543,8 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
             status(502),
             http("502 Bad Gateway", "application/proto", &key),
         ),
-        (code("unavailable"), json("502 Bad Gateway", &message)),
+        (status(502), json("502 Bad Gateway", &message)),
+        (code("unavailable"), json("503 x", &message)),
         (status(502), [chunked.as_slice(), &key].concat()),
         // A proxy's refusals, whatever Connect code the library has for the status.
         (status(301), http("301 Moved Permanently", "text/html", b"")),
@@ -569,6 +585,49 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
                 r#"{"code":"new","details":[{"type":"x"}]}"#,
             ),
         ),
+        // A code that is not as a server of Connect's sends it.
+        (
+            status(503),
+            json("503 x", r#"{"code":"failed_precondition"}"#),
+        ),
+        (status(429), json("429 x", r#"{"code":"unimplemented"}"#)),
+        (
+            status(400),
+            json("400 x", r#"["invalid_argument",null,[]]"#),
+        ),
+        (status(400), http("400 x", "text/html", refusal)),
+        (
+            status(400),
+            http("400 x", "application/connect+json", refusal),
+        ),
+        (
+            status(400),
+            http("400 x", "application/json, text/html", refusal),
+        ),
+        (status(400), head("", refusal)),
+        (
+            status(400),
+            head(
+                "content-type: text/html\r\ncontent-type: application/json\r\n",
+                refusal,
+            ),
+        ),
+        (
+            status(400),
+            head(
+                "content-type: application/json\r\ncontent-encoding: gzip\r\n",
+                refusal,
+            ),
+        ),
+        // Nor is the engine's own error: 'kind' "not_found", 'message' "m".
+        (
+            status(404),
+            http(
+                "404 x",
+                "text/html",
+                br#"{"details":[{"type":"ironflowx.v1.ErrorInfo","value":"Cglub3RfZm91bmQSAW0"}]}"#,
+            ),
+        ),
         // Cut off, and one that the library cannot read.
         (code("unavailable"), vec![]),
         (
@@ -594,7 +653,7 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
     let ignored = [&answers[1], &answers[2]];
     for op in Operation::ALL.iter().copied() {
         for answer in &answers {
-            let client = stub(answer.1.clone()).await;
+            let client = stub.answering(answer.1.clone());
             let shown = answer.1.escape_ascii().to_string();
             let got = ask_one(&client, &call(KEY), op).await;
             // A revoke's answer holds nothing, so another message is one with fields it ignores.
@@ -623,18 +682,13 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
                 false => unanswered(op),
             };
             assert_eq!(ended, expected, "{op:?} {shown:?}");
-            assert!(!e.message.contains(&KEY[41..]), "{}", e.message);
-            let one = !matches!(op, Operation::EmitBatch | Operation::ListEvents);
+            let one = !matches!(op, Operation::EmitBatch) && !op.rpc().contains("/List");
             let message = match decoded.contains(&answer) && one {
                 true => "the answer does not decode".to_owned(),
                 false if refused(why) => format!("the call was refused: {why}"),
                 false => format!("the engine did not answer: {why}"),
             };
-            // Where a body can hold a key or event data, the code and nothing after it; and
-            // nothing after a status, whatever the operation.
-            if held(op) || why.starts_with("an HTTP") {
-                assert_eq!(e.message, message, "{op:?} {shown:?}");
-            }
+            assert_eq!(e.message, message, "{op:?} {shown:?}");
         }
     }
 }
@@ -643,6 +697,7 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
 /// request: the library's own error for both is `resource_exhausted`.
 #[tokio::test]
 async fn an_answer_over_16_mib_is_no_refusal() {
+    let stub = Stub::new().await;
     let error = |size: usize| {
         let (start, end) = (r#"{"code":"resource_exhausted","message":""#, r#""}"#);
         let fill = "x".repeat(size - start.len() - end.len());
@@ -659,65 +714,81 @@ async fn an_answer_over_16_mib_is_no_refusal() {
     ];
     for op in Operation::ALL.iter().copied() {
         for (why, answer) in &long {
-            let client = stub(answer.clone()).await;
+            let client = stub.answering(answer.clone());
             let e = ask_one(&client, &call(KEY), op).await.unwrap_err();
             let ended = (e.kind, e.hint.as_deref());
             assert_eq!(ended, unanswered(op), "{op:?} {why}");
-            if held(op) {
-                assert_eq!(e.message, format!("the engine did not answer: {why}"));
-            }
+            assert_eq!(e.message, format!("the engine did not answer: {why}"));
         }
     }
-    let client = stub(error(most)).await;
+    let client = stub.answering(error(most));
     let e = client.emit(&call(KEY), item("a")).await.unwrap_err();
     assert_eq!(e.kind, ErrorKind::ResourceExhausted);
 }
 
-/// SRV-4, rule 4: a code of the server's library, without the engine's own error, whatever the HTTP
-/// status it came with.
+/// SRV-4, rule 4: a code of the server's library, without the engine's own error, under the HTTP
+/// status a server of Connect's gives it.
 #[tokio::test]
 async fn a_code_of_the_library_is_the_kind_it_means() {
+    let stub = Stub::new().await;
     let older = Some("the engine is older than this client");
+    let invalid = Some((ErrorKind::Invalid, None));
+    let full = Some((ErrorKind::ResourceExhausted, None));
+    let internal = Some((ErrorKind::Internal, older));
     let codes = [
-        ("invalid_argument", Some((ErrorKind::Invalid, None))),
-        ("out_of_range", Some((ErrorKind::Invalid, None))),
-        ("failed_precondition", Some((ErrorKind::Invalid, None))),
-        (
-            "resource_exhausted",
-            Some((ErrorKind::ResourceExhausted, None)),
-        ),
-        ("unimplemented", Some((ErrorKind::Internal, older))),
+        ("invalid_argument", 400, invalid),
+        ("out_of_range", 400, invalid),
+        ("failed_precondition", 400, invalid),
+        ("resource_exhausted", 429, full),
+        ("unimplemented", 404, internal),
+        ("unimplemented", 501, internal),
         // The engine's own always come with its error, so these are no word of its.
-        ("unauthenticated", None),
-        ("permission_denied", None),
-        ("not_found", None),
-        ("unavailable", None),
-        ("internal", None),
-        ("unknown", None),
-        ("canceled", None),
-        ("deadline_exceeded", None),
-        ("already_exists", None),
-        ("aborted", None),
-        ("data_loss", None),
+        ("unauthenticated", 401, None),
+        ("permission_denied", 403, None),
+        ("not_found", 404, None),
+        ("unavailable", 503, None),
+        ("internal", 500, None),
+        ("unknown", 500, None),
+        ("canceled", 499, None),
+        ("deadline_exceeded", 504, None),
+        ("already_exists", 409, None),
+        ("aborted", 409, None),
+        ("data_loss", 500, None),
     ];
     for op in Operation::ALL.iter().copied() {
-        for (code, kind) in codes {
-            for status in ["501 x", "404 x", "503 x"] {
+        for (code, own, kind) in codes {
+            let body = format!(r#" {{"code":"{code}","message":"{CREATED}"}}"#);
+            let client = stub.answering(http(
+                &format!("{own} x"),
+                "Application/JSON; charset=utf-8",
+                body.as_bytes(),
+            ));
+            let e = ask_one(&client, &call(KEY), op).await.unwrap_err();
+            let ended = (e.kind, e.hint.as_deref());
+            let expected = kind.unwrap_or_else(|| unanswered(op));
+            assert_eq!(ended, expected, "{op:?} {code}");
+            let began = match kind {
+                Some(_) => "the call was refused",
+                None => "the engine did not answer",
+            };
+            assert_eq!(e.message, format!("{began}: {code}"), "{op:?}");
+        }
+    }
+    // Under another, a code is none of Connect's, whatever the operation.
+    for op in [Operation::Emit, Operation::GetEvent] {
+        for (code, ..) in codes.iter().filter(|(.., kind)| kind.is_some()) {
+            for status in [400, 404, 429, 500, 501, 503] {
+                if codes.iter().any(|(c, own, _)| (c, *own) == (code, status)) {
+                    continue;
+                }
                 let body = format!(r#"{{"code":"{code}","message":"{CREATED}"}}"#);
-                let client = stub(json(status, &body)).await;
+                let client = stub.answering(json(&format!("{status} x"), &body));
                 let e = ask_one(&client, &call(KEY), op).await.unwrap_err();
                 let ended = (e.kind, e.hint.as_deref());
-                let expected = kind.unwrap_or_else(|| unanswered(op));
-                assert_eq!(ended, expected, "{op:?} {code} {status}");
-                let began = match kind {
-                    Some(_) => "the call was refused",
-                    None => "the engine did not answer",
-                };
-                let said = match held(op) {
-                    true => String::new(),
-                    false => format!(": {CREATED}"),
-                };
-                assert_eq!(e.message, format!("{began}: {code}{said}"), "{op:?}");
+                assert_eq!(ended, unanswered(op), "{op:?} {code} {status}");
+                let message =
+                    format!("the engine did not answer: an HTTP {status} that is not Connect's");
+                assert_eq!(e.message, message, "{op:?} {code}");
             }
         }
     }
@@ -736,19 +807,20 @@ async fn an_older_engine_says_so() {
         let ended = (e.kind, e.hint.as_deref());
         let older = Some("the engine is older than this client");
         assert_eq!(ended, (ErrorKind::Internal, older), "{op:?}");
-        assert!(e.message.starts_with("the call was refused: unimplemented"));
+        assert_eq!(e.message, "the call was refused: unimplemented");
     }
 }
 
 /// SRV-3, rule 1: the engine's own error, also under a code this client does not know.
 #[tokio::test]
 async fn the_engines_own_error_is_first() {
+    let stub = Stub::new().await;
     // 'kind' "not_found", 'message' "m".
     let detail = r#"[{"type":"ironflowx.v1.ErrorInfo","value":"Cglub3RfZm91bmQSAW0"}]"#;
     for code in ["", r#""code":"new","#, r#""code":"unimplemented","#] {
         for op in Operation::ALL.iter().copied() {
             let body = format!(r#"{{{code}"details":{detail}}}"#);
-            let client = stub(json("503 x", &body)).await;
+            let client = stub.answering(json("503 x", &body));
             let e = ask_one(&client, &call(KEY), op).await.unwrap_err();
             let own = OpError {
                 kind: ErrorKind::NotFound,
@@ -764,6 +836,7 @@ async fn the_engines_own_error_is_first() {
 /// idempotency key.
 #[tokio::test]
 async fn an_unknown_emits_hint_fits_its_key() {
+    let stub = Stub::new().await;
     let unkeyed = EmitRequest {
         idempotency_key: None,
         ..item("a")
@@ -773,7 +846,7 @@ async fn an_unknown_emits_hint_fits_its_key() {
         (item("a"), unanswered(Operation::Emit).1.unwrap()),
         (unkeyed.clone(), check),
     ] {
-        let client = stub(vec![]).await;
+        let client = stub.answering(vec![]);
         let e = client.emit(&call(KEY), request).await.unwrap_err();
         assert_eq!(
             (e.kind, e.hint.as_deref()),
@@ -786,7 +859,7 @@ async fn an_unknown_emits_hint_fits_its_key() {
         vec![item("a"), unkeyed.clone()],
         vec![unkeyed],
     ] {
-        let client = stub(vec![]).await;
+        let client = stub.answering(vec![]);
         let batch = EmitBatchRequest { items };
         let e = client.emit_batch(&call(KEY), batch).await.unwrap_err();
         let ended = (e.kind, e.hint.as_deref());

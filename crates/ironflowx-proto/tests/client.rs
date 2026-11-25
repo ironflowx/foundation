@@ -22,6 +22,8 @@ fn a_url_is_http_with_a_host_and_no_user_query_or_fragment() {
         "HTTPS://[::1]:9310/ironflow",
     ] {
         let tls = cfg!(feature = "client-tls");
+        // Set where the build is to be one without: a feature that is on by default is not seen.
+        assert!(!tls || std::env::var_os("NO_CLIENT_TLS").is_none());
         assert_eq!(
             Client::new(url).err(),
             (!tls).then_some(InvalidUrl),

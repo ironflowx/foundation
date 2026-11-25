@@ -236,12 +236,19 @@ async fn a_commit_whose_answer_a_proxy_loses_is_unknown() {
                  content-length: 6\r\n\r\n<html>";
     let json = b"HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\n\
                  content-length: 22\r\n\r\n{\"code\":\"unavailable\"}";
+    let refusal = b"HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\n\
+                    content-length: 30\r\n\r\n{\"code\":\"failed_precondition\"}";
     for (i, (instead, why)) in [
         (
             html.as_slice(),
             "the engine did not answer: an HTTP 503 that is not Connect's",
         ),
         (json, "the engine did not answer: unavailable"),
+        // A refusal's code, which a server of Connect's does not send so.
+        (
+            refusal,
+            "the engine did not answer: an HTTP 503 that is not Connect's",
+        ),
         // Dropped after the request.
         (b"", "the engine did not answer: unavailable"),
     ]
@@ -255,11 +262,7 @@ async fn a_commit_whose_answer_a_proxy_loses_is_unknown() {
             let ended = (e.kind, e.hint.as_deref());
             let expected = (ErrorKind::Unknown, Some(change.hint()));
             assert_eq!(ended, expected, "{name}");
-            match change {
-                // Its text is the transport's, or the answer's.
-                Change::RevokeKey => assert!(e.message.starts_with(why), "{}", e.message),
-                _ => assert_eq!(e.message, why),
-            }
+            assert_eq!(e.message, why);
             assert_eq!(change.landed(&served, &name).await, 1, "{name}");
         }
         let e = lost.whoami(&served.admin, WhoamiRequest {}).await;
@@ -286,7 +289,7 @@ async fn a_commit_that_outlives_its_calls_deadline_is_unknown() {
         let ended = (e.kind, e.hint.as_deref());
         assert_eq!(ended, (ErrorKind::Unknown, Some(change.hint())), "{name}");
         // A read waits for the control plane, which the key change holds.
-        if matches!(change, Change::CreateKey) {
+        if matches!(change, Change::CreateKey | Change::RevokeKey) {
             let e = hasty.whoami(&served.admin, WhoamiRequest {}).await;
             let e = e.unwrap_err();
             assert_eq!((e.kind, e.hint), (ErrorKind::Unavailable, None));

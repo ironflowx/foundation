@@ -13,7 +13,8 @@ use connectrpc::client::{
 };
 use connectrpc::http_body::Body as _;
 use connectrpc::{CompressionRegistry, ConnectError, ErrorCode, ErrorDetail, JsonCodec};
-use http::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
+use http::header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE, HeaderMap, HeaderValue};
+use http::response::Parts;
 use http::uri::{Scheme, Uri};
 use http::{Request, Response, StatusCode};
 use hyper_util::client::legacy;
@@ -33,6 +34,19 @@ use crate::{
 /// [`Operations`] over the network. It holds no key: each call sends its [`Call`]'s as the Bearer
 /// key and an anonymous one sends none, so one client serves many keys. It accepts answers up to
 /// 16 MiB. Calls need a tokio runtime.
+///
+/// # Errors
+///
+/// Of every call, first match wins (D56):
+///
+/// - `ResourceExhausted`, with nothing sent, for a request over 16 MiB; `Invalid` for one the wire
+///   does not carry, as the call says.
+/// - The engine's own error, unchanged.
+/// - `Unavailable` if the connection never opened: nothing ran.
+/// - What the server's library refused: `Invalid`, `ResourceExhausted`, or `Internal` where the
+///   engine is older than this client and has no such operation.
+/// - Any other failure, as a drop, the timeout or a proxy's error: `Unavailable` of a read, and
+///   `Unknown` of a call that changes state, which may have run; its hint says what to do.
 pub struct Client {
     events: EventServiceClient<Transport>,
     identity: IdentityServiceClient<Transport>,
@@ -161,7 +175,8 @@ struct Transport(HttpClient);
 /// What came instead of an answer: the source of the error made from it.
 #[derive(Debug)]
 enum Instead {
-    /// An error of Connect's: JSON that names one of its codes.
+    /// An error of Connect's: JSON that names one of its codes, under that code's HTTP status.
+    /// What sends all of that is taken for a server of Connect's: nothing tells it apart.
     Connect,
     /// None of Connect's.
     Http(StatusCode),
@@ -192,16 +207,15 @@ impl ClientTransport for Transport {
     ) -> BoxFuture<'static, Result<Response<Incoming>, ConnectError>> {
         let answer = self.0.send(request);
         Box::pin(async move {
-            let answer = answer.await?;
-            let status = answer.status();
-            if !status.is_success() {
-                return Err(failure(status, read(answer.into_body()).await));
+            let (answer, body) = answer.await?.into_parts();
+            if !answer.status.is_success() {
+                return Err(failure(&answer, read(body).await.as_deref()));
             }
-            let types: Vec<_> = answer.headers().get_all(CONTENT_TYPE).iter().collect();
-            if status == StatusCode::OK && types == ["application/proto"] {
-                Ok(answer)
+            let types: Vec<_> = answer.headers.get_all(CONTENT_TYPE).iter().collect();
+            if answer.status == StatusCode::OK && types == ["application/proto"] {
+                Ok(Response::from_parts(answer, body))
             } else {
-                Err(failure(status, None))
+                Err(failure(&answer, None))
             }
         })
     }
@@ -221,30 +235,46 @@ async fn read(mut body: Incoming) -> Option<Vec<u8>> {
     Some(whole)
 }
 
-/// An answer of `status` that is no success of Connect's.
-fn failure(status: StatusCode, body: Option<Vec<u8>>) -> ConnectError {
+/// An answer, with the whole of its body if it was read, that is no success of Connect's.
+fn failure(answer: &Parts, body: Option<&[u8]>) -> ConnectError {
     #[derive(Deserialize)]
     struct Failure {
         code: Option<String>,
-        message: Option<String>,
         #[serde(default)]
         details: Vec<ErrorDetail>,
     }
-    let failure = body.and_then(|body| JsonCodec::decode::<Failure>(&body).ok());
-    let (code, message, details) = match failure {
-        Some(f) => (f.code, f.message, f.details),
-        None => (None, None, Vec::new()),
+    // An object: serde takes an array for a struct too.
+    let json = body.filter(|b| is_json(&answer.headers) && b.trim_ascii_start().starts_with(b"{"));
+    let failure = json.and_then(|body| JsonCodec::decode::<Failure>(body).ok());
+    let (code, details) = match failure {
+        Some(f) => (f.code, f.details),
+        None => (None, Vec::new()),
     };
-    let code = code.and_then(|code| code.parse::<ErrorCode>().ok());
+    // As a server of Connect's sends it: each code under its own status, and a method it does not
+    // have as not found.
+    let sent = |code: &ErrorCode| {
+        let missing = *code == ErrorCode::Unimplemented && answer.status == StatusCode::NOT_FOUND;
+        code.http_status() == answer.status || missing
+    };
+    let code = code.and_then(|code| code.parse().ok()).filter(sent);
     let mut e = match code {
-        Some(code) => {
-            ConnectError::new(code, message.unwrap_or_default()).with_source(Instead::Connect)
-        }
-        None => ConnectError::new(ErrorCode::Unknown, "").with_source(Instead::Http(status)),
+        Some(code) => ConnectError::new(code, "").with_source(Instead::Connect),
+        None => ConnectError::new(ErrorCode::Unknown, "").with_source(Instead::Http(answer.status)),
     };
     // Those of a code this client does not know can hold the engine's own error too.
     e.details = details;
     e
+}
+
+/// Whether a body is JSON as it is: its one type says so, and it has no encoding.
+fn is_json(headers: &HeaderMap) -> bool {
+    let mut types = headers.get_all(CONTENT_TYPE).iter();
+    let (Some(kind), None) = (types.next(), types.next()) else {
+        return false;
+    };
+    let kind = kind.to_str().unwrap_or_default().split(';').next();
+    kind.is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
+        && !headers.contains_key(CONTENT_ENCODING)
 }
 
 /// Sends what `cx` holds: no header, or the key with the Bearer scheme.
@@ -269,7 +299,9 @@ fn with_key(cx: &Call) -> CallOptions {
 /// `request`, unless it is over what a door takes. The door's own answer to that is often lost: it
 /// closes the connection, as the rest is still sent.
 fn fits<M: Message>(request: M) -> Result<M, OpError> {
-    if request.encoded_len() as usize <= wire::MAX_MESSAGE {
+    // None of a message too large to have a length.
+    let len = request.try_encoded_len().ok();
+    if len.is_some_and(|len| len as usize <= wire::MAX_MESSAGE) {
         return Ok(request);
     }
     Err(OpError {
@@ -321,21 +353,11 @@ where
     }
     let source = e.source();
     let instead = source.and_then(|s| s.downcast_ref::<Instead>());
+    // Not its text, which can be the body of the answer: what answered may be no engine, and the
+    // body can hold a key (TEN-3) or the data of events.
     let why = match instead {
         Some(instead @ Instead::Http(_)) => instead.to_string(),
-        _ => match op {
-            // Its text can be the body of the answer, which can hold the created key (TEN-3), or
-            // the data of events, as sent or as stored.
-            Operation::CreateKey
-            | Operation::Emit
-            | Operation::EmitBatch
-            | Operation::GetEvent
-            | Operation::ListEvents => e.code.as_str().to_owned(),
-            Operation::Whoami
-            | Operation::ListEnvironments
-            | Operation::ListKeys
-            | Operation::RevokeKey => e.to_string(),
-        },
+        _ => e.code.as_str().to_owned(),
     };
     let refused = |kind, hint: Option<&str>| OpError {
         kind,
@@ -374,8 +396,8 @@ impl Operations for Client {
     ///
     /// # Errors
     ///
-    /// The engine's, unchanged; `Unknown` if it did not answer; `Invalid`, with nothing sent, for
-    /// data or metadata that is not UTF-8, which the wire does not carry.
+    /// As [`Client`]; `Invalid`, with nothing sent, for data or metadata that is not UTF-8, which
+    /// the wire does not carry.
     async fn emit(&self, cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError> {
         let hint = match req.idempotency_key {
             Some(_) => RETRY_KEYED,
@@ -395,7 +417,8 @@ impl Operations for Client {
     ///
     /// # Errors
     ///
-    /// As [`Client::emit`]; one item the wire does not carry refuses the whole batch.
+    /// As [`Client::emit`]; one item the wire does not carry refuses the whole batch; and `Unknown`
+    /// for an answer with another number of results than items.
     async fn emit_batch(
         &self,
         cx: &Call,
@@ -419,7 +442,7 @@ impl Operations for Client {
     ///
     /// # Errors
     ///
-    /// As [`Client::whoami`].
+    /// As [`Client`].
     async fn get_event(&self, cx: &Call, req: GetEventRequest) -> Result<Event, OpError> {
         let req = fits(req.try_into()?)?;
         let options = self.options(cx);
@@ -436,7 +459,7 @@ impl Operations for Client {
     ///
     /// # Errors
     ///
-    /// As [`Client::whoami`].
+    /// As [`Client`].
     async fn list_events(&self, cx: &Call, req: ListEventsRequest) -> Result<EventPage, OpError> {
         let req = fits(req.try_into()?)?;
         let options = self.options(cx);
@@ -452,9 +475,9 @@ impl Operations for Client {
     ///
     /// # Errors
     ///
-    /// The engine's, unchanged; `Unavailable` if it did not answer.
+    /// As [`Client`].
     async fn whoami(&self, cx: &Call, req: WhoamiRequest) -> Result<Whoami, OpError> {
-        let req = fits(req.try_into()?)?;
+        let req = req.try_into()?;
         let options = self.options(cx);
         let answer = self.identity.whoami_with_options(req, options).await;
         answered(
@@ -468,13 +491,13 @@ impl Operations for Client {
     ///
     /// # Errors
     ///
-    /// As [`Client::whoami`].
+    /// As [`Client`].
     async fn list_environments(
         &self,
         cx: &Call,
         req: ListEnvironmentsRequest,
     ) -> Result<Vec<Environment>, OpError> {
-        let req = fits(req.try_into()?)?;
+        let req = req.try_into()?;
         let options = self.options(cx);
         let answer = self
             .environments
@@ -487,8 +510,8 @@ impl Operations for Client {
     ///
     /// # Errors
     ///
-    /// The engine's, unchanged; `Unknown` if it did not answer; `Invalid`, with nothing sent, for
-    /// an expiry outside years 0001–9999, which the wire does not carry.
+    /// As [`Client`]; `Invalid`, with nothing sent, for an expiry outside years 0001–9999, which
+    /// the wire does not carry.
     async fn create_key(&self, cx: &Call, req: CreateKeyRequest) -> Result<CreatedKey, OpError> {
         let req = fits(req.try_into()?)?;
         let options = self.options(cx);
@@ -504,7 +527,7 @@ impl Operations for Client {
     ///
     /// # Errors
     ///
-    /// As [`Client::whoami`].
+    /// As [`Client`].
     async fn list_keys(&self, cx: &Call, req: ListKeysRequest) -> Result<KeyPage, OpError> {
         let req = fits(req.try_into()?)?;
         let options = self.options(cx);
@@ -520,7 +543,7 @@ impl Operations for Client {
     ///
     /// # Errors
     ///
-    /// The engine's, unchanged; `Unknown` if it did not answer.
+    /// As [`Client`].
     async fn revoke_key(&self, cx: &Call, req: RevokeKeyRequest) -> Result<(), OpError> {
         let req = fits(req.try_into()?)?;
         let options = self.options(cx);
