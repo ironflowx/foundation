@@ -184,6 +184,7 @@ fn a_url_is_http_with_a_host_and_no_user_query_or_fragment() {
         "/path",
         "http://",
         "http:///path",
+        "http://:80",
         "https://127.0.0.1:9310",
         "ftp://127.0.0.1",
         "unix:/tmp/x",
