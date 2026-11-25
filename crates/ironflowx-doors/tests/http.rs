@@ -43,7 +43,8 @@ fn client_of(protocol: &str, addr: SocketAddr) -> IdentityServiceClient<HttpClie
     IdentityServiceClient::new(http, config)
 }
 
-/// Sends one HTTP/1.0 request, whose answer is not chunked, and reads the answer to its end: its head and its body.
+/// Sends one HTTP/1.0 request, whose answer is not chunked, and reads the answer to its end: its
+/// head and its body.
 async fn send(
     addr: SocketAddr,
     line: &str,
