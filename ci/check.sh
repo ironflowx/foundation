@@ -49,7 +49,7 @@ step env IRONFLOWX_FACADE_FEATURES=client-tls cargo test -p ironflowx --locked -
   --test features --example whoami
 step env NO_CLIENT_TLS=1 cargo test -p ironflowx-proto --locked --test client
 step cargo test -p ironflowx-proto --locked --test client --features client-tls,rustls/ring
-step cargo test -p ironflowx-events --locked --features serde_json/arbitrary_precision
+step cargo test -p ironflowx-events -p ironflowx-cli --locked --features serde_json/arbitrary_precision
 step cargo deny check
 step ci/purity.sh
 step sh -c 'cd examples/embed && cargo fmt --check && cargo clippy --locked -- -D warnings && cargo run --locked'

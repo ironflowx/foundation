@@ -78,3 +78,4 @@ From 0.2 on, a milestone's PRD issue assigns its decision numbers up front and e
 | D76 | 0.3 | A stored time outside years 0001–9999 is sent as the nearer bound | Reads never fail; only the shown time is rounded |
 | D77 | 0.3 | One release ships the door, the host, the client and the CLI | The binary's first users need a surface; the CLI is the one agents use |
 | D78 | 0.3 | Every multiword field sets a snake_case `json_name`; the generator refuses one without it | One spelling on the wire, in `--json`, `describe` and CLI output |
+| D79 | 0.3 | The CLI refuses an unknown field in `--json`, at any depth; the door ignores it | A mistyped `idempotency_key` would store a second event on a retry; an older engine still accepts a newer client |

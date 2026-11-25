@@ -9,14 +9,18 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::num::NonZeroU32;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
 
-use common::{CREATED, KEY, Recording, serving, whoami};
-use ironflowx_core::{Address, ErrorKind};
-use ironflowx_proto::{OpError, Whoami};
+use common::{CREATED, KEY, Recording, event, event_page, serving, whoami};
+use ironflowx_core::{Address, ErrorKind, Scope, Timestamp};
+use ironflowx_proto::{
+    CreateKeyRequest, EmitBatchRequest, EmitRequest, Event, EventPage, GetEventRequest,
+    ListEventsRequest, ListKeysRequest, OpError, RevokeKeyRequest, Whoami,
+};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use serde_json::{Value, json};
 
@@ -80,6 +84,15 @@ impl Served {
         *self.operations.answer.lock().unwrap() = answer;
     }
 
+    /// What it answers of events: this one, and a page of it.
+    fn holds(&self, event: Event, next: Option<&str>) {
+        *self.operations.event.lock().unwrap() = Some(event.clone());
+        *self.operations.page.lock().unwrap() = Some(EventPage {
+            events: vec![event],
+            next: next.map(str::to_owned),
+        });
+    }
+
     fn whoami(&self) -> Command {
         let mut command = command(&["whoami"]);
         command.env("IRONFLOWX_URL", &self.url);
@@ -128,7 +141,7 @@ fn every_field_that_is_not_optional_is_printed() {
 }
 
 /// Each generated command: the answer on stdout, the new key of `keys create` there alone (TEN-3),
-/// and the request, which has no flags yet.
+/// and the request no flag gives.
 #[test]
 fn each_command_prints_its_operations_answer() {
     let served = Served::answering(Ok(whoami()));
@@ -150,15 +163,15 @@ fn each_command_prints_its_operations_answer() {
         r#""name":"main","project_id":"0190b5f0-0000-7000-8000-000000000004"}"#,
     );
     let event = concat!(
-        r#"{"data":"\t{ \"b\": 1.50,\r\n \"a\": [9007199254740993, \"\\u00e9é\\\\\\\"\", 1e2] } ","#,
+        r#"{"data":{"b":1.50,"a":[9007199254740993,"\u00e9é\\\"",1e2]},"#,
         r#""emitted_by":"key:0190b5f0-0000-7000-8000-000000000001","#,
         r#""event_id":"0190b5f0-0000-7000-8000-000000000005","idempotency_key":"clé\u0001","#,
-        "\"metadata\":\"{\\\"z\\\":\\\"\u{7f}\u{2028}😀\\\\ud83d\\\\ude00\\\\/\\\" , \\\"a\\\":-0}\",",
+        "\"metadata\":{\"z\":\"\u{7f}\u{2028}😀\\ud83d\\ude00\\/\",\"a\":-0},",
         r#""name":"commande.passée","time":"2023-11-14T22:13:20.120Z","#,
         r#""version":"9223372036854775807"}"#,
     );
     let plain = concat!(
-        r#"{"data":"null","emitted_by":"embedder:a b","#,
+        r#"{"data":null,"emitted_by":"embedder:a b","#,
         r#""event_id":"0190b5f0-0000-7000-8000-000000000005","#,
         r#""name":"commande.passée","time":"2023-11-14T22:13:20.120Z","version":"1"}"#,
     );
@@ -211,6 +224,674 @@ fn each_command_prints_its_operations_answer() {
         assert_eq!((out.status.code(), out.stderr), (Some(0), vec![]));
         assert_eq!(served.operations.take_requests(), [request]);
         assert_eq!(served.operations.take(), [Some(KEY.to_owned())]);
+    }
+}
+
+/// A request, from its flags and from its JSON alike, and where that is read from.
+#[test]
+fn a_request_is_what_its_flags_or_its_json_give() {
+    let served = Served::answering(Ok(whoami()));
+    let dir = tempfile::tempdir().unwrap();
+    let file = |name: &str, text: &str| {
+        std::fs::write(dir.path().join(name), text).unwrap();
+        format!("@{name}")
+    };
+    let (data, metadata) = ("\n{ \"id\" : 9007199254740993 }\r\n", "{ }\n");
+    let (data_file, metadata_file) = (file("data", data), file("meta data", metadata));
+    let emit = |name: &str, data: Option<&str>| EmitRequest {
+        name: name.into(),
+        data: data.map(Into::into),
+        metadata: None,
+        version: None,
+        idempotency_key: None,
+    };
+    let whole = EmitRequest {
+        metadata: Some(metadata.into()),
+        version: Some(3),
+        idempotency_key: Some("k".into()),
+        ..emit("a.b", Some(data))
+    };
+    let whole_json = json!({
+        "name": "a.b",
+        "data": data,
+        "metadata": metadata,
+        "version": "3",
+        "idempotency_key": "k",
+    });
+    // As a person would keep it.
+    let whole_json = format!("\n{whole_json:#}\n");
+    let whole_file = file("whole", &whole_json);
+    let batch = EmitBatchRequest {
+        items: vec![emit("a.one", Some("1")), emit("a.two", None)],
+    };
+    let batch_json = r#"{"items":[{"name":"a.one","data":"1"},{"name":"a.two"}]}"#;
+    let created = CreateKeyRequest {
+        scopes: [Scope::Read, Scope::Write].into(),
+        expires_at: Some(Timestamp::from_millis(4_070_908_800_120)),
+        label: Some("agent é".into()),
+    };
+    let created_json = r#"{"scopes":["write","read"],"expires_at":"2099-01-01T01:00:00.120+01:00","label":"agent é"}"#;
+    let listed = ListEventsRequest {
+        limit: NonZeroU32::new(4_294_967_295),
+        cursor: Some("0123.7".into()),
+    };
+    let keys = ListKeysRequest {
+        limit: NonZeroU32::new(7),
+        cursor: Some(String::new()),
+    };
+    let id = "0190b5f0-0000-7000-8000-000000000005";
+    let got = GetEventRequest {
+        event_id: id.into(),
+    };
+    let revoked = RevokeKeyRequest { key_id: id.into() };
+    for (args, stdin, request) in [
+        (
+            &[
+                "events",
+                "emit",
+                "--name",
+                "a.b",
+                "--data",
+                data,
+                "--metadata",
+                metadata,
+            ][..],
+            "",
+            format!(
+                "{:?}",
+                EmitRequest {
+                    version: None,
+                    idempotency_key: None,
+                    ..whole.clone()
+                }
+            ),
+        ),
+        (
+            &[
+                "events",
+                "emit",
+                "--idempotency-key",
+                "k",
+                "--version=3",
+                "--metadata",
+                &metadata_file,
+                "--data",
+                &data_file,
+                "--name",
+                "a.b",
+            ],
+            "",
+            format!("{whole:?}"),
+        ),
+        (
+            &["events", "emit", "--json", &whole_json],
+            "",
+            format!("{whole:?}"),
+        ),
+        (
+            &["events", "emit", "--json", &whole_file],
+            "",
+            format!("{whole:?}"),
+        ),
+        (
+            &["events", "emit", "--json", "-"],
+            &whole_json,
+            format!("{whole:?}"),
+        ),
+        // Text as it is, though a file or a flag has its name, and a number of either sign.
+        (
+            &["events", "emit", "--name", "@data"],
+            "",
+            format!("{:?}", emit("@data", None)),
+        ),
+        (
+            &["events", "emit", "--name", "", "--data", "-1e-5"],
+            "",
+            format!("{:?}", emit("", Some("-1e-5"))),
+        ),
+        (
+            &["events", "emit", "--data", "-"],
+            "1",
+            format!("{:?}", emit("", Some("-"))),
+        ),
+        (
+            &["events", "emit", "--data", "--name"],
+            "",
+            format!("{:?}", emit("", Some("--name"))),
+        ),
+        // `null` is an absent field, as on the wire.
+        (
+            &[
+                "events",
+                "emit",
+                "--json",
+                r#"{"name":null,"version":null}"#,
+            ],
+            "",
+            format!("{:?}", emit("", None)),
+        ),
+        (
+            &["events", "emit-batch", "--json", batch_json],
+            "",
+            format!("{batch:?}"),
+        ),
+        (
+            &["events", "emit-batch", "--json", "-"],
+            batch_json,
+            format!("{batch:?}"),
+        ),
+        (&["events", "get", "--event-id", id], "", format!("{got:?}")),
+        (
+            &[
+                "events",
+                "list",
+                "--limit",
+                "4294967295",
+                "--cursor",
+                "0123.7",
+            ],
+            "",
+            format!("{listed:?}"),
+        ),
+        (
+            &[
+                "events",
+                "list",
+                "--json",
+                r#"{"limit":4294967295,"cursor":"0123.7"}"#,
+            ],
+            "",
+            format!("{listed:?}"),
+        ),
+        (
+            &[
+                "keys",
+                "create",
+                "--scopes",
+                "write",
+                "--label",
+                "agent é",
+                "--expires-at",
+                "2099-01-01T00:00:00.12Z",
+                "--scopes",
+                "read",
+            ],
+            "",
+            format!("{created:?}"),
+        ),
+        (
+            &["keys", "create", "--json", created_json],
+            "",
+            format!("{created:?}"),
+        ),
+        (
+            &["keys", "list", "--limit", "7", "--cursor", ""],
+            "",
+            format!("{keys:?}"),
+        ),
+        (
+            &["keys", "revoke", "--key-id", id],
+            "",
+            format!("{revoked:?}"),
+        ),
+        (
+            &["environments", "list", "--json", "{}"],
+            "",
+            "ListEnvironmentsRequest".into(),
+        ),
+        (&["whoami", "--json", " {}\n"], "", "WhoamiRequest".into()),
+    ] {
+        let mut command = command(args);
+        command
+            .env("IRONFLOWX_URL", &served.url)
+            .env("IRONFLOWX_KEY", KEY)
+            .current_dir(dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        // One that reads none of it can end first.
+        let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
+        let out = child.wait_with_output().unwrap();
+        let taken = served.operations.take_requests();
+        // A recording batch answers more results than these items, which the client refuses.
+        if args[1] == "emit-batch" {
+            let refused = json!({
+                "code": "unknown",
+                "hint": "retry unchanged only if every item had an idempotency key and keeps it; \
+                         else check first what landed",
+                "message": "the engine did not answer: unknown",
+                "retryable": false,
+            });
+            assert_eq!(envelope(&out), (refused, 6), "{args:?}");
+        } else {
+            assert_eq!(
+                (out.status.code(), &*out.stderr),
+                (Some(0), &b""[..]),
+                "{args:?}"
+            );
+        }
+        assert_eq!(taken, [request], "{args:?}");
+    }
+}
+
+/// What gives no request is a usage error, and nothing is sent.
+#[test]
+fn what_is_no_request_is_a_usage_error() {
+    let served = Served::answering(Ok(whoami()));
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("latin"), b"\"\xe9\"").unwrap();
+    let secret = &KEY[41..];
+    let field = format!(r#"{{"{secret}":1}}"#);
+    let version = format!(r#"{{"version":"{KEY}"}}"#);
+    let emit = |rest: &[&'static str]| [&["events", "emit"], rest].concat();
+    let json = |text: &'static str| emit(&["--json", text]);
+    let hinted = |message: &str, hint: &str| {
+        let (mut envelope, code) = invalid(message);
+        envelope["hint"] = json!(hint);
+        (envelope, code)
+    };
+    let text = "data is JSON text: pass a string";
+    let decoding = |why: &str| invalid(&format!("the request does not decode: {why}"));
+    let number = "expected an i64 as a quoted decimal string, integer, float, or null";
+    for (args, expected) in [
+        (
+            emit(&["--version", "x"]),
+            unread(&format!(
+                "invalid value 'x' for '--version <VERSION>': invalid value: string \"x\", {number}"
+            )),
+        ),
+        (
+            emit(&["--version", "9223372036854775808"]),
+            unread(&format!(
+                "invalid value '9223372036854775808' for '--version <VERSION>': invalid value: \
+                 string \"9223372036854775808\", {number}"
+            )),
+        ),
+        (
+            emit(&["--version", "-1"]),
+            unread("unexpected argument '-1' found"),
+        ),
+        (
+            vec!["events", "list", "--limit", "null"],
+            unread(
+                "invalid value 'null' for '--limit <LIMIT>': invalid value: string \"null\", \
+                 expected a u32 as integer, string, float, or null",
+            ),
+        ),
+        (
+            vec!["events", "list", "--limit", "0"],
+            invalid("a limit is at least 1"),
+        ),
+        (
+            vec!["keys", "create", "--expires-at", "tomorrow"],
+            unread(
+                "invalid value 'tomorrow' for '--expires-at <EXPIRES_AT>': \
+                 invalid RFC 3339 timestamp: tomorrow",
+            ),
+        ),
+        (
+            vec!["keys", "create", "--expires-at", KEY],
+            unread(
+                "invalid value <hidden> for '--expires-at <EXPIRES_AT>': \
+                 invalid RFC 3339 timestamp: <hidden>",
+            ),
+        ),
+        (
+            vec![
+                "keys",
+                "create",
+                "--expires-at",
+                "2099-01-01T00:00:00.0001Z",
+            ],
+            invalid("a time is in whole milliseconds and in years 0001 to 9999"),
+        ),
+        (
+            vec!["keys", "create", "--scopes", "read", "--scopes", "reed"],
+            invalid("a scope is read, write or admin"),
+        ),
+        (
+            emit(&["--name", "a", "--name", "b"]),
+            unread("the argument '--name <NAME>' cannot be used multiple times"),
+        ),
+        (
+            emit(&["--data"]),
+            unread("a value is required for '--data <DATA>' but none was supplied"),
+        ),
+        (
+            emit(&["--data", "@none"]),
+            unread(
+                "invalid value '@none' for '--data <DATA>': No such file or directory (os error 2)",
+            ),
+        ),
+        (
+            emit(&["--metadata", "@latin"]),
+            unread(
+                "invalid value '@latin' for '--metadata <METADATA>': \
+                 stream did not contain valid UTF-8",
+            ),
+        ),
+        (
+            emit(&["--name", "a", "--json", "{}"]),
+            unread("the argument '--name <NAME>' cannot be used with '--json <JSON>'"),
+        ),
+        (
+            emit(&["--json", "{}", "--data", "1", "--name", "a"]),
+            unread("the argument '--json <JSON>' cannot be used with: --data <DATA> --name <NAME>"),
+        ),
+        (
+            vec!["events", "emit-batch", "--items", "{}"],
+            unread("unexpected argument '--items' found"),
+        ),
+        (
+            json("@none"),
+            invalid("cannot read what --json names: No such file or directory (os error 2)"),
+        ),
+        (
+            json("@latin"),
+            invalid("cannot read what --json names: stream did not contain valid UTF-8"),
+        ),
+        (
+            vec!["whoami", "--json", "-"],
+            decoding("EOF while parsing a value at line 1 column 0"),
+        ),
+        (
+            json("{"),
+            decoding("EOF while parsing an object at line 1 column 1"),
+        ),
+        (
+            json("{} {}"),
+            decoding("trailing characters at line 1 column 4"),
+        ),
+        (
+            json("null"),
+            decoding("invalid type: null, expected struct EmitRequest at line 1 column 4"),
+        ),
+        // What decoding would ignore, unread.
+        (
+            json(r#"{"name":"a.b","nope":1e400}"#),
+            invalid("the request has no field 'nope'"),
+        ),
+        (
+            json(r#"{"name":"a.b","data":1e400}"#),
+            hinted("data is not a string", text),
+        ),
+        (
+            json(r#"{"name":"a.b","data ":"1"}"#),
+            invalid("the request has no field 'data '"),
+        ),
+        // Its label is no text; the caller's key is looked for in it all the same.
+        (
+            vec!["keys", "create", "--json", r#"{"label":"\ud800"}"#],
+            decoding("unexpected end of hex escape at line 1 column 17"),
+        ),
+        // What an argument holds does not end the message, as what clap adds does.
+        (
+            emit(&["--version", "7\n\nUsage: x"]),
+            unread(&format!(
+                "invalid value '7 Usage: x' for '--version <VERSION>': invalid value: string \
+                 \"7\\n\\nUsage: x\", {number}"
+            )),
+        ),
+        (
+            emit(&["--version", "7\n\nFor more information"]),
+            unread(&format!(
+                "invalid value '7 For more information' for '--version <VERSION>': invalid \
+                 value: string \"7\\n\\nFor more information\", {number}"
+            )),
+        ),
+        (
+            emit(&["x\n\nUsage: y"]),
+            unread("unexpected argument 'x Usage: y' found"),
+        ),
+        (
+            emit(&["--version", "7\n\nx"]),
+            unread(&format!(
+                "invalid value '7 x' for '--version <VERSION>': invalid value: string \
+                 \"7\\n\\nx\", {number}"
+            )),
+        ),
+        // The decoder's own: not a later one of two; nor is the earlier one unread.
+        (
+            json(r#"{"idempotency_key":"a","idempotency_key":"b"}"#),
+            decoding("duplicate field `idempotency_key` at line 1 column 40"),
+        ),
+        (
+            vec![
+                "events",
+                "emit-batch",
+                "--json",
+                r#"{"items":[{"nope":1}],"items":[]}"#,
+            ],
+            invalid("the request has no field 'items[0].nope'"),
+        ),
+        (
+            json(r#"{"version":true}"#),
+            decoding(&format!(
+                "invalid type: boolean `true`, {number} at line 1 column 15"
+            )),
+        ),
+        (
+            vec!["events", "emit", "--json", &version],
+            decoding(&format!(
+                "invalid value: string <hidden> {number} at line 1 column 97"
+            )),
+        ),
+        (
+            json(r#"{"name":"a.b","idempotncy_key":"k"}"#),
+            invalid("the request has no field 'idempotncy_key'"),
+        ),
+        (
+            json(r#"{"name":"a.b","idempotencyKey":"k"}"#),
+            invalid("the request has no field 'idempotencyKey'"),
+        ),
+        (
+            vec!["events", "emit", "--json", &field],
+            invalid("the request has no field '<hidden>'"),
+        ),
+        (
+            vec!["whoami", "--json", r#"{"a":1}"#],
+            invalid("the request has no field 'a'"),
+        ),
+        (
+            vec![
+                "events",
+                "emit-batch",
+                "--json",
+                r#"{"items":[{"name":"a"},{"name":"b","idempotncy_key":"k"}]}"#,
+            ],
+            invalid("the request has no field 'items[1].idempotncy_key'"),
+        ),
+        (
+            json(r#"{"name":"a.b","data":{"id":1}}"#),
+            hinted("data is not a string", text),
+        ),
+        (
+            json(r#"{"data":null}"#),
+            hinted("data is not a string", text),
+        ),
+        (
+            json(r#"{"metadata":{}}"#),
+            hinted(
+                "metadata is not a string",
+                "metadata is JSON text: pass a string",
+            ),
+        ),
+        (
+            vec![
+                "events",
+                "emit-batch",
+                "--json",
+                r#"{"items":[{"name":"a"},{"name":"b","data":7}]}"#,
+            ],
+            hinted("items[1].data is not a string", text),
+        ),
+        (
+            vec!["keys", "create", "--json", r#"[["read"]]"#],
+            decoding("invalid type: sequence, expected an object at line 1 column 0"),
+        ),
+        (
+            vec!["events", "emit-batch", "--json", r#"{"items":[["a"]]}"#],
+            decoding("invalid type: sequence, expected an object at line 1 column 10"),
+        ),
+    ] {
+        let mut command = command(&args);
+        command
+            .env("IRONFLOWX_URL", &served.url)
+            .env("IRONFLOWX_KEY", KEY)
+            .current_dir(dir.path());
+        let out = command.output().unwrap();
+        assert_eq!(envelope(&out), expected, "{args:?}");
+    }
+    assert!(served.operations.take().is_empty());
+}
+
+/// TEN-3: what an agent stored can hold its own key, with reason; its answer is refused all the
+/// same, and nothing stored is lost by it.
+#[test]
+fn stored_data_that_repeats_the_callers_key_is_not_printed() {
+    let served = Served::answering(Ok(whoami()));
+    let secret = &KEY[41..];
+    let other = KEY.replace('A', "B");
+    let call = |args: &[&str], key: &str| {
+        let mut command = command(args);
+        command.env("IRONFLOWX_URL", &served.url);
+        command.env("IRONFLOWX_KEY", key).output().unwrap()
+    };
+    let message = "the answer is not printed, since it repeats the key the CLI was given";
+    let refused = json!({"code": "internal", "message": message, "retryable": false});
+    let plain = || event_page().events.remove(1);
+    let printed = |data: &str, rest: &str| {
+        format!(
+            concat!(
+                r#"{{"data":{},"emitted_by":"embedder:a b","#,
+                r#""event_id":"0190b5f0-0000-7000-8000-000000000005",{}"#,
+                r#""name":"commande.passée","time":"2023-11-14T22:13:20.120Z","version":"1"}}"#,
+            ),
+            data, rest
+        )
+    };
+    for held in [KEY, secret] {
+        let text = format!("{{ \"note\" : \"the key is {held}.\" }}");
+        let compact = format!("{{\"note\":\"the key is {held}.\"}}");
+        for (event, data, rest) in [
+            (
+                Event {
+                    data: text.clone().into(),
+                    ..plain()
+                },
+                &*compact,
+                String::new(),
+            ),
+            (
+                Event {
+                    metadata: Some(text.clone().into()),
+                    ..plain()
+                },
+                "null",
+                format!(r#""metadata":{compact},"#),
+            ),
+            (
+                Event {
+                    idempotency_key: Some(held.to_owned()),
+                    ..plain()
+                },
+                "null",
+                format!(r#""idempotency_key":"{held}","#),
+            ),
+        ] {
+            let printed = printed(data, &rest);
+            served.holds(event, Some("0123.7"));
+            for (args, printed) in [
+                (["events", "get"], format!("{printed}\n")),
+                (
+                    ["events", "list"],
+                    format!("{{\"events\":[{printed}],\"next\":\"0123.7\"}}\n"),
+                ),
+            ] {
+                let out = call(&args, KEY);
+                assert_eq!(envelope(&out), (refused.clone(), 1), "{args:?} {held}");
+                // Another key's holder reads it.
+                let out = call(&args, &other);
+                assert_eq!(out.status.code(), Some(0), "{args:?} {held}");
+                assert_eq!(stdout(&out), printed, "{args:?} {held}");
+            }
+        }
+    }
+    // A repeat that its JSON writes another way is not found.
+    let data = format!("\"{}\\u0041{}\"", &KEY[41..60], &KEY[61..]);
+    let event = Event {
+        data: data.clone().into(),
+        ..plain()
+    };
+    served.holds(event, None);
+    let out = call(&["events", "get"], KEY);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(stdout(&out), format!("{}\n", printed(&data, "")));
+}
+
+/// What answers may be no engine: JSON text that is none does not make its line JSON.
+#[test]
+fn json_text_that_is_no_json_is_not_printed() {
+    let served = Served::answering(Ok(whoami()));
+    for data in [
+        "1 2",
+        "",
+        "1,\"name\":\"another\"",
+        "{\"a\":1}\n{\"b\":2}",
+        "\"\n\"",
+        "'a'",
+    ] {
+        let event = Event {
+            data: data.into(),
+            ..event()
+        };
+        served.holds(event, None);
+        for args in [["events", "get"], ["events", "list"]] {
+            let mut command = command(&args);
+            let out = command.env("IRONFLOWX_URL", &served.url).output().unwrap();
+            let message = "the answer holds JSON text that is no JSON";
+            let refused = json!({"code": "internal", "message": message, "retryable": false});
+            assert_eq!(envelope(&out), (refused, 1), "{data}");
+        }
+    }
+}
+
+/// TEN-3: a label is in the answer, which would not be printed, and the new key in it lost.
+#[test]
+fn a_key_is_not_created_with_the_callers_in_its_label() {
+    let served = Served::answering(Ok(whoami()));
+    let own = &KEY[41..];
+    let part = &KEY[42..];
+    let other = KEY.replace('A', "B");
+    let labelled = |label: &str| format!(r#"{{"label":"{label}"}}"#);
+    let escaped = labelled(&format!("{}\\u0041{}", &KEY[41..60], &KEY[61..]));
+    let message = "no key is created, since the request repeats the key the CLI was given";
+    for (args, refused) in [
+        (&["--label", KEY][..], true),
+        (&["--label", &format!("x{own}")], true),
+        (&["--json", &labelled(own)], true),
+        (&["--json", &escaped], true),
+        (&["--label", part], false),
+        (&["--json", &labelled(part)], false),
+        (&["--label", &other], false),
+    ] {
+        let mut command = command(&[&["keys", "create"], args].concat());
+        command.env("IRONFLOWX_URL", &served.url);
+        let out = command.env("IRONFLOWX_KEY", KEY).output().unwrap();
+        let sent = served.operations.take_requests();
+        if refused {
+            assert_eq!(envelope(&out), invalid(message), "{args:?}");
+            assert!(sent.is_empty(), "{args:?}");
+        } else {
+            assert_eq!(out.status.code(), Some(0), "{args:?}");
+            let label = if args[1] == other { &*other } else { part };
+            let request = CreateKeyRequest {
+                label: Some(label.to_owned()),
+                ..Default::default()
+            };
+            assert_eq!(sent, [format!("{request:?}")], "{args:?}");
+        }
     }
 }
 
@@ -353,9 +1034,8 @@ fn a_server_the_systems_store_does_not_trust_is_unavailable() {
     }
 }
 
-#[test]
-fn a_terminal_gets_indented_output() {
-    let served = Served::answering(Ok(whoami()));
+/// What `command` prints on a terminal, which must succeed.
+fn on_a_terminal(mut command: Command) -> String {
     let terminal = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
     grantpt(&terminal).unwrap();
     unlockpt(&terminal).unwrap();
@@ -365,7 +1045,6 @@ fn a_terminal_gets_indented_output() {
         .write(true)
         .open(OsStr::from_bytes(name.as_bytes()))
         .unwrap();
-    let mut command = served.whoami();
     command.stdout(end).stderr(Stdio::piped());
     let mut child = command.spawn().unwrap();
     // Its copy of the terminal's end.
@@ -381,6 +1060,18 @@ fn a_terminal_gets_indented_output() {
     let mut piped = child.stderr.take().unwrap();
     piped.read_to_string(&mut stderr).unwrap();
     assert_eq!((child.wait().unwrap().code(), &*stderr), (Some(0), ""));
+    // As a terminal's end takes a newline.
+    let printed = String::from_utf8(printed).unwrap();
+    assert_eq!(
+        printed.matches('\n').count(),
+        printed.matches("\r\n").count()
+    );
+    printed.replace("\r\n", "\n")
+}
+
+#[test]
+fn a_terminal_gets_indented_output() {
+    let served = Served::answering(Ok(whoami()));
     let expected = r#"{
   "environment": "default/main",
   "expires_at": "2027-01-15T08:00:00.123Z",
@@ -391,9 +1082,23 @@ fn a_terminal_gets_indented_output() {
   ]
 }
 "#;
-    // As a terminal's end takes a newline.
-    let printed = String::from_utf8(printed).unwrap();
-    assert_eq!(printed, expected.replace('\n', "\r\n"));
+    assert_eq!(on_a_terminal(served.whoami()), expected);
+    // What an event holds stays on its line.
+    let mut get = command(&["events", "get"]);
+    get.env("IRONFLOWX_URL", &served.url);
+    let expected = r#"{
+  "data": {"b":1.50,"a":[9007199254740993,"\u00e9é\\\"",1e2]},
+  "emitted_by": "key:0190b5f0-0000-7000-8000-000000000001",
+  "event_id": "0190b5f0-0000-7000-8000-000000000005",
+  "idempotency_key": "clé\u0001",
+  "metadata": {"z":"DEL SEP😀\ud83d\ude00\/","a":-0},
+  "name": "commande.passée",
+  "time": "2023-11-14T22:13:20.120Z",
+  "version": "9223372036854775807"
+}
+"#;
+    let expected = expected.replace("DEL SEP", "\u{7f}\u{2028}");
+    assert_eq!(on_a_terminal(get), expected);
 }
 
 /// SRV-11, D64: the engine's error, its kind's code, `retryable` and exit code.
@@ -580,6 +1285,18 @@ fn help_is_text() {
         (&["--help"][..], "Usage: ironflowx <COMMAND>"),
         (&["-h"], "Usage: ironflowx <COMMAND>"),
         (&["whoami", "--help"], "Usage: ironflowx whoami [OPTIONS]"),
+        (
+            &["events", "emit", "--help"],
+            "--data <DATA>\n          JSON text, or @<file>\n",
+        ),
+        (
+            &["keys", "create", "--help"],
+            "--scopes <SCOPES>          May be repeated\n",
+        ),
+        (
+            &["events", "emit-batch", "--help"],
+            "The whole request, in place of its flags: JSON, @<file> or -, stdin\n",
+        ),
         (&["version", "--help"], "Usage: ironflowx version"),
         (&["serve", "--help"], "Usage: ironflowx serve [OPTIONS]"),
     ] {

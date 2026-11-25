@@ -95,8 +95,8 @@ jobs:
           NO_CLIENT_TLS: 1
       # Feature unification can switch rustls's other provider on in any embedder's build; it then has no default.
       - run: cargo test -p ironflowx-proto --locked --test client --features client-tls,rustls/ring
-      # Feature unification can switch arbitrary_precision on in any embedder's build; numbers then reach the event rules' visitor as text.
-      - run: cargo test -p ironflowx-events --locked --features serde_json/arbitrary_precision
+      # Feature unification can switch arbitrary_precision on in any embedder's build; numbers then reach the event rules' visitor as text, and a Value takes an object for a number.
+      - run: cargo test -p ironflowx-events -p ironflowx-cli --locked --features serde_json/arbitrary_precision
 
   # deny.toml lists the Linux and macOS targets, so one run covers both.
   deny:
