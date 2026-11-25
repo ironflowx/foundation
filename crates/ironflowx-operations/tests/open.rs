@@ -52,9 +52,18 @@ fn only_a_marked_bootstrap_counts() {
 #[test]
 fn a_broken_control_plane_is_a_bootstrap_read_error() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("control.db"), "not a database").unwrap();
+    let path = dir.path().join("control.db");
+    std::fs::write(&path, "not a database").unwrap();
+    let StoreError::Failed(expected) =
+        ControlPlane::bootstrap_state(&path).expect_err("the control plane is corrupt")
+    else {
+        panic!("corruption should fail the read");
+    };
     let error = is_bootstrapped(dir.path()).expect_err("bootstrap read failed");
-    assert!(matches!(error, EngineError::Store(StoreError::Failed(_))));
+    let EngineError::Store(StoreError::Failed(message)) = error else {
+        panic!("expected the failed store read, got {error:?}");
+    };
+    assert_eq!(message, expected);
 }
 
 /// A `control.db` with no bootstrap in it is bootstrapped, with a seed or without: one with its

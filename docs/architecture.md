@@ -238,11 +238,12 @@ fn admit(grant: &Grant, required: Option<Scope>) -> Result<(), MissingScope>;   
 fn may_create(creator: &Grant, scopes: &BTreeSet<Scope>, expires_at: Option<Timestamp>, label: Option<&str>,
               now: Timestamp) -> Result<(), CreateRefusal>;
 
-// ironflowx-store: blocking; the engine calls it under spawn_blocking, a recovery on its caller's
-// thread. A write takes SQLite's write lock (BEGIN IMMEDIATE) first, then reads now from the clock it is given.
+// ironflowx-store: blocking; async Engine methods call it under spawn_blocking.
+// is_bootstrapped and recover_admin_key use the caller's thread.
+// A write takes SQLite's write lock (BEGIN IMMEDIATE) first, then reads now from the clock it is given.
 impl ControlPlane {
     fn open(path: &Path) -> Result<ControlPlane, StoreError>;               // creates the schema; refuses another format
-    fn bootstrap_state(path: &Path) -> Result<BootstrapState, StoreError>;  // writes no row, leaves no file; refuses another format
+    fn bootstrap_state(path: &Path) -> Result<BootstrapState, StoreError>;  // writes no row, may rebuild -shm; refuses another format
     // StoreError Format | Failed(String)
     // BootstrapState: NoFile | Unbootstrapped | Unmarked { env: EnvRef } | Marked { env: EnvRef }
     fn ensure_bootstrap(&self, b: &Bootstrap, clock: &dyn Clock) -> Result<(), StoreError>; // one transaction
