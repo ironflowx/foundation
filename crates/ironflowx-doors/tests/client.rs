@@ -78,7 +78,12 @@ async fn every_error_crosses_to_the_client() {
 async fn an_address_prints_back_exactly() {
     let (addr, operations) = serving(Ok(whoami())).await;
     let client = Client::new(&format!("http://{addr}/")).unwrap();
-    for (project, environment) in [("default", "main"), ("a", "b/c"), ("", ""), ("a/b", "c")] {
+    for (project, environment, split) in [
+        ("default", "main", ("default", "main")),
+        ("a", "b/c", ("a", "b/c")),
+        ("a/b", "c", ("a", "b/c")),
+        ("", "", ("", "")),
+    ] {
         let sent = Whoami {
             environment: Address::new(project, environment),
             expires_at: None,
@@ -87,10 +92,9 @@ async fn an_address_prints_back_exactly() {
         };
         *operations.answer.lock().unwrap() = Ok(sent.clone());
         let got = ask(&client, &call(KEY)).await.unwrap();
-        assert_eq!(
-            got.environment.to_string(),
-            format!("{project}/{environment}")
-        );
+        let text = format!("{project}/{environment}");
+        assert_eq!(got.environment.to_string(), text);
+        assert_eq!(got.environment, Address::new(split.0, split.1), "{text}");
         assert_eq!((got.scopes, got.expires_at), (sent.scopes, None));
     }
 }

@@ -324,3 +324,13 @@ async fn a_callers_deadline_is_honored_on_every_protocol() {
     }
     assert_eq!(operations.take().len(), 1 + PROTOCOLS.len());
 }
+
+#[test]
+#[should_panic(expected = "a slot opens once")]
+fn a_slot_opens_once() {
+    let slot = Slot::starting();
+    for _ in 0..2 {
+        let state = Arc::new(Mutex::new(Ok(())));
+        slot.open(Recording::answering(Ok(whoami())), Ready(state));
+    }
+}

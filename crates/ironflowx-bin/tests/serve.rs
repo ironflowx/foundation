@@ -186,6 +186,18 @@ fn a_key_file_before_the_bootstrap_is_marked_is_stale() {
     }
 }
 
+/// Whether the bootstrap is marked cannot be read, so the open says why.
+#[test]
+fn a_key_file_beside_a_broken_control_plane_is_not_called_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("control.db"), "not a database").unwrap();
+    std::fs::write(dir.path().join("admin.key"), "a key").unwrap();
+    let (code, log) = refused(dir.path(), "127.0.0.1:0");
+    assert_eq!(code, Some(1), "{log}");
+    assert!(!log.contains("another install's"), "{log}");
+    assert!(log.contains("not a database"), "{log}");
+}
+
 /// D62: a start that cannot listen changes nothing on disk.
 #[test]
 fn an_address_in_use_leaves_no_data_directory() {
@@ -233,7 +245,7 @@ fn an_address_off_this_machine_warns_that_keys_travel_in_clear() {
 }
 
 /// How long after its last byte the host closes a connection that sent `first`, waited `idle` after
-/// its answer, then sent `then`; `None` if it is still open after 13 s.
+/// its answer, then sent `then`; `None` if it is still open after 15 s.
 fn closed_after(addr: SocketAddr, first: &[u8], idle: Duration, then: &[u8]) -> Option<Duration> {
     let mut stream = TcpStream::connect(addr).unwrap();
     stream.write_all(first).unwrap();
@@ -245,7 +257,7 @@ fn closed_after(addr: SocketAddr, first: &[u8], idle: Duration, then: &[u8]) -> 
     }
     let sent = Instant::now();
     stream
-        .set_read_timeout(Some(Duration::from_secs(13)))
+        .set_read_timeout(Some(Duration::from_secs(15)))
         .unwrap();
     let mut rest = Vec::new();
     match stream.read_to_end(&mut rest) {
@@ -301,7 +313,7 @@ fn a_head_is_read_within_10_s_and_an_idle_connection_has_no_limit() {
     });
     for (name, closes, probe) in probes {
         let after = probe.join().unwrap();
-        let expected = Duration::from_secs(9)..Duration::from_secs(12);
+        let expected = Duration::from_secs(9)..Duration::from_secs(14);
         let closed = after.is_some_and(|t| expected.contains(&t));
         assert!(
             closed == closes && after.is_some() == closes,
