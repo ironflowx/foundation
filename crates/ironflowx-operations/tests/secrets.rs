@@ -424,6 +424,24 @@ fn no_secret_is_stored_or_logged() {
     for half in ["4OHi4+Tl5ufo6err7O3u7", "/Dx8vP09fb3+Pn6+/z9/v8"] {
         assert_eq!(leak(half, [high_key.expose()]), Some("a secret's text"));
     }
+    // And each half within base64 of what holds it, alone after `key_<id>_`, `xkey_<id>_` and
+    // `Bearer key_<id>_`, so at each place in a group; then a whole `Authorization` value's,
+    // and the bits after an `x`.
+    for form in [
+        "a2V5XzAxOWE5ZjNlLTdjMmItN2Q0MS04YTNlLTIwMDAwMDAwMDBlMF80T0hpNC1UbDV1Zm82ZXJyN08zdTcuLi4uLi4uLi4uLi4uLi4uLi4uLi4u",
+        "a2V5XzAxOWE5ZjNlLTdjMmItN2Q0MS04YTNlLTIwMDAwMDAwMDBlMF8uLi4uLi4uLi4uLi4uLi4uLi4uLi5fRHg4dlAwOWZiMy1QbjYtX3o5X3Y4",
+        "eGtleV8wMTlhOWYzZS03YzJiLTdkNDEtOGEzZS0yMDAwMDAwMDAwZTBfNE9IaTQtVGw1dWZvNmVycjdPM3U3Li4uLi4uLi4uLi4uLi4uLi4uLi4uLg==",
+        "eGtleV8wMTlhOWYzZS03YzJiLTdkNDEtOGEzZS0yMDAwMDAwMDAwZTBfLi4uLi4uLi4uLi4uLi4uLi4uLi4uX0R4OHZQMDlmYjMtUG42LV96OV92OA==",
+        "QmVhcmVyIGtleV8wMTlhOWYzZS03YzJiLTdkNDEtOGEzZS0yMDAwMDAwMDAwZTBfNE9IaTQtVGw1dWZvNmVycjdPM3U3Li4uLi4uLi4uLi4uLi4uLi4uLi4uLg==",
+        "QmVhcmVyIGtleV8wMTlhOWYzZS03YzJiLTdkNDEtOGEzZS0yMDAwMDAwMDAwZTBfLi4uLi4uLi4uLi4uLi4uLi4uLi4uX0R4OHZQMDlmYjMtUG42LV96OV92OA==",
+        "QmVhcmVyIGl4a18wMTlhOWYzZS03YzJiLTdkNDEtOGEzZS0yMDAwMDAwMDAwZTBfNE9IaTQtVGw1dWZvNmVycjdPM3U3X0R4OHZQMDlmYjMtUG42LV96OV92OA==",
+        "eODh4uPk5ebn6Onq6+zt7u/w8fLz9PX29/j5+vv8/f7/",
+    ] {
+        for form in [form.to_owned(), form.replace('+', "-").replace('/', "_")] {
+            let found = leak(&form, [high_key.expose()]);
+            assert_eq!(found, Some("a secret in base64"), "{form}");
+        }
+    }
     // Not the high bytes of another.
     let others: Vec<u8> = high.iter().rev().copied().collect();
     assert_eq!(leak(&latin1(&others), [high_key.expose()]), None);

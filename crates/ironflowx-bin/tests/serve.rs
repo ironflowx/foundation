@@ -390,13 +390,9 @@ async fn one_client_gets_each_keys_own_answer_and_no_key_is_kept() {
     let all = || [&admin, read, revoked].map(String::as_str);
     assert_eq!(leak(&log, all()), None);
     let files = files(dir.path());
-    for file in &files {
-        if file.0 == Path::new("admin.key") {
-            assert_eq!(file.1, format!("{admin}\n"));
-        } else {
-            assert_eq!(leak_in(file, all()), None, "{:?}", file.0);
-        }
-    }
+    let held = |file: &&(_, _)| leak_in(file, all()).is_some();
+    let held: Vec<_> = files.iter().filter(held).collect();
+    assert_eq!(held, [&("admin.key".into(), format!("{admin}\n"))]);
     // What is stored is searched.
     for key in all() {
         assert!(files.iter().any(|(_, bytes)| bytes.contains(&key[4..40])));
