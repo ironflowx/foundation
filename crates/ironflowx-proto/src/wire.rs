@@ -1,7 +1,9 @@
 //! The wire: the messages generated from the proto, and their mapping to the domain types. What
 //! arrives is validated here, once, for the door and the client alike (D53).
 
+use std::collections::BTreeSet;
 use std::fmt;
+use std::num::NonZeroU32;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
@@ -10,19 +12,28 @@ use buffa_types::google::protobuf::Timestamp as WireTime;
 #[cfg(feature = "server")]
 use connectrpc::ErrorDetail;
 use connectrpc::{ConnectError, ErrorCode};
-use ironflowx_core::{Address, ErrorKind, Timestamp};
+use ironflowx_core::{Address, ErrorKind, KeyOrigin, ParseError, Scope, Secret, Timestamp};
 
-use crate::OpError;
+use crate::{KeyStatus, OpError};
 
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/wire.rs"));
 }
 
-#[cfg(feature = "client")]
-pub use generated::ironflowx::v1::IdentityServiceClient;
-pub use generated::ironflowx::v1::{ErrorInfo, WhoamiRequest, WhoamiResponse};
+pub use generated::ironflowx::v1::{
+    CreateKeyRequest, CreateKeyResponse, Environment, ErrorInfo, KeyInfo, ListEnvironmentsRequest,
+    ListEnvironmentsResponse, ListKeysRequest, ListKeysResponse, RevokeKeyRequest,
+    RevokeKeyResponse, WhoamiRequest, WhoamiResponse,
+};
 #[cfg(feature = "server")]
-pub use generated::ironflowx::v1::{IdentityService, IdentityServiceServer};
+pub use generated::ironflowx::v1::{
+    EnvironmentService, EnvironmentServiceServer, IdentityService, IdentityServiceServer,
+    KeyService, KeyServiceServer,
+};
+#[cfg(feature = "client")]
+pub use generated::ironflowx::v1::{
+    EnvironmentServiceClient, IdentityServiceClient, KeyServiceClient,
+};
 
 /// The compiled proto, as an encoded `FileDescriptorSet`: every file, its imports and their custom
 /// options.
@@ -69,7 +80,7 @@ impl From<crate::Whoami> for WhoamiResponse {
     fn from(a: crate::Whoami) -> Self {
         Self {
             key_id: a.key_id.to_string(),
-            scopes: a.scopes.iter().map(ToString::to_string).collect(),
+            scopes: sent_scopes(&a.scopes),
             environment: a.environment.to_string(),
             expires_at: a.expires_at.map(sent_time).into(),
             ..Self::default()
@@ -83,15 +94,295 @@ impl TryFrom<WhoamiResponse> for crate::Whoami {
     fn try_from(a: WhoamiResponse) -> Result<Self, Undecodable> {
         Ok(Self {
             key_id: a.key_id.parse().map_err(|_| Undecodable)?,
-            scopes: a
-                .scopes
-                .iter()
-                .map(|s| s.parse())
-                .collect::<Result<_, _>>()
-                .map_err(|_| Undecodable)?,
+            scopes: read_scopes(&a.scopes).map_err(|_| Undecodable)?,
             environment: address(&a.environment)?,
             expires_at: a.expires_at.into_option().map(read_time).transpose()?,
         })
+    }
+}
+
+impl TryFrom<ListEnvironmentsRequest> for crate::ListEnvironmentsRequest {
+    type Error = OpError;
+
+    fn try_from(_: ListEnvironmentsRequest) -> Result<Self, OpError> {
+        Ok(Self {})
+    }
+}
+
+impl TryFrom<crate::ListEnvironmentsRequest> for ListEnvironmentsRequest {
+    type Error = OpError;
+
+    fn try_from(_: crate::ListEnvironmentsRequest) -> Result<Self, OpError> {
+        Ok(Self::default())
+    }
+}
+
+impl From<Vec<crate::Environment>> for ListEnvironmentsResponse {
+    fn from(a: Vec<crate::Environment>) -> Self {
+        Self {
+            environments: a.into_iter().map(Environment::from).collect(),
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<ListEnvironmentsResponse> for Vec<crate::Environment> {
+    type Error = Undecodable;
+
+    fn try_from(a: ListEnvironmentsResponse) -> Result<Self, Undecodable> {
+        a.environments.into_iter().map(TryInto::try_into).collect()
+    }
+}
+
+impl From<crate::Environment> for Environment {
+    fn from(e: crate::Environment) -> Self {
+        Self {
+            env: e.env.to_string(),
+            name: e.name,
+            address: e.address.to_string(),
+            project_id: e.project_id.to_string(),
+            created_at: Some(sent_time(e.created_at)).into(),
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<Environment> for crate::Environment {
+    type Error = Undecodable;
+
+    fn try_from(e: Environment) -> Result<Self, Undecodable> {
+        Ok(Self {
+            env: e.env.parse().map_err(|_| Undecodable)?,
+            name: e.name,
+            address: address(&e.address)?,
+            project_id: e.project_id.parse().map_err(|_| Undecodable)?,
+            created_at: read_time(e.created_at.into_option().ok_or(Undecodable)?)?,
+        })
+    }
+}
+
+impl TryFrom<CreateKeyRequest> for crate::CreateKeyRequest {
+    type Error = OpError;
+
+    fn try_from(r: CreateKeyRequest) -> Result<Self, OpError> {
+        let expires_at = r.expires_at.into_option().map(read_time).transpose();
+        Ok(Self {
+            scopes: read_scopes(&r.scopes)
+                .map_err(|_| invalid("a scope is read, write or admin"))?,
+            expires_at: expires_at.map_err(|_| no_time())?,
+            label: r.label,
+        })
+    }
+}
+
+impl TryFrom<crate::CreateKeyRequest> for CreateKeyRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::CreateKeyRequest) -> Result<Self, OpError> {
+        // The bound sent for a stored time is no expiry anyone asked for.
+        let sent = |at| match read_time(sent_time(at)) {
+            Ok(read) if read == at => Ok(sent_time(at)),
+            _ => Err(no_time()),
+        };
+        Ok(Self {
+            scopes: sent_scopes(&r.scopes),
+            expires_at: r.expires_at.map(sent).transpose()?.into(),
+            label: r.label,
+            ..Self::default()
+        })
+    }
+}
+
+/// To send, or to print as the answer of `keys create`: the one message that holds a key (TEN-3).
+impl From<crate::CreatedKey> for CreateKeyResponse {
+    fn from(a: crate::CreatedKey) -> Self {
+        Self {
+            key: a.key.expose().to_owned(),
+            info: Some(KeyInfo::from(a.info)).into(),
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<CreateKeyResponse> for crate::CreatedKey {
+    type Error = Undecodable;
+
+    fn try_from(a: CreateKeyResponse) -> Result<Self, Undecodable> {
+        // First, so that it is zeroed whatever the rest holds.
+        let key = Secret::new(a.key);
+        if key.expose().is_empty() {
+            return Err(Undecodable);
+        }
+        let info = a.info.into_option().ok_or(Undecodable)?.try_into()?;
+        Ok(Self { key, info })
+    }
+}
+
+impl From<crate::KeyInfo> for KeyInfo {
+    fn from(k: crate::KeyInfo) -> Self {
+        Self {
+            key_id: k.key_id.to_string(),
+            label: k.label,
+            scopes: sent_scopes(&k.scopes),
+            origin: origin(k.origin).to_owned(),
+            created_by: k.created_by.map(|id| id.to_string()),
+            created_at: Some(sent_time(k.created_at)).into(),
+            expires_at: k.expires_at.map(sent_time).into(),
+            status: status(k.status).to_owned(),
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<KeyInfo> for crate::KeyInfo {
+    type Error = Undecodable;
+
+    fn try_from(k: KeyInfo) -> Result<Self, Undecodable> {
+        let created_by = k.created_by.map(|id| id.parse()).transpose();
+        Ok(Self {
+            key_id: k.key_id.parse().map_err(|_| Undecodable)?,
+            label: k.label,
+            scopes: read_scopes(&k.scopes).map_err(|_| Undecodable)?,
+            origin: ORIGINS
+                .into_iter()
+                .find(|o| origin(*o) == k.origin)
+                .ok_or(Undecodable)?,
+            created_by: created_by.map_err(|_| Undecodable)?,
+            created_at: read_time(k.created_at.into_option().ok_or(Undecodable)?)?,
+            expires_at: k.expires_at.into_option().map(read_time).transpose()?,
+            status: STATUSES
+                .into_iter()
+                .find(|s| status(*s) == k.status)
+                .ok_or(Undecodable)?,
+        })
+    }
+}
+
+impl TryFrom<ListKeysRequest> for crate::ListKeysRequest {
+    type Error = OpError;
+
+    fn try_from(r: ListKeysRequest) -> Result<Self, OpError> {
+        let limit = r
+            .limit
+            .map(|limit| NonZeroU32::new(limit).ok_or_else(|| invalid("a limit is at least 1")));
+        Ok(Self {
+            limit: limit.transpose()?,
+            cursor: r.cursor,
+        })
+    }
+}
+
+impl TryFrom<crate::ListKeysRequest> for ListKeysRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::ListKeysRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            limit: r.limit.map(NonZeroU32::get),
+            cursor: r.cursor,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<crate::KeyPage> for ListKeysResponse {
+    fn from(a: crate::KeyPage) -> Self {
+        Self {
+            keys: a.keys.into_iter().map(KeyInfo::from).collect(),
+            next: a.next,
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<ListKeysResponse> for crate::KeyPage {
+    type Error = Undecodable;
+
+    fn try_from(a: ListKeysResponse) -> Result<Self, Undecodable> {
+        let keys = a.keys.into_iter().map(TryInto::try_into);
+        Ok(Self {
+            keys: keys.collect::<Result<_, _>>()?,
+            next: a.next,
+        })
+    }
+}
+
+impl TryFrom<RevokeKeyRequest> for crate::RevokeKeyRequest {
+    type Error = OpError;
+
+    fn try_from(r: RevokeKeyRequest) -> Result<Self, OpError> {
+        Ok(Self { key_id: r.key_id })
+    }
+}
+
+impl TryFrom<crate::RevokeKeyRequest> for RevokeKeyRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::RevokeKeyRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            key_id: r.key_id,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<()> for RevokeKeyResponse {
+    fn from((): ()) -> Self {
+        Self::default()
+    }
+}
+
+impl TryFrom<RevokeKeyResponse> for () {
+    type Error = Undecodable;
+
+    fn try_from(_: RevokeKeyResponse) -> Result<Self, Undecodable> {
+        Ok(())
+    }
+}
+
+/// What the wire cannot carry.
+fn invalid(message: &str) -> OpError {
+    OpError {
+        kind: ErrorKind::Invalid,
+        message: message.to_owned(),
+        hint: None,
+    }
+}
+
+fn no_time() -> OpError {
+    invalid("a time is in whole milliseconds and in years 0001 to 9999")
+}
+
+fn sent_scopes(scopes: &BTreeSet<Scope>) -> Vec<String> {
+    scopes.iter().map(ToString::to_string).collect()
+}
+
+fn read_scopes(scopes: &[String]) -> Result<BTreeSet<Scope>, ParseError> {
+    scopes.iter().map(|s| s.parse()).collect()
+}
+
+const ORIGINS: [KeyOrigin; 4] = [
+    KeyOrigin::Minted,
+    KeyOrigin::Seed,
+    KeyOrigin::Recovered,
+    KeyOrigin::Created,
+];
+
+const fn origin(origin: KeyOrigin) -> &'static str {
+    match origin {
+        KeyOrigin::Minted => "minted",
+        KeyOrigin::Seed => "seed",
+        KeyOrigin::Recovered => "recovered",
+        KeyOrigin::Created => "created",
+    }
+}
+
+const STATUSES: [KeyStatus; 3] = [KeyStatus::Active, KeyStatus::Expired, KeyStatus::Revoked];
+
+const fn status(status: KeyStatus) -> &'static str {
+    match status {
+        KeyStatus::Active => "active",
+        KeyStatus::Expired => "expired",
+        KeyStatus::Revoked => "revoked",
     }
 }
 

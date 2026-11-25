@@ -68,12 +68,12 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 | Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time; reports whether it has failed, and signals a ledger fault | `open`, `open_blocking`, `open_existing_blocking`, `submit`, `read`, `state`, `faulted`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
 | Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types, which the wire maps onto (D53) | `Operations` trait and messages | `ironflowx-proto` |
-| Proto | Defines an operation once, on the wire: today `whoami` | `proto/ironflowx/v1/*.proto`: services, messages, the method options `cli`, `summary` and `example`, the field option `json_text` | `ironflowx-proto` (the `.proto` files; compiled, `wire::FILE_DESCRIPTOR_SET`) |
+| Proto | Defines an operation once, on the wire: today every one but the four on events | `proto/ironflowx/v1/*.proto`: services, messages, the method options `cli`, `summary` and `example`, the field option `json_text` | `ironflowx-proto` (the `.proto` files; compiled, `wire::FILE_DESCRIPTOR_SET`) |
 | Wire mapping | Converts `Operations` requests and answers to and from wire messages, validating what arrives | `TryFrom` for requests, both ways; `From` for answers sent and `TryFrom` for answers received; `OpError` ↔ `ErrorInfo` ↔ the Connect error | `ironflowx-proto` (`wire`, `server`) |
 | Proto client | Calls `Operations` over Connect, sending each `Call`'s key | `Client::new(url)`, `with_timeout`, `Operations` | `ironflowx-proto` (`client`) |
 | HTTP door | Serves `Operations` over Connect, gRPC and gRPC-Web, with `/health` and `/ready`. Holds no rule | `router(slot)`, `Slot`, `Readiness` | `ironflowx-doors` (`http`) |
 | Host | Turns a data directory and an address into a served engine | `ironflowx serve`, `admin.key`, exit codes | `ironflowx-bin` |
-| CLI | Calls an operation from a shell | The generated commands, today `whoami`; `version`; the envelope and exit codes | `ironflowx-cli` |
+| CLI | Calls an operation from a shell | The generated commands, one per method of the proto; `version`; the envelope and exit codes | `ironflowx-cli` |
 | Generator | Derives the CLI's commands from the proto at build time, and refuses a proto that does not say enough | `generate(descriptor_set, out_dir)`, from `build.rs` | `ironflowx-codegen` |
 | Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records; reports its health and a ledger fault to the host | `Engine::open`, `health`, `faulted`, `close`, `Operations`, `recover_admin_key` | `ironflowx-operations` |
 | Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create` | `ironflowx-authz` |
@@ -104,7 +104,7 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 
 | Seam | Adapters | Today |
 |---|---|---|
-| `Operations` | The engine (`Engine`) · the proto client (`Client`) | Both. `Client` carries `whoami`; every other operation is `Internal` from it until its messages join the proto |
+| `Operations` | The engine (`Engine`) · the proto client (`Client`) | Both. `Client` carries every operation but the four on events, which are `Internal` from it until their messages join the proto |
 | `Clock` | `HostClock` · `ManualClock`, which a test sets and steps, backwards too | Both, in `ironflowx-cell`. The behaviors and the crash test use `ManualClock` |
 | Control plane | SQLite · a shared database for clusters | SQLite only: hypothetical, so no trait |
 | Ledger, event rules, credentials, door, host, CLI, generator | One adapter each | Module interfaces, not seams |
@@ -170,10 +170,11 @@ impl Operations for Client { .. }   // sends Call's key as the Bearer key; Call:
 // ironflowx-proto, feature "wire": the messages connectrpc-build generates from the protox-compiled set, and their mapping.
 // Feature "server": also the generated service traits a door implements. Both expose buffa's and connectrpc's types, follow
 // their 0.x versions and are left out of public-api/, which has the default features and `client`.
-impl TryFrom<wire::WhoamiRequest> for WhoamiRequest { type Error = OpError; }       // the door; Invalid on what the wire cannot carry
-impl TryFrom<WhoamiRequest> for wire::WhoamiRequest { type Error = OpError; }       // the client
-impl From<Whoami> for wire::WhoamiResponse { }                                      // the door
-impl TryFrom<wire::WhoamiResponse> for Whoami { type Error = wire::Undecodable; }   // the client
+// These four for each operation the proto has, as for `create_key`:
+impl TryFrom<wire::CreateKeyRequest> for CreateKeyRequest { type Error = OpError; }       // the door; Invalid on what the wire cannot carry
+impl TryFrom<CreateKeyRequest> for wire::CreateKeyRequest { type Error = OpError; }       // the client; Invalid on the same
+impl From<CreatedKey> for wire::CreateKeyResponse { }                                     // the door, and the CLI, to print it
+impl TryFrom<wire::CreateKeyResponse> for CreatedKey { type Error = wire::Undecodable; }  // the client
 impl From<&OpError> for wire::ErrorInfo { }
 impl TryFrom<wire::ErrorInfo> for OpError { type Error = wire::Undecodable; }       // an unknown kind is no ErrorInfo
 fn wire::connect_error(e: &OpError) -> ConnectError;        // the kind's code, the message, ErrorInfo as a detail
@@ -371,19 +372,21 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 | Kind | When | Retry |
 |---|---|---|
 | `Invalid` | A rule refused the request, or one batch item; or `create_key` with more scopes than the creator, an expiry not after now or later than the creator's, or a bad label; or `list_keys` with a cursor that does not decode or names another incarnation | No: the same request is refused the same way, unless it names an expiry that a clock set back makes valid |
+| `Invalid` | Through a door, before the key is read and whether or not the engine is open: a request the wire cannot carry ([Proto](#proto)). From the proto client, before it sends anything: the same, an expiry outside years 0001–9999 | No |
 | `NotFound` | No event has that ID, or the ID does not parse | No |
 | `NotFound` | `revoke_key` with an ID that does not parse or names no key in the environment: `key not found` | No |
 | `Unknown` | The append's outcome is unknown; the ledger is now `Unavailable` | After reopen, only if it has an idempotency key, or every item of its batch has one. On the retry, a valid item whose key is already stored returns its original event, a new key stores one event, and a refused item is refused again. An item without a key may store a second event, so check first |
 | `Unavailable` | The ledger failed (append, fold, read store, a panic of its writer or of a `read` query, or a `read` that finds its runtime shut down before its query ran) and refuses every call until it is reopened. Reads waiting at the gate end with it | After reopen |
-| `Unavailable` | A control-plane read or write failed during admission or a handler: `lookup_key`, `environment`, `list_keys` or a key change. The call fails closed and changes nothing, but for an [unsettled commit](#after-a-failed-open-or-change) (D48); the engine stays open (D44). A failure to record an expiry is not this: the call keeps its uniform refusal. A `create_key` whose answer was lost may have committed. Once a call has panicked under the control plane's lock (a host `Clock` that panics), every later call that reaches the control plane answers so until the engine is reopened, though its hint still says at once | Yes, at once; after such a panic, after reopen |
+| `Unavailable` | A control-plane read or write failed during admission or a handler: `lookup_key`, `environment`, `list_keys` or a key change. The call fails closed and changes nothing, but for an [unsettled commit](#after-a-failed-open-or-change) (D48), so the hint of a `create_key` whose transaction failed says to list the keys before the retry; the engine stays open (D44). A failure to record an expiry is not this: the call keeps its uniform refusal. A `create_key` whose answer was lost may have committed. Once a call has panicked under the control plane's lock (a host `Clock` that panics), every later call that reaches the control plane answers so until the engine is reopened, though its hint still says at once | Yes, at once; a `create_key` after listing the keys; after such a panic, after reopen |
 | `Unavailable` | Through a door, the engine is not open yet: every call, with the hint `the engine is starting` | Yes |
 | `Unavailable` | From the proto client, a read that no engine answered: no connection, no answer, none by the client's timeout, a proxy's error, or an answer that does not decode | Yes |
+| `Unknown` | From the proto client, `create_key` or `revoke_key` in any of the cases of the row above, also where it cannot have run, as with no connection | A `revoke_key`, at once: the hint says so. A `create_key` after listing the keys, as its hint says |
 | `Unauthenticated` | No key, or an empty one: `authentication required` | No |
 | `Unauthenticated` | A malformed key: `invalid API key`, with the key format in `hint` | No |
 | `Unauthenticated` | An unknown key ID, a wrong secret, a revoked or expired key, or a key of another environment or incarnation: `invalid API key`, the same answer for each, with no hint, whether or not recording an expiry failed (D29, D30). Also a key change whose calling key was revoked or expired before its transaction (D43) | No |
 | `PermissionDenied` | The key lacks the operation's scope: `missing scope: <scope>`, with `hint` saying to create or use a key with that scope (D31) | No |
 | `ResourceExhausted` | `create_key` when 1,000 created keys hold a slot: `key limit reached`, with `hint` saying to revoke keys, expired ones first (D44) | After a revoke, or once an expiry is recorded |
-| `Internal` | From the proto client, an operation it does not carry yet: every one but `whoami`; nothing is sent | No |
+| `Internal` | From the proto client, an operation it does not carry yet: the four on events; nothing is sent | No |
 | `Invalid` | From the CLI, before it sends anything: a usage error ([CLI](#cli)) | No |
 | `Internal` | From the CLI: an answer it cannot write to stdout, or one that repeats the key the CLI was given | No |
 
@@ -398,7 +401,7 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 | `ResourceExhausted` | false: something must change first | 7 | `resource_exhausted` |
 | `Unavailable` | true | 8 | `unavailable` |
 
-`ErrorKind::retryable()` is true only when the same request, sent again unchanged, may succeed and stores no second event (D70). `OpError::hint`, when there is one, says what to do; `Unknown`'s assumes an idempotency key on every item, and "retry at once" is wrong after a call panicked under the control plane's lock (above). `retryable()` promises no second event, not no second key: a `create_key` that answered `Unavailable` may have stored its key, whose secret is then lost. List the keys before sending it again, and again after a reopen: a key whose commit is [unsettled](#after-a-failed-open-or-change) (D48) is listed only then, if it lands. Revoke the one no holder has.
+`ErrorKind::retryable()` is true only when the same request, sent again unchanged, may succeed and stores no second event (D70). `OpError::hint`, when there is one, says what to do; an emit's `Unknown`'s assumes an idempotency key on every item, and "retry at once" is wrong after a call panicked under the control plane's lock (above). `retryable()` promises no second event, not no second key: a `create_key` that answered `Unavailable`, as one that answered `Unknown`, may have stored its key, whose secret is then lost; its summary in the proto and its hint say so. List the keys before sending it again, and again after a reopen: a key whose commit is [unsettled](#after-a-failed-open-or-change) (D48) is listed only then, if it lands. Revoke the one no holder has.
 
 `ErrorKind::exit_code()` is the exit code of a process that ends with that kind; 0 is success. `Internal` is a server fault (D69); no operation of the engine answers it yet.
 
@@ -565,7 +568,7 @@ What `ironflowx serve` adds to it:
 | `<root>/admin.key` | The minted admin key and a newline, mode `0400`. Never overwritten. Deleting it is the operator's call |
 | `<root>/admin.key.<random>.tmp` | Only after a crash while `admin.key` was written: may hold the whole key, mode `0400` |
 
-**Where a secret may appear.** A served engine's key text reaches only these places: `admin.key` and the temporary file it is linked from, the `Authorization` header of a call, and the variable or the file the CLI was given it in.
+**Where a secret may appear.** A served engine's key text reaches only these places: `admin.key` and the temporary file it is linked from, the `Authorization` header of a call, the `CreateKey` answer on the wire, stdout of `keys create`, and the variable or the file the CLI was given it in.
 
 A ledger's directory, `<dir>`:
 
@@ -583,7 +586,9 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 
 | File | Holds |
 |---|---|
-| `identity.proto` | `IdentityService/Whoami`, its request and its answer |
+| `identity.proto` | `IdentityService`: `Whoami`, with its request and answer |
+| `environment.proto` | `EnvironmentService`: `ListEnvironments`, likewise, and `Environment` |
+| `key.proto` | `KeyService`: `CreateKey`, `ListKeys` and `RevokeKey`, likewise, and `KeyInfo` |
 | `options.proto` | The custom options, which the generator reads |
 | `error.proto` | `ErrorInfo { kind, message, hint }`, the error a call fails with |
 
@@ -604,18 +609,21 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 
 It does not know the hand-written commands: one that takes a name of theirs, or starts with it, panics each start of a debug build, the tests' included.
 
-It writes `cli.rs`: each command with its summary, the fields of its answer that need a default, and its call through `Operations`. A request's fields have no flags yet, so a command sends the empty request.
+It writes `cli.rs`: each command with its summary, the fields of its answer that need a default, and its call through `Operations`. A request's fields have no flags yet, so a command sends the empty request: `keys create` makes a read-only key with no label and no expiry, so it is refused to a key that has one, and `keys revoke` names no key, so it is `NotFound`.
 
 | Rule | Is |
 |---|---|
-| Names | `Operation::rpc()` is `<package>.<Service>/<Method>`: today only `Whoami`'s is served |
+| Names | `Operation::rpc()` is `<package>.<Service>/<Method>`: today every one is served but `EventService`'s four |
 | Field names in JSON | The proto's snake_case names: every multiword field sets `json_name` to its own name (D78). A camelCase name is an unknown field. The generator refuses a field without it |
 | Unknown JSON fields | Ignored, as protobuf does |
-| Presence | A field whose absence means something (`expires_at`, `hint`) is `optional`; absent is `None` |
-| Times | `google.protobuf.Timestamp`, RFC 3339 in JSON. A stored time outside years 0001–9999, which only an in-process caller or a wrong clock can make, is sent as the nearer bound, `0001-01-01T00:00:00Z` or `9999-12-31T23:59:59.999Z` (D76); the stored value still decides expiry |
-| IDs | Strings in their text form |
+| Presence | A field whose absence means something (`expires_at`, `label`, `created_by`, `limit`, `cursor`, `next`, `hint`) is `optional`; absent is `None` |
+| Times | `google.protobuf.Timestamp`, RFC 3339 in JSON, in whole milliseconds and in years 0001–9999. A stored time outside years 0001–9999, which only an in-process caller or a wrong clock can make, is sent as the nearer bound, `0001-01-01T00:00:00Z` or `9999-12-31T23:59:59.999Z` (D76); the stored value still decides expiry |
+| IDs | Strings in their text form; an environment travels as its `EnvRef`'s, `env`, never a bare ID (LED-9) |
 | Addresses | The text `project/environment`. The client splits it at the first `/` for `Address::new`, so it prints back exactly, and never makes an ID from it (D75, TEN-8) |
-| Scopes | `repeated string`: `read`, `write`, `admin` |
+| Scopes | `repeated string`: `read`, `write`, `admin`; none asked for is `{read}` (D71) |
+| A key's origin and status | Strings: `minted`, `seed`, `recovered`, `created`; `active`, `expired`, `revoked` |
+| A created key | `CreateKeyResponse.key`, the one field of any message that holds a key, marked `debug_redact`: built only to send, or to print as the answer of `keys create`, and read once, into a `Secret`; its `Debug`, and its view's, print none of it (TEN-3) |
+| What the wire cannot carry | `Invalid` before the key is read: a `limit` of 0, a scope that is none of the three, a time with a fraction finer than a millisecond or outside years 0001–9999. A JSON text that is no such time (year 10000, ten fraction digits) does not decode, so it is the library's `invalid_argument`, with no `ErrorInfo` |
 | Errors | `ErrorInfo`'s `kind` is the kind's name in snake_case (`permission_denied`). An `ErrorInfo` of a kind its reader does not know is none |
 
 ## Wire
@@ -631,7 +639,7 @@ It writes `cli.rs`: each command with its summary, the fields of its answer that
 | Errors | The kind's [Connect code](#errors), the message, and `ErrorInfo` as a detail, on every protocol. gRPC carries all of it in trailers, the message three times and once percent-encoded, so an error whose trailers pass its client's limit on them loses its `ErrorInfo`, then fails: `connectrpc`'s own client reads a message of 4,096 ASCII letters whole, loses the `ErrorInfo` of 4,096 `%` or 8,192 ASCII letters, and fails at 16,384. No error of the engine is that long. Any other answer without `ErrorInfo` is the library's or a proxy's |
 | While opening | Every call answers `Unavailable`, hint `the engine is starting` |
 
-`Client` speaks Connect binary. A call whose answer carries `ErrorInfo` fails with that error, exactly; `whoami`, the one call it carries, is a read, and any other failure of it is `Unavailable`.
+`Client` speaks Connect binary. A call whose answer carries `ErrorInfo` fails with that error, exactly. Any other failure is `Unavailable` of a read and `Unknown` of an operation that changes state (`Operation::changes_state`), whatever code came and also where the request cannot have run.
 
 ## Host
 
@@ -673,13 +681,13 @@ It writes `cli.rs`: each command with its summary, the fields of its answer that
 
 | Part | Rule |
 |---|---|
-| Commands | One per method of the proto, generated (D52): today `whoami`. Hand-written: `version` here, `serve` in the host |
+| Commands | One per method of the proto, generated (D52): `environments list`, `keys create`, `keys list`, `keys revoke` and `whoami`. Hand-written: `version` here, `serve` in the host |
 | Engine | `--url`, else `IRONFLOWX_URL`, else `http://127.0.0.1:9310`; `http://` only |
 | Key | `--key-file <path>`, else `IRONFLOWX_KEY`, else none, with surrounding whitespace trimmed. Nothing else: the CLI never reads `admin.key` unasked (D61). No key, and an empty one, is a call with no key, which the engine refuses; a file or a variable that is there and empty is still the one that was given. Text that is not UTF-8 is a malformed key |
 | Output | The answer as wire JSON on stdout: one line, or indented if stdout is a terminal. Every field that is not `optional` is printed, defaults included; an absent `optional` field stays absent. (A message field has no default: one that is not `optional` is always set, since the answer printed is mapped from the domain type, D53.) The wire is unchanged. `--help` prints text and exits 0: the one exception |
 | Errors | One line on stderr, the envelope; its kind's [exit code](#errors); nothing on stdout, unless a write to it failed midway. What answered may be no engine, so a message or a hint that repeats 43 characters in a row of the key the CLI was given, as many as a secret has, is not printed, and the envelope says so in its place; nor is an answer that does: `Internal`, also one that holds the caller's own key with reason, as stored event data can. A repeat that was changed (its case, split, encoded or cut shorter) is not found. A message can repeat the URL's path, where no key goes (D55) |
 | Usage errors | An argument that is missing, unknown or of the wrong form, a URL that is not `http://host[:port][/path]`, and a `--key-file` that cannot be read, are `Invalid`, exit 2, and nothing is sent. The message is one line and names a bad argument, its whitespace as single spaces, but `<hidden>` for a word that holds a key's `ixk_` or is as long as a key's secret; it never holds what `--key-file`, `--url` or `IRONFLOWX_URL` was set to, which may be or hold a secret. A build with clap's `debug` feature, which prints each argument as it parses it, reads none: every start is `Invalid`, `clap is built with its debug feature` (TEN-3) |
-| Deadline | 30 s a call, sent as `Connect-Timeout-Ms` and held to by the client too: `Unavailable` after it, for a read |
+| Deadline | 30 s a call, sent as `Connect-Timeout-Ms` and held to by the client too: after it, `Unavailable` for a read and `Unknown` for a state change |
 
 **The envelope** of a failure: `{"code": …, "message": …, "retryable": …, "hint": …}`. `code` is the kind's name in snake_case, as in `ErrorInfo`; `retryable` is `ErrorKind::retryable()`; `hint` is absent when there is none.
 

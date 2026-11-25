@@ -4,13 +4,13 @@ use std::fmt;
 use std::net::Ipv6Addr;
 use std::time::Duration;
 
-use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
+use connectrpc::client::{CallOptions, ClientConfig, HttpClient, UnaryResponse};
 use connectrpc::{CompressionRegistry, ConnectError};
 use http::header::{AUTHORIZATION, HeaderValue};
 use http::uri::{Scheme, Uri};
 use ironflowx_core::ErrorKind;
 
-use crate::wire::{self, IdentityServiceClient};
+use crate::wire::{self, EnvironmentServiceClient, IdentityServiceClient, KeyServiceClient};
 use crate::{
     Call, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
     EmitResponse, Environment, Event, EventPage, GetEventRequest, KeyPage, ListEnvironmentsRequest,
@@ -22,9 +22,12 @@ use crate::{
 /// key and an anonymous one sends none, so one client serves many keys. It accepts answers up to
 /// 16 MiB. Calls need a tokio runtime.
 ///
-/// It carries `whoami`; every other operation is `Internal` until its messages join the proto.
+/// It carries every operation but the events' four, which are `Internal` until their messages join
+/// the proto.
 pub struct Client {
     identity: IdentityServiceClient<HttpClient>,
+    environments: EnvironmentServiceClient<HttpClient>,
+    keys: KeyServiceClient<HttpClient>,
     timeout: Option<Duration>,
 }
 
@@ -80,8 +83,12 @@ impl Client {
             .with_default_max_message_size(wire::MAX_MESSAGE)
             // Another crate of the build may switch gzip or zstd on in `connectrpc`.
             .with_compression(CompressionRegistry::new());
+        // Its clones share its connections.
+        let http = HttpClient::plaintext();
         Ok(Self {
-            identity: IdentityServiceClient::new(HttpClient::plaintext(), config),
+            identity: IdentityServiceClient::new(http.clone(), config.clone()),
+            environments: EnvironmentServiceClient::new(http.clone(), config.clone()),
+            keys: KeyServiceClient::new(http, config),
             timeout: None,
         })
     }
@@ -124,14 +131,37 @@ fn with_key(cx: &Call) -> CallOptions {
     CallOptions::default().with_header(AUTHORIZATION, value)
 }
 
-/// A read's failure. shortcut: without the engine's own error, any failure is `Unavailable`, which
-/// is right for a read; an operation that changes state needs to say what it knows.
-fn read_failed(e: &ConnectError) -> OpError {
-    wire::op_error(e).unwrap_or_else(|| OpError {
-        kind: ErrorKind::Unavailable,
-        message: format!("the engine did not answer: {e}"),
-        hint: None,
-    })
+/// The answer of `op`, or why there is none. shortcut: without the engine's own error, a read is
+/// `Unavailable` and a state change `Unknown`, also where the request cannot have run, as when the
+/// connection never opened, or where the library's own code says more; tell them apart when a
+/// caller needs to know.
+fn answered<W, A>(op: Operation, answer: Result<W, ConnectError>) -> Result<A, OpError>
+where
+    A: TryFrom<W, Error = wire::Undecodable>,
+{
+    let failed = |message: String| OpError {
+        kind: if op.changes_state() {
+            ErrorKind::Unknown
+        } else {
+            ErrorKind::Unavailable
+        },
+        message,
+        hint: match op {
+            Operation::CreateKey => Some(
+                "the key may be stored: list the keys before the retry, and again after the \
+                 engine reopens; revoke the one no holder has"
+                    .into(),
+            ),
+            Operation::RevokeKey => Some("retry: revoking a revoked key succeeds".into()),
+            _ => None,
+        },
+    };
+    let answer = answer.map_err(|e| {
+        wire::op_error(&e).unwrap_or_else(|| failed(format!("the engine did not answer: {e}")))
+    })?;
+    answer
+        .try_into()
+        .map_err(|e: wire::Undecodable| failed(e.to_string()))
 }
 
 fn not_carried<T>(op: Operation) -> Result<T, OpError> {
@@ -152,12 +182,63 @@ impl Operations for Client {
         let req = req.try_into()?;
         let options = self.options(cx);
         let answer = self.identity.whoami_with_options(req, options).await;
-        let answer = answer.map_err(|e| read_failed(&e))?.into_owned();
-        answer.try_into().map_err(|e: wire::Undecodable| OpError {
-            kind: ErrorKind::Unavailable,
-            message: e.to_string(),
-            hint: None,
-        })
+        answered(Operation::Whoami, answer.map(UnaryResponse::into_owned))
+    }
+
+    /// The environments the calling key reaches: only its own.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::whoami`].
+    async fn list_environments(
+        &self,
+        cx: &Call,
+        req: ListEnvironmentsRequest,
+    ) -> Result<Vec<Environment>, OpError> {
+        let req = req.try_into()?;
+        let options = self.options(cx);
+        let answer = self
+            .environments
+            .list_environments_with_options(req, options);
+        let answer = answer.await.map(UnaryResponse::into_owned);
+        answered(Operation::ListEnvironments, answer)
+    }
+
+    /// Creates a key in the calling key's environment; the answer holds its secret, once.
+    ///
+    /// # Errors
+    ///
+    /// The engine's, unchanged; `Unknown` if it did not answer; `Invalid`, with nothing sent, for
+    /// an expiry outside years 0001–9999, which the wire does not carry.
+    async fn create_key(&self, cx: &Call, req: CreateKeyRequest) -> Result<CreatedKey, OpError> {
+        let req = req.try_into()?;
+        let options = self.options(cx);
+        let answer = self.keys.create_key_with_options(req, options).await;
+        answered(Operation::CreateKey, answer.map(UnaryResponse::into_owned))
+    }
+
+    /// Lists a page of the calling key's environment's keys, newest first, never a secret.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::whoami`].
+    async fn list_keys(&self, cx: &Call, req: ListKeysRequest) -> Result<KeyPage, OpError> {
+        let req = req.try_into()?;
+        let options = self.options(cx);
+        let answer = self.keys.list_keys_with_options(req, options).await;
+        answered(Operation::ListKeys, answer.map(UnaryResponse::into_owned))
+    }
+
+    /// Revokes a key of the calling key's environment; revoking a revoked key succeeds.
+    ///
+    /// # Errors
+    ///
+    /// The engine's, unchanged; `Unknown` if it did not answer.
+    async fn revoke_key(&self, cx: &Call, req: RevokeKeyRequest) -> Result<(), OpError> {
+        let req = req.try_into()?;
+        let options = self.options(cx);
+        let answer = self.keys.revoke_key_with_options(req, options).await;
+        answered(Operation::RevokeKey, answer.map(UnaryResponse::into_owned))
     }
 
     async fn emit(&self, _cx: &Call, _req: EmitRequest) -> Result<EmitResponse, OpError> {
@@ -178,25 +259,5 @@ impl Operations for Client {
 
     async fn list_events(&self, _cx: &Call, _req: ListEventsRequest) -> Result<EventPage, OpError> {
         not_carried(Operation::ListEvents)
-    }
-
-    async fn list_environments(
-        &self,
-        _cx: &Call,
-        _req: ListEnvironmentsRequest,
-    ) -> Result<Vec<Environment>, OpError> {
-        not_carried(Operation::ListEnvironments)
-    }
-
-    async fn create_key(&self, _cx: &Call, _req: CreateKeyRequest) -> Result<CreatedKey, OpError> {
-        not_carried(Operation::CreateKey)
-    }
-
-    async fn list_keys(&self, _cx: &Call, _req: ListKeysRequest) -> Result<KeyPage, OpError> {
-        not_carried(Operation::ListKeys)
-    }
-
-    async fn revoke_key(&self, _cx: &Call, _req: RevokeKeyRequest) -> Result<(), OpError> {
-        not_carried(Operation::RevokeKey)
     }
 }

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use connectrpc::client::{
     BoxFuture, CallOptions, ClientBody, ClientConfig, ClientTransport, HttpClient,
@@ -16,17 +16,20 @@ use connectrpc::client::{
 use connectrpc::{ConnectError, ErrorCode, Protocol};
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
-use ironflowx_core::{ErrorKind, Scope, Secret};
-use ironflowx_proto::wire::{IdentityServiceClient, WhoamiRequest, WhoamiResponse, op_error};
-use ironflowx_proto::{Call, Client, OpError, Operations as _};
+use ironflowx_core::{ErrorKind, KeyOrigin, Scope, Secret};
+use ironflowx_proto::wire::{
+    CreateKeyRequest, CreateKeyResponse, IdentityServiceClient, KeyServiceClient, WhoamiRequest,
+    WhoamiResponse, op_error,
+};
+use ironflowx_proto::{Call, Client, ListKeysRequest, OpError, Operations as _};
 use serde_json::Value;
 use tempfile::TempDir;
 
 /// The scenarios whose work has landed: every one must run and pass.
-const REGISTERED: &[&str] = &["HOST-001", "HOST-016", "HOST-021", "HOST-027"];
+const REGISTERED: &[&str] = &["HOST-001", "HOST-016", "HOST-021", "HOST-026", "HOST-027"];
 
 /// How many scenarios run, an outline once per example, so no example goes unnoticed.
-pub const RUNS: usize = 14;
+pub const RUNS: usize = 15;
 
 const LATE: Duration = Duration::from_secs(30);
 
@@ -166,6 +169,7 @@ pub struct Serve {
     /// The admin key's text.
     key: Option<String>,
     answer: Option<Result<WhoamiResponse, ConnectError>>,
+    created: Option<Result<CreateKeyResponse, ConnectError>>,
 }
 
 impl fmt::Debug for Serve {
@@ -173,6 +177,7 @@ impl fmt::Debug for Serve {
         f.debug_struct("Serve")
             .field("log", &self.served.as_ref().map(Served::log))
             .field("answer", &self.answer)
+            .field("created", &self.created)
             .finish_non_exhaustive()
     }
 }
@@ -205,6 +210,7 @@ impl Serve {
             dir,
             key: None,
             answer: None,
+            created: None,
         }
     }
 
@@ -272,6 +278,7 @@ fn served_on(w: &mut Serve, listen: String) {
 }
 
 #[given("the engine is served and an admin key is known")]
+#[given("the engine is served and a client holds the bootstrap key")]
 fn served_with_key(w: &mut Serve) {
     w.serve("127.0.0.1:0");
     w.served().ready();
@@ -398,6 +405,44 @@ fn refused(w: &mut Serve, message: String) {
         ..
     } = op_error(e).expect("the engine's own error");
     assert_eq!((kind, said), (ErrorKind::Unauthenticated, message));
+}
+
+#[when(
+    "the client creates a key over Connect whose expiry has 1 nanosecond past a whole millisecond"
+)]
+async fn too_fine(w: &mut Serve) {
+    let mut request = CreateKeyRequest::default();
+    let expiry = request.expires_at.get_or_insert_default();
+    // Ahead of now by a day, so that nothing but its fraction is wrong.
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    expiry.seconds = i64::try_from(now.as_secs()).unwrap() + 86_400;
+    expiry.nanos = 1_000_001;
+    let bearer = format!("Bearer {}", w.key());
+    let options = CallOptions::default().with_header("authorization", bearer);
+    let client = KeyServiceClient::new(HttpClient::plaintext(), w.config().json());
+    let answer = client.create_key_with_options(request, options).await;
+    w.created = Some(answer.map(connectrpc::UnaryResponse::into_owned));
+}
+
+#[then("the call is refused as invalid")]
+fn refused_as_invalid(w: &mut Serve) {
+    let answer = w.created.as_ref().expect("a call");
+    let e = answer.as_ref().expect_err("the call is refused");
+    assert_eq!(e.code, ErrorCode::InvalidArgument);
+    let e = op_error(e).expect("the engine's own error");
+    assert_eq!(e.kind, ErrorKind::Invalid);
+}
+
+#[then("listing keys shows only the bootstrap key")]
+async fn only_the_bootstrap_key(w: &mut Serve) {
+    let client = Client::new(&w.served().url()).unwrap();
+    let cx = Call::with_key(Secret::new(w.key().to_owned()));
+    let page = client.list_keys(&cx, ListKeysRequest::default()).await;
+    let page = page.unwrap();
+    let keys: Vec<_> = page.keys.iter().map(|k| (k.key_id, k.origin)).collect();
+    let bootstrap = w.key()[4..40].parse().unwrap();
+    assert_eq!(keys, [(bootstrap, KeyOrigin::Minted)]);
+    assert_eq!(page.next, None);
 }
 
 pub async fn run(parser: super::Unescaped) -> (bool, usize) {

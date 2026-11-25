@@ -3,12 +3,17 @@
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use ironflowx_cell::{HostClock, new_env_ref};
+use ironflowx_core::{ErrorKind, Scope, Secret};
 use ironflowx_operations::Engine;
+use ironflowx_proto::{
+    Call, Client, CreateKeyRequest, KeyStatus, ListEnvironmentsRequest, ListKeysRequest, OpError,
+    Operations as _, RevokeKeyRequest, WhoamiRequest,
+};
 use ironflowx_store::{Bootstrap, ControlPlane};
 use serde_json::Value;
 
@@ -268,6 +273,136 @@ fn an_address_off_this_machine_warns_that_keys_travel_in_clear() {
     assert_eq!(warned.len(), 1, "{log}");
     let message = &warned[0]["fields"]["message"];
     assert_eq!(message, "keys travel in clear without a TLS proxy");
+}
+
+/// SRV-6, of an engine: each call of one client is answered for its own key, whichever came before.
+/// TEN-3: no key a call or an answer held is logged, or stored but in `admin.key`.
+#[tokio::test]
+async fn one_client_gets_each_keys_own_answer_and_no_key_is_kept() {
+    let dir = private();
+    let served = Served::start(dir.path(), "127.0.0.1:0");
+    let client = Client::new(&format!("http://{}", served.addr)).unwrap();
+    let call = |key: &str| Call::with_key(Secret::new(key.to_owned()));
+    let admin = std::fs::read_to_string(dir.path().join("admin.key")).unwrap();
+    let admin = admin.trim().to_owned();
+    let mut made = Vec::new();
+    for scopes in [
+        vec![Scope::Read],
+        vec![Scope::Read, Scope::Write, Scope::Admin],
+    ] {
+        let request = CreateKeyRequest {
+            scopes: scopes.into_iter().collect(),
+            ..Default::default()
+        };
+        let created = client.create_key(&call(&admin), request).await.unwrap();
+        let key = created.key.expose().to_owned();
+        assert_eq!(
+            (key.len(), &key[4..40]),
+            (84, &*created.info.key_id.to_string())
+        );
+        made.push(key);
+    }
+    let [read, revoked] = &made[..] else {
+        unreachable!()
+    };
+    let request = RevokeKeyRequest {
+        key_id: revoked[4..40].to_owned(),
+    };
+    client.revoke_key(&call(&admin), request).await.unwrap();
+
+    let refused = |kind, message: &str, hint: Option<&str>| OpError {
+        kind,
+        message: message.into(),
+        hint: hint.map(str::to_owned),
+    };
+    let missing = refused(
+        ErrorKind::PermissionDenied,
+        "missing scope: admin",
+        Some("create a key with scope admin, or use one that has it"),
+    );
+    for _ in 0..3 {
+        for (cx, whoami, keys) in [
+            (
+                Call::anonymous(),
+                Err(refused(
+                    ErrorKind::Unauthenticated,
+                    "authentication required",
+                    None,
+                )),
+                Err(refused(
+                    ErrorKind::Unauthenticated,
+                    "authentication required",
+                    None,
+                )),
+            ),
+            (call(read), Ok(&read[4..40]), Err(missing.clone())),
+            (
+                call(revoked),
+                Err(refused(ErrorKind::Unauthenticated, "invalid API key", None)),
+                Err(refused(ErrorKind::Unauthenticated, "invalid API key", None)),
+            ),
+            (call(&admin), Ok(&admin[4..40]), Ok(())),
+        ] {
+            let me = client.whoami(&cx, WhoamiRequest {}).await;
+            let me = me.map(|me| me.key_id.to_string());
+            assert_eq!(me, whoami.map(str::to_owned));
+            let listed = client.list_keys(&cx, ListKeysRequest::default()).await;
+            assert_eq!(listed.as_ref().map(|_| ()).map_err(Clone::clone), keys);
+            if let Ok(page) = listed {
+                let listed: Vec<_> = page
+                    .keys
+                    .iter()
+                    .map(|k| (k.key_id.to_string(), k.status))
+                    .collect();
+                let expected = [
+                    (&revoked[4..40], KeyStatus::Revoked),
+                    (&read[4..40], KeyStatus::Active),
+                    (&admin[4..40], KeyStatus::Active),
+                ];
+                assert_eq!(listed, expected.map(|(id, status)| (id.to_owned(), status)));
+            }
+        }
+    }
+    let request = ListEnvironmentsRequest {};
+    let environments = client
+        .list_environments(&call(read), request)
+        .await
+        .unwrap();
+    assert_eq!(environments.len(), 1);
+    let control = dir.path().join("control.db");
+    let control = rusqlite::Connection::open(control).unwrap();
+    let sql = "SELECT id || '.' || token FROM environments";
+    let env: String = control.query_row(sql, [], |row| row.get(0)).unwrap();
+    assert_eq!(environments[0].env.to_string(), env);
+    assert_eq!(environments[0].address.to_string(), "default/default");
+    drop(control);
+
+    let log = served.stop();
+    let mut kept = vec![(PathBuf::from("the log"), log.into_bytes())];
+    let mut stack = vec![dir.path().to_owned()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let bytes = std::fs::read(&path).unwrap();
+                kept.push((path, bytes));
+            }
+        }
+    }
+    let holds = |secret: &str| {
+        let secret = secret.as_bytes();
+        let held = kept
+            .iter()
+            .filter(|(_, bytes)| bytes.windows(secret.len()).any(|w| w == secret));
+        held.map(|(path, _)| path.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(holds(&admin[41..]), [dir.path().join("admin.key")]);
+    for key in &made {
+        assert_eq!(holds(&key[41..]), Vec::<PathBuf>::new());
+        assert_eq!(holds(&key[41..62]), Vec::<PathBuf>::new());
+    }
 }
 
 /// The deadline of `accept.rs`'s tests, on a real connection.

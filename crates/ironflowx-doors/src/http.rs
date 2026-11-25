@@ -5,14 +5,17 @@ use std::sync::Arc;
 use axum::Router;
 use axum::routing::get;
 use connectrpc::{
-    CompressionRegistry, ConnectRpcService, Encodable, Limits, RequestContext, Response,
-    ServiceRequest, ServiceResult,
+    Chain, CompressionRegistry, ConnectError, ConnectRpcService, Encodable, Limits, RequestContext,
+    Response, ServiceRequest, ServiceResult,
 };
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use http::{HeaderMap, HeaderName, StatusCode};
 use ironflowx_core::{ErrorKind, Secret};
 use ironflowx_proto::wire::{
-    self, IdentityService, IdentityServiceServer, WhoamiRequest, WhoamiResponse,
+    self, CreateKeyRequest, CreateKeyResponse, EnvironmentService, EnvironmentServiceServer,
+    IdentityService, IdentityServiceServer, KeyService, KeyServiceServer, ListEnvironmentsRequest,
+    ListEnvironmentsResponse, ListKeysRequest, ListKeysResponse, RevokeKeyRequest,
+    RevokeKeyResponse, WhoamiRequest, WhoamiResponse,
 };
 use ironflowx_proto::{Call, OpError, Operations};
 
@@ -23,7 +26,10 @@ pub fn router<O: Operations + 'static, R: Readiness + 'static>(slot: Arc<Slot<O,
     let limits = Limits::default()
         .with_max_request_body_size(wire::MAX_MESSAGE)
         .with_max_message_size(wire::MAX_MESSAGE);
-    let rpcs = ConnectRpcService::new(IdentityServiceServer::new(Door(slot.clone())))
+    let identity = IdentityServiceServer::new(Door(slot.clone()));
+    let environments = EnvironmentServiceServer::new(Door(slot.clone()));
+    let keys = KeyServiceServer::new(Door(slot.clone()));
+    let rpcs = ConnectRpcService::new(Chain(identity, Chain(environments, keys)))
         .with_limits(limits)
         // Another crate of the build may switch gzip or zstd on in `connectrpc`.
         .with_compression(CompressionRegistry::new());
@@ -70,6 +76,10 @@ impl<O: Operations, R: Readiness> Slot<O, R> {
     }
 }
 
+fn refused(e: OpError) -> ConnectError {
+    wire::connect_error(&e)
+}
+
 struct Door<O: Operations, R: Readiness>(Arc<Slot<O, R>>);
 
 impl<O: Operations + 'static, R: Readiness + 'static> IdentityService for Door<O, R> {
@@ -78,11 +88,60 @@ impl<O: Operations + 'static, R: Readiness + 'static> IdentityService for Door<O
         ctx: RequestContext,
         request: ServiceRequest<'_, WhoamiRequest>,
     ) -> ServiceResult<impl Encodable<WhoamiResponse> + Send + use<'a, O, R>> {
-        let refused = |e| wire::connect_error(&e);
         let request = request.to_owned_message().try_into().map_err(refused)?;
         let operations = self.0.operations().map_err(refused)?;
         let answer = operations.whoami(&call(ctx.headers()), request).await;
         Response::ok(WhoamiResponse::from(answer.map_err(refused)?))
+    }
+}
+
+impl<O: Operations + 'static, R: Readiness + 'static> EnvironmentService for Door<O, R> {
+    async fn list_environments<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, ListEnvironmentsRequest>,
+    ) -> ServiceResult<impl Encodable<ListEnvironmentsResponse> + Send + use<'a, O, R>> {
+        let request = request.to_owned_message().try_into().map_err(refused)?;
+        let operations = self.0.operations().map_err(refused)?;
+        let answer = operations
+            .list_environments(&call(ctx.headers()), request)
+            .await;
+        Response::ok(ListEnvironmentsResponse::from(answer.map_err(refused)?))
+    }
+}
+
+impl<O: Operations + 'static, R: Readiness + 'static> KeyService for Door<O, R> {
+    async fn create_key<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, CreateKeyRequest>,
+    ) -> ServiceResult<impl Encodable<CreateKeyResponse> + Send + use<'a, O, R>> {
+        let request = request.to_owned_message().try_into().map_err(refused)?;
+        let operations = self.0.operations().map_err(refused)?;
+        let answer = operations.create_key(&call(ctx.headers()), request).await;
+        Response::ok(CreateKeyResponse::from(answer.map_err(refused)?))
+    }
+
+    async fn list_keys<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, ListKeysRequest>,
+    ) -> ServiceResult<impl Encodable<ListKeysResponse> + Send + use<'a, O, R>> {
+        let request = request.to_owned_message().try_into().map_err(refused)?;
+        let operations = self.0.operations().map_err(refused)?;
+        let answer = operations.list_keys(&call(ctx.headers()), request).await;
+        Response::ok(ListKeysResponse::from(answer.map_err(refused)?))
+    }
+
+    async fn revoke_key<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, RevokeKeyRequest>,
+    ) -> ServiceResult<impl Encodable<RevokeKeyResponse> + Send + use<'a, O, R>> {
+        let request = request.to_owned_message().try_into().map_err(refused)?;
+        let operations = self.0.operations().map_err(refused)?;
+        let answer = operations.revoke_key(&call(ctx.headers()), request).await;
+        Response::ok(RevokeKeyResponse::from(answer.map_err(refused)?))
     }
 }
 

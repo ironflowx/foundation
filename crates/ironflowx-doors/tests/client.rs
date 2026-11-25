@@ -3,11 +3,12 @@
 mod common;
 
 use std::collections::BTreeSet;
+use std::num::NonZeroU32;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 
-use common::{KEY, serving, whoami};
-use ironflowx_core::{Address, ErrorKind, Secret};
+use common::{CREATED, KEY, created, environments, key_page, serving, whoami};
+use ironflowx_core::{Address, ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_proto::{
     Call, Client, CreateKeyRequest, EmitBatchRequest, EmitRequest, GetEventRequest, InvalidUrl,
     ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation, Operations,
@@ -76,6 +77,106 @@ async fn every_error_crosses_to_the_client() {
     }
 }
 
+/// The operations the client carries.
+const CARRIED: [Operation; 5] = [
+    Operation::Whoami,
+    Operation::ListEnvironments,
+    Operation::CreateKey,
+    Operation::ListKeys,
+    Operation::RevokeKey,
+];
+
+/// Calls `op` once: what it answered, as it prints.
+async fn ask_one(client: &Client, cx: &Call, op: Operation) -> Result<String, OpError> {
+    match op {
+        Operation::Whoami => ask(client, cx).await.map(|a| format!("{a:?}")),
+        Operation::ListEnvironments => {
+            let answer = client.list_environments(cx, ListEnvironmentsRequest {});
+            answer.await.map(|a| format!("{a:?}"))
+        }
+        Operation::CreateKey => {
+            let request = CreateKeyRequest {
+                scopes: [Scope::Write].into(),
+                expires_at: Some(Timestamp::from_millis(1_800_000_000_001)),
+                label: Some("clé".into()),
+            };
+            let answer = client.create_key(cx, request).await;
+            answer.map(|a| format!("{} {:?}", a.key.expose(), a.info))
+        }
+        Operation::ListKeys => {
+            let request = ListKeysRequest {
+                limit: NonZeroU32::new(7),
+                cursor: Some("c".into()),
+            };
+            let answer = client.list_keys(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
+        Operation::RevokeKey => {
+            let request = RevokeKeyRequest {
+                key_id: "no ID".into(),
+            };
+            let answer = client.revoke_key(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
+        op => unreachable!("{op:?} is not carried"),
+    }
+}
+
+/// SRV-1, SRV-3: each request arrives as it was asked, once, with its call's key; the answer, or
+/// the error, comes back unchanged.
+#[tokio::test]
+async fn each_operation_crosses_to_the_engine_and_back() {
+    let (addr, operations) = serving(Ok(whoami())).await;
+    let client = Client::new(&format!("http://{addr}")).unwrap();
+    let answers = [
+        format!("{:?}", whoami()),
+        format!("{:?}", environments()),
+        format!("{CREATED} {:?}", created().info),
+        format!("{:?}", key_page()),
+        "()".to_owned(),
+    ];
+    for (op, answer) in CARRIED.into_iter().zip(answers) {
+        assert_eq!(ask_one(&client, &call(KEY), op).await, Ok(answer), "{op:?}");
+    }
+    assert_eq!(operations.take(), vec![Some(KEY.to_owned()); 5]);
+    let asked = [
+        "WhoamiRequest",
+        "ListEnvironmentsRequest",
+        r#"CreateKeyRequest { scopes: {Write}, expires_at: Some(Timestamp { millis: 1800000000001 }), label: Some("clé") }"#,
+        r#"ListKeysRequest { limit: Some(7), cursor: Some("c") }"#,
+        r#"RevokeKeyRequest { key_id: "no ID" }"#,
+    ];
+    assert_eq!(operations.take_requests(), asked);
+
+    let e = OpError {
+        kind: ErrorKind::NotFound,
+        message: "m".into(),
+        hint: Some("h".into()),
+    };
+    *operations.answer.lock().unwrap() = Err(e.clone());
+    for op in CARRIED {
+        let answer = ask_one(&client, &call(KEY), op).await;
+        assert_eq!(answer, Err(e.clone()), "{op:?}");
+    }
+    assert_eq!(operations.take().len(), 5);
+}
+
+/// The wire does not carry the expiry, and the nearest it does is not the one asked for.
+#[tokio::test]
+async fn an_expiry_outside_the_wires_years_is_not_sent() {
+    let (addr, operations) = serving(Ok(whoami())).await;
+    let client = Client::new(&format!("http://{addr}")).unwrap();
+    for outside in [-62_135_596_800_001, 253_402_300_800_000] {
+        let request = CreateKeyRequest {
+            expires_at: Some(Timestamp::from_millis(outside)),
+            ..Default::default()
+        };
+        let e = client.create_key(&call(KEY), request).await.unwrap_err();
+        assert_eq!((e.kind, e.hint), (ErrorKind::Invalid, None), "{outside}");
+    }
+    assert_eq!(operations.take(), []);
+}
+
 #[tokio::test]
 async fn an_address_prints_back_exactly() {
     let (addr, operations) = serving(Ok(whoami())).await;
@@ -133,36 +234,81 @@ async fn stub(answer: Vec<u8>) -> Client {
     Client::new(&format!("http://{addr}")).unwrap()
 }
 
-/// A read without the engine's own error: no answer, or one that is not its own.
+/// What a call without the engine's own error ends as.
+fn unanswered(op: Operation) -> (ErrorKind, Option<&'static str>) {
+    match op {
+        Operation::CreateKey => (
+            ErrorKind::Unknown,
+            Some(
+                "the key may be stored: list the keys before the retry, and again after the \
+                 engine reopens; revoke the one no holder has",
+            ),
+        ),
+        Operation::RevokeKey => (
+            ErrorKind::Unknown,
+            Some("retry: revoking a revoked key succeeds"),
+        ),
+        _ => (ErrorKind::Unavailable, None),
+    }
+}
+
+/// No answer, or one that is not the engine's own: a read is `Unavailable`, a state change
+/// `Unknown`, and no message holds a key (TEN-3).
 #[tokio::test]
-async fn a_read_no_engine_answers_is_unavailable() {
+async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
     let closed = {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         format!("http://{}", listener.local_addr().unwrap())
     };
-    let http = |status: &str, kind: &str, body: &str| {
+    let http = |status: &str, kind: &str, body: &[u8]| {
         let len = body.len();
-        format!("HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-length: {len}\r\n\r\n{body}")
-            .into_bytes()
+        let head =
+            format!("HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-length: {len}\r\n\r\n");
+        [head.as_bytes(), body].concat()
     };
-    for client in [
-        Client::new(&closed).unwrap(),
-        stub(vec![]).await,
-        stub(http("401 Unauthorized", "text/html", "<html>")).await,
-        stub(http("200 OK", "application/proto", "\u{7f}")).await,
-        // A WhoamiResponse whose key ID is "x".
-        stub(http("200 OK", "application/proto", "\n\x01x")).await,
+    // A CreateKeyResponse's key, then no information, or some cut short.
+    let key = [b"\n\x54", CREATED.as_bytes()].concat();
+    let cut = [&key, b"\x12\x7fx".as_slice()].concat();
+    // A WhoamiResponse or a CreateKeyResponse whose first field is "x"; as a page, one that holds
+    // a message that does not decode.
+    let short = b"\n\x01x";
+    let answers = [
+        vec![],
+        http("401 Unauthorized", "text/html", b"<html>"),
+        http("503 Service Unavailable", "text/html", b"<html>"),
+        http("200 OK", "text/html", b""),
+        http("200 OK", "application/proto", b"\x7f"),
+        http("200 OK", "application/proto", short),
+        http("200 OK", "application/proto", &key),
+        http("200 OK", "application/proto", &cut),
         // ErrorInfo of a kind this client does not know: 'kind' "new".
-        stub(http(
+        http(
             "400 Bad Request",
             "application/json",
-            r#"{"code":"invalid_argument","details":[{"type":"ironflowx.v1.ErrorInfo","value":"CgNuZXc"}]}"#,
-        ))
-        .await,
-    ] {
-        let e = ask(&client, &call(KEY)).await.unwrap_err();
-        assert_eq!((e.kind, e.hint), (ErrorKind::Unavailable, None), "{}", e.message);
-        assert!(!e.message.contains(KEY), "{}", e.message);
+            br#"{"code":"invalid_argument","details":[{"type":"ironflowx.v1.ErrorInfo","value":"CgNuZXc"}]}"#,
+        ),
+    ];
+    let ignored = [Some(&answers[5]), Some(&answers[6])];
+    for op in CARRIED {
+        for answer in std::iter::once(None).chain(answers.iter().map(Some)) {
+            let client = match answer {
+                None => Client::new(&closed).unwrap(),
+                Some(answer) => stub(answer.clone()).await,
+            };
+            let shown = answer.map(|a| a.escape_ascii().to_string());
+            let got = ask_one(&client, &call(KEY), op).await;
+            // A revoke's answer holds nothing, so another message is one with fields it ignores.
+            if op == Operation::RevokeKey && ignored.contains(&answer) {
+                assert_eq!(got, Ok("()".to_owned()), "{shown:?}");
+                continue;
+            }
+            let e = got.unwrap_err();
+            let ended = (e.kind, e.hint.as_deref());
+            assert_eq!(ended, unanswered(op), "{op:?} {shown:?}");
+            for key in [KEY, CREATED] {
+                assert!(!e.message.contains(&key[41..]), "{}", e.message);
+            }
+        }
     }
 }
 
@@ -186,9 +332,11 @@ async fn a_call_ends_by_its_timeout() {
     for addr in [addr, silent] {
         let client = Client::new(&format!("http://{addr}")).unwrap();
         let client = client.with_timeout(Duration::from_millis(250));
-        let ended = tokio::time::timeout(late, ask(&client, &call(KEY))).await;
-        let e = ended.expect("in time").unwrap_err();
-        assert_eq!((e.kind, e.hint), (ErrorKind::Unavailable, None));
+        for op in CARRIED {
+            let ended = tokio::time::timeout(late, ask_one(&client, &call(KEY), op)).await;
+            let e = ended.expect("in time").unwrap_err();
+            assert_eq!((e.kind, e.hint.as_deref()), unanswered(op), "{op:?}");
+        }
     }
     let asked = tokio::time::timeout(late, asked).await;
     let (_stream, head) = asked.expect("a call").unwrap();
@@ -261,43 +409,25 @@ async fn an_operation_the_client_does_not_carry_is_internal() {
         version: None,
         idempotency_key: None,
     };
-    let items = vec![emit.clone()];
-    let id = || "x".to_owned();
+    let batch = EmitBatchRequest {
+        items: vec![emit.clone()],
+    };
+    let get = GetEventRequest {
+        event_id: "x".into(),
+    };
     let page = ListEventsRequest {
         limit: None,
         cursor: None,
     };
     let refused = [
         client.emit(&cx, emit).await.err(),
-        client
-            .emit_batch(&cx, EmitBatchRequest { items })
-            .await
-            .err(),
-        client
-            .get_event(&cx, GetEventRequest { event_id: id() })
-            .await
-            .err(),
+        client.emit_batch(&cx, batch).await.err(),
+        client.get_event(&cx, get).await.err(),
         client.list_events(&cx, page).await.err(),
-        client
-            .list_environments(&cx, ListEnvironmentsRequest {})
-            .await
-            .err(),
-        client
-            .create_key(&cx, CreateKeyRequest::default())
-            .await
-            .err(),
-        client
-            .list_keys(&cx, ListKeysRequest::default())
-            .await
-            .err(),
-        client
-            .revoke_key(&cx, RevokeKeyRequest { key_id: id() })
-            .await
-            .err(),
     ];
     let expected: Vec<_> = Operation::ALL
         .iter()
-        .filter(|op| **op != Operation::Whoami)
+        .filter(|op| !CARRIED.contains(op))
         .map(|op| {
             Some(OpError {
                 kind: ErrorKind::Internal,

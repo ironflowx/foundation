@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package ironflowx.v1;
+
+import "google/protobuf/timestamp.proto";
+import "ironflowx/v1/options.proto";
+
+// The keys of the calling key's environment.
+service KeyService {
+  // Creates a key; the answer holds it, once.
+  rpc CreateKey(CreateKeyRequest) returns (CreateKeyResponse) {
+    option (ironflowx.v1.cli) = "keys create";
+    option (ironflowx.v1.summary) =
+      "Create a key, read-only unless scopes are asked for, and show it this once. "
+      "After unavailable or unknown, list the keys before the retry, and again after the engine "
+      "reopens: a key whose commit is unsettled shows only then. Revoke the one no holder has";
+    option (ironflowx.v1.example) = "{\"scopes\": [\"read\", \"write\"], \"label\": \"agent\"}";
+  }
+  // Lists a page of keys, newest first, never a secret.
+  rpc ListKeys(ListKeysRequest) returns (ListKeysResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (ironflowx.v1.cli) = "keys list";
+    option (ironflowx.v1.summary) = "List a page of keys, newest first, without their secrets";
+    option (ironflowx.v1.example) = "{\"limit\": 100}";
+  }
+  // Revokes a key; revoking a revoked key succeeds.
+  rpc RevokeKey(RevokeKeyRequest) returns (RevokeKeyResponse) {
+    option (ironflowx.v1.cli) = "keys revoke";
+    option (ironflowx.v1.summary) =
+      "Revoke a key. Safe to repeat: revoking a revoked key succeeds";
+    option (ironflowx.v1.example) = "{\"key_id\": \"0190b5f0-0000-7000-8000-000000000001\"}";
+  }
+}
+
+message CreateKeyRequest {
+  // "read", "write", "admin". None: "read".
+  repeated string scopes = 1;
+  // In whole milliseconds. Absent: no expiry, which a key with none may ask for.
+  optional google.protobuf.Timestamp expires_at = 2 [json_name = "expires_at"];
+  optional string label = 3;
+}
+
+message CreateKeyResponse {
+  // The whole key, shown only here. The one field of any message that holds one (TEN-3).
+  string key = 1 [debug_redact = true];
+  KeyInfo info = 2;
+}
+
+// What is known about a key, without its secret.
+message KeyInfo {
+  string key_id = 1 [json_name = "key_id"];
+  optional string label = 2;
+  // "read", "write", "admin".
+  repeated string scopes = 3;
+  // "minted", "seed", "recovered", "created".
+  string origin = 4;
+  // The ID of the key that created it. Absent: no key did.
+  optional string created_by = 5 [json_name = "created_by"];
+  google.protobuf.Timestamp created_at = 6 [json_name = "created_at"];
+  // Absent: it never expires.
+  optional google.protobuf.Timestamp expires_at = 7 [json_name = "expires_at"];
+  // "active", "expired", "revoked".
+  string status = 8;
+}
+
+message ListKeysRequest {
+  // At least 1. Absent: 100; above 1,000: 1,000.
+  optional uint32 limit = 1;
+  // The `next` of the previous page. Absent: from the newest key.
+  optional string cursor = 2;
+}
+
+message ListKeysResponse {
+  repeated KeyInfo keys = 1;
+  // The cursor of the next page. Absent on the last page.
+  optional string next = 2;
+}
+
+message RevokeKeyRequest {
+  string key_id = 1 [json_name = "key_id"];
+}
+
+message RevokeKeyResponse {}

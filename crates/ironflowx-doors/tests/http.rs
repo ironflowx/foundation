@@ -3,17 +3,23 @@
 mod common;
 
 use std::net::SocketAddr;
+use std::num::NonZeroU32;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::{KEY, Ready, Recording, serve, serving, whoami};
+use common::{
+    CREATED, KEY, Ready, Recording, created, environments, key_page, serve, serving, whoami,
+};
 use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
 use connectrpc::{ErrorCode, Protocol};
-use ironflowx_core::ErrorKind;
+use ironflowx_core::{ErrorKind, Scope, Timestamp};
 use ironflowx_doors::{Slot, WaitingOn};
-use ironflowx_proto::wire::{self, IdentityServiceClient, WhoamiRequest, WhoamiResponse};
-use ironflowx_proto::{OpError, Operation, Whoami};
+use ironflowx_proto::wire::{
+    self, EnvironmentServiceClient, IdentityServiceClient, KeyServiceClient, WhoamiRequest,
+    WhoamiResponse,
+};
+use ironflowx_proto::{CreatedKey, Environment, KeyPage, OpError, Operation, Whoami};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 
@@ -25,9 +31,10 @@ fn bearer() -> CallOptions {
 
 const PROTOCOLS: [&str; 4] = ["Connect JSON", "Connect binary", "gRPC", "gRPC-Web"];
 
-fn client_of(protocol: &str, addr: SocketAddr) -> IdentityServiceClient<HttpClient> {
+/// What a client of `protocol` is made of.
+fn transport(protocol: &str, addr: SocketAddr) -> (HttpClient, ClientConfig) {
     let config = ClientConfig::new(format!("http://{addr}").parse().unwrap());
-    let (http, config) = match protocol {
+    match protocol {
         "Connect JSON" => (HttpClient::plaintext(), config.json()),
         "Connect binary" => (HttpClient::plaintext(), config),
         "gRPC" => (
@@ -39,8 +46,17 @@ fn client_of(protocol: &str, addr: SocketAddr) -> IdentityServiceClient<HttpClie
             config.with_protocol(Protocol::GrpcWeb),
         ),
         _ => unreachable!(),
-    };
+    }
+}
+
+fn client_of(protocol: &str, addr: SocketAddr) -> IdentityServiceClient<HttpClient> {
+    let (http, config) = transport(protocol, addr);
     IdentityServiceClient::new(http, config)
+}
+
+fn keys_of(protocol: &str, addr: SocketAddr) -> KeyServiceClient<HttpClient> {
+    let (http, config) = transport(protocol, addr);
+    KeyServiceClient::new(http, config)
 }
 
 /// Sends one HTTP/1.0 request, whose answer is not chunked, and reads the answer to its end: its
@@ -76,7 +92,7 @@ async fn an_operation_is_served_at_its_rpc() {
     for op in Operation::ALL {
         let line = format!("POST /{}", op.rpc());
         let (head, _) = send(addr, &line, &[JSON], b"{}").await;
-        let served = *op == Operation::Whoami;
+        let served = !op.rpc().contains("EventService");
         let status = if served { "200" } else { "404" };
         assert!(
             head.starts_with(&format!("HTTP/1.0 {status} ")),
@@ -98,7 +114,232 @@ async fn a_call_and_its_answer_cross_every_protocol() {
             .unwrap();
         let answer = Whoami::try_from(answer.into_owned()).unwrap();
         assert_eq!(answer, whoami(), "{protocol}");
-        assert_eq!(operations.take(), [Some(KEY.to_owned())], "{protocol}");
+
+        let (http, config) = transport(protocol, addr);
+        let client = EnvironmentServiceClient::new(http, config);
+        let answer = client
+            .list_environments_with_options(wire::ListEnvironmentsRequest::default(), bearer())
+            .await
+            .unwrap();
+        let answer = Vec::<Environment>::try_from(answer.into_owned()).unwrap();
+        assert_eq!(answer, environments(), "{protocol}");
+
+        let keys = keys_of(protocol, addr);
+        let mut request = wire::CreateKeyRequest {
+            scopes: vec!["admin".into(), "read".into(), "read".into()],
+            label: Some("clé".into()),
+            ..Default::default()
+        };
+        let time = request.expires_at.get_or_insert_default();
+        (time.seconds, time.nanos) = (1_800_000_000, 1_000_000);
+        let answer = keys
+            .create_key_with_options(request, bearer())
+            .await
+            .unwrap();
+        let answer = CreatedKey::try_from(answer.into_owned()).unwrap();
+        assert_eq!(answer.key.expose(), CREATED, "{protocol}");
+        assert_eq!(answer.info, created().info, "{protocol}");
+
+        let request = wire::ListKeysRequest {
+            limit: Some(u32::MAX),
+            cursor: Some(String::new()),
+            ..Default::default()
+        };
+        let answer = keys
+            .list_keys_with_options(request, bearer())
+            .await
+            .unwrap();
+        let answer = KeyPage::try_from(answer.into_owned()).unwrap();
+        assert_eq!(answer, key_page(), "{protocol}");
+
+        let request = wire::RevokeKeyRequest {
+            key_id: "no ID".into(),
+            ..Default::default()
+        };
+        keys.revoke_key_with_options(request, bearer())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            operations.take(),
+            vec![Some(KEY.to_owned()); 5],
+            "{protocol}"
+        );
+        let asked = [
+            "WhoamiRequest".to_owned(),
+            "ListEnvironmentsRequest".to_owned(),
+            format!(
+                "{:?}",
+                ironflowx_proto::CreateKeyRequest {
+                    scopes: [Scope::Read, Scope::Admin].into(),
+                    expires_at: Some(Timestamp::from_millis(1_800_000_000_001)),
+                    label: Some("clé".into()),
+                }
+            ),
+            format!(
+                "{:?}",
+                ironflowx_proto::ListKeysRequest {
+                    limit: NonZeroU32::new(u32::MAX),
+                    cursor: Some(String::new()),
+                }
+            ),
+            format!(
+                "{:?}",
+                ironflowx_proto::RevokeKeyRequest {
+                    key_id: "no ID".into()
+                }
+            ),
+        ];
+        assert_eq!(operations.take_requests(), asked, "{protocol}");
+    }
+}
+
+/// An absent field is `None`, and a request with none of them a whole one.
+#[tokio::test]
+async fn an_empty_request_asks_for_the_defaults() {
+    let (addr, operations) = serving(Ok(whoami())).await;
+    for (method, asked) in [
+        (
+            "KeyService/CreateKey",
+            format!("{:?}", ironflowx_proto::CreateKeyRequest::default()),
+        ),
+        (
+            "KeyService/ListKeys",
+            format!("{:?}", ironflowx_proto::ListKeysRequest::default()),
+        ),
+    ] {
+        let line = format!("POST /ironflowx.v1.{method}");
+        let (head, _) = send(addr, &line, &[JSON], b"{}").await;
+        assert!(head.starts_with("HTTP/1.0 200 "), "{head}");
+        assert_eq!(operations.take_requests(), [asked], "{method}");
+    }
+}
+
+/// A request the wire cannot carry is `Invalid` before its key is read, whether or not the engine
+/// is open (Proto).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_the_wire_cannot_carry_is_invalid_before_its_key_is_read() {
+    let (open, operations) = serving(Ok(whoami())).await;
+    let starting = serve(Arc::new(Slot::starting())).await;
+    let create = |scopes: &[&str], time: Option<(i64, i32)>| {
+        let mut request = wire::CreateKeyRequest {
+            scopes: scopes.iter().map(ToString::to_string).collect(),
+            ..Default::default()
+        };
+        if let Some(time) = time {
+            let sent = request.expires_at.get_or_insert_default();
+            (sent.seconds, sent.nanos) = time;
+        }
+        request
+    };
+    for addr in [open, starting] {
+        for protocol in PROTOCOLS {
+            let keys = keys_of(protocol, addr);
+            let mut requests = vec![
+                create(&["own"], None),
+                create(&["read", "Write"], None),
+                create(&[""], None),
+                create(&[], Some((1_800_000_000, 1))),
+                create(&[], Some((1_800_000_000, 999_999))),
+            ];
+            // No JSON text says them.
+            if protocol != "Connect JSON" {
+                requests.extend([
+                    create(&[], Some((-62_135_596_801, 999_000_000))),
+                    create(&[], Some((253_402_300_800, 0))),
+                    create(&[], Some((i64::MAX, 0))),
+                    create(&[], Some((0, -1_000_000))),
+                    create(&[], Some((0, 1_000_000_000))),
+                ]);
+            }
+            for request in requests {
+                let e = keys
+                    .create_key_with_options(request.clone(), bearer())
+                    .await
+                    .err()
+                    .unwrap();
+                let shown = format!("{protocol}: {request:?}");
+                let message = if request.scopes.is_empty() {
+                    "a time is in whole milliseconds and in years 0001 to 9999"
+                } else {
+                    "a scope is read, write or admin"
+                };
+                assert_eq!(wire::op_error(&e), Some(invalid(message)), "{shown}");
+                assert_eq!(e.code, ErrorCode::InvalidArgument, "{shown}");
+            }
+            let request = wire::ListKeysRequest {
+                limit: Some(0),
+                ..Default::default()
+            };
+            let e = keys
+                .list_keys_with_options(request, bearer())
+                .await
+                .err()
+                .unwrap();
+            let refused = invalid("a limit is at least 1");
+            assert_eq!(wire::op_error(&e), Some(refused), "{protocol}");
+            assert_eq!(e.code, ErrorCode::InvalidArgument, "{protocol}");
+        }
+        // A JSON text that is no time does not decode.
+        for time in [
+            "0000-12-31T23:59:59.999Z",
+            "10000-01-01T00:00:00Z",
+            "9999-12-31T23:59:59-00:01",
+            "2027-01-15T08:00:00.0000000001Z",
+        ] {
+            let body = format!(r#"{{"expires_at":"{time}"}}"#);
+            let line = "POST /ironflowx.v1.KeyService/CreateKey";
+            let (head, body) = send(addr, line, &[JSON], body.as_bytes()).await;
+            assert!(head.starts_with("HTTP/1.0 400 "), "{time}: {head}");
+            assert!(body.contains(r#""code":"invalid_argument""#), "{body}");
+        }
+    }
+    assert_eq!(operations.take(), []);
+    // Their neighbors are carried.
+    for (time, millis) in [
+        ((-62_135_596_800, 0), -62_135_596_800_000),
+        ((253_402_300_799, 999_000_000), 253_402_300_799_999),
+    ] {
+        for protocol in PROTOCOLS {
+            let keys = keys_of(protocol, open);
+            keys.create_key(create(&[], Some(time))).await.unwrap();
+            let asked = ironflowx_proto::CreateKeyRequest {
+                expires_at: Some(Timestamp::from_millis(millis)),
+                ..Default::default()
+            };
+            assert_eq!(operations.take_requests(), [format!("{asked:?}")]);
+        }
+    }
+}
+
+fn invalid(message: &str) -> OpError {
+    OpError {
+        kind: ErrorKind::Invalid,
+        message: message.into(),
+        hint: None,
+    }
+}
+
+/// Connect calls a read with GET, and nothing that changes state.
+#[tokio::test]
+async fn only_a_read_is_called_with_get() {
+    let (addr, operations) = serving(Ok(whoami())).await;
+    for op in Operation::ALL {
+        if op.rpc().contains("EventService") {
+            continue;
+        }
+        let line = format!("GET /{}?connect=v1&encoding=json&message=%7B%7D", op.rpc());
+        let (head, _) = send(addr, &line, &[], b"").await;
+        let status = if op.changes_state() { "405" } else { "200" };
+        assert!(
+            head.starts_with(&format!("HTTP/1.0 {status} ")),
+            "{line}: {head}"
+        );
+        assert_eq!(
+            operations.take().len(),
+            usize::from(!op.changes_state()),
+            "{line}"
+        );
     }
 }
 
@@ -111,7 +352,31 @@ async fn the_json_names_are_the_protos() {
     let (head, body) = send(addr, WHOAMI, &[JSON], b"{}").await;
     assert!(head.starts_with("HTTP/1.0 200 "), "{head}");
     assert_eq!(body, ANSWER);
+    for (method, answer) in [
+        (
+            "EnvironmentService/ListEnvironments",
+            r#"{"environments":[{"env":"0190b5f0-0000-7000-8000-000000000003.00112233445566778899aabbccddeeff","name":"main","address":"default/main","project_id":"0190b5f0-0000-7000-8000-000000000004","created_at":"2023-11-14T22:13:20Z"}]}"#.to_owned(),
+        ),
+        (
+            "KeyService/CreateKey",
+            format!(r#"{{"key":"{CREATED}","info":{INFO}}}"#),
+        ),
+        (
+            "KeyService/ListKeys",
+            format!(
+                r#"{{"keys":[{INFO},{{"key_id":"0190b5f0-0000-7000-8000-000000000001","scopes":["admin"],"origin":"minted","created_at":"1970-01-01T00:00:00Z","status":"revoked"}}],"next":"0123.7"}}"#
+            ),
+        ),
+        ("KeyService/RevokeKey", "{}".to_owned()),
+    ] {
+        let line = format!("POST /ironflowx.v1.{method}");
+        let (head, body) = send(addr, &line, &[JSON], b"{}").await;
+        assert!(head.starts_with("HTTP/1.0 200 "), "{head}");
+        assert_eq!(body, answer, "{method}");
+    }
 }
+
+const INFO: &str = r#"{"key_id":"0190b5f0-0000-7000-8000-000000000002","label":"agent é","scopes":["read","write"],"origin":"created","created_by":"0190b5f0-0000-7000-8000-000000000001","created_at":"2023-11-14T22:13:20.001Z","expires_at":"2027-01-15T08:00:00.120Z","status":"active"}"#;
 
 /// SRV-3: kind, message and hint, on every protocol, under the kind's Connect code.
 #[tokio::test(flavor = "multi_thread")]
