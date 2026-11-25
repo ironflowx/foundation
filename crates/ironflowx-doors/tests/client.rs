@@ -761,7 +761,7 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
         (code("invalid_argument"), json("400 Bad Request", new_kind)),
         (code("unimplemented"), json("404 x", unreadable)),
         (code("resource_exhausted"), json("429 x", another)),
-        // Nor beside a code or a message that is no text, nor on two lines by any byte of them.
+        // Nor beside a code or a message that is no text, nor with a tab or a carriage return.
         (
             status(502),
             json(
@@ -1046,7 +1046,8 @@ async fn copying(head: &str, wrap: &'static str) -> (Client, JoinHandle<Vec<u8>>
 /// How an emit of this name, and this idempotency key, is sent.
 fn encoded(request: &EmitRequest) -> Vec<u8> {
     let field = |tag: u8, text: &str| {
-        let length = u8::try_from(text.len()).expect("a length of one byte");
+        let length = u8::try_from(text.len()).ok().filter(u8::is_ascii);
+        let length = length.expect("a length of one byte");
         [&[tag, length], text.as_bytes()].concat()
     };
     let key = request.idempotency_key.as_ref();
