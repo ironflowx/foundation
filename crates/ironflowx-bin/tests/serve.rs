@@ -226,9 +226,13 @@ fn any_other_refusal_exits_1_and_names_it() {
 
     let file = dir.path().join("file");
     std::fs::write(&file, "").unwrap();
-    let (code, log) = refused(&file.join("data"), "127.0.0.1:0");
-    assert_eq!(code, Some(1), "{log}");
-    assert!(log.contains("cannot create "), "{log}");
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink("nothing", &link).unwrap();
+    for data_dir in [file.join("data"), file, link] {
+        let (code, log) = refused(&data_dir, "127.0.0.1:0");
+        assert_eq!(code, Some(1), "{log}");
+        assert!(log.contains("cannot create "), "{log}");
+    }
 }
 
 #[test]
@@ -269,10 +273,11 @@ fn under_umask(umask: &str, data_dir: &Path) -> Child {
 }
 
 #[test]
-fn the_data_directory_is_its_owners_whatever_the_umask() {
-    for umask in ["0277", "0477", "0777"] {
+fn what_the_host_creates_for_its_data_is_its_owners_whatever_the_umask() {
+    for umask in ["0000", "0277", "0477", "0777"] {
         let dir = tempfile::tempdir().unwrap();
-        let data_dir = dir.path().join("data");
+        let above = dir.path().join("above");
+        let data_dir = above.join("data");
         let mut child = under_umask(umask, &data_dir);
         let lock = data_dir.join("engine.lock");
         let started = Instant::now();
@@ -282,7 +287,7 @@ fn the_data_directory_is_its_owners_whatever_the_umask() {
         }
         let _ = child.kill();
         let _ = child.wait();
-        assert_eq!(mode(&data_dir), 0o700, "{umask}");
+        assert_eq!((mode(&above), mode(&data_dir)), (0o700, 0o700), "{umask}");
     }
 }
 

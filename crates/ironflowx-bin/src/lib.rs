@@ -151,15 +151,21 @@ fn prepare(data_dir: &Path) -> Result<(), ServeError> {
     Ok(())
 }
 
-/// Creates `dir` with mode `0700`, whatever the process umask; one that is there keeps its mode.
+/// Creates `dir`, and what is missing above it, with mode `0700`, whatever the process umask. A
+/// directory that is there keeps its mode.
 fn create(dir: &Path) -> io::Result<()> {
+    if dir.is_dir() || dir.as_os_str().is_empty() {
+        return Ok(());
+    }
     if let Some(parent) = dir.parent() {
-        std::fs::create_dir_all(parent)?;
+        create(parent)?;
     }
     let private = Permissions::from_mode(0o700);
-    match std::fs::DirBuilder::new().mode(private.mode()).create(dir) {
+    let made = std::fs::DirBuilder::new().mode(private.mode()).create(dir);
+    match made {
         Ok(()) => std::fs::set_permissions(dir, private),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        // Another start made it meanwhile.
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(()),
         Err(e) => Err(e),
     }
 }

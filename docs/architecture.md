@@ -523,7 +523,7 @@ Seen with a fault-injecting VFS that fails the WAL's sync (macOS, [#135](https:/
 
 ## What is stored
 
-The engine and the ledger set no file modes, so the process umask applies, and encrypt nothing: the host keeps the directory private. `ironflowx serve` creates it with mode `0700`; one that is there keeps its mode. Who can read it reads every event; who can write it has an admin's authority. A ledger has no delete and no retention.
+The engine and the ledger set no file modes, so the process umask applies, and encrypt nothing: the host keeps the directory private. `ironflowx serve` creates it, and what is missing above it, with mode `0700`, whatever the umask; a directory that is there keeps its mode. Who can read it reads every event; who can write it has an admin's authority. A ledger has no delete and no retention.
 
 An engine's data directory, `<root>`:
 
@@ -585,7 +585,7 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 | Size | A request body and a message are at most 16 MiB each, so on gRPC and gRPC-Web, whose body holds a 5-byte envelope too, a message is at most 16 MiB less 5 bytes; over either, the library answers `resource_exhausted`. `Client` accepts an answer of 16 MiB |
 | Timeouts | A connection sends its first request's head within 10 s, and on HTTP/1.1 each later one within 10 s of its first byte. A later head that arrives with the request before it (before that one is answered), and later HTTP/2 heads, count as idle; no idle limit of its own (a proxy sets one); `Connect-Timeout-Ms` is honored; no deadline of its own, on `/ready` either |
 | Door | Holds no rule: decode, convert (`TryFrom`), call `Operations` once, convert back (SRV-1). A request that does not decode is `invalid_argument` before its key is read |
-| Errors | The kind's [Connect code](#errors), the message, and `ErrorInfo` as a detail, on every protocol. gRPC carries all of it in trailers, the message three times and once percent-encoded, so an error whose trailers pass its client's limit on them loses its `ErrorInfo`, then fails: `connectrpc`'s own client reads a message of 4,096 letters whole, loses the `ErrorInfo` of 4,096 `%` or 8,192 letters, and fails at 16,384 letters. No error of the engine is that long. An answer without `ErrorInfo` is the library's or a proxy's |
+| Errors | The kind's [Connect code](#errors), the message, and `ErrorInfo` as a detail, on every protocol. gRPC carries all of it in trailers, the message three times and once percent-encoded, so an error whose trailers pass its client's limit on them loses its `ErrorInfo`, then fails: `connectrpc`'s own client reads a message of 4,096 ASCII letters whole, loses the `ErrorInfo` of 4,096 `%` or 8,192 ASCII letters, and fails at 16,384. No error of the engine is that long. Any other answer without `ErrorInfo` is the library's or a proxy's |
 | While opening | Every call answers `Unavailable`, hint `the engine is starting` |
 
 `Client` speaks Connect binary. A call whose answer carries `ErrorInfo` fails with that error, exactly; `whoami`, the one call it carries, is a read, and any other failure of it is `Unavailable`.
@@ -605,7 +605,7 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 2. Bind the listen address. Nothing in the data directory is touched before (D62).
 3. Log `listening` with the bound URL, also when port 0 picked the address. An address that is not loopback also logs a warning that keys travel in clear without a TLS proxy (D59).
 4. Serve `/health` and the door, the slot `Starting`.
-5. Create the data directory with mode `0700` if missing. If it holds `admin.key` and its bootstrap is not marked (`ControlPlane::bootstrap_state`), exit 2: no open before the mark wrote that file, so it is stale. An error of that read is left for the open. Then `Engine::open(data_dir, HostClock, None)`.
+5. Create the data directory, and what is missing above it, with mode `0700`. If it holds `admin.key` and its bootstrap is not marked (`ControlPlane::bootstrap_state`), exit 2: no open before the mark wrote that file, so it is stale. An error of that read is left for the open. Then `Engine::open(data_dir, HostClock, None)`.
 6. Write a minted key to `admin.key` and log its path, never the key. If it cannot be written, close the engine and exit 1; the key stays stored, its secret lost ([Engine open](#engine-open), "Recovery").
 7. Set the slot `Open`.
 
