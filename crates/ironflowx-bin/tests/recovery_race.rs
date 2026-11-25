@@ -129,7 +129,12 @@ async fn the_loser_names_only_its_undelivered_key_and_keeps_the_winners_file() {
     )));
     assert!(!message.contains(&winner_id.to_string()));
     let hint = error["hint"].as_str().unwrap();
-    assert!(hint.ends_with(&format!("then revoke {loser_id}")));
+    assert_eq!(
+        hint,
+        format!(
+            "use a working admin key or recover one with ironflowx recover-key --stdout, then revoke {loser_id}"
+        )
+    );
 
     let file = dir.join("admin.key");
     let text = std::fs::read_to_string(&file).unwrap();

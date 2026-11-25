@@ -38,8 +38,12 @@ pub fn write(data_dir: &Path, key: &Secret) -> io::Result<()> {
     file.sync_all()?;
     // Not a rename, which would replace an `admin.key`.
     std::fs::hard_link(temporary.path(), path(data_dir))?;
-    temporary.close().map_err(tempfile_error)?;
+    close_temporary(temporary)?;
     File::open(data_dir)?.sync_all()
+}
+
+fn close_temporary(temporary: tempfile::NamedTempFile) -> io::Result<()> {
+    temporary.close().map_err(tempfile_error)
 }
 
 // Tempfile wraps filesystem errors with its own rendering of the path. The caller already
@@ -183,6 +187,33 @@ fn failed_removal(path: &Path) -> Option<(std::ffi::OsString, io::Error)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writer_creation_error_omits_the_private_tempfile_path() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("quoted\"root");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, Permissions::from_mode(0o500)).unwrap();
+        let (_, key) = ironflowx_operations::generate_seed();
+        let result = write(&dir, &key);
+        std::fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.to_string(), "permission denied");
+        assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn writer_close_error_omits_the_private_tempfile_path() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("quoted\"root");
+        std::fs::create_dir(&dir).unwrap();
+        let temporary = tempfile::NamedTempFile::new_in(&dir).unwrap();
+        std::fs::remove_file(temporary.path()).unwrap();
+        let error = close_temporary(temporary).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(error.to_string(), "entity not found");
+    }
 
     #[test]
     fn the_probe_keeps_an_entry_it_could_not_link_over() {

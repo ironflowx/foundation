@@ -286,14 +286,37 @@ async fn a_broken_stdout_reports_the_committed_key_id() {
             .unwrap()
             .starts_with(&format!("cannot deliver recovered key {id} to stdout:"))
     );
-    assert!(
-        error["hint"]
-            .as_str()
-            .unwrap()
-            .ends_with(&format!("then revoke {id}"))
+    assert_eq!(
+        error["hint"],
+        format!(
+            "use a working admin key or recover one with ironflowx recover-key --stdout, then revoke {id}"
+        )
     );
     assert!(!dir.path().join("admin.key").exists());
     opened.engine.close().await;
+}
+
+#[test]
+fn an_uninspectable_data_directory_is_unavailable_in_both_modes() {
+    let temp = tempfile::tempdir_in("/tmp").unwrap();
+    let parent = temp.path().join("inaccessible");
+    let dir = parent.join("engine");
+    std::fs::create_dir_all(&dir).unwrap();
+    for args in [&[][..], &["--stdout"][..]] {
+        std::fs::set_permissions(&parent, Permissions::from_mode(0o600)).unwrap();
+        let out = recovery(&dir).args(args).output();
+        std::fs::set_permissions(&parent, Permissions::from_mode(0o700)).unwrap();
+        let cause = std::io::Error::from(rustix::io::Errno::ACCESS);
+        assert_eq!(
+            refusal(out.unwrap(), 8),
+            json!({
+                "code": "unavailable",
+                "message": format!("cannot inspect {}: {cause}", dir.display()),
+                "retryable": true,
+            })
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
 }
 
 #[test]
