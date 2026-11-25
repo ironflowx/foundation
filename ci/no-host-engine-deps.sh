@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Usage: ci/no-host-engine-deps.sh <Cargo.toml>
 # A host reaches the control plane, ledger, event rules and credentials through the engine.
-# Check only this package's normal dependencies. Cargo metadata reports package names even when
-# renamed, including optional and target-specific dependencies, without resolving transitives.
+# Check this package's direct normal dependencies by their declared Cargo package names.
+# Cargo metadata keeps those names for aliases and for optional or target-specific dependencies.
+# A fork with a different package name escapes the check; this workspace uses the four names below.
 set -euo pipefail
 manifest=$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")
 forbidden=$(cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest" |
