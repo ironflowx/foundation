@@ -584,7 +584,7 @@ fn print(text: &str) -> Result<(), OpError> {
 }
 
 /// The exit code of an answer printed, or of a failure, once its envelope is.
-fn end(result: Result<(), OpError>) -> ExitCode {
+pub fn end(result: Result<(), OpError>) -> ExitCode {
     let Err(e) = result else {
         return ExitCode::SUCCESS;
     };

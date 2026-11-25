@@ -9,7 +9,7 @@ license.workspace = true
 
 [features]
 # The HTTP door.
-http = ["dep:axum", "dep:connectrpc", "dep:http", "ironflowx-proto/server"]
+http = ["dep:axum", "dep:connectrpc", "dep:http", "dep:tracing", "ironflowx-proto/server"]
 
 # No engine crate: ci/no-engine-deps.sh (SRV-1).
 [dependencies]
@@ -18,6 +18,8 @@ ironflowx-proto.workspace = true
 axum = { version = "0.8.9", default-features = false, optional = true }
 connectrpc = { version = "0.9.1", default-features = false, features = ["json"], optional = true }
 http = { version = "1.5.0", default-features = false, features = ["std"], optional = true }
+
+tracing = { version = "0.1.44", default-features = false, optional = true }
 
 [dev-dependencies]
 # For the tests; a dev-dependency does not ship.

@@ -576,9 +576,10 @@ What `ironflowx serve` adds to it:
 | Where | Holds |
 |---|---|
 | `<root>/admin.key` | The minted admin key and a newline, mode `0400`. Never overwritten. Deleting it is the operator's call |
-| `<root>/admin.key.<random>.tmp` | Only after a crash while `admin.key` was written: may hold the whole key, mode `0400` |
+| `<root>/admin.key.<random>.tmp` | The temporary file used to publish the key, mode `0400`. A leftover may hold the only copy. The host warns with its path and keeps it |
+| `<root>/.admin-key-probe.<random>` and its `.link` | Dummy zero bytes only, mode `0400`. A live probe removes its own entries unless the OS refuses cleanup, in which case the error names the paths |
 
-**Where a secret may appear.** A served engine's key text reaches only these places: `admin.key` and the temporary file it is linked from, the `Authorization` header of a call, the `CreateKey` answer on the wire, stdout of `keys create`, and the variable or the file the CLI was given it in. A key's text sent where no key goes is data, as any: a label is stored and listed (the CLI refuses to create a key whose label holds its own), and a text that does not decode can be repeated to its sender.
+**Where a secret may appear.** A served engine's key text reaches only these places: `admin.key` and the temporary file it is linked from, the `Authorization` header of a call, the `CreateKey` answer on the wire, stdout of `keys create` and `seed generate`, and the variable or file given to the CLI or host. A key's text sent where no key goes is data, as any: a label is stored and listed (the CLI refuses to create a key whose label holds its own), and a text that does not decode can be repeated to its sender.
 
 A ledger's directory, `<dir>`:
 
@@ -678,20 +679,35 @@ With `client-tls`, `Client` calls an `https` URL as it does an `http` one. It tr
 
 `ironflowx serve` binds, opens the engine, and serves it until the process is killed. It handles no signal: every acknowledgment already followed `fsync`, so a kill loses nothing acknowledged.
 
-| Setting | Flag | Default |
-|---|---|---|
-| Data directory | `--data-dir` | `./.ironflowx` |
-| Listen address | `--listen`, an IP address and a port | `127.0.0.1:9310` |
+| Setting | Flag | Variable | Default |
+|---|---|---|---|
+| Data directory | `--data-dir` | `IRONFLOWX_DATA_DIR` | `./.ironflowx` |
+| Listen IP address and port | `--listen` | `IRONFLOWX_LISTEN` | `127.0.0.1:9310` |
+| Seed | `--seed-file` | `IRONFLOWX_SEED_FILE` or `IRONFLOWX_SEED` | None |
+| Log level | `--log-level` | `IRONFLOWX_LOG_LEVEL` | `info` |
+| Log format | `--log-format` | `IRONFLOWX_LOG_FORMAT` | `json` |
+
+A flag beats its variable. A seed file and an inline seed are two sources and are refused together.
+The host trims surrounding whitespace off a seed and validates it before binding. An empty variable
+is a value and is refused. The host warns once for each unread `IRONFLOWX_*` variable, naming the
+variable without its value. `IRONFLOWX_URL` and `IRONFLOWX_KEY` are known CLI variables. There is no
+settings file.
 
 **Start.** In order:
 
-1. If the data directory holds `admin.key` and no `control.db`, exit 2: a stale key file, from another install.
-2. Bind the listen address. Nothing in the data directory is touched before (D62).
-3. Log `listening` with the bound URL, also when port 0 picked the address. An address that is not loopback also logs a warning that keys travel in clear without a TLS proxy (D59).
-4. Serve `/health` and the door, the slot `Starting`.
-5. Create the data directory, and what is missing above it, asking for mode `0700` ([What is stored](#what-is-stored)). If it holds `admin.key` and the engine's `is_bootstrapped` answers `Ok(false)`, exit 2: no open before the mark wrote that file, so it is stale. An error of that read is left for the open. Then `Engine::open(data_dir, HostClock, None)`.
-6. Write a minted key to `admin.key` and log its path, never the key. If it cannot be written, close the engine and exit 1; the key stays stored, its secret lost ([Engine open](#engine-open), "Recovery").
-7. Set the slot `Open`.
+1. Read and validate settings and any seed. Bad settings, a malformed seed or an unreadable seed file exit 2.
+2. If the data directory holds `admin.key` and no `control.db`, exit 2: a stale key file, from another install.
+3. Bind the listen address. In use exits 8, any other bind error exits 2. No file has been written (D62).
+4. Log `listening` with the bound URL, also when port 0 picked the address. An address that is not loopback also logs a warning that keys travel in clear without a TLS proxy (D59).
+5. Serve `/health` and the door, the slot `Starting`.
+6. Create the data directory, and what is missing above it, asking for mode `0700`. Warn about leftover `admin.key.*.tmp` paths and keep them. Only a confirmed unmarked bootstrap with an occupied `admin.key` is stale (exit 2). A seeded start leaves a bootstrap read error for the open. A seedless start on an unmarked or unreadable bootstrap checks the destination with `symlink_metadata`: an occupied name, including a dangling link, yields the stale refusal or the original read error, respectively. A lookup error other than not found is a refusal. When the destination is absent, probe before opening. If a healthy marked root has an occupied key path and the first read fails transiently, retry the start after the failure clears.
+7. Open with `Engine::open(data_dir, HostClock, seed)`. Warn if it revoked an earlier minted key whose secret was lost, or if the supplied seed is revoked. Write a minted key to `admin.key` and log its path. On failure log the minted key ID and the instruction to run `ironflowx recover-key` and revoke that ID, close the engine and exit 1. Set the slot `Open` on success.
+
+**Pre-mint probe.** Write and sync dummy data in the data directory, hard-link it, then remove
+both probe-created names and sync the directory. Attempt cleanup of each created name even after
+an earlier failure, and keep any existing entry that the probe hit in a collision. If the OS refuses
+removal, report each path whose removal failed. Any probe failure exits 1 before open, with nothing
+minted.
 
 `is_bootstrapped` reads the control plane without creating a directory or database. It answers
 `true` for a marked bootstrap and `false` for a missing control plane, a control plane that
@@ -709,9 +725,28 @@ not check the ledger. SQLite can rebuild `control.db-shm` from a WAL left by a c
 
 `/ready` asks the engine on each request and has no deadline of its own, so it can answer as late as `Engine::health` does ([Commit and read](#commit-and-read)): a prober sets its own.
 
-**Log.** One JSON object per line on stderr, at `info` and above.
+**Logs.** JSON lines on stderr by default, or text with `--log-format text`.
+`--log-level` takes `off`, `error`, `warn`, `info`, `debug` or `trace`.
+At `info`, the host logs one line per call, with the operation, duration, outcome kind and the
+presented key's ID, if the key is well formed. The ID is recorded even for a key the engine refuses.
+Before `Operations`, the door logs a refusal without a key ID. A transport refusal before the
+door can determine a domain kind has outcome `refused`. Logs carry no key, seed, event data or
+metadata. In a diagnostic path or message, the host hides words that could be credentials and
+escapes control characters. The refusal's envelope is the last stderr line, regardless of the log format or level.
 
-**Exit.** 2 for a stale `admin.key`; 1 for any other refusal; the message of either is its last log line. A command line it cannot read exits 2, with an envelope ([CLI](#cli)).
+### Exit codes
+
+Host errors use the same table as the CLI, from `ErrorKind::exit_code()`.
+
+| Exit | Kind | Host refusals |
+|---|---|---|
+| 1 | `internal` | Engine or ledger format, orphaned engine, missing ledger, wrong incarnation, corrupt ledger, data directory creation failure, failed pre-mint probe, key-file publication failure |
+| 2 | `invalid` | Bad settings, malformed or unreadable seed, a directory belonging to a ledger, a seed conflict, stale `admin.key`, bind error other than address in use |
+| 3–7 | [Call errors](#errors) | Calls only |
+| 8 | `unavailable` | Address in use, engine or ledger lock or I/O error, control-plane fault, destination lookup error |
+
+**Seed generation.** `ironflowx seed generate` prints one JSON object with `key` and `key_id`.
+It opens no engine and writes no file.
 
 ## CLI
 
@@ -719,7 +754,7 @@ not check the ledger. SQLite can rebuild `control.db-shm` from a WAL left by a c
 
 | Part | Rule |
 |---|---|
-| Commands | One per method of the proto, generated (D52): `environments list`, `events emit`, `events emit-batch`, `events get`, `events list`, `keys create`, `keys list`, `keys revoke` and `whoami`. Hand-written: `describe` and `version` here, `serve` in the host |
+| Commands | One per method of the proto, generated (D52): `environments list`, `events emit`, `events emit-batch`, `events get`, `events list`, `keys create`, `keys list`, `keys revoke` and `whoami`. Hand-written: `describe` and `version` here, `serve` and `seed generate` in the host |
 | Engine | `--url`, else `IRONFLOWX_URL`, else `http://127.0.0.1:9310`. `https://` too, for an engine behind a TLS proxy ([Wire](#wire)) |
 | Key | `--key-file <path>`, else `IRONFLOWX_KEY`, else none, with surrounding whitespace trimmed. Nothing else: the CLI never reads `admin.key` unasked (D61). No key, and an empty one, is a call with no key, which the engine refuses; a file or a variable that is there and empty is still the one that was given. Text that is not UTF-8 is a malformed key |
 | Arguments | A flag for each scalar field of the request, its name in kebab case (`--event-id`); the flag of a repeated field may be repeated (`--scopes read --scopes write`), and a field that holds messages has none. Its value is what wire JSON reads from a string (text, a number, an RFC 3339 time) or, for a `bool`, `true` or `false`; one its field does not take is a usage error that names the flag, but for what the wire mapping or the engine refuses (a limit of 0, an unknown scope). A `json_text` field takes JSON text, also text that begins with `-`, or `@<file>`, the file's text, and sends it byte for byte. Any other value that begins with `-` is given after `=`: `--label=-x`. A field without its flag is absent |

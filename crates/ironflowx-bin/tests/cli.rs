@@ -1217,7 +1217,28 @@ fn a_usage_error_is_an_envelope() {
         (
             &[][..],
             "'ironflowx' requires a subcommand but one was not provided \
-             [subcommands: serve, version, describe, environments, events, whoami, keys]",
+             [subcommands: serve, seed, version, describe, environments, events, whoami, keys]",
+        ),
+        (
+            &["seed"],
+            "'ironflowx seed' requires a subcommand but one was not provided [subcommands: generate]",
+        ),
+        (&["seed", "nope"], "unrecognized subcommand 'nope'"),
+        (&["seed", "generate", "x"], "unexpected argument 'x' found"),
+        (&["serve", "--key"], "unexpected argument '--key' found"),
+        (
+            &["serve", "--seed-file"],
+            "a value is required for '--seed-file <PATH>' but none was supplied",
+        ),
+        (
+            &["serve", "--log-level"],
+            "a value is required for '--log-level <LEVEL>' but none was supplied \
+             [possible values: off, error, warn, info, debug, trace]",
+        ),
+        (
+            &["serve", "--log-format"],
+            "a value is required for '--log-format <FORMAT>' but none was supplied \
+             [possible values: json, text]",
         ),
         (&["nope"], "unrecognized subcommand 'nope'"),
         (&["describe", "health"], "unrecognized subcommand 'health'"),

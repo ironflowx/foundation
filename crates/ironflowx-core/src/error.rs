@@ -31,6 +31,20 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
+    /// The kind's name in an error envelope or call log.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Invalid => "invalid",
+            Self::NotFound => "not_found",
+            Self::Unknown => "unknown",
+            Self::Unavailable => "unavailable",
+            Self::Unauthenticated => "unauthenticated",
+            Self::PermissionDenied => "permission_denied",
+            Self::ResourceExhausted => "resource_exhausted",
+            Self::Internal => "internal",
+        }
+    }
+
     /// True only when the same request, sent again unchanged, may succeed and stores no second
     /// event. The error's hint, when there is one, says what to do, retryable or not;
     /// [`Self::Unavailable`] says when "at once" is not enough.

@@ -8,21 +8,23 @@ use std::process::{Command, Output, Stdio};
 use cucumber::gherkin::Step;
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
+use ironflowx_core::{Scope, Secret};
 use ironflowx_proto::wire::FILE_DESCRIPTOR_SET;
+use ironflowx_proto::{Call, Client, Operations as _, WhoamiRequest};
 use prost_reflect::DescriptorPool;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use super::serve::{Served, command};
+use super::serve::{Served, command, serve_command};
 
 /// The scenarios whose work has landed: every one must run and pass.
 const REGISTERED: &[&str] = &[
     "CLI-001", "CLI-002", "CLI-003", "CLI-004", "CLI-006", "CLI-007", "CLI-008", "CLI-009",
-    "CLI-010", "CLI-013", "CLI-014", "CLI-015", "CLI-016",
+    "CLI-010", "CLI-012", "CLI-013", "CLI-014", "CLI-015", "CLI-016",
 ];
 
 /// How many scenarios run, an outline once per example, so no example goes unnoticed.
-pub const RUNS: usize = 21;
+pub const RUNS: usize = 22;
 
 #[derive(World)]
 #[world(init = Self::new)]
@@ -42,7 +44,7 @@ const DATA_DIR: &str = ".ironflowx";
 impl fmt::Debug for Cli {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cli")
-            .field("ran", &self.ran)
+            .field("status", &self.ran.as_ref().map(|out| out.status))
             .finish_non_exhaustive()
     }
 }
@@ -639,6 +641,31 @@ fn batch_output_alternatives(_: &mut Cli) {
         let answer = json!({"items": [item]});
         assert_eq!(output.is_valid(&answer), expected, "batch output: {answer}");
     }
+}
+
+#[then(r#"stdout holds a "key" and its "key_id""#)]
+fn printed_seed(w: &mut Cli) {
+    let seed = w.succeeded();
+    assert_eq!(
+        seed["key"].as_str().unwrap().get(4..40),
+        seed["key_id"].as_str()
+    );
+}
+
+#[then(
+    "an engine served on another fresh data directory with that key as IRONFLOWX_SEED authenticates it as admin"
+)]
+async fn use_seed(w: &mut Cli) {
+    let seed = w.succeeded();
+    let key = seed["key"].as_str().unwrap();
+    let mut cmd = serve_command(&w.dir.path().join("seeded"), "127.0.0.1:0");
+    let served = Served::start_command(cmd.env("IRONFLOWX_SEED", key));
+    served.ready();
+    let client = Client::new(&served.url()).unwrap();
+    let cx = Call::with_key(Secret::new(key.to_owned()));
+    let me = client.whoami(&cx, WhoamiRequest {}).await.unwrap();
+    assert_eq!(me.key_id.to_string(), seed["key_id"]);
+    assert!(me.scopes.contains(&Scope::Admin));
 }
 
 pub async fn run(parser: super::Unescaped) -> (bool, usize) {

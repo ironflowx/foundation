@@ -123,10 +123,26 @@ async fn the_slot_answers_until_the_engine_is_open_and_the_key_is_written() {
     go.send(()).unwrap();
     let refused = host.await.unwrap().unwrap_err();
     assert!(
-        matches!(&refused, ServeError::KeyFile(path, e)
+        matches!(&refused, ServeError::KeyFile(path, e, _)
             if *path == key_file && e.kind() == std::io::ErrorKind::AlreadyExists),
         "{refused}"
     );
+    let ServeError::KeyFile(_, _, id) = &refused else {
+        unreachable!()
+    };
+    let envelope = refused.envelope();
+    assert_eq!(envelope.kind, ErrorKind::Internal);
+    assert!(envelope.message.contains(&id.to_string()));
+    assert_eq!(
+        envelope.hint,
+        Some(format!("run ironflowx recover-key, then revoke {id}"))
+    );
+    let db = rusqlite::Connection::open(data_dir.join("control.db")).unwrap();
+    let stored: String = db
+        .query_row("SELECT id FROM keys", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(id.to_string(), stored);
+    drop(db);
     assert_eq!(refused.exit_code(), 1);
     assert_eq!(std::fs::read_to_string(&key_file).unwrap(), "another's");
     assert_eq!(temporaries(&data_dir), 0);
