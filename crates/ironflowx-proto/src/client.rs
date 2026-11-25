@@ -245,8 +245,11 @@ async fn read(mut body: Incoming) -> Option<Vec<u8>> {
 fn failure(answer: &Parts, body: Option<&[u8]>) -> ConnectError {
     // Every request that can store an event or change a key holds a byte below a space, but a
     // `create_key` of nothing, and no error of a server of Connect's does, or begins otherwise: a
-    // copy of a request in another's error is read for nothing.
-    let object = body.filter(|body| body.starts_with(b"{") && body.iter().all(|b| *b >= b' '));
+    // copy of a request in another's error is read for nothing. Nor is one that is not UTF-8, so no
+    // JSON: serde does not look into a text it skips.
+    let object = body.filter(|body| {
+        body.starts_with(b"{") && body.iter().all(|b| *b >= b' ') && str::from_utf8(body).is_ok()
+    });
     let error = object.and_then(|body| JsonCodec::decode::<EngineError>(body).ok());
     let refusal = object
         .filter(|_| is_json(&answer.headers))

@@ -21,6 +21,7 @@ use ironflowx_proto::{
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
+use tokio::task::JoinHandle;
 
 fn call(key: &str) -> Call {
     Call::with_key(Secret::new(key.to_owned()))
@@ -517,6 +518,15 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
     let unreadable =
         r#"{"code":"unimplemented","details":[{"type":"ironflowx.v1.ErrorInfo","value":"!"}]}"#;
     let another = r#"{"code":"resource_exhausted","details":[{"type":"x"}]}"#;
+    let own_field = |text: &[u8]| {
+        let before =
+            br#"{"details":[{"type":"ironflowx.v1.ErrorInfo","value":"Cglub3RfZm91bmQSAW0","x":""#;
+        http(
+            "502 x",
+            "application/json",
+            &[before, text, br#""}]}"#].concat(),
+        )
+    };
     // Each with the HTTP status its message names, or the Connect code of the failure it is.
     let status = |n: u16| format!("an HTTP {n} that is not Connect's");
     let code = str::to_owned;
@@ -751,6 +761,40 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
         (code("invalid_argument"), json("400 Bad Request", new_kind)),
         (code("unimplemented"), json("404 x", unreadable)),
         (code("resource_exhausted"), json("429 x", another)),
+        // Nor beside a code or a message that is no text, nor on two lines by any byte of them.
+        (
+            status(502),
+            json(
+                "502 x",
+                r#"{"code":1,"details":[{"type":"ironflowx.v1.ErrorInfo","value":"Cglub3RfZm91bmQSAW0"}]}"#,
+            ),
+        ),
+        (
+            status(502),
+            json(
+                "502 x",
+                r#"{"message":{},"details":[{"type":"ironflowx.v1.ErrorInfo","value":"Cglub3RfZm91bmQSAW0"}]}"#,
+            ),
+        ),
+        (
+            status(502),
+            json(
+                "502 x",
+                "{\t\"details\":[{\"type\":\"ironflowx.v1.ErrorInfo\",\"value\":\"Cglub3RfZm91bmQSAW0\"}]}",
+            ),
+        ),
+        (
+            status(502),
+            json(
+                "502 x",
+                "{\r\"details\":[{\"type\":\"ironflowx.v1.ErrorInfo\",\"value\":\"Cglub3RfZm91bmQSAW0\"}]}",
+            ),
+        ),
+        // Of a kind this client knows, beside a text that is not UTF-8: no such byte, one written
+        // too long, and half a pair.
+        (status(502), own_field(b"\xff")),
+        (status(502), own_field(b"\xc0\xaf")),
+        (status(502), own_field(b"\xed\xa0\x80")),
         // Says in words that no connection opened.
         (
             code("unavailable"),
@@ -931,6 +975,8 @@ async fn the_engines_own_error_is_first() {
     let stub = Stub::new().await;
     // 'kind' "not_found", 'message' "m".
     let detail = r#"[{"type":"ironflowx.v1.ErrorInfo","value":"Cglub3RfZm91bmQSAW0"}]"#;
+    let field =
+        r#"[{"type":"ironflowx.v1.ErrorInfo","value":"Cglub3RfZm91bmQSAW0","x":"é\ud800"}]"#;
     let heads = [
         "404 x\r\ncontent-type: application/json",
         "503 x\r\ncontent-type: application/json",
@@ -946,7 +992,9 @@ async fn the_engines_own_error_is_first() {
             r#""code":"new","#,
             r#""code":"unimplemented","message":"x","#,
             r#""code":null,"message":null,"#,
+            r#""message":"é","#,
         ] {
+            let detail = if rest.is_empty() { field } else { detail };
             let body = format!(r#"{{{rest}"details":{detail}}}"#);
             let length = body.len();
             let answer = format!("HTTP/1.1 {head}\r\ncontent-length: {length}\r\n\r\n{body}");
@@ -964,12 +1012,13 @@ async fn the_engines_own_error_is_first() {
     }
 }
 
-/// Answers one request with `head` and a copy of the request's body in the place of `wrap`'s `@`.
-async fn copying(head: &str, wrap: &'static str) -> Client {
+/// Answers one request with `head` and a copy of the request's body in the place of `wrap`'s `@`,
+/// and gives what it answered.
+async fn copying(head: &str, wrap: &'static str) -> (Client, JoinHandle<Vec<u8>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let client = Client::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
     let head = head.to_owned();
-    tokio::spawn(async move {
+    let answered = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut read = Vec::new();
         let body = loop {
@@ -989,8 +1038,20 @@ async fn copying(head: &str, wrap: &'static str) -> Client {
         let length = body.len();
         let head = format!("HTTP/1.1 {head}\r\ncontent-length: {length}\r\n\r\n");
         let _ = stream.write_all(&[head.as_bytes(), &body].concat()).await;
+        body
     });
-    client
+    (client, answered)
+}
+
+/// How an emit of this name, and this idempotency key, is sent.
+fn encoded(request: &EmitRequest) -> Vec<u8> {
+    let field = |tag: u8, text: &str| {
+        let length = u8::try_from(text.len()).expect("a length of one byte");
+        [&[tag, length], text.as_bytes()].concat()
+    };
+    let key = request.idempotency_key.as_ref();
+    let key = key.map_or_else(Vec::new, |key| field(0x2a, key));
+    [field(0x0a, &request.name), key].concat()
 }
 
 /// SRV-4: an event's name or its idempotency key can make a request, copied as it is into an
@@ -1073,8 +1134,11 @@ async fn a_request_copied_into_an_answer_is_no_engines_error() {
     rows.push(("503 x\r\ncontent-type: text/html".to_owned(), "@", &object));
     let (mut got, mut expected) = (Vec::new(), Vec::new());
     for (head, wrap, request) in rows {
-        let client = copying(&head, wrap).await;
+        let (client, answered) = copying(&head, wrap).await;
         let e = client.emit(&call(KEY), request.clone()).await.unwrap_err();
+        let (before, after) = wrap.split_once('@').unwrap();
+        let copied = [before.as_bytes(), &encoded(request), after.as_bytes()].concat();
+        assert_eq!(answered.await.unwrap(), copied, "{wrap}");
         let hint = match request.idempotency_key {
             Some(_) => "retry with the same idempotency key",
             None => "check first what landed: a retry may store a second event",
@@ -1098,7 +1162,7 @@ async fn a_request_copied_into_an_answer_is_no_engines_error() {
 #[tokio::test]
 async fn an_answer_as_a_connect_server_sends_is_taken_for_one() {
     let wrap = r#"{"code":"invalid_argument","message":"@"}"#;
-    let client = copying("400 x\r\ncontent-type: application/json", wrap).await;
+    let (client, _) = copying("400 x\r\ncontent-type: application/json", wrap).await;
     let empty = CreateKeyRequest::default();
     let e = client.create_key(&call(KEY), empty).await.unwrap_err();
     let refused = OpError {
