@@ -1,7 +1,7 @@
 //! The host's accept loop: HTTP/1.1 and cleartext HTTP/2. A connection sends its first request's
 //! head within 10 s, and on HTTP/1.1 each later one within 10 s of its first byte. A later head
-//! that arrives with the request before it, and later HTTP/2 heads, count as idle, which has no
-//! limit.
+//! that arrives with the request before it (before that one is answered), and later HTTP/2 heads,
+//! count as idle, which has no limit.
 
 use std::convert::Infallible;
 use std::io;
@@ -76,27 +76,34 @@ where
 
 /// Times an HTTP/1.1 head from its first byte. hyper's own timer runs from the end of the request
 /// before, which would close an idle connection; the first head has the connection's deadline.
-/// One that arrives with the request before it is timed from what comes of it after that.
+/// One that arrives before that request is answered is timed from what comes of it after that.
 #[derive(Clone)]
 struct HeadTimer(Arc<AtomicBool>);
 
 impl Timer for HeadTimer {
-    fn sleep(&self, _: Duration) -> Pin<Box<dyn Sleep>> {
+    /// The clock its sleeps run on.
+    fn now(&self) -> Instant {
+        tokio::time::Instant::now().into_std()
+    }
+
+    fn sleep(&self, duration: Duration) -> Pin<Box<dyn Sleep>> {
         self.0.store(false, Relaxed);
         Box::pin(HeadSleep {
             read: self.0.clone(),
+            duration,
             sleep: None,
         })
     }
 
     fn sleep_until(&self, deadline: Instant) -> Pin<Box<dyn Sleep>> {
-        self.sleep(deadline.saturating_duration_since(Instant::now()))
+        self.sleep(deadline.saturating_duration_since(self.now()))
     }
 }
 
 /// Polled at each read of a head that is not whole yet.
 struct HeadSleep {
     read: Arc<AtomicBool>,
+    duration: Duration,
     sleep: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
@@ -107,9 +114,10 @@ impl Future for HeadSleep {
         if !self.read.load(Relaxed) {
             return Poll::Pending;
         }
+        let duration = self.duration;
         let sleep = self
             .sleep
-            .get_or_insert_with(|| Box::pin(tokio::time::sleep(HEAD_TIMEOUT)));
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(duration)));
         sleep.as_mut().poll(cx)
     }
 }
@@ -177,7 +185,10 @@ mod tests {
 
     fn connect() -> DuplexStream {
         let (ours, theirs) = duplex(64 * 1024);
-        let router = Router::new().route("/health", get(|| async {}));
+        let slow = || tokio::time::sleep(Duration::from_secs(2));
+        let router = Router::new()
+            .route("/health", get(|| async {}))
+            .route("/slow", get(slow));
         tokio::spawn(connection(theirs, router));
         ours
     }
@@ -249,6 +260,13 @@ mod tests {
         assert_eq!(closed_after(&mut stream).await, None);
         stream.write_all(b"a").await.unwrap();
         assert_10_s(closed_after(&mut stream).await, "more of it");
+        // Before that request is answered.
+        let mut stream = connect();
+        let slow = b"GET /slow HTTP/1.1\r\nhost: x\r\n\r\n";
+        stream.write_all(slow).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        stream.write_all(b"GET /he").await.unwrap();
+        assert_eq!(closed_after(&mut stream).await, None);
     }
 
     #[tokio::test(start_paused = true)]

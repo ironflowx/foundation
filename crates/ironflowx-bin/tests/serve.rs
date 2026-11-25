@@ -113,6 +113,7 @@ fn the_first_start_writes_the_key_and_a_later_one_keeps_what_is_there() {
     let log = Served::start(&data_dir, "127.0.0.1:0").stop();
     assert_eq!(std::fs::read_to_string(&key_file).unwrap(), written);
     assert!(!log.contains("admin.key"), "{log}");
+    assert!(!log.contains(&key[41..]), "{log}");
     std::fs::remove_file(&key_file).unwrap();
     Served::start(&data_dir, "127.0.0.1:0").stop();
     assert!(!key_file.exists());

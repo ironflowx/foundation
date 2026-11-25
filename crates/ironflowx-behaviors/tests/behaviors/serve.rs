@@ -75,9 +75,7 @@ impl Served {
         self.reader.take().unwrap().join().unwrap();
         self.log()
     }
-}
 
-impl Served {
     fn start(data_dir: &Path, listen: &str) -> Self {
         let mut command = Command::new(BINARY.get().expect("the binary is built"));
         for (name, _) in std::env::vars_os() {
