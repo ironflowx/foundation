@@ -311,11 +311,10 @@ fn an_example_its_schema_refuses_is_refused() {
         assert!(refused.starts_with(why), "{bad}: {refused}");
     }
     // The decoder still checks the cardinality of a oneof.
-    for bad in [r#"{"left":"a","right":"b"}"#] {
-        let refused = generate(&method(&example(bad), request, "")).unwrap_err();
-        let why = "t.S.Do: its (ironflowx.v1.example) is no request: ";
-        assert!(refused.starts_with(why), "{bad}: {refused}");
-    }
+    let bad = r#"{"left":"a","right":"b"}"#;
+    let refused = generate(&method(&example(bad), request, "")).unwrap_err();
+    let why = "t.S.Do: its (ironflowx.v1.example) is no request: ";
+    assert!(refused.starts_with(why), "{bad}: {refused}");
     let refused = generate(&method(&example("{"), "", "")).unwrap_err();
     let why = "t.S.Do: its (ironflowx.v1.example) is not JSON: ";
     assert!(refused.starts_with(why), "{refused}");
