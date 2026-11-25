@@ -1,8 +1,9 @@
 # CI checks
 
-`.github/workflows/ci.yml` runs these on every PR; the `main` ruleset requires each job but `soak`. Every
-check script here, but for the snapshot comparison in `public-api.sh`, is proven by a fixture in
-`fixtures/` that it must reject (`must-reject.sh`), so one that silently stops working fails CI.
+`.github/workflows/ci.yml` runs these on every PR. The `main` ruleset requires each job but `soak`.
+Every check script here, except the snapshot comparison in `public-api.sh`, has a fixture it must
+reject. Fixtures can be dedicated files under `fixtures/` or builds configured to trigger the
+check. `must-reject.sh` checks that each fixture fails for the expected reason.
 
 `ci/check.sh` runs every job below but `soak` locally, in order, and stops at the first failure: run it
 before you push. `git config core.hooksPath .githooks` makes `git push` run it. The root
