@@ -781,7 +781,7 @@ Host errors use the same table as the CLI, from `ErrorKind::exit_code()`.
 | 1 | `internal` | Engine or ledger format, orphaned engine, missing ledger, wrong incarnation, corrupt ledger, data directory creation failure, failed pre-mint probe, key-file publication or recovery output failure, signal registration failure. A second signal also exits 1 immediately |
 | 2 | `invalid` | Bad settings, malformed or unreadable seed, a directory belonging to a ledger, a seed conflict, stale `admin.key`, bind error other than address in use, recovery with a missing data directory, unfinished bootstrap or occupied file destination |
 | 3–7 | [Call errors](#errors) | Calls only |
-| 8 | `unavailable` | Address in use, engine or ledger lock or I/O error, control-plane fault at open, destination lookup error, a ledger fault before close |
+| 8 | `unavailable` | Address in use, engine or ledger lock or I/O error, control-plane fault during serve startup or recovery, destination lookup error, a ledger fault before close |
 
 **Recovering an admin key.** Run `ironflowx recover-key` with access to the data directory. It uses
 `--data-dir`, then `IRONFLOWX_DATA_DIR`, then `./.ironflowx`. It works with or without a running
