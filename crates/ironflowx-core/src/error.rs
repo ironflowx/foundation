@@ -24,7 +24,7 @@ pub enum ErrorKind {
     PermissionDenied,
     /// A limit is reached; the hint says what frees room.
     ResourceExhausted,
-    /// A fault of the server, not of the request; or an operation the proto client does not carry.
+    /// A fault of the server, not of the request.
     Internal,
 }
 

@@ -21,18 +21,20 @@ mod generated {
 }
 
 pub use generated::ironflowx::v1::{
-    CreateKeyRequest, CreateKeyResponse, Environment, ErrorInfo, KeyInfo, ListEnvironmentsRequest,
-    ListEnvironmentsResponse, ListKeysRequest, ListKeysResponse, RevokeKeyRequest,
-    RevokeKeyResponse, WhoamiRequest, WhoamiResponse,
+    CreateKeyRequest, CreateKeyResponse, EmitBatchItem, EmitBatchRequest, EmitBatchResponse,
+    EmitRequest, EmitResponse, Environment, ErrorInfo, Event, GetEventRequest, KeyInfo,
+    ListEnvironmentsRequest, ListEnvironmentsResponse, ListEventsRequest, ListEventsResponse,
+    ListKeysRequest, ListKeysResponse, RevokeKeyRequest, RevokeKeyResponse, WhoamiRequest,
+    WhoamiResponse, emit_batch_item,
 };
 #[cfg(feature = "server")]
 pub use generated::ironflowx::v1::{
-    EnvironmentService, EnvironmentServiceServer, IdentityService, IdentityServiceServer,
-    KeyService, KeyServiceServer,
+    EnvironmentService, EnvironmentServiceServer, EventService, EventServiceServer,
+    IdentityService, IdentityServiceServer, KeyService, KeyServiceServer,
 };
 #[cfg(feature = "client")]
 pub use generated::ironflowx::v1::{
-    EnvironmentServiceClient, IdentityServiceClient, KeyServiceClient,
+    EnvironmentServiceClient, EventServiceClient, IdentityServiceClient, KeyServiceClient,
 };
 
 /// The compiled proto, as an encoded `FileDescriptorSet`: every file, its imports and their custom
@@ -59,6 +61,215 @@ impl fmt::Display for Undecodable {
 }
 
 impl std::error::Error for Undecodable {}
+
+impl TryFrom<EmitRequest> for crate::EmitRequest {
+    type Error = OpError;
+
+    fn try_from(r: EmitRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            name: r.name,
+            data: r.data.map(String::into_bytes),
+            metadata: r.metadata.map(String::into_bytes),
+            version: r.version,
+            idempotency_key: r.idempotency_key,
+        })
+    }
+}
+
+impl TryFrom<crate::EmitRequest> for EmitRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::EmitRequest) -> Result<Self, OpError> {
+        let text = |bytes: Option<Vec<u8>>, refused| {
+            let text = bytes.map(String::from_utf8).transpose();
+            text.map_err(|_| invalid(refused))
+        };
+        Ok(Self {
+            name: r.name,
+            data: text(r.data, "event data is not UTF-8")?,
+            metadata: text(r.metadata, "event metadata is not UTF-8")?,
+            version: r.version,
+            idempotency_key: r.idempotency_key,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<crate::EmitResponse> for EmitResponse {
+    fn from(a: crate::EmitResponse) -> Self {
+        Self {
+            event_id: a.event_id.to_string(),
+            duplicate: a.duplicate,
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<EmitResponse> for crate::EmitResponse {
+    type Error = Undecodable;
+
+    fn try_from(a: EmitResponse) -> Result<Self, Undecodable> {
+        Ok(Self {
+            event_id: a.event_id.parse().map_err(|_| Undecodable)?,
+            duplicate: a.duplicate,
+        })
+    }
+}
+
+impl TryFrom<EmitBatchRequest> for crate::EmitBatchRequest {
+    type Error = OpError;
+
+    fn try_from(r: EmitBatchRequest) -> Result<Self, OpError> {
+        let items = r.items.into_iter().map(TryInto::try_into);
+        Ok(Self {
+            items: items.collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+/// One item the wire cannot carry refuses the whole batch.
+impl TryFrom<crate::EmitBatchRequest> for EmitBatchRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::EmitBatchRequest) -> Result<Self, OpError> {
+        let items = r.items.into_iter().map(TryInto::try_into);
+        Ok(Self {
+            items: items.collect::<Result<_, _>>()?,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<crate::EmitBatchResponse> for EmitBatchResponse {
+    fn from(a: crate::EmitBatchResponse) -> Self {
+        let item = |item: Result<crate::EmitResponse, OpError>| EmitBatchItem {
+            result: match item {
+                Ok(ok) => EmitResponse::from(ok).into(),
+                Err(e) => ErrorInfo::from(&e).into(),
+            },
+            ..EmitBatchItem::default()
+        };
+        Self {
+            items: a.items.into_iter().map(item).collect(),
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<EmitBatchResponse> for crate::EmitBatchResponse {
+    type Error = Undecodable;
+
+    fn try_from(a: EmitBatchResponse) -> Result<Self, Undecodable> {
+        let item = |item: EmitBatchItem| match item.result.ok_or(Undecodable)? {
+            emit_batch_item::Result::Ok(ok) => Ok(Ok((*ok).try_into()?)),
+            emit_batch_item::Result::Error(e) => Ok(Err((*e).try_into()?)),
+        };
+        let items = a.items.into_iter().map(item);
+        Ok(Self {
+            items: items.collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+impl TryFrom<GetEventRequest> for crate::GetEventRequest {
+    type Error = OpError;
+
+    fn try_from(r: GetEventRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            event_id: r.event_id,
+        })
+    }
+}
+
+impl TryFrom<crate::GetEventRequest> for GetEventRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::GetEventRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            event_id: r.event_id,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<crate::Event> for Event {
+    fn from(e: crate::Event) -> Self {
+        let text = |bytes| String::from_utf8(bytes).expect("a stored event is UTF-8 (LED-5)");
+        Self {
+            event_id: e.event_id.to_string(),
+            name: e.name,
+            data: Some(text(e.data)),
+            metadata: e.metadata.map(text),
+            version: e.version,
+            idempotency_key: e.idempotency_key,
+            time: Some(sent_time(e.time)).into(),
+            emitted_by: e.emitted_by.to_string(),
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<Event> for crate::Event {
+    type Error = Undecodable;
+
+    fn try_from(e: Event) -> Result<Self, Undecodable> {
+        Ok(Self {
+            event_id: e.event_id.parse().map_err(|_| Undecodable)?,
+            name: e.name,
+            data: e.data.ok_or(Undecodable)?.into_bytes(),
+            metadata: e.metadata.map(String::into_bytes),
+            version: e.version,
+            idempotency_key: e.idempotency_key,
+            time: read_time(e.time.into_option().ok_or(Undecodable)?)?,
+            emitted_by: e.emitted_by.parse().map_err(|_| Undecodable)?,
+        })
+    }
+}
+
+impl TryFrom<ListEventsRequest> for crate::ListEventsRequest {
+    type Error = OpError;
+
+    fn try_from(r: ListEventsRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            limit: read_limit(r.limit)?,
+            cursor: r.cursor,
+        })
+    }
+}
+
+impl TryFrom<crate::ListEventsRequest> for ListEventsRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::ListEventsRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            limit: r.limit.map(NonZeroU32::get),
+            cursor: r.cursor,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<crate::EventPage> for ListEventsResponse {
+    fn from(a: crate::EventPage) -> Self {
+        Self {
+            events: a.events.into_iter().map(Event::from).collect(),
+            next: a.next,
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<ListEventsResponse> for crate::EventPage {
+    type Error = Undecodable;
+
+    fn try_from(a: ListEventsResponse) -> Result<Self, Undecodable> {
+        let events = a.events.into_iter().map(TryInto::try_into);
+        Ok(Self {
+            events: events.collect::<Result<_, _>>()?,
+            next: a.next,
+        })
+    }
+}
 
 impl TryFrom<WhoamiRequest> for crate::WhoamiRequest {
     type Error = OpError;
@@ -273,11 +484,8 @@ impl TryFrom<ListKeysRequest> for crate::ListKeysRequest {
     type Error = OpError;
 
     fn try_from(r: ListKeysRequest) -> Result<Self, OpError> {
-        let limit = r
-            .limit
-            .map(|limit| NonZeroU32::new(limit).ok_or_else(|| invalid("a limit is at least 1")));
         Ok(Self {
-            limit: limit.transpose()?,
+            limit: read_limit(r.limit)?,
             cursor: r.cursor,
         })
     }
@@ -361,6 +569,11 @@ fn invalid(message: &str) -> OpError {
 
 fn no_time() -> OpError {
     invalid("a time is in whole milliseconds and in years 0001 to 9999")
+}
+
+fn read_limit(limit: Option<u32>) -> Result<Option<NonZeroU32>, OpError> {
+    let limit = limit.map(|l| NonZeroU32::new(l).ok_or_else(|| invalid("a limit is at least 1")));
+    limit.transpose()
 }
 
 fn sent_scopes(scopes: &BTreeSet<Scope>) -> Vec<String> {

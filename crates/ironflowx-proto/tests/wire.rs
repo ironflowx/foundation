@@ -6,8 +6,10 @@ use buffa::{HasMessageView, Message as _, OwnedView};
 use ironflowx_core::{Address, ErrorKind, KeyOrigin, Scope, Secret, Timestamp};
 use ironflowx_proto::wire::{self, ErrorInfo, Undecodable, WhoamiResponse};
 use ironflowx_proto::{
-    CreateKeyRequest, CreatedKey, Environment, KeyInfo, KeyPage, KeyStatus,
-    ListEnvironmentsRequest, ListKeysRequest, OpError, RevokeKeyRequest, Whoami, WhoamiRequest,
+    CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest, EmitResponse,
+    Environment, Event, EventPage, GetEventRequest, KeyInfo, KeyPage, KeyStatus,
+    ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation,
+    RevokeKeyRequest, Whoami, WhoamiRequest,
 };
 
 const ID: &str = "0190b5f0-0000-7000-8000-000000000001";
@@ -105,6 +107,201 @@ fn an_answer_that_is_not_what_the_proto_says_does_not_decode() {
     }
     let edge = time(LAST / 1_000, 999_000_000);
     assert_eq!(Whoami::try_from(edge), Ok(whoami(Some(LAST))));
+}
+
+/// SRV-2: the proto's methods are the operations.
+#[test]
+fn the_protos_methods_are_the_operations() {
+    let pool = prost_reflect::DescriptorPool::decode(wire::FILE_DESCRIPTOR_SET).unwrap();
+    let methods = pool.services().flat_map(|s| {
+        let of = |m: prost_reflect::MethodDescriptor| format!("{}/{}", s.full_name(), m.name());
+        s.methods().map(of).collect::<Vec<_>>()
+    });
+    let mut methods: Vec<_> = methods.collect();
+    methods.sort();
+    let mut rpcs: Vec<_> = Operation::ALL.iter().map(|op| op.rpc()).collect();
+    rpcs.sort_unstable();
+    assert_eq!(methods, rpcs);
+}
+
+fn event() -> Event {
+    Event {
+        event_id: ID.parse().unwrap(),
+        name: "a".into(),
+        data: b"null".to_vec(),
+        metadata: None,
+        version: 1,
+        idempotency_key: None,
+        time: Timestamp::from_millis(0),
+        emitted_by: format!("key:{ID}").parse().unwrap(),
+    }
+}
+
+/// D54, D76.
+#[test]
+fn an_event_crosses_whole_but_for_its_times_bound() {
+    for (stored, shown) in [(i64::MIN, FIRST), (i64::MAX, LAST), (1, 1)] {
+        let sent = Event {
+            data: "{ \"é\" : [1.0,\n2] }".into(),
+            metadata: Some("{}".into()),
+            version: i64::from(i32::MAX),
+            idempotency_key: Some(String::new()),
+            time: Timestamp::from_millis(stored),
+            emitted_by: "embedder:a b".parse().unwrap(),
+            ..event()
+        };
+        let expected = Event {
+            time: Timestamp::from_millis(shown),
+            ..sent.clone()
+        };
+        let one = wire::Event::from(sent.clone());
+        assert_eq!(one.data.as_deref(), Some("{ \"é\" : [1.0,\n2] }"));
+        assert_eq!(Event::try_from(one), Ok(expected.clone()));
+        let page = EventPage {
+            events: vec![sent, event()],
+            next: Some(String::new()),
+        };
+        let got = EventPage::try_from(wire::ListEventsResponse::from(page)).unwrap();
+        assert_eq!(got.events, [expected, event()]);
+        assert_eq!(got.next.as_deref(), Some(""));
+    }
+    let page = EventPage {
+        events: vec![],
+        next: None,
+    };
+    let sent = wire::ListEventsResponse::from(page.clone());
+    assert_eq!(EventPage::try_from(sent), Ok(page));
+}
+
+#[test]
+fn an_event_that_is_not_what_the_proto_says_does_not_decode() {
+    let changes: [fn(&mut wire::Event); 7] = [
+        |e| e.event_id = ID.to_uppercase(),
+        |e| e.event_id.clear(),
+        |e| e.data = None,
+        |e| e.time = None.into(),
+        |e| e.time.get_or_insert_default().nanos = 1,
+        |e| e.emitted_by.clear(),
+        |e| e.emitted_by = ID.into(),
+    ];
+    for (i, change) in changes.into_iter().enumerate() {
+        let mut one = wire::Event::from(event());
+        change(&mut one);
+        let page = wire::ListEventsResponse {
+            events: vec![wire::Event::from(event()), one.clone()],
+            ..Default::default()
+        };
+        assert_eq!(Event::try_from(one), Err(Undecodable), "{i}");
+        assert_eq!(EventPage::try_from(page), Err(Undecodable), "{i}");
+    }
+}
+
+/// SRV-3: an item's error is whole, and a result that is neither is none.
+#[test]
+fn a_batchs_results_cross_whole() {
+    let ok = |duplicate| EmitResponse {
+        event_id: ID.parse().unwrap(),
+        duplicate,
+    };
+    let e = OpError {
+        kind: ErrorKind::ResourceExhausted,
+        message: String::new(),
+        hint: Some(String::new()),
+    };
+    for items in [
+        vec![],
+        vec![Ok(ok(false)), Err(e.clone()), Ok(ok(true)), Err(e)],
+    ] {
+        let sent = EmitBatchResponse { items };
+        let wire = wire::EmitBatchResponse::from(sent.clone());
+        assert_eq!(EmitBatchResponse::try_from(wire), Ok(sent));
+    }
+    for (i, result) in [
+        None,
+        wire::EmitResponse::default().into(),
+        ErrorInfo::default().into(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let item = |result| wire::EmitBatchItem {
+            result,
+            ..Default::default()
+        };
+        let answer = wire::EmitBatchResponse {
+            items: vec![
+                item(wire::EmitResponse::from(ok(true)).into()),
+                item(result),
+            ],
+            ..Default::default()
+        };
+        let got = EmitBatchResponse::try_from(answer);
+        assert_eq!(got, Err(Undecodable), "{i}");
+    }
+    let sent = wire::EmitResponse::from(ok(true));
+    assert_eq!(EmitResponse::try_from(sent), Ok(ok(true)));
+    let none = wire::EmitResponse::default();
+    assert_eq!(EmitResponse::try_from(none), Err(Undecodable));
+}
+
+/// D74: text as it is, or nothing of it.
+#[test]
+fn an_emit_crosses_byte_for_byte_or_is_invalid() {
+    let none = EmitRequest {
+        name: String::new(),
+        data: None,
+        metadata: None,
+        version: None,
+        idempotency_key: None,
+    };
+    let full = EmitRequest {
+        name: "é\0".into(),
+        data: Some(" not\tJSON \0".into()),
+        metadata: Some(vec![]),
+        version: Some(i64::MIN),
+        idempotency_key: Some(String::new()),
+    };
+    for sent in [none.clone(), full.clone()] {
+        let wire = wire::EmitRequest::try_from(sent.clone()).unwrap();
+        assert_eq!(EmitRequest::try_from(wire), Ok(sent));
+    }
+    for items in [vec![], vec![none.clone(), full]] {
+        let sent = EmitBatchRequest { items };
+        let wire = wire::EmitBatchRequest::try_from(sent.clone()).unwrap();
+        assert_eq!(EmitBatchRequest::try_from(wire), Ok(sent));
+    }
+    // An unpaired surrogate, an overlong NUL, a character cut short, one past the last.
+    for bytes in [
+        &b"\xff\xfe"[..],
+        b"\xed\xa0\x80",
+        b"\xc0\x80",
+        b"a\xc3",
+        b"\xf4\x90\x80\x80",
+    ] {
+        let data = EmitRequest {
+            data: Some(bytes.to_vec()),
+            ..none.clone()
+        };
+        let metadata = EmitRequest {
+            metadata: Some(bytes.to_vec()),
+            ..none.clone()
+        };
+        for (bad, message) in [
+            (data, "event data is not UTF-8"),
+            (metadata, "event metadata is not UTF-8"),
+        ] {
+            let refused = OpError {
+                kind: ErrorKind::Invalid,
+                message: message.into(),
+                hint: None,
+            };
+            let got = wire::EmitRequest::try_from(bad.clone());
+            assert_eq!(got, Err(refused.clone()));
+            let items = vec![none.clone(), bad];
+            let got = wire::EmitBatchRequest::try_from(EmitBatchRequest { items });
+            assert_eq!(got, Err(refused));
+        }
+    }
 }
 
 const KEY: &str =
@@ -373,6 +570,22 @@ fn a_request_crosses_whole_or_is_invalid() {
         let sent = ListKeysRequest { limit, cursor };
         let wire = wire::ListKeysRequest::try_from(sent.clone()).unwrap();
         assert_eq!(ListKeysRequest::try_from(wire), Ok(sent));
+    }
+    for (limit, cursor) in [
+        (None, None),
+        (NonZeroU32::new(1), Some("")),
+        (Some(NonZeroU32::MAX), Some("x")),
+    ] {
+        let cursor = cursor.map(str::to_owned);
+        let sent = ListEventsRequest { limit, cursor };
+        let wire = wire::ListEventsRequest::try_from(sent.clone()).unwrap();
+        assert_eq!(ListEventsRequest::try_from(wire), Ok(sent));
+    }
+    for event_id in ["", ID, "no ID"] {
+        let event_id = event_id.to_owned();
+        let sent = GetEventRequest { event_id };
+        let wire = wire::GetEventRequest::try_from(sent.clone()).unwrap();
+        assert_eq!(GetEventRequest::try_from(wire), Ok(sent));
     }
     for key_id in ["", ID, "no ID"] {
         let key_id = key_id.to_owned();

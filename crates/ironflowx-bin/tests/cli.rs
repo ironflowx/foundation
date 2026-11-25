@@ -149,7 +149,40 @@ fn each_command_prints_its_operations_answer() {
         r#""env":"0190b5f0-0000-7000-8000-000000000003.00112233445566778899aabbccddeeff","#,
         r#""name":"main","project_id":"0190b5f0-0000-7000-8000-000000000004"}"#,
     );
+    let event = concat!(
+        r#"{"data":"\t{ \"b\": 1.50,\r\n \"a\": [9007199254740993, \"\\u00e9é\\\\\\\"\", 1e2] } ","#,
+        r#""emitted_by":"key:0190b5f0-0000-7000-8000-000000000001","#,
+        r#""event_id":"0190b5f0-0000-7000-8000-000000000005","idempotency_key":"clé\u0001","#,
+        "\"metadata\":\"{\\\"z\\\":\\\"\u{7f}\u{2028}😀\\\\ud83d\\\\ude00\\\\/\\\" , \\\"a\\\":-0}\",",
+        r#""name":"commande.passée","time":"2023-11-14T22:13:20.120Z","#,
+        r#""version":"9223372036854775807"}"#,
+    );
+    let plain = concat!(
+        r#"{"data":"null","emitted_by":"embedder:a b","#,
+        r#""event_id":"0190b5f0-0000-7000-8000-000000000005","#,
+        r#""name":"commande.passée","time":"2023-11-14T22:13:20.120Z","version":"1"}"#,
+    );
     for (args, request, answer) in [
+        (
+            ["events", "emit"],
+            r#"EmitRequest { name: "", data: None, metadata: None, version: None, idempotency_key: None }"#,
+            r#"{"duplicate":false,"event_id":"0190b5f0-0000-7000-8000-000000000005"}"#.to_owned(),
+        ),
+        (
+            ["events", "emit-batch"],
+            "EmitBatchRequest { items: [] }",
+            r#"{"items":[]}"#.to_owned(),
+        ),
+        (
+            ["events", "get"],
+            r#"GetEventRequest { event_id: "" }"#,
+            event.to_owned(),
+        ),
+        (
+            ["events", "list"],
+            "ListEventsRequest { limit: None, cursor: None }",
+            format!(r#"{{"events":[{event},{plain}],"next":"0123.7"}}"#),
+        ),
         (
             ["environments", "list"],
             "ListEnvironmentsRequest",
@@ -189,6 +222,10 @@ fn a_state_change_no_engine_answers_is_unknown() {
     let url = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || listener.incoming().for_each(drop));
     for (args, code, hint) in [
+        (["events", "get"], "unavailable", None),
+        (["events", "list"], "unavailable", None),
+        (["events", "emit"], "unknown", None),
+        (["events", "emit-batch"], "unknown", None),
         (["environments", "list"], "unavailable", None),
         (["keys", "list"], "unavailable", None),
         (
@@ -380,7 +417,7 @@ fn a_usage_error_is_an_envelope() {
         (
             &[][..],
             "'ironflowx' requires a subcommand but one was not provided \
-             [subcommands: serve, version, environments, whoami, keys]",
+             [subcommands: serve, version, environments, events, whoami, keys]",
         ),
         (&["nope"], "unrecognized subcommand 'nope'"),
         (&["help"], "unrecognized subcommand 'help'"),

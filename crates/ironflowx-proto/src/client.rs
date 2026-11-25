@@ -13,7 +13,9 @@ use http::uri::{Scheme, Uri};
 use http::{Request, Response, StatusCode};
 use ironflowx_core::ErrorKind;
 
-use crate::wire::{self, EnvironmentServiceClient, IdentityServiceClient, KeyServiceClient};
+use crate::wire::{
+    self, EnvironmentServiceClient, EventServiceClient, IdentityServiceClient, KeyServiceClient,
+};
 use crate::{
     Call, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
     EmitResponse, Environment, Event, EventPage, GetEventRequest, KeyPage, ListEnvironmentsRequest,
@@ -24,10 +26,8 @@ use crate::{
 /// [`Operations`] over the network. It holds no key: each call sends its [`Call`]'s as the Bearer
 /// key and an anonymous one sends none, so one client serves many keys. It accepts answers up to
 /// 16 MiB. Calls need a tokio runtime.
-///
-/// It carries every operation but the events' four, which are `Internal` until their messages join
-/// the proto.
 pub struct Client {
+    events: EventServiceClient<Transport>,
     identity: IdentityServiceClient<Transport>,
     environments: EnvironmentServiceClient<Transport>,
     keys: KeyServiceClient<Transport>,
@@ -89,6 +89,7 @@ impl Client {
         // Its clones share its connections.
         let http = Transport(HttpClient::plaintext());
         Ok(Self {
+            events: EventServiceClient::new(http.clone(), config.clone()),
             identity: IdentityServiceClient::new(http.clone(), config.clone()),
             environments: EnvironmentServiceClient::new(http.clone(), config.clone()),
             keys: KeyServiceClient::new(http, config),
@@ -193,10 +194,17 @@ where
     let answer = answer.map_err(|e| {
         wire::op_error(&e).unwrap_or_else(|| {
             let why = match op {
-                // Its text can be the body of the answer, and of this one that holds the key
-                // (TEN-3).
-                Operation::CreateKey => e.code.as_str().to_owned(),
-                _ => e.to_string(),
+                // Its text can be the body of the answer, which can hold the created key (TEN-3),
+                // or the data of events, as sent or as stored.
+                Operation::CreateKey
+                | Operation::Emit
+                | Operation::EmitBatch
+                | Operation::GetEvent
+                | Operation::ListEvents => e.code.as_str().to_owned(),
+                Operation::Whoami
+                | Operation::ListEnvironments
+                | Operation::ListKeys
+                | Operation::RevokeKey => e.to_string(),
             };
             failed(format!("the engine did not answer: {why}"))
         })
@@ -206,15 +214,69 @@ where
         .map_err(|e: wire::Undecodable| failed(e.to_string()))
 }
 
-fn not_carried<T>(op: Operation) -> Result<T, OpError> {
-    Err(OpError {
-        kind: ErrorKind::Internal,
-        message: format!("the client does not carry {}", op.rpc()),
-        hint: None,
-    })
-}
-
 impl Operations for Client {
+    /// Emits one event.
+    ///
+    /// # Errors
+    ///
+    /// The engine's, unchanged; `Unknown` if it did not answer; `Invalid`, with nothing sent, for
+    /// data or metadata that is not UTF-8, which the wire does not carry.
+    async fn emit(&self, cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError> {
+        let req = req.try_into()?;
+        let options = self.options(cx);
+        let answer = self.events.emit_with_options(req, options).await;
+        answered(Operation::Emit, answer.map(UnaryResponse::into_owned))
+    }
+
+    /// Emits a batch; the answer holds one result per input item, in input order.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::emit`]; one item the wire does not carry refuses the whole batch.
+    async fn emit_batch(
+        &self,
+        cx: &Call,
+        req: EmitBatchRequest,
+    ) -> Result<EmitBatchResponse, OpError> {
+        let items = req.items.len();
+        let req = req.try_into()?;
+        let options = self.options(cx);
+        let answer = self.events.emit_batch_with_options(req, options).await;
+        let answer = answer.map(UnaryResponse::into_owned).and_then(|a| {
+            // An empty answer decodes as one to an empty batch.
+            let whole = a.items.len() == items;
+            whole
+                .then_some(a)
+                .ok_or_else(|| ConnectError::new(ErrorCode::Unknown, "not a result per item"))
+        });
+        answered(Operation::EmitBatch, answer)
+    }
+
+    /// Reads one event by ID.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::whoami`].
+    async fn get_event(&self, cx: &Call, req: GetEventRequest) -> Result<Event, OpError> {
+        let req = req.try_into()?;
+        let options = self.options(cx);
+        let answer = self.events.get_event_with_options(req, options).await;
+        answered(Operation::GetEvent, answer.map(UnaryResponse::into_owned))
+    }
+
+    /// Lists a page of events, newest first. A page shorter than its limit is not necessarily the
+    /// last: only one without `next` is.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::whoami`].
+    async fn list_events(&self, cx: &Call, req: ListEventsRequest) -> Result<EventPage, OpError> {
+        let req = req.try_into()?;
+        let options = self.options(cx);
+        let answer = self.events.list_events_with_options(req, options).await;
+        answered(Operation::ListEvents, answer.map(UnaryResponse::into_owned))
+    }
+
     /// The calling key, as it sees itself.
     ///
     /// # Errors
@@ -281,25 +343,5 @@ impl Operations for Client {
         let options = self.options(cx);
         let answer = self.keys.revoke_key_with_options(req, options).await;
         answered(Operation::RevokeKey, answer.map(UnaryResponse::into_owned))
-    }
-
-    async fn emit(&self, _cx: &Call, _req: EmitRequest) -> Result<EmitResponse, OpError> {
-        not_carried(Operation::Emit)
-    }
-
-    async fn emit_batch(
-        &self,
-        _cx: &Call,
-        _req: EmitBatchRequest,
-    ) -> Result<EmitBatchResponse, OpError> {
-        not_carried(Operation::EmitBatch)
-    }
-
-    async fn get_event(&self, _cx: &Call, _req: GetEventRequest) -> Result<Event, OpError> {
-        not_carried(Operation::GetEvent)
-    }
-
-    async fn list_events(&self, _cx: &Call, _req: ListEventsRequest) -> Result<EventPage, OpError> {
-        not_carried(Operation::ListEvents)
     }
 }

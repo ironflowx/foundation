@@ -49,3 +49,4 @@ protox = { version = "0.10.0", default-features = false, optional = true }
 [dev-dependencies]
 # For tests/wire.rs; a dev-dependency does not ship.
 ironflowx-proto = { path = ".", features = ["server", "client"] }
+prost-reflect = "0.16.5"

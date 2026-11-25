@@ -21,11 +21,13 @@ The steps call `Operations`, never a URL or a status code, but for `/health` and
 
 | Adapter | Drives | When |
 |---|---|---|
-| The engine (`Engine`) | An engine in the test's process, on a temporary directory, with a `ManualClock` | Every PR: `events.feature`, `tenancy.feature` |
-| Proto client (`Client`) | The `ironflowx` binary, built once at the suite's start with `cargo build -p ironflowx-bin --locked` (Cargo gives a test a binary's path only within its own package), started by each scenario on a fresh data directory and `127.0.0.1:0` | Every PR: `serve.feature`, but for the calls that name a protocol |
+| The engine (`Engine`) | An engine in the test's process, on a temporary directory, with a `ManualClock` | Every PR: `events.feature`, `tenancy.feature`, whole |
+| Proto client (`Client`) | The `ironflowx` binary, built once at the suite's start with `cargo build -p ironflowx-bin --locked` (Cargo gives a test a binary's path only within its own package), started by each scenario on a fresh data directory and `127.0.0.1:0` | Every PR: `events.feature` and `tenancy.feature` again, but for what is `@local`; `serve.feature`, but for the calls that name a protocol |
 | The CLI | The same binary, each command a process of its own with the scenario's variables, calling an engine the scenario serves | Every PR: `cli.feature` |
 
-The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It runs the files in this folder in place; they are not copied. It fails unless the `.feature` files here are exactly those its `SCENARIOS` table names, each with that many scenario declarations (before outline expansion), so a new scenario updates its count and a new file is added there (`crates/ironflowx-behaviors/tests/behaviors.rs`). Each file runs on its own World: an engine each, or a started binary. Every scenario of `events.feature` and `tenancy.feature` runs; of `serve.feature` and `cli.feature`, those in each `REGISTERED` (`tests/behaviors/serve.rs`, `tests/behaviors/cli.rs`): each lands with the work that makes it pass. The runner fails unless as many scenarios of each file pass, an outline once per example, as `EVENT_RUNS` and each `RUNS` say (`tests/behaviors/tenancy.rs`, `serve.rs` and `cli.rs`). Run them alone with `cargo test -p ironflowx-behaviors --test behaviors`.
+Against the binary, "a fresh environment" and "a fresh engine directory" are a binary started on a fresh data directory; "the bootstrap key" is the key in `admin.key`; and "now", "in one hour" and "an hour ago" are the machine's clock, read once per scenario, so ACC-010's creation time is checked to lie between that and the answer. "A client" and "another client" call through the scenario's one `Client`. `Client` refuses EVT-016's two rows that are not UTF-8 itself, and HOST-025 sends such bytes raw.
+
+The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It runs the files in this folder in place; they are not copied. It fails unless the `.feature` files here are exactly those its `SCENARIOS` table names, each with that many scenario declarations (before outline expansion), so a new scenario updates its count and a new file is added there (`crates/ironflowx-behaviors/tests/behaviors.rs`). Each file runs on its own World: an engine each, or a started binary. Every scenario of `events.feature` and `tenancy.feature` runs on the engine, and every one that is not `@local` against the binary; of `serve.feature` and `cli.feature`, those in each `REGISTERED` (`tests/behaviors/serve.rs`, `tests/behaviors/cli.rs`): each lands with the work that makes it pass. The runner fails unless as many scenarios of each file pass with each adapter, an outline once per example, as `EVENT_RUNS` and `EVENT_REMOTE_RUNS` (95 and 93), `RUNS` and `REMOTE_RUNS` of `tests/behaviors/tenancy.rs` (70 and 41) and each `RUNS` of `serve.rs` and `cli.rs` say. Run them alone with `cargo test -p ironflowx-behaviors --test behaviors`.
 
 ## Conventions
 
@@ -35,17 +37,16 @@ The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It 
 - Lengths count UTF-8 bytes. Sizes are the bytes of the JSON as sent.
 - In `events.feature`, "a fresh environment" is `Engine::open` on a temporary directory, "a client" is a call holding the bootstrap key, and "another client" is a call on the same engine holding a key the bootstrap key created with all three scopes. EVT-055's other incarnation is a bare `Ledger` with the same ID and a new token, written as an embedder (D36).
 - "N days ago", "N hours pass" and "the clock reads" step the `ManualClock`.
-- `@local`: the scenario needs a fixture only the in-process adapter has (the clock, a second incarnation, the data directory, what `open` returns). The proto client skips it until it can drive them.
+- `@local`: the scenario needs a fixture only the in-process adapter has (the clock, a second incarnation, the data directory, what `open` returns), so it does not run against the binary.
 - In `tenancy.feature`, "opened", "closed" and "reopened" are `Engine::open` and `close` on the scenario's directory; "the bootstrap key" is the key the first open returned, or the seed it was given; a seed is a well-formed key the step builds; "a client with a `<scope>` key" holds a key the bootstrap key created with exactly those scopes.
-- In `serve.feature`, "served" is `ironflowx serve` on the scenario's data directory, on `127.0.0.1:0` unless an address is named; "becomes ready" is `/ready` answering 200. "Over Connect", "over gRPC" and so on use a client for that protocol generated from the proto, not `Client`.
+- In `serve.feature`, "served" is `ironflowx serve` on the scenario's data directory, on `127.0.0.1:0` unless an address is named; "becomes ready" is `/ready` answering 200. "Over Connect", "over gRPC" and so on use a client for that protocol generated from the proto, not `Client`. A data cell is the JSON itself, unquoted, or `built:` and a description.
 - In `cli.feature`, an envelope is the one line of stderr, with nothing on stdout; "exits with code N" is the process's status; single quotes in a command are the shell's; a printed cell is the JSON itself, unquoted.
 
 ## Not yet
 
 | Left out | Where |
 |---|---|
-| The scenarios of `serve.feature` and `cli.feature` that are not in `REGISTERED`; `events.feature` and `tenancy.feature` through the proto client | Later in 0.3 |
-| The times of events on the wire, a limit the wire cannot carry, invalid UTF-8 in an idempotency key | Later in 0.3 |
+| The scenarios of `serve.feature` and `cli.feature` that are not in `REGISTERED` | Later in 0.3 |
 | Emits from a run, the version a function receives, paging back, totals, filters, listing event names | 0.4 |
 | Approval requests | 0.7 |
 | Users, roles, policies, audit, a key's last use, more than one environment | 0.9 |

@@ -12,10 +12,12 @@ use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use http::{HeaderMap, HeaderName, StatusCode};
 use ironflowx_core::{ErrorKind, Secret};
 use ironflowx_proto::wire::{
-    self, CreateKeyRequest, CreateKeyResponse, EnvironmentService, EnvironmentServiceServer,
-    IdentityService, IdentityServiceServer, KeyService, KeyServiceServer, ListEnvironmentsRequest,
-    ListEnvironmentsResponse, ListKeysRequest, ListKeysResponse, RevokeKeyRequest,
-    RevokeKeyResponse, WhoamiRequest, WhoamiResponse,
+    self, CreateKeyRequest, CreateKeyResponse, EmitBatchRequest, EmitBatchResponse, EmitRequest,
+    EmitResponse, EnvironmentService, EnvironmentServiceServer, Event, EventService,
+    EventServiceServer, GetEventRequest, IdentityService, IdentityServiceServer, KeyService,
+    KeyServiceServer, ListEnvironmentsRequest, ListEnvironmentsResponse, ListEventsRequest,
+    ListEventsResponse, ListKeysRequest, ListKeysResponse, RevokeKeyRequest, RevokeKeyResponse,
+    WhoamiRequest, WhoamiResponse,
 };
 use ironflowx_proto::{Call, OpError, Operations};
 
@@ -26,10 +28,12 @@ pub fn router<O: Operations + 'static, R: Readiness + 'static>(slot: Arc<Slot<O,
     let limits = Limits::default()
         .with_max_request_body_size(wire::MAX_MESSAGE)
         .with_max_message_size(wire::MAX_MESSAGE);
+    let events = EventServiceServer::new(Door(slot.clone()));
     let identity = IdentityServiceServer::new(Door(slot.clone()));
     let environments = EnvironmentServiceServer::new(Door(slot.clone()));
     let keys = KeyServiceServer::new(Door(slot.clone()));
-    let rpcs = ConnectRpcService::new(Chain(identity, Chain(environments, keys)))
+    let services = Chain(events, Chain(identity, Chain(environments, keys)));
+    let rpcs = ConnectRpcService::new(services)
         .with_limits(limits)
         // Another crate of the build may switch gzip or zstd on in `connectrpc`.
         .with_compression(CompressionRegistry::new());
@@ -81,6 +85,52 @@ fn refused(e: OpError) -> ConnectError {
 }
 
 struct Door<O: Operations, R: Readiness>(Arc<Slot<O, R>>);
+
+impl<O: Operations + 'static, R: Readiness + 'static> EventService for Door<O, R> {
+    async fn emit<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, EmitRequest>,
+    ) -> ServiceResult<impl Encodable<EmitResponse> + Send + use<'a, O, R>> {
+        let request = request.to_owned_message().try_into().map_err(refused)?;
+        let operations = self.0.operations().map_err(refused)?;
+        let answer = operations.emit(&call(ctx.headers()), request).await;
+        Response::ok(EmitResponse::from(answer.map_err(refused)?))
+    }
+
+    async fn emit_batch<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, EmitBatchRequest>,
+    ) -> ServiceResult<impl Encodable<EmitBatchResponse> + Send + use<'a, O, R>> {
+        let request = request.to_owned_message().try_into().map_err(refused)?;
+        let operations = self.0.operations().map_err(refused)?;
+        let answer = operations.emit_batch(&call(ctx.headers()), request).await;
+        Response::ok(EmitBatchResponse::from(answer.map_err(refused)?))
+    }
+
+    async fn get_event<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, GetEventRequest>,
+    ) -> ServiceResult<impl Encodable<Event> + Send + use<'a, O, R>> {
+        let request = request.to_owned_message().try_into().map_err(refused)?;
+        let operations = self.0.operations().map_err(refused)?;
+        let answer = operations.get_event(&call(ctx.headers()), request).await;
+        Response::ok(Event::from(answer.map_err(refused)?))
+    }
+
+    async fn list_events<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, ListEventsRequest>,
+    ) -> ServiceResult<impl Encodable<ListEventsResponse> + Send + use<'a, O, R>> {
+        let request = request.to_owned_message().try_into().map_err(refused)?;
+        let operations = self.0.operations().map_err(refused)?;
+        let answer = operations.list_events(&call(ctx.headers()), request).await;
+        Response::ok(ListEventsResponse::from(answer.map_err(refused)?))
+    }
+}
 
 impl<O: Operations + 'static, R: Readiness + 'static> IdentityService for Door<O, R> {
     async fn whoami<'a>(
