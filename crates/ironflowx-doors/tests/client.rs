@@ -268,11 +268,22 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
     };
     // A CreateKeyResponse's key, then no information, or some cut short.
     let key = [b"\n\x54", CREATED.as_bytes()].concat();
+    let message = format!(r#"{{"code":"unavailable","message":"{CREATED}"}}"#).into_bytes();
     let cut = [&key, b"\x12\x7fx".as_slice()].concat();
     // A WhoamiResponse or a CreateKeyResponse whose first field is "x"; as a page, one that holds
     // a message that does not decode.
     let short = b"\n\x01x";
     let answers = [
+        // Decodes as an answer that holds nothing, but is none of Connect's.
+        http("204 No Content", "application/proto", b""),
+        http("202 Accepted", "application/proto", b""),
+        b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n".to_vec(),
+        http("200 OK", "application/protobuf", b""),
+        http("200 OK", "application/proto, text/html", b""),
+        // A created key, in the body of an error that is not the engine's.
+        http("502 Bad Gateway", "application/proto", &key),
+        http("502 Bad Gateway", "application/json", &message),
+        [b"HTTP/1.1 502 Bad Gateway\r\n\r\n", &*key].concat(),
         vec![],
         http("401 Unauthorized", "text/html", b"<html>"),
         http("503 Service Unavailable", "text/html", b"<html>"),
@@ -288,7 +299,7 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
             br#"{"code":"invalid_argument","details":[{"type":"ironflowx.v1.ErrorInfo","value":"CgNuZXc"}]}"#,
         ),
     ];
-    let ignored = [Some(&answers[5]), Some(&answers[6])];
+    let ignored = [Some(&answers[13]), Some(&answers[14])];
     for op in CARRIED {
         for answer in std::iter::once(None).chain(answers.iter().map(Some)) {
             let client = match answer {
@@ -305,8 +316,9 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
             let e = got.unwrap_err();
             let ended = (e.kind, e.hint.as_deref());
             assert_eq!(ended, unanswered(op), "{op:?} {shown:?}");
-            for key in [KEY, CREATED] {
-                assert!(!e.message.contains(&key[41..]), "{}", e.message);
+            assert!(!e.message.contains(&KEY[41..]), "{}", e.message);
+            if op == Operation::CreateKey {
+                assert!(!e.message.contains(&CREATED[41..62]), "{}", e.message);
             }
         }
     }

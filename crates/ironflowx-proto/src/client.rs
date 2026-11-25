@@ -4,10 +4,13 @@ use std::fmt;
 use std::net::Ipv6Addr;
 use std::time::Duration;
 
-use connectrpc::client::{CallOptions, ClientConfig, HttpClient, UnaryResponse};
-use connectrpc::{CompressionRegistry, ConnectError};
-use http::header::{AUTHORIZATION, HeaderValue};
+use connectrpc::client::{
+    BoxFuture, CallOptions, ClientBody, ClientConfig, ClientTransport, HttpClient, UnaryResponse,
+};
+use connectrpc::{CompressionRegistry, ConnectError, ErrorCode};
+use http::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use http::uri::{Scheme, Uri};
+use http::{Request, Response, StatusCode};
 use ironflowx_core::ErrorKind;
 
 use crate::wire::{self, EnvironmentServiceClient, IdentityServiceClient, KeyServiceClient};
@@ -25,9 +28,9 @@ use crate::{
 /// It carries every operation but the events' four, which are `Internal` until their messages join
 /// the proto.
 pub struct Client {
-    identity: IdentityServiceClient<HttpClient>,
-    environments: EnvironmentServiceClient<HttpClient>,
-    keys: KeyServiceClient<HttpClient>,
+    identity: IdentityServiceClient<Transport>,
+    environments: EnvironmentServiceClient<Transport>,
+    keys: KeyServiceClient<Transport>,
     timeout: Option<Duration>,
 }
 
@@ -84,7 +87,7 @@ impl Client {
             // Another crate of the build may switch gzip or zstd on in `connectrpc`.
             .with_compression(CompressionRegistry::new());
         // Its clones share its connections.
-        let http = HttpClient::plaintext();
+        let http = Transport(HttpClient::plaintext());
         Ok(Self {
             identity: IdentityServiceClient::new(http.clone(), config.clone()),
             environments: EnvironmentServiceClient::new(http.clone(), config.clone()),
@@ -109,6 +112,34 @@ impl Client {
             Some(timeout) => options.with_timeout(timeout),
             None => options,
         }
+    }
+}
+
+/// Passes on no success that is not Connect's: the library takes any 2xx, of any type that starts as
+/// its own or of none, and an empty one decodes as an answer that says yes or lists nothing.
+#[derive(Clone)]
+struct Transport(HttpClient);
+
+impl ClientTransport for Transport {
+    type ResponseBody = <HttpClient as ClientTransport>::ResponseBody;
+    type Error = ConnectError;
+
+    fn send(
+        &self,
+        request: Request<ClientBody>,
+    ) -> BoxFuture<'static, Result<Response<Self::ResponseBody>, ConnectError>> {
+        let answer = self.0.send(request);
+        Box::pin(async move {
+            let answer = answer.await?;
+            let kinds: Vec<_> = answer.headers().get_all(CONTENT_TYPE).iter().collect();
+            if answer.status().is_success()
+                && (answer.status() != StatusCode::OK || kinds != ["application/proto"])
+            {
+                let message = format!("an HTTP {} that is not Connect's", answer.status().as_u16());
+                return Err(ConnectError::new(ErrorCode::Unknown, message));
+            }
+            Ok(answer)
+        })
     }
 }
 
@@ -157,7 +188,15 @@ where
         },
     };
     let answer = answer.map_err(|e| {
-        wire::op_error(&e).unwrap_or_else(|| failed(format!("the engine did not answer: {e}")))
+        wire::op_error(&e).unwrap_or_else(|| {
+            let why = match op {
+                // Its text can be the body of the answer, and of this one that holds the key
+                // (TEN-3).
+                Operation::CreateKey => e.code.as_str().to_owned(),
+                _ => e.to_string(),
+            };
+            failed(format!("the engine did not answer: {why}"))
+        })
     })?;
     answer
         .try_into()

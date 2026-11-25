@@ -49,6 +49,7 @@ impl Served {
     /// Starts it and waits until it is ready.
     fn start(data_dir: &Path, listen: &str) -> Self {
         let mut child = command(data_dir, listen)
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
@@ -74,9 +75,13 @@ impl Served {
         served
     }
 
-    /// Stops it; all it logged.
+    /// Stops it; all it logged. It printed nothing to stdout.
     fn stop(mut self) -> String {
         self.child.kill().unwrap();
+        let mut printed = String::new();
+        let mut stdout = self.child.stdout.take().unwrap();
+        stdout.read_to_string(&mut printed).unwrap();
+        assert_eq!(printed, "");
         let mut log = std::mem::take(&mut self.listening);
         self.log.read_to_string(&mut log).unwrap();
         log

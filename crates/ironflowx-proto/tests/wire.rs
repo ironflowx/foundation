@@ -270,8 +270,18 @@ fn a_key_that_is_not_what_the_proto_says_does_not_decode() {
         change(answer.info.get_or_insert_default());
         assert_eq!(CreatedKey::try_from(answer).err(), Some(Undecodable), "{i}");
     }
-    let changes: [fn(&mut wire::CreateKeyResponse); 2] =
-        [|a| a.key.clear(), |a| a.info = None.into()];
+    let changes: [fn(&mut wire::CreateKeyResponse); 8] = [
+        |a| a.info = None.into(),
+        // No key, or one no engine accepts (D46).
+        |a| a.key.clear(),
+        |a| a.key = "x".into(),
+        |a| a.key.push('A'),
+        |a| a.key.truncate(83),
+        |a| a.key.replace_range(0..4, "IXK_"),
+        |a| a.key.replace_range(41..42, "+"),
+        // One of another ID.
+        |a| a.key.replace_range(39..40, "2"),
+    ];
     for (i, change) in changes.into_iter().enumerate() {
         let mut answer = wire::CreateKeyResponse::from(created());
         change(&mut answer);

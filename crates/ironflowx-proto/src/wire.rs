@@ -210,11 +210,20 @@ impl TryFrom<CreateKeyResponse> for crate::CreatedKey {
     fn try_from(a: CreateKeyResponse) -> Result<Self, Undecodable> {
         // First, so that it is zeroed whatever the rest holds.
         let key = Secret::new(a.key);
-        if key.expose().is_empty() {
+        let info = a.info.into_option().ok_or(Undecodable)?;
+        // `ixk_<key ID>_<secret>` (D46): one that no engine accepts, or of another ID, is lost.
+        let secret = key
+            .expose()
+            .strip_prefix("ixk_")
+            .and_then(|rest| rest.strip_prefix(&*info.key_id)?.strip_prefix('_'));
+        let encoded = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_';
+        if !secret.is_some_and(|s| s.len() == 43 && s.bytes().all(encoded)) {
             return Err(Undecodable);
         }
-        let info = a.info.into_option().ok_or(Undecodable)?.try_into()?;
-        Ok(Self { key, info })
+        Ok(Self {
+            key,
+            info: info.try_into()?,
+        })
     }
 }
 

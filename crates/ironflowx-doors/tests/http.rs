@@ -295,6 +295,16 @@ async fn a_request_the_wire_cannot_carry_is_invalid_before_its_key_is_read() {
         }
     }
     assert_eq!(operations.take(), []);
+    // The library's reading of a time, as it is documented (Proto).
+    let body = br#"{"expires_at":"2027-+1-15T08:00:00Z"}"#;
+    let line = "POST /ironflowx.v1.KeyService/CreateKey";
+    let (head, _) = send(open, line, &[JSON], body).await;
+    assert!(head.starts_with("HTTP/1.0 200 "), "{head}");
+    let asked = ironflowx_proto::CreateKeyRequest {
+        expires_at: Some(Timestamp::from_millis(1_800_000_000_000)),
+        ..Default::default()
+    };
+    assert_eq!(operations.take_requests(), [format!("{asked:?}")]);
     // Their neighbors are carried.
     for (time, millis) in [
         ((-62_135_596_800, 0), -62_135_596_800_000),

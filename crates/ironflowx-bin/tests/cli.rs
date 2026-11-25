@@ -184,6 +184,10 @@ fn each_command_prints_its_operations_answer() {
 /// SRV-11: what an agent branches on where no engine answers.
 #[test]
 fn a_state_change_no_engine_answers_is_unknown() {
+    // Takes each connection and closes it.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || listener.incoming().for_each(drop));
     for (args, code, hint) in [
         (["environments", "list"], "unavailable", None),
         (["keys", "list"], "unavailable", None),
@@ -202,8 +206,7 @@ fn a_state_change_no_engine_answers_is_unknown() {
         ),
     ] {
         let mut command = command(&args);
-        // A port the system gives to no one who asks for any.
-        command.env("IRONFLOWX_URL", "http://127.0.0.1:1");
+        command.env("IRONFLOWX_URL", &url);
         let out = command.env("IRONFLOWX_KEY", KEY).output().unwrap();
         let (envelope, exit) = envelope(&out);
         let unknown = code == "unknown";

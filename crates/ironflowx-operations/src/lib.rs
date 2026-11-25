@@ -277,7 +277,8 @@ impl Operations for Engine {
     /// beyond the caller, an expiry not after now, or a bad label; `ResourceExhausted` while
     /// 1,000 created keys hold a slot: not revoked, and no expiry recorded; `Unauthenticated` if
     /// the caller was revoked or expired before the key was stored. An `Unavailable` of the store
-    /// itself says in its hint to list the keys before a retry: the key may be stored (D48).
+    /// itself says in its hint to list the keys before a retry, and again after a reopen: the key
+    /// may be stored (D48).
     ///
     /// # Panics
     ///
