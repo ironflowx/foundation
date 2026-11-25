@@ -663,7 +663,7 @@ A success that is not Connect's (a 2xx other than 200, or of a type other than `
 
 - Rule 4 takes a proxy that answers in place of the engine exactly as a Connect server would, status, type and code alike, for one: where it dropped the engine's own answer, a commit it names refused has run. The answer can copy the request, where that holds nothing, as an empty `create_key` does.
 - Rule 1 takes any well-formed `ErrorInfo` of a known kind for the engine's: one a proxy forged, cached, or replays from another call.
-- An intermediary that copies the raw request, unescaped, having trimmed or replaced its control bytes, into an answer of only `code`, `message` and `details`, can make one of an event's name or idempotency key. A copy that keeps the bytes is told apart: every request that stores an event or changes a key holds one below 0x20, an empty `create_key` aside, and no error the engine's door writes does.
+- An intermediary that copies the raw request, unescaped, having trimmed or replaced its control bytes, into an answer of only `code`, `message` and `details`, can make one of an event's name or idempotency key. A copy that keeps the bytes is told apart: every request that stores an event or changes a key holds one below 0x20, an empty `create_key` aside, and no error the engine's door writes on Connect does.
 
 With `client-tls`, `Client` calls an `https` URL as it does an `http` one. It trusts the roots of the system's store, so a private authority's works, and reads them once, in `Client::new`; `SSL_CERT_FILE` or `SSL_CERT_DIR`, where set, replaces the store, on macOS too. With no roots, no server is trusted. Without `client-tls`, an `https` URL is `InvalidUrl`.
 
