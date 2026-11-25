@@ -685,7 +685,8 @@ With `client-tls`, `Client` calls an `https` URL as it does an `http` one. It tr
 
 ## Host
 
-`ironflowx serve` binds, opens the engine, and serves it until the process is killed. It handles no signal: every acknowledgment already followed `fsync`, so a kill loses nothing acknowledged.
+`ironflowx serve` binds, opens the engine, and serves it. SIGINT, SIGTERM or a ledger fault
+starts a drain. Every acknowledgment already followed `fsync`.
 
 | Setting | Flag | Variable | Default |
 |---|---|---|---|

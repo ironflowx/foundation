@@ -142,7 +142,13 @@ impl<O: Operations, R: Readiness> Slot<O, R> {
             State::Open(_, readiness) => readiness.clone(),
             _ => return Err(WaitingOn::Open),
         };
-        readiness.ready().await
+        let health = readiness.ready().await;
+        // The health read may have waited while the host stopped admitting calls.
+        if matches!(*self.0.lock().expect("slot lock"), State::Open(..)) {
+            health
+        } else {
+            Err(WaitingOn::Open)
+        }
     }
 }
 
