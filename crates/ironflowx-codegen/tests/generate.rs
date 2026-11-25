@@ -70,7 +70,8 @@ fn a_method_becomes_a_command() {
           repeated Part parts = 5;
           optional Part part = 6;
           google.protobuf.Timestamp at = 7;
-          oneof result { string ok = 8; Empty error = 9; }
+          repeated string texts = 8 [(ironflowx.v1.json_text) = true];
+          oneof result { string ok = 9; Empty error = 10; }
         }
         message Part { repeated string names = 1; uint64 n = 2; int32 m = 3; }
         message Empty {}
@@ -82,14 +83,15 @@ fn a_method_becomes_a_command() {
 pub(crate) const COMMANDS: &[Command] = &[
     // Input: INPUT
     // Example: {"at":"2026-01-02T03:04:05Z","data":"{\"id\":1}"}
-    Command { path: "events emit-all", summary: "Say \"hi\"", answer: &[Field { name: "id", default: Some("\"\""), fields: &[] }, Field { name: "duplicate", default: Some("false"), fields: &[] }, Field { name: "version", default: Some("\"0\""), fields: &[] }, Field { name: "parts", default: Some("[]"), fields: &[Field { name: "names", default: Some("[]"), fields: &[] }, Field { name: "n", default: Some("\"0\""), fields: &[] }, Field { name: "m", default: Some("0"), fields: &[] }] }, Field { name: "part", default: None, fields: &[Field { name: "names", default: Some("[]"), fields: &[] }, Field { name: "n", default: Some("\"0\""), fields: &[] }, Field { name: "m", default: Some("0"), fields: &[] }] }] },
+    Command { path: "events emit-all", summary: "Say \"hi\"", request: &[Field { name: "at", kind: Kind::Text, list: false, default: None }, Field { name: "data", kind: Kind::JsonText, list: false, default: None }, Field { name: "items", kind: Kind::Message(&[Field { name: "big", kind: Kind::Text, list: false, default: Some("\"0\"") }, Field { name: "on", kind: Kind::Bool, list: false, default: Some("false") }, Field { name: "small", kind: Kind::Text, list: false, default: Some("0") }]), list: true, default: Some("[]") }, Field { name: "name", kind: Kind::Text, list: false, default: Some("\"\"") }], answer: &[Field { name: "id", kind: Kind::Text, list: false, default: Some("\"\"") }, Field { name: "duplicate", kind: Kind::Bool, list: false, default: Some("false") }, Field { name: "version", kind: Kind::Text, list: false, default: Some("\"0\"") }, Field { name: "label", kind: Kind::Text, list: false, default: None }, Field { name: "parts", kind: Kind::Message(&[Field { name: "names", kind: Kind::Text, list: true, default: Some("[]") }, Field { name: "n", kind: Kind::Text, list: false, default: Some("\"0\"") }, Field { name: "m", kind: Kind::Text, list: false, default: Some("0") }]), list: true, default: Some("[]") }, Field { name: "part", kind: Kind::Message(&[Field { name: "names", kind: Kind::Text, list: true, default: Some("[]") }, Field { name: "n", kind: Kind::Text, list: false, default: Some("\"0\"") }, Field { name: "m", kind: Kind::Text, list: false, default: Some("0") }]), list: false, default: None }, Field { name: "at", kind: Kind::Text, list: false, default: None }, Field { name: "texts", kind: Kind::JsonText, list: true, default: Some("[]") }, Field { name: "ok", kind: Kind::Text, list: false, default: None }, Field { name: "error", kind: Kind::Message(&[]), list: false, default: None }], refusal: |v| serde_json::from_value::<wire::Req>(v).err() },
 ];
 
-/// Calls the operation of `command`: its answer, in wire JSON.
-pub(crate) async fn call(command: &str, client: &Client, cx: &Call) -> Result<serde_json::Value, OpError> {
+/// Calls the operation of `command` with `request`, in wire JSON: its answer, likewise.
+pub(crate) async fn call(command: &str, client: &Client, cx: &Call, request: &str) -> Result<serde_json::Value, OpError> {
     Ok(match command {
         "events emit-all" => {
-            let request = wire::Req::default().try_into()?;
+            let request: wire::Req = serde_json::from_str(request).map_err(|e| undecoded(&e))?;
+            let request = request.try_into()?;
             let answer = wire::Ans::from(client.emit_all(cx, request).await?);
             serde_json::to_value(answer)
         }
@@ -126,8 +128,11 @@ fn every_kind_of_number_is_known() {
             let code = generate(&method(&options, &field, &field)).unwrap();
             let input = format!(r#""properties":{{"n":{schema}}}"#);
             assert!(code.contains(&input), "{kind}: {code}");
-            let answer = format!(r#"name: "n", default: Some("{default}")"#);
-            assert!(code.contains(&answer), "{kind}: {code}");
+            let field = format!(
+                r#"&[Field {{ name: "n", kind: Kind::Text, list: false, default: Some("{default}") }}]"#
+            );
+            let both = format!("request: {field}, answer: {field}, ");
+            assert!(code.contains(&both), "{kind}: {code}");
         }
     }
 }

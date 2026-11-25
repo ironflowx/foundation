@@ -6,6 +6,7 @@ mod refusals;
 
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
+use std::process::Command;
 use std::sync::Arc;
 
 use connectrpc::Protocol;
@@ -47,8 +48,9 @@ async fn the_five_refusals_are_one_answer_through_the_client() {
     .await;
 }
 
-/// Writes JSON text at random, the same each time (xorshift).
-struct Json(u64);
+/// Writes JSON text at random, the same each time (xorshift), with whitespace between its tokens or
+/// without, which changes nothing else.
+struct Json(u64, bool);
 
 impl Json {
     fn below(&mut self, n: u64) -> u64 {
@@ -64,7 +66,8 @@ impl Json {
 
     fn space(&mut self, out: &mut String) {
         for _ in 0..self.below(3) {
-            out.push_str(self.any(&["", " ", "\n", "\r\n", "\t", "  "]));
+            let space = self.any(&["", " ", "\n", "\r\n", "\t", "  "]);
+            out.push_str(if self.1 { space } else { "" });
         }
     }
 
@@ -74,6 +77,8 @@ impl Json {
             out.push_str(self.any(&[
                 "a",
                 "Z",
+                " ",
+                " : ",
                 "é",
                 "e\u{301}",
                 "\u{7f}",
@@ -163,6 +168,20 @@ impl Json {
     }
 }
 
+/// 100 events' data and metadata, with whitespace between their tokens or without.
+fn documents(spaced: bool) -> Vec<(String, String)> {
+    let mut json = Json(0x9e37_79b9_7f4a_7c15, spaced);
+    let document = |_| {
+        let (mut data, mut metadata) = (String::new(), String::new());
+        json.value(4, &mut data);
+        json.space(&mut metadata);
+        json.object(2, &mut metadata);
+        json.space(&mut metadata);
+        (data, metadata)
+    };
+    (0..100).map(document).collect()
+}
+
 const PROTOCOLS: [&str; 4] = ["Connect JSON", "Connect binary", "gRPC", "gRPC-Web"];
 
 /// What a client of `protocol` is made of.
@@ -202,17 +221,7 @@ async fn event_data_crosses_every_protocol_byte_for_byte() {
     let engine = Arc::new(engine);
     let addr = serve(engine.clone()).await;
 
-    let mut json = Json(0x9e37_79b9_7f4a_7c15);
-    let documents: Vec<(String, String)> = (0..100)
-        .map(|_| {
-            let (mut data, mut metadata) = (String::new(), String::new());
-            json.value(4, &mut data);
-            json.space(&mut metadata);
-            json.object(2, &mut metadata);
-            json.space(&mut metadata);
-            (data, metadata)
-        })
-        .collect();
+    let documents = documents(true);
     // What a decoder that is not a copy would change is there.
     for held in [
         "\r\n",
@@ -312,6 +321,94 @@ async fn event_data_crosses_every_protocol_byte_for_byte() {
     }
     stored.reverse();
     assert_eq!(listed, stored);
+}
+
+/// SRV-5: the CLI sends JSON from its arguments and from files as it is there, and prints the same
+/// values, key order and number text, on one line.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_cli_prints_event_data_as_it_was_sent() {
+    let dir = tempfile::tempdir().unwrap();
+    let opened = Engine::open(dir.path(), clock(), None).await;
+    let Opened { engine, minted, .. } = opened.unwrap();
+    let admin = minted.unwrap();
+    let engine = Arc::new(engine);
+    let addr = serve(engine.clone()).await;
+    let files = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ironflowx"));
+        command
+            .args(args)
+            .current_dir(files.path())
+            .env("IRONFLOWX_URL", format!("http://{addr}"))
+            .env("IRONFLOWX_KEY", admin.expose());
+        let out = tokio::task::block_in_place(|| command.output()).unwrap();
+        assert_eq!(
+            (out.status.code(), &*out.stderr),
+            (Some(0), &b""[..]),
+            "{args:?}"
+        );
+        let line = String::from_utf8(out.stdout).unwrap();
+        let line = line.strip_suffix('\n').expect("a line").to_owned();
+        assert!(!line.contains(['\n', '\r']), "{line}");
+        line
+    };
+    let write = |name: &str, text: &str| std::fs::write(files.path().join(name), text).unwrap();
+
+    let (sent, compact) = (documents(true), documents(false));
+    // What a filter that does not know a string would change is there.
+    for held in [" : ", "\\\" ", "\\\\\"", "\r\n", "-0", "90071992547"] {
+        let holds = |(d, m): &(String, String)| d.contains(held) || m.contains(held);
+        assert!(sent.iter().any(holds), "{held:?}");
+    }
+    // All at once, in a file as a person would keep it; then some again, each from files of its
+    // own or as it is.
+    let items = sent.iter().map(
+        |(data, metadata)| serde_json::json!({"name": "a", "data": data, "metadata": metadata}),
+    );
+    let items: Vec<_> = items.collect();
+    write(
+        "batch",
+        &format!("{:#}\n", serde_json::json!({ "items": items })),
+    );
+    run(&["events", "emit-batch", "--json", "@batch"]);
+    for (i, (data, metadata)) in sent.iter().enumerate().take(40) {
+        let mut args = vec!["events", "emit", "--name", "a", "--data", data];
+        args.extend(["--metadata", metadata]);
+        if i % 2 == 0 {
+            write("data", data);
+            write("metadata", metadata);
+            (args[5], args[7]) = ("@data", "@metadata");
+        }
+        run(&args);
+    }
+
+    let request = ListEventsRequest {
+        limit: NonZeroU32::new(200),
+        cursor: None,
+    };
+    let page = engine.list_events(&key(admin.expose()), request).await;
+    let mut stored = page.unwrap().events;
+    // Oldest first.
+    stored.reverse();
+    let expected = sent.iter().chain(&sent[..40]);
+    let got = stored.iter().map(|e| (&*e.data, e.metadata.as_deref()));
+    let as_sent = expected.map(|(d, m)| (d.as_bytes(), Some(m.as_bytes())));
+    assert!(got.eq(as_sent), "the engine stores the bytes");
+
+    let printed = stored.iter().zip(compact.iter().chain(&compact[..40]));
+    let printed = printed.map(|(event, (data, metadata))| {
+        format!(
+            r#"{{"data":{data},"emitted_by":"{}","event_id":"{}","metadata":{metadata},"name":"a","time":"2027-01-15T08:00:00Z","version":"1"}}"#,
+            event.emitted_by, event.event_id
+        )
+    });
+    let mut printed: Vec<String> = printed.collect();
+    let newest = printed.len() - 1;
+    let id = stored[newest].event_id.to_string();
+    assert_eq!(run(&["events", "get", "--event-id", &id]), printed[newest]);
+    printed.reverse();
+    let page = format!(r#"{{"events":[{}]}}"#, printed.join(","));
+    assert_eq!(run(&["events", "list", "--limit", "200"]), page);
 }
 
 /// D73: the largest page an engine answers, every event of it at every limit, is whole on each

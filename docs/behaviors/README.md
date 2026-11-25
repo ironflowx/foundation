@@ -40,7 +40,7 @@ The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It 
 - `@local`: the scenario needs a fixture only the in-process adapter has (the clock, a second incarnation, the data directory, what `open` returns), so it does not run against the binary.
 - In `tenancy.feature`, "opened", "closed" and "reopened" are `Engine::open` and `close` on the scenario's directory; "the bootstrap key" is the key the first open returned, or the seed it was given; a seed is a well-formed key the step builds; "a client with a `<scope>` key" holds a key the bootstrap key created with exactly those scopes.
 - In `serve.feature`, "served" is `ironflowx serve` on the scenario's data directory, on `127.0.0.1:0` unless an address is named; "becomes ready" is `/ready` answering 200. "Over Connect", "over gRPC" and so on use a client for that protocol generated from the proto, not `Client`. A data cell is the JSON itself, unquoted, or `built:` and a description.
-- In `cli.feature`, an envelope is the one line of stderr, with nothing on stdout; "exits with code N" is the process's status; single quotes in a command are the shell's; a printed cell is the JSON itself, unquoted.
+- In `cli.feature`, an envelope is the one line of stderr, with nothing on stdout; "exits with code N" is the process's status; single quotes in a command are the shell's, and `sh` runs it, in the scenario's directory; a key with scopes is one the CLI creates with the bootstrap key; a printed cell is the JSON itself, unquoted.
 
 ## Not yet
 

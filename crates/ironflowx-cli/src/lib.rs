@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::{Arg, ArgMatches, value_parser};
+use clap::{Arg, ArgAction, ArgMatches, value_parser};
 use ironflowx_core::{ErrorKind, Secret};
 use ironflowx_proto::{Call, Client, OpError, wire};
 use serde_json::{Value, json};
@@ -31,22 +31,34 @@ struct Command {
     /// Its words, as `events emit`.
     path: &'static str,
     summary: &'static str,
-    /// The answer's fields that need something before they are printed.
+    request: &'static [Field],
     answer: &'static [Field],
+    /// Why wire JSON is no such request; `None`: it is one.
+    refusal: fn(Value) -> Option<serde_json::Error>,
 }
 
 struct Field {
     name: &'static str,
+    /// What it holds, or each item of its list.
+    kind: Kind,
+    list: bool,
     /// The JSON text of its default, which wire JSON leaves out; `None`: an absent one stays so.
     default: Option<&'static str>,
-    /// The fields of the message, or of each of the messages, it holds.
-    fields: &'static [Field],
+}
+
+enum Kind {
+    /// A string, or what wire JSON also reads from one: a number, a time.
+    Text,
+    Bool,
+    /// A string that holds JSON text.
+    JsonText,
+    Message(&'static [Field]),
 }
 
 mod generated {
     use ironflowx_proto::{Call, Client, OpError, Operations as _, wire};
 
-    use super::{Command, Field};
+    use super::{Command, Field, Kind, undecoded};
 
     include!(concat!(env!("OUT_DIR"), "/cli.rs"));
 }
@@ -80,16 +92,7 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
         // Its first paragraph; the rest is the usage.
         let text = e.render().to_string();
         let first = text.split("\n\n").next().unwrap_or_default();
-        // A key given where none goes, or the end of one, is not printed (TEN-3).
-        let key = |word: &str| {
-            // Without clap's quotes, one on each side.
-            let bare = word.strip_prefix('\'').unwrap_or(word);
-            let bare = bare.strip_suffix('\'').unwrap_or(bare);
-            word.contains(KEY_PREFIX) || bare.len() >= SECRET_LEN
-        };
-        let hide = |word| if key(word) { "<hidden>" } else { word };
-        let words: Vec<_> = first.split_whitespace().map(hide).collect();
-        let message = words.join(" ");
+        let message = without_keys(first);
         end(Err(OpError {
             hint: Some("--help says what a command takes".to_owned()),
             ..invalid(message.trim_start_matches("error: "))
@@ -97,11 +100,25 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
     })
 }
 
+/// `text`, its whitespace as single spaces, without a word that may be a key given where none goes,
+/// or the end of one (TEN-3).
+fn without_keys(text: &str) -> String {
+    let key = |word: &str| {
+        // Without clap's quotes, one on each side.
+        let bare = word.strip_prefix('\'').unwrap_or(word);
+        let bare = bare.strip_suffix('\'').unwrap_or(bare);
+        word.contains(KEY_PREFIX) || bare.len() >= SECRET_LEN
+    };
+    let hide = |word| if key(word) { "<hidden>" } else { word };
+    let words: Vec<_> = text.split_whitespace().map(hide).collect();
+    words.join(" ")
+}
+
 /// Runs the CLI's own command that [`parse`] found: the process's exit code.
 pub fn run(matches: &ArgMatches) -> ExitCode {
     let (command, leaf) = chosen(matches);
-    end(answer(&command, leaf).and_then(|a| {
-        print(&a).map_err(|e| match &*command {
+    end(answer(&command, leaf).and_then(|text| {
+        print(&text).map_err(|e| match &*command {
             "keys create" => OpError {
                 hint: Some(
                     "the key is stored and its secret lost: list the keys, revoke it".into(),
@@ -140,6 +157,14 @@ fn add(parent: clap::Command, words: &[&'static str], command: &Command) -> clap
         return parent.subcommand(
             clap::Command::new(*word)
                 .about(command.summary)
+                .args(flags(command).map(|f| flag(command, f)))
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .value_name("JSON")
+                        .help("The whole request, in place of its flags: JSON, @<file> or -, stdin")
+                        .conflicts_with_all(flags(command).map(|f| f.name)),
+                )
                 .arg(Arg::new("url").value_name("URL").long("url").help(format!(
                     "The engine to call; else IRONFLOWX_URL, else {DEFAULT_URL}"
                 )))
@@ -159,30 +184,157 @@ fn add(parent: clap::Command, words: &[&'static str], command: &Command) -> clap
     parent.mut_subcommand(word, |group| add(group, rest, command))
 }
 
-fn answer(command: &str, matches: &ArgMatches) -> Result<Value, OpError> {
+/// The fields of the request that have a flag.
+fn flags(command: &Command) -> impl Iterator<Item = &'static Field> {
+    let has_one = |f: &&Field| !matches!(f.kind, Kind::Message(_));
+    command.request.iter().filter(has_one)
+}
+
+/// The flag of `field`: what it parses to is the field, or an item of its list, in wire JSON.
+fn flag(command: &Command, field: &'static Field) -> Arg {
+    let refusal = command.refusal;
+    let parse = move |text: &str| {
+        let value = match (&field.kind, text.strip_prefix('@'), text.parse()) {
+            (Kind::JsonText, Some(path), _) => {
+                Value::String(std::fs::read_to_string(path).map_err(|e| e.to_string())?)
+            }
+            (Kind::Bool, _, Ok(on)) => Value::Bool(on),
+            _ => Value::String(text.to_owned()),
+        };
+        // Alone, so that a refusal is of this flag.
+        match refusal(json!({ field.name: set(field, vec![value.clone()]) })) {
+            Some(e) => Err(e.to_string()),
+            None => Ok(value),
+        }
+    };
+    let help = match (&field.kind, field.list) {
+        (Kind::JsonText, _) => "JSON text, or @<file>",
+        (_, true) => "May be repeated",
+        _ => "",
+    };
+    Arg::new(field.name)
+        // Leaked, once a run: clap takes static text.
+        .long(&*field.name.replace('_', "-").leak())
+        .value_name(&*field.name.to_uppercase().leak())
+        .help(help)
+        .action(match field.list {
+            true => ArgAction::Append,
+            false => ArgAction::Set,
+        })
+        // A negative number is JSON text; a flag taken for a value is none.
+        .allow_hyphen_values(matches!(field.kind, Kind::JsonText))
+        .value_parser(parse)
+}
+
+/// The field its flag's `values` set.
+fn set(field: &Field, mut values: Vec<Value>) -> Value {
+    match field.list {
+        true => values.into(),
+        false => values.remove(0),
+    }
+}
+
+/// The request that the flags or `--json` give, in wire JSON.
+fn request(command: &Command, matches: &ArgMatches) -> Result<String, OpError> {
+    let Some(given) = matches.get_one::<String>("json") else {
+        let given = flags(command).filter_map(|field| {
+            let values = matches.get_many(field.name)?.cloned().collect();
+            Some((field.name.to_owned(), set(field, values)))
+        });
+        return Ok(Value::Object(given.collect()).to_string());
+    };
+    let text = match given.strip_prefix('@') {
+        Some(path) => std::fs::read_to_string(path),
+        None if given == "-" => io::read_to_string(io::stdin()),
+        None => Ok(given.clone()),
+    };
+    // Without the path, as of --key-file.
+    let text = text.map_err(|e| invalid(format!("cannot read what --json names: {e}")))?;
+    let value = serde_json::from_str(&text).map_err(|e| undecoded(&e))?;
+    check(&value, command.request, None)?;
+    Ok(text)
+}
+
+/// Refuses what decoding ignores or takes for something else: a field that a message, the request
+/// or the one at `at` in it, does not have (D79), an array for a message, and JSON for its text.
+fn check(value: &Value, fields: &[Field], at: Option<&str>) -> Result<(), OpError> {
+    let object = match value {
+        Value::Object(object) => object,
+        // An absent one, or it does not decode.
+        Value::Null => return Ok(()),
+        _ => {
+            let at = at.unwrap_or("the request");
+            return Err(invalid(format!("{at} is not an object")));
+        }
+    };
+    let under = at.map_or(String::new(), |at| format!("{at}."));
+    for (name, value) in object {
+        let Some(field) = fields.iter().find(|f| f.name == name) else {
+            let name = without_keys(name);
+            return Err(invalid(format!("the request has no field '{under}{name}'")));
+        };
+        let at = format!("{under}{name}");
+        let items = match value {
+            Value::Array(items) if field.list => {
+                let item = |(i, item)| (format!("{at}[{i}]"), item);
+                items.iter().enumerate().map(item).collect()
+            }
+            one => vec![(at, one)],
+        };
+        for (at, value) in items {
+            match field.kind {
+                Kind::Message(fields) => check(value, fields, Some(&at))?,
+                Kind::JsonText if !value.is_string() => {
+                    return Err(OpError {
+                        hint: Some(format!("{name} is JSON text: pass a string")),
+                        ..invalid(format!("{at} is not a string"))
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The text to print.
+fn answer(command: &str, matches: &ArgMatches) -> Result<String, OpError> {
+    let indent = io::stdout().is_terminal().then_some(0);
     if command == "version" {
-        return Ok(json!({
+        let version = json!({
             "version": env!("CARGO_PKG_VERSION"),
             "commit": env!("IRONFLOWX_COMMIT"),
             "protocol": "ironflowx.v1",
-        }));
+        });
+        return render(&version, &Kind::Message(&[]), indent);
     }
+    let known = generated::COMMANDS.iter().find(|c| c.path == command);
+    let known = known.expect("a command it found");
+    let request = request(known, matches)?;
     let client = client(matches)?.with_timeout(DEADLINE);
     let cx = credential(matches)?;
+    // Its answer repeats the label, so it would not be printed, and the new key in it lost.
+    if command == "keys create" {
+        let decoded: Value = serde_json::from_str(&request).expect("it was read as JSON");
+        if repeats_secret(&decoded.to_string(), &cx) {
+            let message = "no key is created, since the request repeats the key the CLI was given";
+            return Err(invalid(message));
+        }
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| internal(format!("no runtime: {e}")))?;
     let mut answer = runtime
-        .block_on(generated::call(command, &client, &cx))
+        .block_on(generated::call(command, &client, &cx, &request))
         .map_err(|e| without_secret(e, &cx))?;
-    if repeats_secret(&answer.to_string(), &cx) {
+    complete(&mut answer, known.answer);
+    let text = render(&answer, &Kind::Message(known.answer), indent)?;
+    if repeats_secret(&text, &cx) {
         let message = "the answer is not printed, since it repeats the key the CLI was given";
         return Err(internal(message.to_owned()));
     }
-    let known = generated::COMMANDS.iter().find(|c| c.path == command);
-    complete(&mut answer, known.expect("a command it called").answer);
-    Ok(answer)
+    Ok(text)
 }
 
 fn client(matches: &ArgMatches) -> Result<Client, OpError> {
@@ -248,26 +400,72 @@ fn complete(value: &mut Value, fields: &[Field]) {
             let default = || serde_json::from_str(default).expect("the generator writes JSON");
             object.entry(field.name).or_insert_with(default);
         }
+        let Kind::Message(fields) = field.kind else {
+            continue;
+        };
         match value.get_mut(field.name) {
-            Some(Value::Array(items)) => {
-                items
-                    .iter_mut()
-                    .for_each(|item| complete(item, field.fields));
-            }
-            Some(inner) => complete(inner, field.fields),
+            Some(Value::Array(items)) => items.iter_mut().for_each(|item| complete(item, fields)),
+            Some(inner) => complete(inner, fields),
             None => {}
         }
     }
 }
 
-fn print(answer: &Value) -> Result<(), OpError> {
-    let mut out = io::stdout().lock();
-    let text = if out.is_terminal() {
-        format!("{answer:#}")
-    } else {
-        answer.to_string()
+/// The JSON text of `value`, which holds `kind`s: on one line, or indented and this deep already.
+/// JSON text is in it as the value it holds (D65).
+fn render(value: &Value, kind: &Kind, indent: Option<usize>) -> Result<String, OpError> {
+    let inner = indent.map(|depth| depth + 1);
+    let (open, close, items) = match (value, kind) {
+        (Value::String(held), Kind::JsonText) => {
+            let no_json = |_| internal("the answer holds JSON text that is no JSON".to_owned());
+            return compact(held).map_err(no_json);
+        }
+        (Value::Array(items), _) => {
+            let items = items.iter().map(|item| render(item, kind, inner));
+            ('[', ']', items.collect::<Result<Vec<_>, _>>()?)
+        }
+        (Value::Object(object), _) => {
+            let fields = match kind {
+                Kind::Message(fields) => fields,
+                _ => &[][..],
+            };
+            let mut items = Vec::new();
+            for (name, value) in object {
+                let field = fields.iter().find(|f| f.name == name);
+                let value = render(value, field.map_or(&Kind::Text, |f| &f.kind), inner)?;
+                let colon = if indent.is_some() { ": " } else { ":" };
+                items.push(format!("{}{colon}{value}", Value::from(&**name)));
+            }
+            ('{', '}', items)
+        }
+        _ => return Ok(value.to_string()),
     };
-    writeln!(out, "{text}").map_err(|e| unprinted(&e))
+    let line = |depth: Option<usize>| match depth {
+        Some(depth) if !items.is_empty() => format!("\n{}", "  ".repeat(depth)),
+        _ => String::new(),
+    };
+    let between = format!(",{}", line(inner));
+    let items = [line(inner), items.join(&between), line(indent)].concat();
+    Ok(format!("{open}{items}{close}"))
+}
+
+/// JSON text without the whitespace between its tokens: its values, the order of its keys and its
+/// numbers are as they were sent.
+fn compact(json: &str) -> Result<String, serde_json::Error> {
+    // What answered may be no engine.
+    serde_json::from_str::<Value>(json)?;
+    let (mut in_string, mut escaped) = (false, false);
+    let kept = |c: &char| {
+        let between = !in_string && c.is_ascii_whitespace();
+        in_string ^= *c == '"' && !escaped;
+        escaped = *c == '\\' && !escaped;
+        !between
+    };
+    Ok(json.chars().filter(kept).collect())
+}
+
+fn print(text: &str) -> Result<(), OpError> {
+    writeln!(io::stdout(), "{text}").map_err(|e| unprinted(&e))
 }
 
 /// The exit code of an answer printed, or of a failure, once its envelope is.
@@ -304,6 +502,11 @@ fn internal(message: String) -> OpError {
     }
 }
 
+/// Of a request that is not one.
+fn undecoded(e: &serde_json::Error) -> OpError {
+    invalid(without_keys(&format!("the request does not decode: {e}")))
+}
+
 fn unprinted(e: &io::Error) -> OpError {
     internal(format!("cannot write to stdout: {e}"))
 }
@@ -317,7 +520,9 @@ mod tests {
         let command = |path| Command {
             path,
             summary: "",
+            request: &[],
             answer: &[],
+            refusal: |_| None,
         };
         let root = ["whoami", "keys list", "keys revoke", "a b c"]
             .into_iter()
@@ -363,28 +568,37 @@ mod tests {
         assert_eq!(url(None, None), ("the default", default));
     }
 
+    const fn field(name: &'static str, kind: Kind, default: Option<&'static str>) -> Field {
+        Field {
+            name,
+            kind,
+            list: false,
+            default,
+        }
+    }
+
+    const fn list(name: &'static str, kind: Kind) -> Field {
+        Field {
+            list: true,
+            ..field(name, kind, Some("[]"))
+        }
+    }
+
     /// D65: a default is added wherever wire JSON leaves one out, and nothing else.
     #[test]
     fn an_answer_is_completed_at_any_depth() {
-        const fn field(
-            name: &'static str,
-            default: Option<&'static str>,
-            fields: &'static [Field],
-        ) -> Field {
-            Field {
-                name,
-                default,
-                fields,
-            }
-        }
         const ITEM: &[Field] = &[
-            field("ok", Some("false"), &[]),
-            field("n", Some("\"0\""), &[]),
+            field("ok", Kind::Bool, Some("false")),
+            field("n", Kind::Text, Some("\"0\"")),
         ];
         const ANSWER: &[Field] = &[
-            field("items", Some("[]"), ITEM),
-            field("one", None, &[field("inner", None, ITEM)]),
-            field("name", Some("\"\""), &[]),
+            list("items", Kind::Message(ITEM)),
+            field(
+                "one",
+                Kind::Message(&[field("inner", Kind::Message(ITEM), None)]),
+                None,
+            ),
+            field("name", Kind::Text, Some("\"\"")),
         ];
         for (sent, printed) in [
             (json!({}), json!({"items": [], "name": ""})),
@@ -404,6 +618,263 @@ mod tests {
             let mut value = sent.clone();
             complete(&mut value, ANSWER);
             assert_eq!(value, printed, "{sent}");
+        }
+    }
+
+    /// D65: a field of JSON text is printed as what it holds, at any depth, and nothing else is.
+    #[test]
+    fn json_text_is_printed_as_the_value_it_holds() {
+        const PART: &[Field] = &[field("data", Kind::JsonText, None)];
+        const ANSWER: Kind = Kind::Message(&[
+            field("data", Kind::JsonText, None),
+            field("name", Kind::Text, None),
+            list("texts", Kind::JsonText),
+            list("parts", Kind::Message(PART)),
+            field("part", Kind::Message(PART), None),
+        ]);
+        let answer = json!({
+            "data": " {\n\"b\": 1.50, \"a\" :[ ] } ",
+            "name": "[ ]",
+            "none": {},
+            "part": {"data": "1 "},
+            "parts": [{"data": " \"x y\""}, {}],
+            "texts": ["[ 1 ]", "2"],
+            "\"": {"data": "[ ]"},
+        });
+        let line = concat!(
+            r#"{"\"":{"data":"[ ]"},"data":{"b":1.50,"a":[]},"name":"[ ]","none":{},"#,
+            r#""part":{"data":1},"parts":[{"data":"x y"},{}],"texts":[[1],2]}"#,
+        );
+        assert_eq!(render(&answer, &ANSWER, None).unwrap(), line);
+        let indented = r#"{
+  "\"": {
+    "data": "[ ]"
+  },
+  "data": {"b":1.50,"a":[]},
+  "name": "[ ]",
+  "none": {},
+  "part": {
+    "data": 1
+  },
+  "parts": [
+    {
+      "data": "x y"
+    },
+    {}
+  ],
+  "texts": [
+    [1],
+    2
+  ]
+}"#;
+        assert_eq!(render(&answer, &ANSWER, Some(0)).unwrap(), indented);
+        // As JSON is printed that holds none.
+        assert_eq!(
+            render(&answer, &Kind::Text, Some(0)).unwrap(),
+            format!("{answer:#}")
+        );
+        assert_eq!(
+            render(&answer, &Kind::Text, None).unwrap(),
+            answer.to_string()
+        );
+        let refused = render(&json!({"data": "1 2"}), &ANSWER, None).unwrap_err();
+        let expected = internal("the answer holds JSON text that is no JSON".to_owned());
+        assert_eq!(refused, expected);
+    }
+
+    #[test]
+    fn only_whitespace_between_tokens_is_removed() {
+        for (held, printed) in [
+            ("null", "null"),
+            (" \t\r\n-0\n", "-0"),
+            ("1E+2", "1E+2"),
+            (
+                "123456789012345678901234567890.10",
+                "123456789012345678901234567890.10",
+            ),
+            ("{ \"b\" : 1 , \"a\" : [ 1 , 2 ] }", "{\"b\":1,\"a\":[1,2]}"),
+            (r#"[ " a  b " ]"#, r#"[" a  b "]"#),
+            // What ends a string, and what does not.
+            (r#"[ "\" [ " , 1 ]"#, r#"["\" [ ",1]"#),
+            (r#"[ "\\" , " " ]"#, r#"["\\"," "]"#),
+            (r#"[ "\\\" \\" , " " ]"#, r#"["\\\" \\"," "]"#),
+            (r#"[ "\\n" , "\n \u0020" ]"#, r#"["\\n","\n \u0020"]"#),
+            // Not between tokens.
+            ("\"\u{a0}\u{2028} \u{feff}\"", "\"\u{a0}\u{2028} \u{feff}\""),
+        ] {
+            assert_eq!(compact(held).unwrap(), printed, "{held}");
+        }
+        let deepest = "[ ".repeat(127) + &"] ".repeat(127);
+        let printed = "[".repeat(127) + &"]".repeat(127);
+        assert_eq!(compact(&deepest).unwrap(), printed);
+        for no_json in [
+            "",
+            " ",
+            "1 2",
+            "{",
+            "nul l",
+            "{},\"x\":1",
+            "\u{c}1",
+            "\u{a0}1",
+            "\"\n\"",
+            "'a'",
+        ] {
+            assert!(compact(no_json).is_err(), "{no_json:?}");
+        }
+    }
+
+    /// D79, and what a message's fields may be given as.
+    #[test]
+    fn a_request_is_checked_at_any_depth() {
+        const INNER: &[Field] = &[
+            field("data", Kind::JsonText, None),
+            field("n", Kind::Text, None),
+        ];
+        const REQUEST: &[Field] = &[
+            field("data", Kind::JsonText, None),
+            list("texts", Kind::JsonText),
+            field("one", Kind::Message(INNER), None),
+            list("items", Kind::Message(INNER)),
+            list("names", Kind::Text),
+        ];
+        let check = |text: &str| check(&serde_json::from_str(text).unwrap(), REQUEST, None);
+        for good in [
+            "{}",
+            // Absent, or it does not decode.
+            "null",
+            r#"{"one":null,"items":null}"#,
+            r#"{"items":[null]}"#,
+            r#"{"data":"1","texts":["1","{"],"one":{"data":"x"},"items":[{},{"data":"","n":[]}]}"#,
+            // No message of ours, so what it holds is the decoder's to say.
+            r#"{"names":[{"x":1}]}"#,
+        ] {
+            assert_eq!(check(good), Ok(()), "{good}");
+        }
+        let long = "n".repeat(SECRET_LEN - 1);
+        let hidden = format!(r#"{{"one":{{"{long}n":1}}}}"#);
+        let shown = format!(r#"{{"one":{{"{long}":1}}}}"#);
+        for (bad, message) in [
+            (r#"{"dat":"1"}"#, "the request has no field 'dat'"),
+            (r#"{"Data":"1"}"#, "the request has no field 'Data'"),
+            (r#"{"":1}"#, "the request has no field ''"),
+            (r#"{"n":1}"#, "the request has no field 'n'"),
+            (r#"{"one":{"m":1}}"#, "the request has no field 'one.m'"),
+            (
+                r#"{"items":[{},{"one":1}]}"#,
+                "the request has no field 'items[1].one'",
+            ),
+            // Not in a list: what decoding says of that comes after.
+            (r#"{"items":{"x":1}}"#, "the request has no field 'items.x'"),
+            (r#"{"ixk_":1}"#, "the request has no field '<hidden>'"),
+            (&hidden, "the request has no field 'one.<hidden>'"),
+            (&shown, &format!("the request has no field 'one.{long}'")),
+            ("[]", "the request is not an object"),
+            (r#""x""#, "the request is not an object"),
+            (r#"{"one":["1"]}"#, "one is not an object"),
+            (r#"{"items":[{},["1"]]}"#, "items[1] is not an object"),
+            (r#"{"items":"x"}"#, "items is not an object"),
+        ] {
+            assert_eq!(check(bad), Err(invalid(message)), "{bad}");
+        }
+        for (bad, at, name) in [
+            (r#"{"data":{"id":1}}"#, "data", "data"),
+            (r#"{"data":null}"#, "data", "data"),
+            (r#"{"data":1}"#, "data", "data"),
+            (r#"{"data":["1"]}"#, "data", "data"),
+            (r#"{"texts":["1",2]}"#, "texts[1]", "texts"),
+            (r#"{"texts":"1","one":{"data":true}}"#, "one.data", "data"),
+            (
+                r#"{"items":[{"data":"1"},{"data":[]}]}"#,
+                "items[1].data",
+                "data",
+            ),
+        ] {
+            let expected = OpError {
+                hint: Some(format!("{name} is JSON text: pass a string")),
+                ..invalid(format!("{at} is not a string"))
+            };
+            assert_eq!(check(bad), Err(expected), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_flag_sets_its_field() {
+        const REQUEST: &[Field] = &[
+            field("a_name", Kind::Text, None),
+            field("on", Kind::Bool, None),
+            field("data", Kind::JsonText, None),
+            list("names", Kind::Text),
+            list("texts", Kind::JsonText),
+            field("one", Kind::Message(&[]), None),
+            list("items", Kind::Message(&[])),
+        ];
+        let command = Command {
+            path: "do",
+            summary: "",
+            request: REQUEST,
+            answer: &[],
+            // As one that knows no such name, in whichever field.
+            refusal: |v| match v.to_string().contains("refused") {
+                true => serde_json::from_str::<Value>("").err(),
+                false => None,
+            },
+        };
+        let root = add(clap::Command::new("ironflowx"), &["do"], &command);
+        root.clone().debug_assert();
+        let parse = |args: &[&str]| {
+            let line = ["ironflowx", "do"].into_iter().chain(args.iter().copied());
+            root.clone().try_get_matches_from(line)
+        };
+        for (args, expected) in [
+            (&[][..], json!({})),
+            (&["--a-name", "x"], json!({"a_name": "x"})),
+            (&["--a-name", ""], json!({"a_name": ""})),
+            (&["--a-name", "@x"], json!({"a_name": "@x"})),
+            (&["--a-name=-x"], json!({"a_name": "-x"})),
+            (&["--on", "true"], json!({"on": true})),
+            (&["--on", "false"], json!({"on": false})),
+            (&["--on", "1"], json!({"on": "1"})),
+            (&["--names", "x"], json!({"names": ["x"]})),
+            (
+                &["--names", "x", "--names", "y"],
+                json!({"names": ["x", "y"]}),
+            ),
+            (&["--data", "-1e-5"], json!({"data": "-1e-5"})),
+            (&["--data", "--on"], json!({"data": "--on"})),
+            (&["--data", ""], json!({"data": ""})),
+            (
+                &["--texts", "1", "--texts", "-2"],
+                json!({"texts": ["1", "-2"]}),
+            ),
+            (
+                &["--on", "true", "--a-name", "x", "--data", " [1] "],
+                json!({"on": true, "a_name": "x", "data": " [1] "}),
+            ),
+        ] {
+            let matches = parse(args).unwrap();
+            let (_, leaf) = chosen(&matches);
+            let given = request(&command, leaf).unwrap();
+            assert_eq!(given, expected.to_string(), "{args:?}");
+        }
+        for (args, why) in [
+            (&["--one", "x"][..], "unexpected argument '--one' found"),
+            (&["--items", "x"], "unexpected argument '--items' found"),
+            (&["--a_name", "x"], "unexpected argument '--a_name' found"),
+            (
+                &["--a-name", "x", "--names", "refused"],
+                "invalid value 'refused' for '--names <NAMES>': EOF while parsing a value",
+            ),
+            (
+                &["--json", "{}", "--names", "x"],
+                "the argument '--json <JSON>' cannot be used with '--names <NAMES>'",
+            ),
+            (
+                &["--a-name", "x", "--a-name", "y"],
+                "the argument '--a-name <A_NAME>' cannot be used multiple times",
+            ),
+        ] {
+            let e = parse(args).unwrap_err().to_string();
+            assert!(e.starts_with(&format!("error: {why}")), "{args:?}: {e}");
         }
     }
 }
