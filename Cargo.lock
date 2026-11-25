@@ -1178,6 +1178,7 @@ version = "0.2.0"
 dependencies = [
  "axum",
  "clap",
+ "connectrpc",
  "hyper",
  "hyper-util",
  "ironflowx-authz",
@@ -1263,6 +1264,7 @@ name = "ironflowx-doors"
 version = "0.2.0"
 dependencies = [
  "axum",
+ "buffa",
  "connectrpc",
  "http",
  "ironflowx-core",
@@ -1310,6 +1312,7 @@ dependencies = [
  "http",
  "ironflowx-core",
  "ironflowx-proto",
+ "prost-reflect",
  "protox",
  "serde",
 ]

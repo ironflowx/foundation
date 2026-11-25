@@ -8,18 +8,25 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use buffa::Message as _;
 use common::{
-    CREATED, KEY, Ready, Recording, created, environments, key_page, serve, serving, whoami,
+    CREATED, DATA, KEY, METADATA, Ready, Recording, batch, created, emitted, environments, event,
+    event_page, key_page, serve, serving, whoami,
 };
-use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
+use connectrpc::client::{
+    BoxFuture, CallOptions, ClientBody, ClientConfig, ClientTransport, HttpClient, full_body,
+};
 use connectrpc::{ErrorCode, Protocol};
 use ironflowx_core::{ErrorKind, Scope, Timestamp};
 use ironflowx_doors::{Slot, WaitingOn};
 use ironflowx_proto::wire::{
-    self, EnvironmentServiceClient, IdentityServiceClient, KeyServiceClient, WhoamiRequest,
-    WhoamiResponse,
+    self, EnvironmentServiceClient, EventServiceClient, IdentityServiceClient, KeyServiceClient,
+    WhoamiRequest, WhoamiResponse,
 };
-use ironflowx_proto::{CreatedKey, Environment, KeyPage, OpError, Operation, Whoami};
+use ironflowx_proto::{
+    CreatedKey, EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage,
+    KeyPage, OpError, Operation, Whoami,
+};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 
@@ -59,6 +66,11 @@ fn keys_of(protocol: &str, addr: SocketAddr) -> KeyServiceClient<HttpClient> {
     KeyServiceClient::new(http, config)
 }
 
+fn events_of(protocol: &str, addr: SocketAddr) -> EventServiceClient<HttpClient> {
+    let (http, config) = transport(protocol, addr);
+    EventServiceClient::new(http, config)
+}
+
 /// Sends one HTTP/1.0 request, whose answer is not chunked, and reads the answer to its end: its
 /// head and its body.
 async fn send(
@@ -89,17 +101,29 @@ const WHOAMI: &str = "POST /ironflowx.v1.IdentityService/Whoami";
 #[tokio::test]
 async fn an_operation_is_served_at_its_rpc() {
     let (addr, operations) = serving(Ok(whoami())).await;
-    for op in Operation::ALL {
+    // That operation's request, so its method.
+    let requests = [
+        format!("{NOTHING:?}"),
+        "EmitBatchRequest { items: [] }".to_owned(),
+        r#"GetEventRequest { event_id: "" }"#.to_owned(),
+        "ListEventsRequest { limit: None, cursor: None }".to_owned(),
+        "WhoamiRequest".to_owned(),
+        "ListEnvironmentsRequest".to_owned(),
+        "CreateKeyRequest { scopes: {}, expires_at: None, label: None }".to_owned(),
+        "ListKeysRequest { limit: None, cursor: None }".to_owned(),
+        r#"RevokeKeyRequest { key_id: "" }"#.to_owned(),
+    ];
+    assert_eq!(requests.len(), Operation::ALL.len());
+    for (op, request) in Operation::ALL.iter().zip(requests) {
         let line = format!("POST /{}", op.rpc());
         let (head, _) = send(addr, &line, &[JSON], b"{}").await;
-        let served = !op.rpc().contains("EventService");
-        let status = if served { "200" } else { "404" };
-        assert!(
-            head.starts_with(&format!("HTTP/1.0 {status} ")),
-            "{line}: {head}"
-        );
-        assert_eq!(operations.take().len(), usize::from(served), "{line}");
+        assert!(head.starts_with("HTTP/1.0 200 "), "{line}: {head}");
+        assert_eq!(operations.take_requests(), [request], "{line}");
     }
+    let line = "POST /ironflowx.v1.EventService/GetEvents";
+    let (head, _) = send(addr, line, &[JSON], b"{}").await;
+    assert!(head.starts_with("HTTP/1.0 404 "), "{head}");
+    assert_eq!(operations.take_requests(), [""; 0]);
 }
 
 /// SRV-1: one call in, unchanged, and its answer out, on every protocol.
@@ -160,11 +184,84 @@ async fn a_call_and_its_answer_cross_every_protocol() {
             .await
             .unwrap();
 
+        let events = events_of(protocol, addr);
+        let item = wire::EmitRequest {
+            name: "commande.passée".into(),
+            data: Some(DATA.into()),
+            metadata: Some(METADATA.into()),
+            version: Some(i64::MIN),
+            idempotency_key: Some("clé\0".into()),
+            ..Default::default()
+        };
+        // Present and empty, which is not absent.
+        let empty = wire::EmitRequest {
+            data: Some(String::new()),
+            metadata: Some(String::new()),
+            version: Some(0),
+            idempotency_key: Some(String::new()),
+            ..Default::default()
+        };
+        let answer = events
+            .emit_with_options(item.clone(), bearer())
+            .await
+            .unwrap();
+        let answer = EmitResponse::try_from(answer.into_owned()).unwrap();
+        assert_eq!(answer, emitted(), "{protocol}");
+
+        let request = wire::EmitBatchRequest {
+            items: vec![item, empty, wire::EmitRequest::default()],
+            ..Default::default()
+        };
+        let answer = events
+            .emit_batch_with_options(request, bearer())
+            .await
+            .unwrap();
+        // SRV-3: each kind of error, as an item.
+        let answer = EmitBatchResponse::try_from(answer.into_owned()).unwrap();
+        assert_eq!(answer, batch(), "{protocol}");
+
+        let request = wire::GetEventRequest {
+            event_id: "no ID".into(),
+            ..Default::default()
+        };
+        let answer = events
+            .get_event_with_options(request, bearer())
+            .await
+            .unwrap();
+        let answer = Event::try_from(answer.into_owned()).unwrap();
+        assert_eq!(answer, event(), "{protocol}");
+
+        let request = wire::ListEventsRequest {
+            limit: Some(u32::MAX),
+            cursor: Some(String::new()),
+            ..Default::default()
+        };
+        let answer = events
+            .list_events_with_options(request, bearer())
+            .await
+            .unwrap();
+        let answer = EventPage::try_from(answer.into_owned()).unwrap();
+        assert_eq!(answer, event_page(), "{protocol}");
+
         assert_eq!(
             operations.take(),
-            vec![Some(KEY.to_owned()); 5],
+            vec![Some(KEY.to_owned()); 9],
             "{protocol}"
         );
+        let item = EmitRequest {
+            name: "commande.passée".into(),
+            data: Some(DATA.into()),
+            metadata: Some(METADATA.into()),
+            version: Some(i64::MIN),
+            idempotency_key: Some("clé\0".into()),
+        };
+        let empty = EmitRequest {
+            name: String::new(),
+            data: Some(vec![]),
+            metadata: Some(vec![]),
+            version: Some(0),
+            idempotency_key: Some(String::new()),
+        };
         let asked = [
             "WhoamiRequest".to_owned(),
             "ListEnvironmentsRequest".to_owned(),
@@ -189,10 +286,39 @@ async fn a_call_and_its_answer_cross_every_protocol() {
                     key_id: "no ID".into()
                 }
             ),
+            format!("{item:?}"),
+            format!(
+                "{:?}",
+                ironflowx_proto::EmitBatchRequest {
+                    items: vec![item, empty, NOTHING],
+                }
+            ),
+            format!(
+                "{:?}",
+                ironflowx_proto::GetEventRequest {
+                    event_id: "no ID".into()
+                }
+            ),
+            format!(
+                "{:?}",
+                ironflowx_proto::ListEventsRequest {
+                    limit: NonZeroU32::new(u32::MAX),
+                    cursor: Some(String::new()),
+                }
+            ),
         ];
         assert_eq!(operations.take_requests(), asked, "{protocol}");
     }
 }
+
+/// An `EmitRequest` with nothing in it.
+const NOTHING: EmitRequest = EmitRequest {
+    name: String::new(),
+    data: None,
+    metadata: None,
+    version: None,
+    idempotency_key: None,
+};
 
 /// An absent field is `None`, and a request with none of them a whole one.
 #[tokio::test]
@@ -206,6 +332,21 @@ async fn an_empty_request_asks_for_the_defaults() {
         (
             "KeyService/ListKeys",
             format!("{:?}", ironflowx_proto::ListKeysRequest::default()),
+        ),
+        ("EventService/Emit", format!("{NOTHING:?}")),
+        (
+            "EventService/EmitBatch",
+            format!("{:?}", ironflowx_proto::EmitBatchRequest { items: vec![] }),
+        ),
+        (
+            "EventService/ListEvents",
+            format!(
+                "{:?}",
+                ironflowx_proto::ListEventsRequest {
+                    limit: None,
+                    cursor: None
+                }
+            ),
         ),
     ] {
         let line = format!("POST /ironflowx.v1.{method}");
@@ -277,6 +418,17 @@ async fn a_request_the_wire_cannot_carry_is_invalid_before_its_key_is_read() {
                 .err()
                 .unwrap();
             let refused = invalid("a limit is at least 1");
+            assert_eq!(wire::op_error(&e), Some(refused.clone()), "{protocol}");
+            assert_eq!(e.code, ErrorCode::InvalidArgument, "{protocol}");
+            let request = wire::ListEventsRequest {
+                limit: Some(0),
+                ..Default::default()
+            };
+            let e = events_of(protocol, addr)
+                .list_events_with_options(request, bearer())
+                .await
+                .err()
+                .unwrap();
             assert_eq!(wire::op_error(&e), Some(refused), "{protocol}");
             assert_eq!(e.code, ErrorCode::InvalidArgument, "{protocol}");
         }
@@ -345,9 +497,6 @@ fn invalid(message: &str) -> OpError {
 async fn only_a_read_is_called_with_get() {
     let (addr, operations) = serving(Ok(whoami())).await;
     for op in Operation::ALL {
-        if op.rpc().contains("EventService") {
-            continue;
-        }
         let line = format!("GET /{}?connect=v1&encoding=json&message=%7B%7D", op.rpc());
         let (head, _) = send(addr, &line, &[], b"").await;
         let status = if op.changes_state() { "405" } else { "200" };
@@ -372,6 +521,31 @@ async fn the_json_names_are_the_protos() {
     let (head, body) = send(addr, WHOAMI, &[JSON], b"{}").await;
     assert!(head.starts_with("HTTP/1.0 200 "), "{head}");
     assert_eq!(body, ANSWER);
+    let mut items = vec![
+        r#"{"ok":{"event_id":"0190b5f0-0000-7000-8000-000000000005"}}"#.to_owned(),
+        r#"{"ok":{"event_id":"0190b5f0-0000-7000-8000-000000000005","duplicate":true}}"#.to_owned(),
+    ];
+    for kind in [
+        "invalid",
+        "unauthenticated",
+        "permission_denied",
+        "not_found",
+        "unknown",
+        "resource_exhausted",
+        "unavailable",
+        "internal",
+    ] {
+        for hint in ["", r#","hint":"""#, r#","hint":"do\nthis""#] {
+            items.push(format!(
+                r#"{{"error":{{"kind":"{kind}","message":"réfusé % \"x\""{hint}}}}}"#
+            ));
+        }
+    }
+    let batch = format!(r#"{{"items":[{}]}}"#, items.join(","));
+    let line = "POST /ironflowx.v1.EventService/EmitBatch";
+    let (head, body) = send(addr, line, &[JSON], br#"{"items":[{}]}"#).await;
+    assert!(head.starts_with("HTTP/1.0 200 "), "{head}");
+    assert_eq!(body, batch);
     for (method, answer) in [
         (
             "EnvironmentService/ListEnvironments",
@@ -388,6 +562,18 @@ async fn the_json_names_are_the_protos() {
             ),
         ),
         ("KeyService/RevokeKey", "{}".to_owned()),
+        (
+            "EventService/Emit",
+            r#"{"event_id":"0190b5f0-0000-7000-8000-000000000005"}"#.to_owned(),
+        ),
+        ("EventService/EmitBatch", "{}".to_owned()),
+        ("EventService/GetEvent", EVENT.to_owned()),
+        (
+            "EventService/ListEvents",
+            format!(
+                r#"{{"events":[{EVENT},{{"event_id":"0190b5f0-0000-7000-8000-000000000005","name":"commande.passée","data":"null","version":"1","time":"2023-11-14T22:13:20.120Z","emitted_by":"embedder:a b"}}],"next":"0123.7"}}"#
+            ),
+        ),
     ] {
         let line = format!("POST /ironflowx.v1.{method}");
         let (head, body) = send(addr, &line, &[JSON], b"{}").await;
@@ -395,6 +581,15 @@ async fn the_json_names_are_the_protos() {
         assert_eq!(body, answer, "{method}");
     }
 }
+
+const EVENT: &str = concat!(
+    r#"{"event_id":"0190b5f0-0000-7000-8000-000000000005","name":"commande.passée","#,
+    r#""data":"\t{ \"b\": 1.50,\r\n \"a\": [9007199254740993, \"\\u00e9é\\\\\\\"\", 1e2] } ","#,
+    "\"metadata\":\"{\\\"z\\\":\\\"\u{7f}\u{2028}😀\\\\ud83d\\\\ude00\\\\/\\\" , \\\"a\\\":-0}\",",
+    r#""version":"9223372036854775807","idempotency_key":"clé\u0001","#,
+    r#""time":"2023-11-14T22:13:20.120Z","#,
+    r#""emitted_by":"key:0190b5f0-0000-7000-8000-000000000001"}"#,
+);
 
 const INFO: &str = r#"{"key_id":"0190b5f0-0000-7000-8000-000000000002","label":"agent é","scopes":["read","write"],"origin":"created","created_by":"0190b5f0-0000-7000-8000-000000000001","created_at":"2023-11-14T22:13:20.001Z","expires_at":"2027-01-15T08:00:00.120Z","status":"active"}"#;
 
@@ -564,6 +759,139 @@ async fn a_slot_answers_for_its_engine_until_it_is_open() {
         let answer = client.whoami(WhoamiRequest::default()).await.unwrap();
         let answer: WhoamiResponse = answer.into_owned();
         assert_eq!(Whoami::try_from(answer), Ok(whoami()), "{protocol}");
+    }
+}
+
+/// D73: no page the event rules admit is as large as this one, which fits a message on each
+/// protocol, and, but in JSON, the 4 MiB a client commonly takes. `ironflowx-bin`'s `remote.rs`
+/// lists the largest an engine answers.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_larger_than_any_fits() {
+    let (addr, operations) = serving(Ok(whoami())).await;
+    // Escaping doubles every byte, the most it does to a byte of JSON text.
+    let text = |size: usize| vec![b'"'; size];
+    let events: Vec<_> = (0..200)
+        .map(|i| Event {
+            name: "\"".repeat(256),
+            data: text(if i == 0 { 15_662 } else { 15_534 }),
+            metadata: Some(text(200)),
+            // A control character is the longest escape.
+            idempotency_key: Some("\u{1}".repeat(256)),
+            // Longer, in JSON and in binary, than any the rules admit.
+            version: i64::MAX,
+            time: Timestamp::from_millis(-1),
+            emitted_by: format!("embedder:{}", "\"".repeat(128)).parse().unwrap(),
+            ..event()
+        })
+        .collect();
+    // 3 MiB, and 6 bytes more an event than it may hold: more than the 2 by which its length
+    // prefixes are shorter than the longest.
+    let bytes: usize = events.iter().map(|e| e.data.len() + 200).sum();
+    assert_eq!(bytes, 3 * 1024 * 1024 + 200 * 6);
+    let page = EventPage {
+        events,
+        next: Some(format!("{}.{}", "f".repeat(32), u64::MAX)),
+    };
+    *operations.page.lock().unwrap() = Some(page.clone());
+    let line = "POST /ironflowx.v1.EventService/ListEvents";
+    let (_, json) = send(addr, line, &[JSON], b"{}").await;
+    let proto = wire::ListEventsResponse::from(page.clone());
+    let sizes = (json.len(), proto.encode_to_vec().len());
+    assert_eq!(sizes, (6_794_331, 3_293_983));
+    for protocol in PROTOCOLS {
+        let request = wire::ListEventsRequest::default();
+        let answer = events_of(protocol, addr).list_events(request.clone()).await;
+        if protocol == "Connect JSON" {
+            let e = answer.err().unwrap();
+            assert_eq!(e.code, ErrorCode::ResourceExhausted);
+        } else {
+            let answer = EventPage::try_from(answer.unwrap().into_owned());
+            assert!(answer == Ok(page.clone()), "{protocol}");
+        }
+        let (http, config) = transport(protocol, addr);
+        let config = config.with_default_max_message_size(wire::MAX_MESSAGE);
+        let client = EventServiceClient::new(http, config);
+        let answer = client.list_events(request).await.unwrap().into_owned();
+        assert!(
+            EventPage::try_from(answer) == Ok(page.clone()),
+            "{protocol}"
+        );
+    }
+}
+
+/// Sends every request with this body in place of its own.
+#[derive(Clone)]
+struct WithBody(HttpClient, Vec<u8>);
+
+impl ClientTransport for WithBody {
+    type ResponseBody = <HttpClient as ClientTransport>::ResponseBody;
+    type Error = <HttpClient as ClientTransport>::Error;
+
+    fn send(
+        &self,
+        request: http::Request<ClientBody>,
+    ) -> BoxFuture<'static, Result<http::Response<Self::ResponseBody>, Self::Error>> {
+        let body = full_body(self.1.clone().into());
+        self.0.send(request.map(|_| body))
+    }
+}
+
+/// Text that is not UTF-8 is no field of any message: it is refused before the key is read.
+#[tokio::test(flavor = "multi_thread")]
+async fn text_that_is_not_utf8_is_refused() {
+    let (open, operations) = serving(Ok(whoami())).await;
+    let starting = serve(Arc::new(Slot::starting())).await;
+    // The client of `protocol` that sends `message`, with the bytes `text` in `field` of an emit.
+    let sending = |protocol, addr, message: Vec<u8>| {
+        let (http, config) = transport(protocol, addr);
+        let body = match protocol {
+            "Connect JSON" | "Connect binary" => message,
+            _ => [&[0, 0, 0, 0, message.len() as u8][..], &message].concat(),
+        };
+        EventServiceClient::new(WithBody(http, body), config)
+    };
+    let fields = [
+        (1, "name"),
+        (2, "data"),
+        (3, "metadata"),
+        (5, "idempotency_key"),
+    ];
+    for addr in [open, starting] {
+        for protocol in PROTOCOLS {
+            for (number, name) in fields {
+                let json = [format!("{{\"{name}\":\"").as_bytes(), b"\xff\xfe\"}"].concat();
+                let proto = vec![number << 3 | 2, 2, 0xff, 0xfe];
+                let (item, batch) = if protocol == "Connect JSON" {
+                    let batch = [&b"{\"items\":["[..], &json, b"]}"].concat();
+                    (json, batch)
+                } else {
+                    let batch = [&[0x0a, 4][..], &proto].concat();
+                    (proto, batch)
+                };
+                // As the request of an emit, and as an item.
+                let one = sending(protocol, addr, item);
+                let one = one.emit_with_options(wire::EmitRequest::default(), bearer());
+                let many = sending(protocol, addr, batch);
+                let many =
+                    many.emit_batch_with_options(wire::EmitBatchRequest::default(), bearer());
+                for e in [one.await.err().unwrap(), many.await.err().unwrap()] {
+                    assert_eq!(e.code, ErrorCode::InvalidArgument, "{protocol}: {name}");
+                    assert_eq!(wire::op_error(&e), None, "{protocol}: {name}");
+                }
+            }
+        }
+    }
+    assert_eq!(operations.take(), []);
+    // The same bytes, but text.
+    for protocol in &PROTOCOLS[1..] {
+        let client = sending(protocol, open, vec![0x12, 2, 0xc3, 0xa9]);
+        let request = wire::EmitRequest::default();
+        client.emit_with_options(request, bearer()).await.unwrap();
+        let asked = EmitRequest {
+            data: Some("é".into()),
+            ..NOTHING
+        };
+        assert_eq!(operations.take_requests(), [format!("{asked:?}")]);
     }
 }
 

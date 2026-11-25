@@ -1,8 +1,10 @@
 //! The behavior scenarios in `docs/behaviors/`, each file on its own World: an engine on a
-//! temporary directory with a `ManualClock` (D20), or, for `serve.feature` and `cli.feature`, the
-//! `ironflowx` binary on one. Steps call `Operations` or the CLI, never a URL, but for the binary's
-//! `/health` and `/ready`.
+//! temporary directory with a `ManualClock` (D20), or the `ironflowx` binary on one, each in turn
+//! for `events.feature` and `tenancy.feature`. Steps call `Operations` or the CLI, never a URL, but
+//! for the binary's `/health` and `/ready`.
 
+#[path = "behaviors/adapter.rs"]
+mod adapter;
 #[path = "behaviors/cli.rs"]
 mod cli;
 #[path = "behaviors/serve.rs"]
@@ -13,6 +15,7 @@ mod tenancy;
 use std::collections::BTreeSet;
 use std::fmt;
 
+use adapter::{Adapter, BINARIES, runs_remotely};
 use cucumber::feature::Ext as _;
 use cucumber::gherkin::{Feature, GherkinEnv};
 use cucumber::writer::Stats as _;
@@ -33,9 +36,11 @@ const DAY: i64 = 86_400_000;
 #[derive(World)]
 #[world(init = Self::new)]
 struct Env {
+    /// Whether the environment is the binary's.
+    remote: bool,
     // Before `dir`: fields drop in order, and the engine must go before its directory.
-    engine: Option<Engine>,
-    /// The bootstrap key, as the fresh environment's open returned it.
+    ops: Option<Adapter>,
+    /// The bootstrap key, as the fresh environment's open returned it, or as `admin.key` holds it.
     bootstrap: Option<Secret>,
     /// The client's call, holding the bootstrap key.
     client: Option<Call>,
@@ -84,7 +89,8 @@ impl Env {
         Self {
             dir: tempfile::tempdir().unwrap(),
             clock: ManualClock::new(Timestamp::from_millis(1_800_000_000_000)),
-            engine: None,
+            remote: false,
+            ops: None,
             bootstrap: None,
             client: None,
             other: None,
@@ -99,8 +105,8 @@ impl Env {
         }
     }
 
-    fn ops(&self) -> &Engine {
-        self.engine.as_ref().expect("a fresh environment")
+    fn ops(&self) -> &Adapter {
+        self.ops.as_ref().expect("a fresh environment")
     }
 
     fn client(&self) -> &Call {
@@ -353,10 +359,16 @@ fn refused(r: &Result<impl fmt::Debug, OpError>, kind: ErrorKind) -> &str {
 
 #[given("a fresh environment")]
 async fn fresh(w: &mut Env) {
+    if w.remote {
+        let (served, key) = Adapter::served(&w.dir.path().join("data")).await;
+        w.bootstrap = Some(Secret::new(key));
+        w.ops = Some(served);
+        return;
+    }
     let opened = Engine::open(w.dir.path(), w.clock.clone(), None).await;
     let opened = opened.unwrap();
     w.bootstrap = opened.minted;
-    w.engine = Some(opened.engine);
+    w.ops = Some(Adapter::Engine(opened.engine));
 }
 
 #[given("a client")]
@@ -783,9 +795,10 @@ fn cells(line: &str) -> String {
     out
 }
 
-/// How many scenarios of `events.feature` run, an outline once per example, so no example goes
-/// unnoticed.
+/// How many scenarios of `events.feature` run on the engine, and against the binary, an outline
+/// once per example, so no example goes unnoticed.
 const EVENT_RUNS: usize = 95;
+const EVENT_REMOTE_RUNS: usize = 93;
 
 /// Every feature file in `docs/behaviors/` and its scenario declarations.
 const SCENARIOS: &[(&str, usize)] = &[
@@ -813,40 +826,57 @@ fn discover() {
     );
 }
 
+/// Runs `events.feature`, through the binary or on the engine: whether a scenario failed, and how
+/// many passed.
+async fn events(remote: bool) -> (bool, usize) {
+    let writer = Env::cucumber::<&str>()
+        .with_parser(Unescaped)
+        .before(move |_, _, _, world| {
+            world.remote = remote;
+            Box::pin(async {})
+        })
+        .after(move |_, _, _, _, world| {
+            Box::pin(async move {
+                if let Some(ops) = world.and_then(|w| w.ops.take()) {
+                    assert_eq!(matches!(ops, Adapter::Binary(..)), remote, "the adapter");
+                    ops.close().await;
+                }
+            })
+        })
+        .max_concurrent_scenarios(if remote { BINARIES } else { 64 })
+        .fail_on_skipped()
+        .filter_run(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../docs/behaviors/events.feature"
+            ),
+            move |_, _, scenario| !remote || runs_remotely(scenario),
+        )
+        .await;
+    let passed = writer.scenarios_stats().passed;
+    (writer.execution_has_failed(), passed)
+}
+
 #[tokio::main]
 async fn main() {
     discover();
     serve::build();
-    let events = Env::cucumber::<&str>()
-        .with_parser(Unescaped)
-        // `close`, not a drop: dropping joins the writer thread on the runtime.
-        .after(|_, _, _, _, world| {
-            Box::pin(async move {
-                if let Some(engine) = world.and_then(|w| w.engine.take()) {
-                    engine.close().await;
-                }
-            })
-        })
-        .fail_on_skipped()
-        .run(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/behaviors/events.feature"
-        ))
-        .await;
-    let (tenancy_failed, tenancy_passed) = tenancy::run(Unescaped).await;
-    let (serve_failed, serve_passed) = serve::run(Unescaped).await;
-    let (cli_failed, cli_passed) = cli::run(Unescaped).await;
-    assert!(!events.execution_has_failed(), "events.feature failed");
-    let passed = events.scenarios_stats().passed;
-    assert_eq!(passed, EVENT_RUNS, "events.feature: scenarios run");
-    assert!(!tenancy_failed, "tenancy.feature failed");
-    assert_eq!(
-        tenancy_passed,
-        tenancy::RUNS,
-        "tenancy.feature: scenarios run"
-    );
-    assert!(!serve_failed, "serve.feature failed");
-    assert_eq!(serve_passed, serve::RUNS, "serve.feature: scenarios run");
-    assert!(!cli_failed, "cli.feature failed");
-    assert_eq!(cli_passed, cli::RUNS, "cli.feature: scenarios run");
+    let mut runs = Vec::new();
+    for (remote, adapter) in [(false, "the engine"), (true, "the binary")] {
+        let count = |engine, binary| if remote { binary } else { engine };
+        let expected = count(EVENT_RUNS, EVENT_REMOTE_RUNS);
+        let of = |file| format!("{file}, {adapter}");
+        runs.push((of("events.feature"), events(remote).await, expected));
+        let expected = count(tenancy::RUNS, tenancy::REMOTE_RUNS);
+        let tenancy = tenancy::run(Unescaped, remote).await;
+        runs.push((of("tenancy.feature"), tenancy, expected));
+    }
+    let serve = serve::run(Unescaped).await;
+    runs.push(("serve.feature".to_owned(), serve, serve::RUNS));
+    let cli = cli::run(Unescaped).await;
+    runs.push(("cli.feature".to_owned(), cli, cli::RUNS));
+    for (file, (failed, passed), expected) in runs {
+        assert!(!failed, "{file} failed");
+        assert_eq!(passed, expected, "{file}: scenarios run");
+    }
 }

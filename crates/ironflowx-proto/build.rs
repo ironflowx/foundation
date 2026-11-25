@@ -7,9 +7,10 @@ fn main() {
 
 #[cfg(feature = "__wire")]
 fn wire() {
-    const FILES: [&str; 4] = [
+    const FILES: [&str; 5] = [
         "ironflowx/v1/environment.proto",
         "ironflowx/v1/error.proto",
+        "ironflowx/v1/event.proto",
         "ironflowx/v1/identity.proto",
         "ironflowx/v1/key.proto",
     ];

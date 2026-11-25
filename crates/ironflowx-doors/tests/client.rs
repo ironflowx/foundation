@@ -4,11 +4,16 @@ mod common;
 
 use std::collections::BTreeSet;
 use std::num::NonZeroU32;
+use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 
-use common::{CREATED, KEY, created, environments, key_page, serving, whoami};
+use common::{
+    CREATED, DATA, KEY, KINDS, METADATA, batch, created, emitted, environments, event, event_page,
+    key_page, serve, serving, whoami,
+};
 use ironflowx_core::{Address, ErrorKind, Scope, Secret, Timestamp};
+use ironflowx_doors::Slot;
 use ironflowx_proto::{
     Call, Client, CreateKeyRequest, EmitBatchRequest, EmitRequest, GetEventRequest, InvalidUrl,
     ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation, Operations,
@@ -55,16 +60,7 @@ async fn one_client_sends_each_calls_own_key() {
 async fn every_error_crosses_to_the_client() {
     let (addr, operations) = serving(Ok(whoami())).await;
     let client = Client::new(&format!("http://{addr}")).unwrap();
-    for kind in [
-        ErrorKind::Invalid,
-        ErrorKind::Unauthenticated,
-        ErrorKind::PermissionDenied,
-        ErrorKind::NotFound,
-        ErrorKind::Unknown,
-        ErrorKind::ResourceExhausted,
-        ErrorKind::Unavailable,
-        ErrorKind::Internal,
-    ] {
+    for kind in KINDS {
         for hint in [None, Some(String::new()), Some("do this".to_owned())] {
             let sent = OpError {
                 kind,
@@ -77,14 +73,15 @@ async fn every_error_crosses_to_the_client() {
     }
 }
 
-/// The operations the client carries.
-const CARRIED: [Operation; 5] = [
-    Operation::Whoami,
-    Operation::ListEnvironments,
-    Operation::CreateKey,
-    Operation::ListKeys,
-    Operation::RevokeKey,
-];
+fn item(name: &str) -> EmitRequest {
+    EmitRequest {
+        name: name.into(),
+        data: Some(DATA.into()),
+        metadata: Some(METADATA.into()),
+        version: Some(7),
+        idempotency_key: Some("clé".into()),
+    }
+}
 
 /// Calls `op` once: what it answered, as it prints.
 async fn ask_one(client: &Client, cx: &Call, op: Operation) -> Result<String, OpError> {
@@ -118,7 +115,28 @@ async fn ask_one(client: &Client, cx: &Call, op: Operation) -> Result<String, Op
             let answer = client.revoke_key(cx, request).await;
             answer.map(|a| format!("{a:?}"))
         }
-        op => unreachable!("{op:?} is not carried"),
+        Operation::Emit => client.emit(cx, item("a")).await.map(|a| format!("{a:?}")),
+        Operation::EmitBatch => {
+            // As many as `batch` answers.
+            let items = vec![item("b"); batch().items.len()];
+            let answer = client.emit_batch(cx, EmitBatchRequest { items }).await;
+            answer.map(|a| format!("{a:?}"))
+        }
+        Operation::GetEvent => {
+            let request = GetEventRequest {
+                event_id: "no ID".into(),
+            };
+            let answer = client.get_event(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
+        Operation::ListEvents => {
+            let request = ListEventsRequest {
+                limit: NonZeroU32::new(7),
+                cursor: Some("c".into()),
+            };
+            let answer = client.list_events(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
     }
 }
 
@@ -129,24 +147,36 @@ async fn each_operation_crosses_to_the_engine_and_back() {
     let (addr, operations) = serving(Ok(whoami())).await;
     let client = Client::new(&format!("http://{addr}")).unwrap();
     let answers = [
+        format!("{:?}", emitted()),
+        format!("{:?}", batch()),
+        format!("{:?}", event()),
+        format!("{:?}", event_page()),
         format!("{:?}", whoami()),
         format!("{:?}", environments()),
         format!("{CREATED} {:?}", created().info),
         format!("{:?}", key_page()),
         "()".to_owned(),
     ];
-    for (op, answer) in CARRIED.into_iter().zip(answers) {
-        assert_eq!(ask_one(&client, &call(KEY), op).await, Ok(answer), "{op:?}");
+    let mut asked = Vec::new();
+    for (op, answer) in Operation::ALL.iter().zip(answers) {
+        let got = ask_one(&client, &call(KEY), *op).await;
+        assert_eq!(got, Ok(answer), "{op:?}");
+        assert_eq!(operations.take(), [Some(KEY.to_owned())], "{op:?}");
+        asked.extend(operations.take_requests());
     }
-    assert_eq!(operations.take(), vec![Some(KEY.to_owned()); 5]);
-    let asked = [
-        "WhoamiRequest",
-        "ListEnvironmentsRequest",
-        r#"CreateKeyRequest { scopes: {Write}, expires_at: Some(Timestamp { millis: 1800000000001 }), label: Some("clé") }"#,
-        r#"ListKeysRequest { limit: Some(7), cursor: Some("c") }"#,
-        r#"RevokeKeyRequest { key_id: "no ID" }"#,
+    let items = vec![item("b"); batch().items.len()];
+    let sent = [
+        format!("{:?}", item("a")),
+        format!("{:?}", EmitBatchRequest { items }),
+        r#"GetEventRequest { event_id: "no ID" }"#.to_owned(),
+        r#"ListEventsRequest { limit: Some(7), cursor: Some("c") }"#.to_owned(),
+        "WhoamiRequest".to_owned(),
+        "ListEnvironmentsRequest".to_owned(),
+        r#"CreateKeyRequest { scopes: {Write}, expires_at: Some(Timestamp { millis: 1800000000001 }), label: Some("clé") }"#.to_owned(),
+        r#"ListKeysRequest { limit: Some(7), cursor: Some("c") }"#.to_owned(),
+        r#"RevokeKeyRequest { key_id: "no ID" }"#.to_owned(),
     ];
-    assert_eq!(operations.take_requests(), asked);
+    assert_eq!(asked, sent);
 
     let e = OpError {
         kind: ErrorKind::NotFound,
@@ -154,11 +184,84 @@ async fn each_operation_crosses_to_the_engine_and_back() {
         hint: Some("h".into()),
     };
     *operations.answer.lock().unwrap() = Err(e.clone());
-    for op in CARRIED {
-        let answer = ask_one(&client, &call(KEY), op).await;
+    for op in Operation::ALL {
+        let answer = ask_one(&client, &call(KEY), *op).await;
         assert_eq!(answer, Err(e.clone()), "{op:?}");
     }
-    assert_eq!(operations.take().len(), 5);
+    assert_eq!(operations.take().len(), 9);
+}
+
+/// While the engine opens.
+#[tokio::test]
+async fn each_operation_answers_that_the_engine_is_starting() {
+    let addr = serve(Arc::new(Slot::starting())).await;
+    let client = Client::new(&format!("http://{addr}")).unwrap();
+    for op in Operation::ALL {
+        let starting = OpError {
+            kind: ErrorKind::Unavailable,
+            message: "the engine is unavailable".into(),
+            hint: Some("the engine is starting".into()),
+        };
+        let answer = ask_one(&client, &call(KEY), *op).await;
+        assert_eq!(answer, Err(starting), "{op:?}");
+    }
+}
+
+/// D74: bytes that are no text are not sent, and one such item keeps its whole batch back.
+#[tokio::test]
+async fn data_that_is_not_utf8_is_not_sent() {
+    let (addr, operations) = serving(Ok(whoami())).await;
+    let client = Client::new(&format!("http://{addr}")).unwrap();
+    let bad = b"\"\xff\xfe\"".to_vec();
+    let data = EmitRequest {
+        data: Some(bad.clone()),
+        ..item("a")
+    };
+    let metadata = EmitRequest {
+        metadata: Some(bad),
+        ..item("a")
+    };
+    for (bad, message) in [
+        (data, "event data is not UTF-8"),
+        (metadata, "event metadata is not UTF-8"),
+    ] {
+        let refused = OpError {
+            kind: ErrorKind::Invalid,
+            message: message.into(),
+            hint: None,
+        };
+        let e = client.emit(&call(KEY), bad.clone()).await.unwrap_err();
+        assert_eq!(e, refused);
+        for items in [
+            vec![bad.clone()],
+            vec![bad.clone(), item("a")],
+            vec![item("a"), bad],
+        ] {
+            let batch = EmitBatchRequest { items };
+            let e = client.emit_batch(&call(KEY), batch).await.unwrap_err();
+            assert_eq!(e, refused);
+        }
+    }
+    assert_eq!(operations.take(), []);
+}
+
+/// What became of some item is then not known.
+#[tokio::test]
+async fn a_batch_answered_with_another_number_of_results_is_unknown() {
+    let (addr, _operations) = serving(Ok(whoami())).await;
+    let client = Client::new(&format!("http://{addr}")).unwrap();
+    let n = batch().items.len();
+    for items in [1, n - 1, n + 1] {
+        let items = vec![item("a"); items];
+        let batch = EmitBatchRequest { items };
+        let e = client.emit_batch(&call(KEY), batch).await.unwrap_err();
+        let unknown = OpError {
+            kind: ErrorKind::Unknown,
+            message: "the engine did not answer: unknown".into(),
+            hint: None,
+        };
+        assert_eq!(e, unknown);
+    }
 }
 
 /// The wire does not carry the expiry, and the nearest it does is not the one asked for.
@@ -226,6 +329,43 @@ async fn an_answer_holds_at_most_16_mib() {
     assert_eq!((refused.kind, refused.hint), (ErrorKind::Unavailable, None));
 }
 
+/// The Errors table: the engine sees none of it.
+#[tokio::test]
+async fn a_request_over_16_mib_is_not_the_engines() {
+    let (addr, operations) = serving(Ok(whoami())).await;
+    let client = Client::new(&format!("http://{addr}")).unwrap();
+    // The fields of each message, their tags and lengths, around what fills it.
+    let emit = |size: usize| EmitRequest {
+        name: "a".into(),
+        data: Some(vec![b'1'; size - 3 - 5]),
+        metadata: None,
+        version: None,
+        idempotency_key: None,
+    };
+    let get = |size: usize| GetEventRequest {
+        event_id: "x".repeat(size - 5),
+    };
+    let most = 16 * 1024 * 1024;
+    assert_eq!(client.emit(&call(KEY), emit(most)).await, Ok(emitted()));
+    let items = |size: usize| EmitBatchRequest {
+        items: vec![emit(size - 5)],
+    };
+    // A batch of one item, which the engine here answers as another: its count is not the one sent.
+    let sent = client.emit_batch(&call(KEY), items(most)).await;
+    assert_eq!(sent.unwrap_err().kind, ErrorKind::Unknown);
+    assert_eq!(client.get_event(&call(KEY), get(most)).await, Ok(event()));
+    assert_eq!(operations.take().len(), 3);
+
+    let ended = |e: OpError| (e.kind, e.hint);
+    let e = client.emit(&call(KEY), emit(most + 1)).await.unwrap_err();
+    assert_eq!(ended(e), (ErrorKind::Unknown, None));
+    let e = client.emit_batch(&call(KEY), items(most + 1)).await;
+    assert_eq!(ended(e.unwrap_err()), (ErrorKind::Unknown, None));
+    let e = client.get_event(&call(KEY), get(most + 1)).await;
+    assert_eq!(ended(e.unwrap_err()), (ErrorKind::Unavailable, None));
+    assert_eq!(operations.take(), []);
+}
+
 /// Answers one request with `answer`, then closes.
 async fn stub(answer: Vec<u8>) -> Client {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -253,12 +393,13 @@ fn unanswered(op: Operation) -> (ErrorKind, Option<&'static str>) {
             ErrorKind::Unknown,
             Some("retry: revoking a revoked key succeeds, and one that revoked itself is refused"),
         ),
+        Operation::Emit | Operation::EmitBatch => (ErrorKind::Unknown, None),
         _ => (ErrorKind::Unavailable, None),
     }
 }
 
 /// No answer, or one that is not the engine's own: a read is `Unavailable`, a state change
-/// `Unknown`, and no message holds a key (TEN-3).
+/// `Unknown`, and no message holds a key (TEN-3) or what can be an event's data.
 #[tokio::test]
 async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
     let closed = {
@@ -278,55 +419,65 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
     // A WhoamiResponse or a CreateKeyResponse whose first field is "x"; as a page, one that holds
     // a message that does not decode.
     let short = b"\n\x01x";
+    // Each with the Connect code of the failure it is.
     let answers = [
         // Holds nothing, as a revoke's answer does, and a page with nothing.
-        http("200 OK", "application/proto", b""),
+        ("unknown", http("200 OK", "application/proto", b"")),
         // As that, but none of Connect's.
-        http("204 No Content", "application/proto", b""),
-        http("202 Accepted", "application/proto", b""),
-        b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n".to_vec(),
-        http("200 OK", "application/protobuf", b""),
-        http("200 OK", "application/proto, text/html", b""),
+        ("unknown", http("204 No Content", "application/proto", b"")),
+        ("unknown", http("202 Accepted", "application/proto", b"")),
+        ("unknown", b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n".to_vec()),
+        ("unknown", http("200 OK", "application/protobuf", b"")),
+        ("unknown", http("200 OK", "application/proto, text/html", b"")),
         // A created key, in the body of an error that is not the engine's.
-        http("502 Bad Gateway", "application/proto", &key),
-        http("502 Bad Gateway", "application/json", &message),
-        [b"HTTP/1.1 502 Bad Gateway\r\n\r\n", &*key].concat(),
-        vec![],
-        http("401 Unauthorized", "text/html", b"<html>"),
-        http("503 Service Unavailable", "text/html", b"<html>"),
-        http("200 OK", "text/html", b""),
-        http("200 OK", "application/proto", b"\x7f"),
-        http("200 OK", "application/proto", short),
-        http("200 OK", "application/proto", &key),
-        http("200 OK", "application/proto", &cut),
+        ("unavailable", http("502 Bad Gateway", "application/proto", &key)),
+        ("unavailable", http("502 Bad Gateway", "application/json", &message)),
+        ("unavailable", [b"HTTP/1.1 502 Bad Gateway\r\n\r\n", &*key].concat()),
+        ("unavailable", vec![]),
+        ("unauthenticated", http("401 Unauthorized", "text/html", b"<html>")),
+        ("unavailable", http("503 Service Unavailable", "text/html", b"<html>")),
+        ("unknown", http("200 OK", "text/html", b"")),
+        ("internal", http("200 OK", "application/proto", b"\x7f")),
+        ("internal", http("200 OK", "application/proto", short)),
+        ("internal", http("200 OK", "application/proto", &key)),
+        ("internal", http("200 OK", "application/proto", &cut)),
         // ErrorInfo of a kind this client does not know: 'kind' "new".
-        http(
-            "400 Bad Request",
-            "application/json",
-            br#"{"code":"invalid_argument","details":[{"type":"ironflowx.v1.ErrorInfo","value":"CgNuZXc"}]}"#,
+        (
+            "invalid_argument",
+            http(
+                "400 Bad Request",
+                "application/json",
+                br#"{"code":"invalid_argument","details":[{"type":"ironflowx.v1.ErrorInfo","value":"CgNuZXc"}]}"#,
+            ),
         ),
     ];
+    // Decode as messages, which are no answers where an answer needs something.
+    let decoded = [Some(&answers[0]), Some(&answers[14]), Some(&answers[15])];
     let ignored = [Some(&answers[14]), Some(&answers[15])];
     let nothing = Some(&answers[0]);
-    for op in CARRIED {
+    for op in Operation::ALL.iter().copied() {
         for answer in std::iter::once(None).chain(answers.iter().map(Some)) {
             let client = match answer {
                 None => Client::new(&closed).unwrap(),
-                Some(answer) => stub(answer.clone()).await,
+                Some((_, answer)) => stub(answer.clone()).await,
             };
-            let shown = answer.map(|a| a.escape_ascii().to_string());
+            let shown = answer.map(|(_, a)| a.escape_ascii().to_string());
             let got = ask_one(&client, &call(KEY), op).await;
             // A revoke's answer holds nothing, so another message is one with fields it ignores.
             if op == Operation::RevokeKey && ignored.contains(&answer) {
                 assert_eq!(got, Ok("()".to_owned()), "{shown:?}");
                 continue;
             }
-            if answer == nothing && !matches!(op, Operation::Whoami | Operation::CreateKey) {
-                let empty = match op {
-                    Operation::RevokeKey => "()",
-                    Operation::ListKeys => "KeyPage { keys: [], next: None }",
-                    _ => "[]",
-                };
+            let empty = match op {
+                Operation::RevokeKey => Some("()"),
+                Operation::ListKeys => Some("KeyPage { keys: [], next: None }"),
+                Operation::ListEvents => Some("EventPage { events: [], next: None }"),
+                Operation::ListEnvironments => Some("[]"),
+                _ => None,
+            };
+            if answer == nothing
+                && let Some(empty) = empty
+            {
                 assert_eq!(got, Ok(empty.to_owned()));
                 continue;
             }
@@ -334,8 +485,16 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
             let ended = (e.kind, e.hint.as_deref());
             assert_eq!(ended, unanswered(op), "{op:?} {shown:?}");
             assert!(!e.message.contains(&KEY[41..]), "{}", e.message);
-            if op == Operation::CreateKey {
-                assert!(!e.message.contains(&CREATED[41..62]), "{}", e.message);
+            // Where a body can hold a key or event data, the code and nothing after it.
+            let held = op == Operation::CreateKey || op.rpc().contains("EventService");
+            let one = !matches!(op, Operation::EmitBatch | Operation::ListEvents);
+            let code = answer.map_or("unavailable", |(code, _)| *code);
+            let message = match decoded.contains(&answer) && one {
+                true => "the answer does not decode".to_owned(),
+                false => format!("the engine did not answer: {code}"),
+            };
+            if held {
+                assert_eq!(e.message, message, "{op:?} {shown:?}");
             }
         }
     }
@@ -361,7 +520,7 @@ async fn a_call_ends_by_its_timeout() {
     for addr in [addr, silent] {
         let client = Client::new(&format!("http://{addr}")).unwrap();
         let client = client.with_timeout(Duration::from_millis(250));
-        for op in CARRIED {
+        for op in Operation::ALL.iter().copied() {
             let ended = tokio::time::timeout(late, ask_one(&client, &call(KEY), op)).await;
             let e = ended.expect("in time").unwrap_err();
             assert_eq!((e.kind, e.hint.as_deref()), unanswered(op), "{op:?}");
@@ -424,46 +583,4 @@ fn a_url_is_http_with_a_host_and_no_user_query_or_fragment() {
     ] {
         assert_eq!(Client::new(url).err(), Some(InvalidUrl), "{url}");
     }
-}
-
-/// The Errors table's `Internal` row.
-#[tokio::test]
-async fn an_operation_the_client_does_not_carry_is_internal() {
-    let client = Client::new("http://127.0.0.1:9").unwrap();
-    let cx = Call::anonymous();
-    let emit = EmitRequest {
-        name: "a".into(),
-        data: None,
-        metadata: None,
-        version: None,
-        idempotency_key: None,
-    };
-    let batch = EmitBatchRequest {
-        items: vec![emit.clone()],
-    };
-    let get = GetEventRequest {
-        event_id: "x".into(),
-    };
-    let page = ListEventsRequest {
-        limit: None,
-        cursor: None,
-    };
-    let refused = [
-        client.emit(&cx, emit).await.err(),
-        client.emit_batch(&cx, batch).await.err(),
-        client.get_event(&cx, get).await.err(),
-        client.list_events(&cx, page).await.err(),
-    ];
-    let expected: Vec<_> = Operation::ALL
-        .iter()
-        .filter(|op| !CARRIED.contains(op))
-        .map(|op| {
-            Some(OpError {
-                kind: ErrorKind::Internal,
-                message: format!("the client does not carry {}", op.rpc()),
-                hint: None,
-            })
-        })
-        .collect();
-    assert_eq!(refused.to_vec(), expected);
 }

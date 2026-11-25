@@ -1,0 +1,117 @@
+syntax = "proto3";
+
+package ironflowx.v1;
+
+import "google/protobuf/timestamp.proto";
+import "ironflowx/v1/error.proto";
+import "ironflowx/v1/options.proto";
+
+// The events of the calling key's environment.
+service EventService {
+  // Emits one event.
+  rpc Emit(EmitRequest) returns (EmitResponse) {
+    option (ironflowx.v1.cli) = "events emit";
+    option (ironflowx.v1.summary) =
+      "Emit one event. Sent again with the same idempotency key it returns the first event's ID; "
+      "without one it stores a second event";
+    option (ironflowx.v1.example) =
+      "{\"name\": \"order.placed\", \"data\": \"{\\\"id\\\": 1}\", "
+      "\"idempotency_key\": \"order-1\"}";
+  }
+  // Emits a batch; the answer holds one result per item, in their order.
+  rpc EmitBatch(EmitBatchRequest) returns (EmitBatchResponse) {
+    option (ironflowx.v1.cli) = "events emit-batch";
+    option (ironflowx.v1.summary) =
+      "Emit up to 100 events at once, with a result for each, in their order: an event or why it "
+      "was refused. Sent again, an item without an idempotency key stores a second event";
+    option (ironflowx.v1.example) =
+      "{\"items\": [{\"name\": \"order.placed\", \"data\": \"{\\\"id\\\": 1}\", "
+      "\"idempotency_key\": \"order-1\"}, {\"name\": \"order.paid\", "
+      "\"data\": \"{\\\"id\\\": 1}\", \"idempotency_key\": \"order-1-paid\"}]}";
+  }
+  // Reads one event.
+  rpc GetEvent(GetEventRequest) returns (Event) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (ironflowx.v1.cli) = "events get";
+    option (ironflowx.v1.summary) = "Read one event by its ID";
+    option (ironflowx.v1.example) = "{\"event_id\": \"0190b5f0-0000-7000-8000-000000000001\"}";
+  }
+  // Lists a page of events, newest first.
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (ironflowx.v1.cli) = "events list";
+    option (ironflowx.v1.summary) =
+      "List a page of events, newest first. A page shorter than its limit is not necessarily the "
+      "last: only one without next is";
+    option (ironflowx.v1.example) = "{\"limit\": 20}";
+  }
+}
+
+message EmitRequest {
+  string name = 1;
+  // The text of one JSON value, stored and returned byte for byte (D54). Absent: null.
+  optional string data = 2 [(ironflowx.v1.json_text) = true];
+  // The text of one JSON object, likewise. Absent: none.
+  optional string metadata = 3 [(ironflowx.v1.json_text) = true];
+  // 1 to 2,147,483,647. Absent: 1.
+  optional int64 version = 4;
+  // Absent: none, so this event is stored again each time it is sent.
+  optional string idempotency_key = 5 [json_name = "idempotency_key"];
+}
+
+message EmitResponse {
+  string event_id = 1 [json_name = "event_id"];
+  // Whether the idempotency key matched an earlier event, whose ID this is.
+  bool duplicate = 2;
+}
+
+message EmitBatchRequest {
+  repeated EmitRequest items = 1;
+}
+
+message EmitBatchResponse {
+  // One per item of the request, in their order.
+  repeated EmitBatchItem items = 1;
+}
+
+// What became of one item of a batch.
+message EmitBatchItem {
+  oneof result {
+    EmitResponse ok = 1;
+    ErrorInfo error = 2;
+  }
+}
+
+message GetEventRequest {
+  string event_id = 1 [json_name = "event_id"];
+}
+
+// A stored event.
+message Event {
+  string event_id = 1 [json_name = "event_id"];
+  string name = 2;
+  // The JSON text as it was sent, or "null" if none was. Always there.
+  optional string data = 3 [(ironflowx.v1.json_text) = true];
+  // Absent: none was sent.
+  optional string metadata = 4 [(ironflowx.v1.json_text) = true];
+  int64 version = 5;
+  optional string idempotency_key = 6 [json_name = "idempotency_key"];
+  google.protobuf.Timestamp time = 7;
+  // "key:<key ID>", or "embedder:<name>".
+  string emitted_by = 8 [json_name = "emitted_by"];
+}
+
+message ListEventsRequest {
+  // At least 1. Absent: 20; above 200: 200.
+  optional uint32 limit = 1;
+  // The `next` of the previous page. Absent: from the newest event.
+  optional string cursor = 2;
+}
+
+message ListEventsResponse {
+  // Newest first. Fewer than the limit, also on a page that is not the last, if their data and
+  // metadata would pass 3 MiB (D73).
+  repeated Event events = 1;
+  // The cursor of the next page. Absent on the last page, and only there.
+  optional string next = 2;
+}

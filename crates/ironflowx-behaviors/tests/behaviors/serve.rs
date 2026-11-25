@@ -15,25 +15,32 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use connectrpc::client::{
-    BoxFuture, CallOptions, ClientBody, ClientConfig, ClientTransport, HttpClient,
+    BoxFuture, CallOptions, ClientBody, ClientConfig, ClientTransport, HttpClient, full_body,
 };
 use connectrpc::{ConnectError, ErrorCode, Protocol};
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
 use ironflowx_core::{ErrorKind, KeyOrigin, Scope, Secret};
 use ironflowx_proto::wire::{
-    CreateKeyRequest, CreateKeyResponse, IdentityServiceClient, KeyServiceClient, WhoamiRequest,
-    WhoamiResponse, op_error,
+    CreateKeyRequest, CreateKeyResponse, EmitBatchRequest, EmitRequest, Event, EventServiceClient,
+    GetEventRequest, IdentityServiceClient, KeyServiceClient, WhoamiRequest, WhoamiResponse,
+    op_error,
 };
-use ironflowx_proto::{Call, Client, ListKeysRequest, OpError, Operations as _};
+use ironflowx_proto::{
+    Call, Client, EmitBatchResponse, EmitResponse, ListEventsRequest, ListKeysRequest, OpError,
+    Operation, Operations as _,
+};
 use serde_json::Value;
 use tempfile::TempDir;
 
 /// The scenarios whose work has landed: every one must run and pass.
-const REGISTERED: &[&str] = &["HOST-001", "HOST-016", "HOST-021", "HOST-026", "HOST-027"];
+const REGISTERED: &[&str] = &[
+    "HOST-001", "HOST-016", "HOST-021", "HOST-022", "HOST-023", "HOST-024", "HOST-025", "HOST-026",
+    "HOST-027", "HOST-029",
+];
 
 /// How many scenarios run, an outline once per example, so no example goes unnoticed.
-pub const RUNS: usize = 15;
+pub const RUNS: usize = 27;
 
 const LATE: Duration = Duration::from_secs(30);
 
@@ -165,6 +172,24 @@ fn get(url: &str, path: &str) -> u16 {
     status.parse().unwrap()
 }
 
+/// What the RPC answers, as the JSON it sends.
+fn post_json(url: &str, rpc: &str, key: &str, body: &str) -> Value {
+    let addr = url.strip_prefix("http://").expect("an http URL");
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let length = body.len();
+    write!(
+        stream,
+        "POST /{rpc} HTTP/1.0\r\nauthorization: Bearer {key}\r\n\
+         content-type: application/json\r\ncontent-length: {length}\r\n\r\n{body}"
+    )
+    .unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).unwrap();
+    let (head, body) = answer.split_once("\r\n\r\n").expect("an answer");
+    assert!(head.starts_with("HTTP/1.0 200 "), "{head}");
+    serde_json::from_str(body).unwrap()
+}
+
 #[derive(World)]
 #[world(init = Self::new)]
 pub struct Serve {
@@ -174,6 +199,12 @@ pub struct Serve {
     key: Option<String>,
     answer: Option<Result<WhoamiResponse, ConnectError>>,
     created: Option<Result<CreateKeyResponse, ConnectError>>,
+    /// The client's key, where it is not the admin key, and the observer's.
+    client_key: Option<String>,
+    observer_key: Option<String>,
+    emitted: Option<Result<EmitResponse, ConnectError>>,
+    batch: Option<Result<EmitBatchResponse, ConnectError>>,
+    event: Option<Event>,
 }
 
 impl fmt::Debug for Serve {
@@ -182,6 +213,8 @@ impl fmt::Debug for Serve {
             .field("log", &self.served.as_ref().map(Served::log))
             .field("answer", &self.answer)
             .field("created", &self.created)
+            .field("emitted", &self.emitted)
+            .field("batch", &self.batch)
             .finish_non_exhaustive()
     }
 }
@@ -204,6 +237,28 @@ impl ClientTransport for WithQuery {
     }
 }
 
+/// Sends every request with this body in place of its own.
+#[derive(Clone)]
+struct WithBody(HttpClient, Vec<u8>);
+
+impl ClientTransport for WithBody {
+    type ResponseBody = <HttpClient as ClientTransport>::ResponseBody;
+    type Error = <HttpClient as ClientTransport>::Error;
+
+    fn send(
+        &self,
+        request: http::Request<ClientBody>,
+    ) -> BoxFuture<'static, Result<http::Response<Self::ResponseBody>, Self::Error>> {
+        let body = full_body(self.1.clone().into());
+        self.0.send(request.map(|_| body))
+    }
+}
+
+/// Calls that present `key`.
+fn bearer(key: &str) -> CallOptions {
+    CallOptions::default().with_header("authorization", format!("Bearer {key}"))
+}
+
 impl Serve {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
@@ -215,6 +270,11 @@ impl Serve {
             key: None,
             answer: None,
             created: None,
+            client_key: None,
+            observer_key: None,
+            emitted: None,
+            batch: None,
+            event: None,
         }
     }
 
@@ -245,6 +305,53 @@ impl Serve {
 
     fn config(&self) -> ClientConfig {
         ClientConfig::new(self.served().url().parse().unwrap())
+    }
+
+    /// What a client of `protocol` is made of.
+    fn transport(&self, protocol: &str) -> (HttpClient, ClientConfig) {
+        match protocol {
+            "Connect JSON" => (HttpClient::plaintext(), self.config().json()),
+            "Connect binary" => (HttpClient::plaintext(), self.config().proto()),
+            "gRPC" => (
+                HttpClient::plaintext_http2_only(),
+                self.config().with_protocol(Protocol::Grpc),
+            ),
+            "gRPC-Web" => (
+                HttpClient::plaintext(),
+                self.config().with_protocol(Protocol::GrpcWeb),
+            ),
+            _ => unreachable!(),
+        }
+    }
+
+    fn events(&self, protocol: &str) -> EventServiceClient<HttpClient> {
+        let (http, config) = self.transport(protocol);
+        EventServiceClient::new(http, config)
+    }
+
+    fn client_key(&self) -> &str {
+        self.client_key.as_deref().expect("a client")
+    }
+
+    /// Creates a key with the scopes `names` quotes, with the admin key; its text.
+    async fn create(&self, names: &str) -> String {
+        let client = Client::new(&self.served().url()).unwrap();
+        let cx = Call::with_key(Secret::new(self.key().to_owned()));
+        let scopes = names.split('"').skip(1).step_by(2);
+        let request = ironflowx_proto::CreateKeyRequest {
+            scopes: scopes.map(|s| s.parse().unwrap()).collect(),
+            ..Default::default()
+        };
+        let created = client.create_key(&cx, request).await.unwrap();
+        created.key.expose().to_owned()
+    }
+
+    /// Why the client's call was refused.
+    fn refusal(&self) -> &ConnectError {
+        let emitted = self.emitted.as_ref().and_then(|a| a.as_ref().err());
+        let batch = self.batch.as_ref().and_then(|a| a.as_ref().err());
+        let created = self.created.as_ref().and_then(|a| a.as_ref().err());
+        emitted.or(batch).or(created).expect("a refused call")
     }
 
     async fn whoami<T>(&mut self, client: IdentityServiceClient<T>, options: CallOptions)
@@ -373,21 +480,8 @@ async fn over_connect(w: &mut Serve, credential: String) {
     regex = "^whoami is called over (Connect JSON|Connect binary|gRPC|gRPC-Web) with the admin key$"
 )]
 async fn over_protocol(w: &mut Serve, protocol: String) {
-    let (http, config) = match protocol.as_str() {
-        "Connect JSON" => (HttpClient::plaintext(), w.config().json()),
-        "Connect binary" => (HttpClient::plaintext(), w.config().proto()),
-        "gRPC" => (
-            HttpClient::plaintext_http2_only(),
-            w.config().with_protocol(Protocol::Grpc),
-        ),
-        "gRPC-Web" => (
-            HttpClient::plaintext(),
-            w.config().with_protocol(Protocol::GrpcWeb),
-        ),
-        _ => unreachable!(),
-    };
-    let bearer = format!("Bearer {}", w.key());
-    let options = CallOptions::default().with_header("authorization", bearer);
+    let (http, config) = w.transport(&protocol);
+    let options = bearer(w.key());
     w.whoami(IdentityServiceClient::new(http, config), options)
         .await;
 }
@@ -421,8 +515,7 @@ async fn too_fine(w: &mut Serve) {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     expiry.seconds = i64::try_from(now.as_secs()).unwrap() + 86_400;
     expiry.nanos = 1_000_001;
-    let bearer = format!("Bearer {}", w.key());
-    let options = CallOptions::default().with_header("authorization", bearer);
+    let options = bearer(w.key());
     let client = KeyServiceClient::new(HttpClient::plaintext(), w.config().json());
     let answer = client.create_key_with_options(request, options).await;
     w.created = Some(answer.map(connectrpc::UnaryResponse::into_owned));
@@ -430,12 +523,234 @@ async fn too_fine(w: &mut Serve) {
 
 #[then("the call is refused as invalid")]
 fn refused_as_invalid(w: &mut Serve) {
-    let answer = w.created.as_ref().expect("a call");
-    let e = answer.as_ref().expect_err("the call is refused");
+    let e = w.refusal();
     assert_eq!(e.code, ErrorCode::InvalidArgument);
+    if w.created.is_some() {
+        let e = op_error(e).expect("the door's own error");
+        let message = "a time is in whole milliseconds and in years 0001 to 9999";
+        assert_eq!((e.kind, &*e.message), (ErrorKind::Invalid, message));
+    } else {
+        // It did not decode, so the library refused it.
+        assert_eq!(op_error(e), None);
+        let message = "failed to decode proto request: invalid UTF-8 in string field";
+        assert_eq!(e.message.as_deref(), Some(message));
+    }
+}
+
+#[given(
+    regex = r#"^the engine is served(?: and|,) a client holds a ("write"|"read"|"write" and "read") key(?: and an observer holds a ("read") key)?$"#
+)]
+async fn served_with_client(w: &mut Serve, client: String, observer: String) {
+    served_with_key(w);
+    w.client_key = Some(w.create(&client).await);
+    if !observer.is_empty() {
+        w.observer_key = Some(w.create(&observer).await);
+    }
+}
+
+fn named(name: &str) -> EmitRequest {
+    EmitRequest {
+        name: name.to_owned(),
+        ..EmitRequest::default()
+    }
+}
+
+#[when("the client emits an event over Connect")]
+async fn emits(w: &mut Serve) {
+    let client = w.events("Connect JSON");
+    let answer = client
+        .emit_with_options(named("order.placed"), bearer(w.client_key()))
+        .await;
+    w.emitted = Some(answer.map(|a| a.into_owned().try_into().expect("an answer")));
+}
+
+#[then(regex = r#"^the call is refused as permission denied with "([^"]+)"$"#)]
+fn permission_denied(w: &mut Serve, message: String) {
+    let e = w.refusal();
+    assert_eq!(e.code, ErrorCode::PermissionDenied);
     let e = op_error(e).expect("the engine's own error");
-    let message = "a time is in whole milliseconds and in years 0001 to 9999";
-    assert_eq!((e.kind, &*e.message), (ErrorKind::Invalid, message));
+    assert_eq!((e.kind, e.message), (ErrorKind::PermissionDenied, message));
+}
+
+#[then(regex = r#"^the hint says a key with scope "(\w+)" is needed$"#)]
+fn hint_names_scope(w: &mut Serve, scope: String) {
+    let e = op_error(w.refusal()).expect("the engine's own error");
+    let hint = format!("create a key with scope {scope}, or use one that has it");
+    assert_eq!(e.hint, Some(hint));
+}
+
+#[then("the error is not retryable")]
+fn not_retryable(w: &mut Serve) {
+    let e = op_error(w.refusal()).expect("the engine's own error");
+    assert!(!e.kind.retryable());
+}
+
+/// A data cell is the JSON itself, unless it starts `built:`.
+fn data(cell: &str) -> &str {
+    match cell {
+        "built: an object spread over two lines" => "{\"b\": 1,\n \"a\": 2}",
+        cell => {
+            assert!(!cell.starts_with("built:"), "{cell}");
+            cell
+        }
+    }
+}
+
+#[when(
+    regex = r"^the client emits an event with data (.+) over (Connect JSON|Connect binary|gRPC|gRPC-Web)$"
+)]
+async fn emits_data(w: &mut Serve, cell: String, codec: String) {
+    let request = EmitRequest {
+        data: Some(data(&cell).to_owned()),
+        ..named("order.placed")
+    };
+    let client = w.events(&codec);
+    let answer = client
+        .emit_with_options(request, bearer(w.client_key()))
+        .await;
+    w.emitted = Some(answer.map(|a| a.into_owned().try_into().expect("an answer")));
+}
+
+/// The emitted event, read over `codec`.
+async fn read(w: &Serve, codec: &str) -> Event {
+    let emitted = w.emitted.as_ref().expect("an emit");
+    let request = GetEventRequest {
+        event_id: emitted.as_ref().expect("an event").event_id.to_string(),
+        ..GetEventRequest::default()
+    };
+    let client = w.events(codec);
+    let answer = client
+        .get_event_with_options(request, bearer(w.client_key()))
+        .await;
+    answer.expect("the event").into_owned()
+}
+
+#[when(regex = r"^reads it back over (Connect JSON|Connect binary|gRPC|gRPC-Web)$")]
+async fn reads_back(w: &mut Serve, codec: String) {
+    w.event = Some(read(w, &codec).await);
+}
+
+#[then(regex = r"^the data is byte for byte (.+)$")]
+fn the_data_is(w: &mut Serve, cell: String) {
+    let event = w.event.as_ref().expect("an event");
+    assert_eq!(event.data.as_deref(), Some(data(&cell)));
+}
+
+#[then("over JSON the event's time is RFC 3339 in UTC, with no fraction finer than a millisecond")]
+async fn the_time_is(w: &mut Serve) {
+    // As it is sent: a client would read any spelling of the time.
+    let emitted = w.emitted.as_ref().expect("an emit");
+    let id = emitted.as_ref().expect("an event").event_id;
+    let body = format!(r#"{{"event_id":"{id}"}}"#);
+    let rpc = Operation::GetEvent.rpc();
+    let event = post_json(&w.served().url(), rpc, w.client_key(), &body);
+    let time = event["time"].as_str().expect("a time").to_owned();
+    // 2027-01-15T08:00:00Z or 2027-01-15T08:00:00.123Z
+    let shape: String = time
+        .chars()
+        .map(|c| if c.is_ascii_digit() { '0' } else { c })
+        .collect();
+    let whole = "0000-00-00T00:00:00Z";
+    let millis = "0000-00-00T00:00:00.000Z";
+    assert!([whole, millis].contains(&&*shape), "{time}");
+}
+
+#[when("the client sends an emit batch whose request body is 17 MiB")]
+async fn sends_17_mib(w: &mut Serve) {
+    let size = 17 * 1024 * 1024;
+    // An event the engine would store, and spaces.
+    let mut body = br#"{"items":[{"name":"a.one"}]}"#.to_vec();
+    body.resize(size, b' ');
+    // HTTP/1.1 closes the connection on a body it refuses, and can lose the answer with it.
+    let http = HttpClient::plaintext_http2_only();
+    let client = EventServiceClient::new(WithBody(http, body), w.config().json());
+    let answer = client
+        .emit_batch_with_options(EmitBatchRequest::default(), bearer(w.client_key()))
+        .await;
+    w.batch = Some(answer.map(|a| a.into_owned().try_into().expect("an answer")));
+}
+
+#[then("the call is refused as resource exhausted")]
+fn resource_exhausted(w: &mut Serve) {
+    let e = w.refusal();
+    assert_eq!(e.code, ErrorCode::ResourceExhausted);
+    // By the library, before the engine.
+    assert_eq!(op_error(e), None);
+    let message = e.message.as_deref();
+    assert_eq!(message, Some("request body size exceeds limit 16777216"));
+}
+
+#[then("the observer lists no events")]
+async fn observer_lists_none(w: &mut Serve) {
+    let client = Client::new(&w.served().url()).unwrap();
+    let key = w.observer_key.clone().expect("an observer");
+    let request = ListEventsRequest {
+        limit: None,
+        cursor: None,
+    };
+    let page = client
+        .list_events(&Call::with_key(Secret::new(key)), request)
+        .await
+        .unwrap();
+    assert_eq!((page.events, page.next), (vec![], None));
+}
+
+#[when(
+    regex = r"^the client sends an emit over Connect binary whose (name|idempotency key|data|metadata) holds the bytes FF FE$"
+)]
+async fn sends_bytes(w: &mut Serve, field: String) {
+    let number = match field.as_str() {
+        "name" => 1,
+        "data" => 2,
+        "metadata" => 3,
+        _ => 5,
+    };
+    // A name, then the field, each a tag and a length before its bytes.
+    let body = [b"\x0a\x05a.one", &[number << 3 | 2, 2, 0xff, 0xfe][..]].concat();
+    let (http, config) = w.transport("Connect binary");
+    let client = EventServiceClient::new(WithBody(http, body), config);
+    let answer = client
+        .emit_with_options(EmitRequest::default(), bearer(w.client_key()))
+        .await;
+    w.emitted = Some(answer.map(|a| a.into_owned().try_into().expect("an answer")));
+}
+
+#[when(
+    regex = r#"^the client emits a batch over Connect of an event named "([^"]+)" and an event with no name$"#
+)]
+async fn emits_batch(w: &mut Serve, name: String) {
+    let request = EmitBatchRequest {
+        items: vec![named(&name), named("")],
+        ..EmitBatchRequest::default()
+    };
+    let client = w.events("Connect JSON");
+    let answer = client
+        .emit_batch_with_options(request, bearer(w.client_key()))
+        .await;
+    w.batch = Some(answer.map(|a| a.into_owned().try_into().expect("an answer")));
+}
+
+fn results(w: &Serve) -> &[Result<EmitResponse, OpError>] {
+    let batch = w.batch.as_ref().expect("a batch").as_ref();
+    let items = &batch.expect("the batch succeeds").items;
+    assert_eq!(items.len(), 2, "{items:?}");
+    items
+}
+
+#[then("the first result is an event")]
+fn first_is_event(w: &mut Serve) {
+    let first = results(w)[0].as_ref().expect("an event");
+    assert!(!first.duplicate);
+}
+
+#[then(regex = r#"^the second result is an error of kind invalid with message "([^"]+)"$"#)]
+fn second_is_error(w: &mut Serve, message: String) {
+    let refused = OpError {
+        kind: ErrorKind::Invalid,
+        message,
+        hint: None,
+    };
+    assert_eq!(results(w)[1], Err(refused));
 }
 
 #[then("listing keys shows only the bootstrap key")]

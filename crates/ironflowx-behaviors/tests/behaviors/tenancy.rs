@@ -1,4 +1,4 @@
-//! `tenancy.feature` on the engine.
+//! `tenancy.feature`, on the engine and, but for what is `@local`, against the binary.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
-use ironflowx_cell::{Ledger, ManualClock, new_env_ref};
-use ironflowx_core::{EnvRef, ErrorKind, KeyOrigin, Scope, Secret, Timestamp};
+use ironflowx_cell::{HostClock, Ledger, ManualClock, new_env_ref};
+use ironflowx_core::{Clock as _, EnvRef, ErrorKind, KeyOrigin, Scope, Secret, Timestamp};
 use ironflowx_operations::{
     Engine, EngineError, Opened, RecoverError, SeedState, recover_admin_key,
 };
@@ -19,16 +19,22 @@ use ironflowx_proto::{
 };
 use tempfile::TempDir;
 
-/// How many scenarios run, an outline once per example, so no example goes unnoticed.
+use super::adapter::{Adapter, BINARIES, runs_remotely};
+
+/// How many scenarios run on the engine, and against the binary, an outline once per example, so no
+/// example goes unnoticed.
 pub const RUNS: usize = 70;
+pub const REMOTE_RUNS: usize = 41;
 
 const HOUR: i64 = 3_600_000;
 
 #[derive(World)]
 #[world(init = Self::new)]
 pub struct Tenancy {
+    /// Whether the engine is the binary's.
+    remote: bool,
     // Before `dir`: the engine must close before its directory goes.
-    engine: Option<Engine>,
+    engine: Option<Adapter>,
     /// A second engine, with its own directory (ACC-009).
     other: Option<(Engine, TempDir)>,
     dir: TempDir,
@@ -109,6 +115,7 @@ fn scopes(text: &str) -> BTreeSet<Scope> {
 impl Tenancy {
     fn new() -> Self {
         Self {
+            remote: false,
             engine: None,
             other: None,
             dir: tempfile::tempdir().unwrap(),
@@ -160,6 +167,12 @@ impl Tenancy {
     }
 
     async fn open(&mut self) {
+        if self.remote {
+            let (served, key) = Adapter::served(&self.dir.path().join("data")).await;
+            self.bootstrap_key = Some(key);
+            self.engine = Some(served);
+            return;
+        }
         self.open_with(None).await.expect("the engine opens");
     }
 
@@ -172,7 +185,7 @@ impl Tenancy {
         if let Some(key) = opened.minted {
             self.bootstrap_key = Some(key.expose().to_owned());
         }
-        self.engine = Some(opened.engine);
+        self.engine = Some(Adapter::Engine(opened.engine));
         Ok(())
     }
 
@@ -196,7 +209,7 @@ impl Tenancy {
         self.engine().whoami(&cx, WhoamiRequest {}).await
     }
 
-    fn engine(&self) -> &Engine {
+    fn engine(&self) -> &Adapter {
         self.engine.as_ref().expect("an open engine")
     }
 
@@ -240,7 +253,7 @@ impl Tenancy {
     }
 
     fn now(&self) -> Timestamp {
-        ironflowx_core::Clock::now(&self.clock)
+        self.clock.now()
     }
 
     fn keep<T>(&mut self, answer: Result<T, OpError>) {
@@ -599,7 +612,12 @@ async fn the_list_holds(w: &mut Tenancy, name: String, address: String) {
         (env.name.as_str(), env.address.to_string()),
         (name.as_str(), address)
     );
-    assert_eq!(env.created_at, ironflowx_core::Clock::now(&clock()));
+    if w.remote {
+        let now = HostClock.now();
+        assert!(w.now() <= env.created_at && env.created_at <= now);
+    } else {
+        assert_eq!(env.created_at, clock().now());
+    }
 }
 
 #[when(regex = r#"^the (?:first )?client emits event "([^"]+)"$"#)]
@@ -1437,14 +1455,24 @@ fn still_empty(w: &mut Tenancy) {
     assert_eq!(w.read_directory(), BTreeMap::new());
 }
 
-/// Runs every tenancy scenario: whether any failed, and how many passed.
-pub async fn run(parser: super::Unescaped) -> (bool, usize) {
+/// Runs every tenancy scenario, through the binary or on the engine: whether any failed, and how
+/// many passed.
+pub async fn run(parser: super::Unescaped, remote: bool) -> (bool, usize) {
     let writer = Tenancy::cucumber::<&str>()
         .with_parser(parser)
-        .after(|_, _, _, _, world| {
+        .before(move |_, _, _, world| {
+            world.remote = remote;
+            if remote {
+                // The machine's time, read once a scenario.
+                world.clock = ManualClock::new(HostClock.now());
+            }
+            Box::pin(async {})
+        })
+        .after(move |_, _, _, _, world| {
             Box::pin(async move {
                 if let Some(w) = world {
                     if let Some(engine) = w.engine.take() {
+                        assert_eq!(matches!(engine, Adapter::Binary(..)), remote, "the adapter");
                         engine.close().await;
                     }
                     if let Some((engine, _dir)) = w.other.take() {
@@ -1453,11 +1481,15 @@ pub async fn run(parser: super::Unescaped) -> (bool, usize) {
                 }
             })
         })
+        .max_concurrent_scenarios(if remote { BINARIES } else { 64 })
         .fail_on_skipped()
-        .run(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/behaviors/tenancy.feature"
-        ))
+        .filter_run(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../docs/behaviors/tenancy.feature"
+            ),
+            move |_, _, scenario| !remote || runs_remotely(scenario),
+        )
         .await;
     let passed = writer.scenarios_stats().passed;
     (writer.execution_has_failed(), passed)
