@@ -52,6 +52,7 @@ step cargo test -p ironflowx-proto --locked --test client --features client-tls,
 step cargo test -p ironflowx-events -p ironflowx-cli --locked --features serde_json/arbitrary_precision
 step cargo deny check
 step ci/purity.sh
+step ci/no-host-engine-deps.sh crates/ironflowx-bin/Cargo.toml
 step sh -c 'cd examples/embed && cargo fmt --check && cargo clippy --locked -- -D warnings && cargo run --locked'
 step ci/public-api.sh
 step ci/doc-pins.sh

@@ -15,12 +15,10 @@ doc = false
 test = false
 
 [dependencies]
-ironflowx-cell.workspace = true
 ironflowx-cli = { path = "../ironflowx-cli" }
 ironflowx-core.workspace = true
 ironflowx-doors = { path = "../ironflowx-doors", features = ["http"] }
 ironflowx-operations.workspace = true
-ironflowx-store.workspace = true
 axum = { version = "0.8.9", default-features = false }
 # Exact: ironflowx-cli refuses a clap that prints arguments by what this one does (TEN-3).
 clap = { version = "=4.6.9", default-features = false, features = ["error-context", "help", "std", "usage"] }

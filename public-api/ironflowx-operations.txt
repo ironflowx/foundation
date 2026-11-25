@@ -1,8 +1,11 @@
 pub mod ironflowx_operations
 pub use ironflowx_operations::Fault
+pub use ironflowx_operations::HostClock
 pub use ironflowx_operations::LedgerState
+pub use ironflowx_operations::OpenError
 pub use ironflowx_operations::RecoverError
 pub use ironflowx_operations::SeedState
+pub use ironflowx_operations::StoreError
 pub enum ironflowx_operations::ControlPlaneState
 pub ironflowx_operations::ControlPlaneState::Failed
 pub ironflowx_operations::ControlPlaneState::Ok
@@ -79,4 +82,5 @@ pub ironflowx_operations::Opened::engine: ironflowx_operations::Engine
 pub ironflowx_operations::Opened::lost_secret: bool
 pub ironflowx_operations::Opened::minted: core::option::Option<ironflowx_core::secret::Secret>
 pub ironflowx_operations::Opened::seed: core::option::Option<ironflowx_authz::SeedState>
+pub fn ironflowx_operations::is_bootstrapped(&std::path::Path) -> core::result::Result<bool, ironflowx_operations::EngineError>
 pub fn ironflowx_operations::recover_admin_key(&std::path::Path, impl ironflowx_core::time::Clock) -> core::result::Result<ironflowx_core::secret::Secret, ironflowx_store::RecoverError>

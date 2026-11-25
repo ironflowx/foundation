@@ -118,6 +118,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: ci/purity.sh
+      - run: ci/no-host-engine-deps.sh crates/ironflowx-bin/Cargo.toml
 
   # The PRD's last "Done when": a crate outside the workspace, on `ironflowx` and `tokio` only,
   # bootstraps an engine, emits, reads with a `read` key and sees its emit refused. Its
