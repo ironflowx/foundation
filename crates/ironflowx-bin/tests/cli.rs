@@ -241,7 +241,7 @@ fn a_key_an_answer_repeats_is_not_printed() {
         for (in_message, in_hint) in [(true, true), (true, false), (false, true)] {
             let text = |repeats| format!("no '{}'", if repeats { repeated } else { "key" });
             let printed = |repeats| match repeats && hidden {
-                true => "not printed, since it repeats the key the call sent".to_owned(),
+                true => "not printed, since it repeats the key the CLI was given".to_owned(),
                 false => text(repeats),
             };
             served.answers(Err(OpError {
@@ -266,7 +266,7 @@ fn a_key_an_answer_repeats_is_not_printed() {
         let out = output();
         let given = format!("{sent} sent, {repeated} repeated");
         if hidden {
-            let message = "the answer is not printed, since it repeats the key the call sent";
+            let message = "the answer is not printed, since it repeats the key the CLI was given";
             let expected = json!({"code": "internal", "message": message, "retryable": false});
             assert_eq!(envelope(&out), (expected, 1), "{given}");
         } else {

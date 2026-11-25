@@ -167,7 +167,7 @@ fn answer(command: &str, matches: &ArgMatches) -> Result<Value, OpError> {
         .block_on(generated::call(command, &client, &cx))
         .map_err(|e| without_secret(e, &cx))?;
     if repeats_secret(&answer.to_string(), &cx) {
-        let message = "the answer is not printed, since it repeats the key the call sent";
+        let message = "the answer is not printed, since it repeats the key the CLI was given";
         return Err(internal(message.to_owned()));
     }
     let known = generated::COMMANDS.iter().find(|c| c.path == command);
@@ -207,7 +207,7 @@ fn credential(matches: &ArgMatches) -> Result<Call, OpError> {
     Ok(Call::with_key(Secret::new(key)))
 }
 
-/// Whether `text` holds as many bytes in a row of the key `cx` sends as a key's secret has (TEN-3).
+/// Whether `text` holds as many bytes in a row of the key in `cx` as a key's secret has (TEN-3).
 /// Fewer are no one's secret, and may be in any answer; a repeat that was changed is not found.
 fn repeats_secret(text: &str, cx: &Call) -> bool {
     let key = cx.key().map_or("", Secret::expose).as_bytes();
@@ -217,14 +217,14 @@ fn repeats_secret(text: &str, cx: &Call) -> bool {
         .any(|part| text.contains(part))
 }
 
-/// `e`, whose text may come from no engine, without one that repeats the secret it was sent.
+/// `e`, whose text may come from no engine, without one that repeats the secret in `cx`.
 fn without_secret(mut e: OpError, cx: &Call) -> OpError {
     for text in [Some(&mut e.message), e.hint.as_mut()]
         .into_iter()
         .flatten()
     {
         if repeats_secret(text, cx) {
-            *text = "not printed, since it repeats the key the call sent".to_owned();
+            *text = "not printed, since it repeats the key the CLI was given".to_owned();
         }
     }
     e
