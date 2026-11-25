@@ -51,6 +51,24 @@ fn recovery_does_not_create_a_missing_data_directory() {
 }
 
 #[test]
+fn recovery_refuses_a_regular_file_as_the_data_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("not-a-directory");
+    std::fs::write(&file, b"keep me").unwrap();
+    for args in [&[][..], &["--stdout"][..]] {
+        assert_eq!(
+            refusal(recovery(&file).args(args).output().unwrap(), 2),
+            json!({
+                "code": "invalid",
+                "message": "the data path is not a directory",
+                "retryable": false,
+            })
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), b"keep me");
+    }
+}
+
+#[test]
 fn recovery_refuses_an_unfinished_bootstrap() {
     let dir = tempfile::tempdir().unwrap();
     for args in [&[][..], &["--stdout"][..]] {
