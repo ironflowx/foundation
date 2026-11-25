@@ -1,5 +1,8 @@
 //! `ironflowx serve`, as a process.
 
+#[path = "../../ironflowx-operations/tests/leak/mod.rs"]
+mod leak;
+
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
@@ -8,8 +11,14 @@ use std::process::{Child, ChildStderr, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use ironflowx_cell::{HostClock, new_env_ref};
+use ironflowx_core::{ErrorKind, Scope, Secret};
 use ironflowx_operations::Engine;
+use ironflowx_proto::{
+    Call, Client, CreateKeyRequest, KeyStatus, ListEnvironmentsRequest, ListKeysRequest, OpError,
+    Operations as _, RevokeKeyRequest, WhoamiRequest,
+};
 use ironflowx_store::{Bootstrap, ControlPlane};
+use leak::{files, leak, leak_in};
 use serde_json::Value;
 
 const ID: &str = "0190b5f0-0000-7000-8000-000000000001";
@@ -44,6 +53,7 @@ impl Served {
     /// Starts it and waits until it is ready.
     fn start(data_dir: &Path, listen: &str) -> Self {
         let mut child = command(data_dir, listen)
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
@@ -69,9 +79,13 @@ impl Served {
         served
     }
 
-    /// Stops it; all it logged.
+    /// Stops it; all it logged. It printed nothing to stdout.
     fn stop(mut self) -> String {
         self.child.kill().unwrap();
+        let mut printed = String::new();
+        let mut stdout = self.child.stdout.take().unwrap();
+        stdout.read_to_string(&mut printed).unwrap();
+        assert_eq!(printed, "");
         let mut log = std::mem::take(&mut self.listening);
         self.log.read_to_string(&mut log).unwrap();
         log
@@ -119,7 +133,7 @@ fn the_first_start_writes_the_key_and_a_later_one_keeps_what_is_there() {
     let key = written.strip_suffix('\n').unwrap();
     assert_eq!((key.len(), &key[..4]), (84, "ixk_"));
     assert!(log.contains(&logged(&key_file)), "{log}");
-    assert!(!log.contains(&key[41..]), "{log}");
+    assert_eq!(leak(&log, [key]), None, "{log}");
     assert!(!log.contains("TLS proxy"), "{log}");
     let names: Vec<_> = std::fs::read_dir(&data_dir)
         .unwrap()
@@ -132,7 +146,7 @@ fn the_first_start_writes_the_key_and_a_later_one_keeps_what_is_there() {
     let log = Served::start(&data_dir, "127.0.0.1:0").stop();
     assert_eq!(std::fs::read_to_string(&key_file).unwrap(), written);
     assert!(!log.contains("admin.key"), "{log}");
-    assert!(!log.contains(&key[41..]), "{log}");
+    assert_eq!(leak(&log, [key]), None, "{log}");
     std::fs::remove_file(&key_file).unwrap();
     Served::start(&data_dir, "127.0.0.1:0").stop();
     assert!(!key_file.exists());
@@ -268,6 +282,121 @@ fn an_address_off_this_machine_warns_that_keys_travel_in_clear() {
     assert_eq!(warned.len(), 1, "{log}");
     let message = &warned[0]["fields"]["message"];
     assert_eq!(message, "keys travel in clear without a TLS proxy");
+}
+
+/// SRV-6, of an engine: each call of one client is answered for its own key, whichever came before.
+/// TEN-3: no key a call or an answer held is logged, or stored but in `admin.key`.
+#[tokio::test]
+async fn one_client_gets_each_keys_own_answer_and_no_key_is_kept() {
+    let dir = private();
+    let served = Served::start(dir.path(), "127.0.0.1:0");
+    let client = Client::new(&format!("http://{}", served.addr)).unwrap();
+    let call = |key: &str| Call::with_key(Secret::new(key.to_owned()));
+    let admin = std::fs::read_to_string(dir.path().join("admin.key")).unwrap();
+    let admin = admin.trim().to_owned();
+    let mut made = Vec::new();
+    for scopes in [
+        vec![Scope::Read],
+        vec![Scope::Read, Scope::Write, Scope::Admin],
+    ] {
+        let request = CreateKeyRequest {
+            scopes: scopes.into_iter().collect(),
+            ..Default::default()
+        };
+        let created = client.create_key(&call(&admin), request).await.unwrap();
+        let key = created.key.expose().to_owned();
+        assert_eq!(
+            (key.len(), &key[4..40]),
+            (84, &*created.info.key_id.to_string())
+        );
+        made.push(key);
+    }
+    let [read, revoked] = &made[..] else {
+        unreachable!()
+    };
+    let request = RevokeKeyRequest {
+        key_id: revoked[4..40].to_owned(),
+    };
+    client.revoke_key(&call(&admin), request).await.unwrap();
+
+    let refused = |kind, message: &str, hint: Option<&str>| OpError {
+        kind,
+        message: message.into(),
+        hint: hint.map(str::to_owned),
+    };
+    let missing = refused(
+        ErrorKind::PermissionDenied,
+        "missing scope: admin",
+        Some("create a key with scope admin, or use one that has it"),
+    );
+    for _ in 0..3 {
+        for (cx, whoami, keys) in [
+            (
+                Call::anonymous(),
+                Err(refused(
+                    ErrorKind::Unauthenticated,
+                    "authentication required",
+                    None,
+                )),
+                Err(refused(
+                    ErrorKind::Unauthenticated,
+                    "authentication required",
+                    None,
+                )),
+            ),
+            (call(read), Ok(&read[4..40]), Err(missing.clone())),
+            (
+                call(revoked),
+                Err(refused(ErrorKind::Unauthenticated, "invalid API key", None)),
+                Err(refused(ErrorKind::Unauthenticated, "invalid API key", None)),
+            ),
+            (call(&admin), Ok(&admin[4..40]), Ok(())),
+        ] {
+            let me = client.whoami(&cx, WhoamiRequest {}).await;
+            let me = me.map(|me| me.key_id.to_string());
+            assert_eq!(me, whoami.map(str::to_owned));
+            let listed = client.list_keys(&cx, ListKeysRequest::default()).await;
+            assert_eq!(listed.as_ref().map(|_| ()).map_err(Clone::clone), keys);
+            if let Ok(page) = listed {
+                let listed: Vec<_> = page
+                    .keys
+                    .iter()
+                    .map(|k| (k.key_id.to_string(), k.status))
+                    .collect();
+                let expected = [
+                    (&revoked[4..40], KeyStatus::Revoked),
+                    (&read[4..40], KeyStatus::Active),
+                    (&admin[4..40], KeyStatus::Active),
+                ];
+                assert_eq!(listed, expected.map(|(id, status)| (id.to_owned(), status)));
+            }
+        }
+    }
+    let request = ListEnvironmentsRequest {};
+    let environments = client
+        .list_environments(&call(read), request)
+        .await
+        .unwrap();
+    assert_eq!(environments.len(), 1);
+    let control = dir.path().join("control.db");
+    let control = rusqlite::Connection::open(control).unwrap();
+    let sql = "SELECT id || '.' || token FROM environments";
+    let env: String = control.query_row(sql, [], |row| row.get(0)).unwrap();
+    assert_eq!(environments[0].env.to_string(), env);
+    assert_eq!(environments[0].address.to_string(), "default/default");
+    drop(control);
+
+    let log = served.stop();
+    let all = || [&admin, read, revoked].map(String::as_str);
+    assert_eq!(leak(&log, all()), None);
+    let files = files(dir.path());
+    let held = |file: &&(_, _)| leak_in(file, all()).is_some();
+    let held: Vec<_> = files.iter().filter(held).collect();
+    assert_eq!(held, [&("admin.key".into(), format!("{admin}\n"))]);
+    // What is stored is searched.
+    for key in all() {
+        assert!(files.iter().any(|(_, bytes)| bytes.contains(&key[4..40])));
+    }
 }
 
 /// The deadline of `accept.rs`'s tests, on a real connection.

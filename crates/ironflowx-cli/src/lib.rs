@@ -100,7 +100,17 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
 /// Runs the CLI's own command that [`parse`] found: the process's exit code.
 pub fn run(matches: &ArgMatches) -> ExitCode {
     let (command, leaf) = chosen(matches);
-    end(answer(&command, leaf).and_then(|a| print(&a)))
+    end(answer(&command, leaf).and_then(|a| {
+        print(&a).map_err(|e| match &*command {
+            "keys create" => OpError {
+                hint: Some(
+                    "the key is stored and its secret lost: list the keys, revoke it".into(),
+                ),
+                ..e
+            },
+            _ => e,
+        })
+    }))
 }
 
 /// The words of the command that was parsed, and its own arguments.

@@ -7,7 +7,12 @@ fn main() {
 
 #[cfg(feature = "__wire")]
 fn wire() {
-    const FILES: [&str; 2] = ["ironflowx/v1/error.proto", "ironflowx/v1/identity.proto"];
+    const FILES: [&str; 4] = [
+        "ironflowx/v1/environment.proto",
+        "ironflowx/v1/error.proto",
+        "ironflowx/v1/identity.proto",
+        "ironflowx/v1/key.proto",
+    ];
     println!("cargo::rerun-if-changed=proto");
     let set = protox::Compiler::new(["proto"])
         .expect("the proto directory")

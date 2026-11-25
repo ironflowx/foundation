@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
 
-use common::{KEY, Recording, serving, whoami};
+use common::{CREATED, KEY, Recording, serving, whoami};
 use ironflowx_core::{Address, ErrorKind};
 use ironflowx_proto::{OpError, Whoami};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
@@ -125,6 +125,100 @@ fn every_field_that_is_not_optional_is_printed() {
         )
     );
     assert_eq!((out.status.code(), out.stderr), (Some(0), vec![]));
+}
+
+/// Each generated command: the answer on stdout, the new key of `keys create` there alone (TEN-3),
+/// and the request, which has no flags yet.
+#[test]
+fn each_command_prints_its_operations_answer() {
+    let served = Served::answering(Ok(whoami()));
+    let info = concat!(
+        r#"{"created_at":"2023-11-14T22:13:20.001Z","#,
+        r#""created_by":"0190b5f0-0000-7000-8000-000000000001","#,
+        r#""expires_at":"2027-01-15T08:00:00.120Z","#,
+        r#""key_id":"0190b5f0-0000-7000-8000-000000000002","label":"agent é","#,
+        r#""origin":"created","scopes":["read","write"],"status":"active"}"#,
+    );
+    let bootstrap = concat!(
+        r#"{"created_at":"1970-01-01T00:00:00Z","#,
+        r#""key_id":"0190b5f0-0000-7000-8000-000000000001","#,
+        r#""origin":"minted","scopes":["admin"],"status":"revoked"}"#,
+    );
+    let environment = concat!(
+        r#"{"address":"default/main","created_at":"2023-11-14T22:13:20Z","#,
+        r#""env":"0190b5f0-0000-7000-8000-000000000003.00112233445566778899aabbccddeeff","#,
+        r#""name":"main","project_id":"0190b5f0-0000-7000-8000-000000000004"}"#,
+    );
+    for (args, request, answer) in [
+        (
+            ["environments", "list"],
+            "ListEnvironmentsRequest",
+            format!(r#"{{"environments":[{environment}]}}"#),
+        ),
+        (
+            ["keys", "create"],
+            "CreateKeyRequest { scopes: {}, expires_at: None, label: None }",
+            format!(r#"{{"info":{info},"key":"{CREATED}"}}"#),
+        ),
+        (
+            ["keys", "list"],
+            "ListKeysRequest { limit: None, cursor: None }",
+            format!(r#"{{"keys":[{info},{bootstrap}],"next":"0123.7"}}"#),
+        ),
+        (
+            ["keys", "revoke"],
+            r#"RevokeKeyRequest { key_id: "" }"#,
+            "{}".to_owned(),
+        ),
+    ] {
+        let mut command = command(&args);
+        command.env("IRONFLOWX_URL", &served.url);
+        let out = command.env("IRONFLOWX_KEY", KEY).output().unwrap();
+        assert_eq!(stdout(&out), format!("{answer}\n"));
+        assert_eq!((out.status.code(), out.stderr), (Some(0), vec![]));
+        assert_eq!(served.operations.take_requests(), [request]);
+        assert_eq!(served.operations.take(), [Some(KEY.to_owned())]);
+    }
+}
+
+/// SRV-11: what an agent branches on where no engine answers.
+#[test]
+fn a_state_change_no_engine_answers_is_unknown() {
+    // Takes each connection and closes it.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || listener.incoming().for_each(drop));
+    for (args, code, hint) in [
+        (["environments", "list"], "unavailable", None),
+        (["keys", "list"], "unavailable", None),
+        (
+            ["keys", "create"],
+            "unknown",
+            Some(
+                "the key may be stored: list the keys before the retry, and again after the \
+                 engine reopens; revoke the one no holder has",
+            ),
+        ),
+        (
+            ["keys", "revoke"],
+            "unknown",
+            Some("retry: revoking a revoked key succeeds, and one that revoked itself is refused"),
+        ),
+    ] {
+        let mut command = command(&args);
+        command.env("IRONFLOWX_URL", &url);
+        let out = command.env("IRONFLOWX_KEY", KEY).output().unwrap();
+        let (envelope, exit) = envelope(&out);
+        let unknown = code == "unknown";
+        assert_eq!(exit, if unknown { 6 } else { 8 }, "{args:?}");
+        assert_eq!(envelope["code"], code, "{args:?}");
+        assert_eq!(envelope["retryable"], !unknown, "{args:?}");
+        assert_eq!(
+            envelope.get("hint").and_then(Value::as_str),
+            hint,
+            "{args:?}"
+        );
+    }
 }
 
 #[test]
@@ -286,7 +380,7 @@ fn a_usage_error_is_an_envelope() {
         (
             &[][..],
             "'ironflowx' requires a subcommand but one was not provided \
-             [subcommands: serve, version, whoami]",
+             [subcommands: serve, version, environments, whoami, keys]",
         ),
         (&["nope"], "unrecognized subcommand 'nope'"),
         (&["help"], "unrecognized subcommand 'help'"),
@@ -490,7 +584,15 @@ fn a_call_is_given_30_seconds() {
 #[test]
 fn an_answer_that_cannot_be_printed_is_a_failure() {
     let served = Served::answering(Ok(whoami()));
-    for mut command in [served.whoami(), command(&["version"]), command(&["--help"])] {
+    let mut create = command(&["keys", "create"]);
+    create.env("IRONFLOWX_URL", &served.url);
+    let lost = "the key is stored and its secret lost: list the keys, revoke it";
+    for (mut command, hint) in [
+        (served.whoami(), None),
+        (command(&["version"]), None),
+        (command(&["--help"]), None),
+        (create, Some(lost)),
+    ] {
         // A pipe nothing reads.
         let (reader, writer) = std::io::pipe().unwrap();
         drop(reader);
@@ -498,7 +600,10 @@ fn an_answer_that_cannot_be_printed_is_a_failure() {
         drop(command);
         let (envelope, exit) = envelope(&child.unwrap().wait_with_output().unwrap());
         let message = "cannot write to stdout: Broken pipe (os error 32)";
-        let expected = json!({"code": "internal", "message": message, "retryable": false});
+        let mut expected = json!({"code": "internal", "message": message, "retryable": false});
+        if let Some(hint) = hint {
+            expected["hint"] = json!(hint);
+        }
         assert_eq!((envelope, exit), (expected, 1));
     }
 }

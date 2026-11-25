@@ -276,7 +276,9 @@ impl Operations for Engine {
     /// As [`Engine::whoami`]; `PermissionDenied` without `admin`; `Invalid` for a request
     /// beyond the caller, an expiry not after now, or a bad label; `ResourceExhausted` while
     /// 1,000 created keys hold a slot: not revoked, and no expiry recorded; `Unauthenticated` if
-    /// the caller was revoked or expired before the key was stored.
+    /// the caller was revoked or expired before the key was stored. An `Unavailable` of the store
+    /// itself says in its hint to list the keys before a retry, and again after a reopen: the key
+    /// may be stored (D48).
     ///
     /// # Panics
     ///
@@ -300,7 +302,20 @@ impl Operations for Engine {
             expires_at: req.expires_at,
         };
         let (keys, env, clock) = (self.keys(&a), self.env, self.clock.clone());
-        let row = key_change(move || keys.insert_key(&env, new, creator, &*clock, KEY_CAP)).await?;
+        let row = key_change(move || keys.insert_key(&env, new, creator, &*clock, KEY_CAP))
+            .await
+            .map_err(|e| match e.kind {
+                // Its commit may be unsettled (D48), and a retry would make a second key.
+                ErrorKind::Unavailable => OpError {
+                    hint: Some(
+                        "the key may be stored: list the keys before the retry, and again after \
+                         the engine reopens; revoke the one no holder has"
+                            .into(),
+                    ),
+                    ..e
+                },
+                _ => e,
+            })?;
         let info = key_info(row, self.clock.now());
         Ok(CreatedKey { key, info })
     }

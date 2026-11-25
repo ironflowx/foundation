@@ -27,11 +27,19 @@ fn call(key: &str) -> Call {
 }
 
 fn assert_unavailable<T: std::fmt::Debug>(answer: Result<T, OpError>, seam: &str) {
+    assert_unavailable_with(answer, seam, "retry at once");
+}
+
+fn assert_unavailable_with<T: std::fmt::Debug>(answer: Result<T, OpError>, seam: &str, hint: &str) {
     let err = answer.expect_err(seam);
     assert_eq!(err.kind, ErrorKind::Unavailable, "{seam}: {err:?}");
     assert!(err.kind.retryable(), "{seam}");
-    assert_eq!(err.hint.as_deref(), Some("retry at once"), "{seam}");
+    assert_eq!(err.hint.as_deref(), Some(hint), "{seam}");
 }
+
+/// What a `create_key` whose transaction failed says: its key may land yet (D48).
+const MAY_BE_STORED: &str = "the key may be stored: list the keys before the retry, and again \
+                             after the engine reopens; revoke the one no holder has";
 
 /// Breaks one seam with `break_sql`, checks the call that reaches it, then mends it.
 async fn at_seam(dir: &Path, break_sql: &str, mend_sql: &str, check: impl AsyncFnOnce()) {
@@ -102,7 +110,7 @@ async fn a_failure_at_each_control_plane_seam_is_unavailable_until_it_clears() {
     // A key change: both kinds write to the keys table.
     let change = async || {
         let made = engine.create_key(&k, CreateKeyRequest::default()).await;
-        assert_unavailable(made, "key change");
+        assert_unavailable_with(made, "key change", MAY_BE_STORED);
         assert_unavailable(engine.revoke_key(&k, victim.clone()).await, "key change");
     };
     at_seam(

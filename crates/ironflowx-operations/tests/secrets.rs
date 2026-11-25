@@ -5,9 +5,11 @@
 //! logs: this test runs itself as a child that plays a host, which prints every answer and error it
 //! gets.
 
+mod leak;
+
 use std::collections::BTreeSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
 
@@ -21,6 +23,7 @@ use ironflowx_proto::{
     RevokeKeyRequest, WhoamiRequest,
 };
 use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, RecoverError};
+use leak::{files, latin1, leak, leak_in};
 
 const T: i64 = 1_800_000_000_000;
 const HOUR: i64 = 3_600_000;
@@ -48,104 +51,6 @@ fn announced(key: &str) -> String {
     let mut hash = DefaultHasher::new();
     key.hash(&mut hash);
     format!("a key: {} {:016x}", &key[4..40], hash.finish())
-}
-
-/// The 256 bits a key's secret part encodes.
-fn bits(secret: &str) -> Vec<u8> {
-    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let (mut held, mut held_bits, mut out) = (0u32, 0, Vec::new());
-    for c in secret.chars() {
-        let six = alphabet.find(c).expect("base64url");
-        held = held << 6 | u32::try_from(six).unwrap();
-        held_bits += 6;
-        if held_bits >= 8 {
-            held_bits -= 8;
-            out.push((held >> held_bits & 0xff) as u8);
-        }
-    }
-    out
-}
-
-/// Bytes as a string `str::contains` searches: each byte the character of that number.
-fn latin1(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| char::from(*b)).collect()
-}
-
-/// The halves of a key's secret: of its text, and of the 256 bits that encodes. Half of it is
-/// enough to matter.
-fn halves(key: &str) -> [Vec<u8>; 4] {
-    let (text, bits) = (&key.as_bytes()[41..], bits(&key[41..]));
-    let (a, b) = text.split_at(21);
-    let (c, d) = bits.split_at(16);
-    [a, b, c, d].map(<[u8]>::to_vec)
-}
-
-/// What gives a secret away in `text`: half of one of `keys`, or the start of any key's text. A
-/// half as it is, in either base64 alphabet, as a list of numbers, decimal or hex, as a run of hex
-/// digits, whatever the case, the spaces and the `0x` between them, or as `escape_ascii` writes
-/// it: what one usual call to std's formatting gives. In no other form: not with a `char` for each
-/// byte, unless in a path, nor as hex with anything else between.
-fn leak<'a>(text: &str, keys: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
-    let list: String = text.split_whitespace().collect();
-    let list = list.to_lowercase().replace("0x", "");
-    let run = list.replace(',', "");
-    for key in keys {
-        for half in halves(key) {
-            let as_is = latin1(&half);
-            let base64 = as_is.replace('-', "+").replace('_', "/");
-            let each = |f: fn(&u8) -> String| half.iter().map(f).collect::<Vec<_>>();
-            if text.contains(&as_is) || text.contains(&base64) {
-                return Some("a secret's text");
-            }
-            if list.contains(&each(|b| format!("{b}")).join(","))
-                || list.contains(&each(|b| format!("{b:x}")).join(","))
-            {
-                return Some("a secret as a list");
-            }
-            if run.contains(&each(|b| format!("{b:02x}")).concat()) {
-                return Some("a secret in hex");
-            }
-            if text.contains(&half.escape_ascii().to_string()) {
-                return Some("a secret, escaped");
-            }
-        }
-    }
-    // The key format a hint names goes on with `<`.
-    let mut starts = text.match_indices("ixk_");
-    let start = starts.find(|(at, _)| text[at + 4..].starts_with(|c: char| c.is_ascii_hexdigit()));
-    start.map(|_| "a key's text")
-}
-
-/// As [`leak`], in a file's or directory's path or in a file's bytes.
-fn leak_in<'a>(
-    (path, bytes): &(PathBuf, String),
-    keys: impl IntoIterator<Item = &'a str>,
-) -> Option<&'static str> {
-    let raw = latin1(path.as_os_str().as_encoded_bytes());
-    leak(&format!("{}\n{raw}\n{bytes}", path.display()), keys)
-}
-
-/// Every file and directory under `root`, by its path there, a directory empty. Copied by another
-/// process: closing a file this one opened would drop the locks SQLite holds on it here.
-fn files(root: &Path) -> Vec<(PathBuf, String)> {
-    let copy = tempfile::tempdir().unwrap();
-    let copied = copy.path().join("root");
-    let cp = Command::new("cp").arg("-R").arg(root).arg(&copied).status();
-    assert!(cp.unwrap().success());
-    let (mut out, mut stack) = (Vec::new(), vec![copied.clone()]);
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            let mut bytes = String::new();
-            if path.is_dir() {
-                stack.push(path.clone());
-            } else {
-                bytes = latin1(&std::fs::read(&path).unwrap());
-            }
-            out.push((path.strip_prefix(&copied).unwrap().to_owned(), bytes));
-        }
-    }
-    out
 }
 
 /// What a host does, and every secret in it.
@@ -518,6 +423,25 @@ fn no_secret_is_stored_or_logged() {
     }
     for half in ["4OHi4+Tl5ufo6err7O3u7", "/Dx8vP09fb3+Pn6+/z9/v8"] {
         assert_eq!(leak(half, [high_key.expose()]), Some("a secret's text"));
+    }
+    // And each half within base64 of what holds it, alone after `key_<id>_`, `xkey_<id>_` and
+    // `Bearer key_<id>_`; then a whole `Authorization` value's; then the first half and the bits
+    // after an `x`. So at each place in a group.
+    for form in [
+        "a2V5XzAxOWE5ZjNlLTdjMmItN2Q0MS04YTNlLTIwMDAwMDAwMDBlMF80T0hpNC1UbDV1Zm82ZXJyN08zdTcuLi4uLi4uLi4uLi4uLi4uLi4uLi4u",
+        "a2V5XzAxOWE5ZjNlLTdjMmItN2Q0MS04YTNlLTIwMDAwMDAwMDBlMF8uLi4uLi4uLi4uLi4uLi4uLi4uLi5fRHg4dlAwOWZiMy1QbjYtX3o5X3Y4",
+        "eGtleV8wMTlhOWYzZS03YzJiLTdkNDEtOGEzZS0yMDAwMDAwMDAwZTBfNE9IaTQtVGw1dWZvNmVycjdPM3U3Li4uLi4uLi4uLi4uLi4uLi4uLi4uLg==",
+        "eGtleV8wMTlhOWYzZS03YzJiLTdkNDEtOGEzZS0yMDAwMDAwMDAwZTBfLi4uLi4uLi4uLi4uLi4uLi4uLi4uX0R4OHZQMDlmYjMtUG42LV96OV92OA==",
+        "QmVhcmVyIGtleV8wMTlhOWYzZS03YzJiLTdkNDEtOGEzZS0yMDAwMDAwMDAwZTBfNE9IaTQtVGw1dWZvNmVycjdPM3U3Li4uLi4uLi4uLi4uLi4uLi4uLi4uLg==",
+        "QmVhcmVyIGtleV8wMTlhOWYzZS03YzJiLTdkNDEtOGEzZS0yMDAwMDAwMDAwZTBfLi4uLi4uLi4uLi4uLi4uLi4uLi4uX0R4OHZQMDlmYjMtUG42LV96OV92OA==",
+        "QmVhcmVyIGl4a18wMTlhOWYzZS03YzJiLTdkNDEtOGEzZS0yMDAwMDAwMDAwZTBfNE9IaTQtVGw1dWZvNmVycjdPM3U3X0R4OHZQMDlmYjMtUG42LV96OV92OA==",
+        "eDRPSGk0LVRsNXVmbzZlcnI3TzN1Ny4uLi4uLi4uLi4uLi4uLi4uLi4uLi4=",
+        "eODh4uPk5ebn6Onq6+zt7u/w8fLz9PX29/j5+vv8/f7/",
+    ] {
+        for form in [form.to_owned(), form.replace('+', "-").replace('/', "_")] {
+            let found = leak(&form, [high_key.expose()]);
+            assert_eq!(found, Some("a secret in base64"), "{form}");
+        }
     }
     // Not the high bytes of another.
     let others: Vec<u8> = high.iter().rev().copied().collect();

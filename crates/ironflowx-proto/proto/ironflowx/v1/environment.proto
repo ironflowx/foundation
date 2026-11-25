@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package ironflowx.v1;
+
+import "google/protobuf/timestamp.proto";
+import "ironflowx/v1/options.proto";
+
+// The environments a key reaches: only its own.
+service EnvironmentService {
+  // The environments the calling key reaches.
+  rpc ListEnvironments(ListEnvironmentsRequest) returns (ListEnvironmentsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (ironflowx.v1.cli) = "environments list";
+    option (ironflowx.v1.summary) = "List the environments the calling key reaches: its own";
+    option (ironflowx.v1.example) = "{}";
+  }
+}
+
+message ListEnvironmentsRequest {}
+
+message ListEnvironmentsResponse {
+  repeated Environment environments = 1;
+}
+
+message Environment {
+  // Its environment reference, "<id>.<token>": never an ID alone (LED-9).
+  string env = 1;
+  string name = 2;
+  // The text "project/environment".
+  string address = 3;
+  string project_id = 4 [json_name = "project_id"];
+  google.protobuf.Timestamp created_at = 5 [json_name = "created_at"];
+}
