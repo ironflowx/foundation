@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package no_summary;
+
+import "ironflowx/v1/options.proto";
+
+service EventService {
+  rpc Emit(EmitRequest) returns (EmitResponse) {
+    option (ironflowx.v1.cli) = "events emit";
+    option (ironflowx.v1.example) = "{\"event_name\": \"order.placed\", \"data\": \"{\\\"id\\\": 1}\"}";
+  }
+}
+
+message EmitRequest {
+  string event_name = 1 [json_name = "event_name"];
+  optional string data = 2 [(ironflowx.v1.json_text) = true];
+}
+
+message EmitResponse {
+  bool duplicate = 1;
+}

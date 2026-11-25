@@ -15,4 +15,6 @@ allow = [
   "Apache-2.0",
   # foldhash: buffa's hash tables.
   "Zlib",
+  # borrow-or-share: under jsonschema, which checks the proto's examples as ironflowx-cli builds.
+  "MIT-0",
 ]

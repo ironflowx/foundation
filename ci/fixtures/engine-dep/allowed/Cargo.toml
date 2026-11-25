@@ -7,5 +7,8 @@ edition = "2024"
 ironflowx-core = { path = "../../../../crates/ironflowx-core" }
 ironflowx-proto = { path = "../../../../crates/ironflowx-proto" }
 
+[build-dependencies]
+ironflowx-codegen = { path = "../../../../crates/ironflowx-codegen" }
+
 [dev-dependencies]
 ironflowx-operations = { path = "../../../../crates/ironflowx-operations" }

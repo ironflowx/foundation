@@ -31,7 +31,7 @@ An app that needs no keys opens a ledger directly.
 
 ## Architecture
 
-The engine is a library: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead. `ironflowx serve`, in this repository and not released yet, is the first host we ship: it serves an engine over Connect, gRPC and gRPC-Web. Event rules, credentials and core are pure; only the ledger, the control plane, the engine and the host touch disk, the clock and randomness.
+The engine is a library: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead. `ironflowx serve`, in this repository and not released yet, is the first host we ship: it serves an engine over Connect, gRPC and gRPC-Web, and the same binary's CLI calls one. Event rules, credentials and core are pure; only the ledger, the control plane, the engine and the host touch disk, the clock and randomness.
 
 A write is acknowledged once its record is fsynced, and a read sees every write acknowledged before it arrived, whoever made it:
 
@@ -50,6 +50,8 @@ More diagrams (crates, modules and seams, crash recovery) and the details are in
 | ironflowx-operations | the engine: admits every call, then runs it on the ledger or the keys |
 | ironflowx | every foundation crate, re-exported |
 | ironflowx-doors | the HTTP door, unpublished |
+| ironflowx-cli | the CLI, unpublished |
+| ironflowx-codegen | the generator: the CLI's commands, from the proto, unpublished |
 | ironflowx-bin | the `ironflowx` binary and its host, unpublished |
 
 ## Use it

@@ -1,0 +1,15 @@
+pub mod ironflowx_codegen
+pub struct ironflowx_codegen::CodegenError
+impl core::clone::Clone for ironflowx_codegen::CodegenError
+pub fn ironflowx_codegen::CodegenError::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_codegen::CodegenError
+pub fn ironflowx_codegen::CodegenError::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_codegen::CodegenError
+pub fn ironflowx_codegen::CodegenError::eq(&self, &Self) -> bool
+impl core::error::Error for ironflowx_codegen::CodegenError
+impl core::fmt::Debug for ironflowx_codegen::CodegenError
+pub fn ironflowx_codegen::CodegenError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_codegen::CodegenError
+pub fn ironflowx_codegen::CodegenError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_codegen::CodegenError
+pub fn ironflowx_codegen::generate(&[u8], &std::path::Path) -> core::result::Result<(), ironflowx_codegen::CodegenError>

@@ -3,12 +3,16 @@ syntax = "proto3";
 package ironflowx.v1;
 
 import "google/protobuf/timestamp.proto";
+import "ironflowx/v1/options.proto";
 
 // Who is calling. Each multiword field sets a snake_case json_name (D78).
 service IdentityService {
   // The calling key, as it sees itself.
   rpc Whoami(WhoamiRequest) returns (WhoamiResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
+    option (ironflowx.v1.cli) = "whoami";
+    option (ironflowx.v1.summary) = "Show the calling key: its ID, scopes, environment and expiry";
+    option (ironflowx.v1.example) = "{}";
   }
 }
 

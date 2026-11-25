@@ -6,9 +6,9 @@
 //! No operation takes an environment: it runs on the one its key is bound to (LED-7).
 //!
 //! Features, none on by default: `client` is the proto client, [`Operations`] over the network;
-//! `wire` is the generated messages of the proto in `proto/` and their mapping to the types here;
-//! `server` adds the generated service traits a door implements. `wire` and `server` expose types
-//! of `buffa` and `connectrpc`, which are 0.x, and follow their versions.
+//! `wire` is the generated messages of the proto in `proto/`, their mapping to the types here, and
+//! the compiled proto; `server` adds the generated service traits a door implements. `wire` and
+//! `server` expose types of `buffa` and `connectrpc`, which are 0.x, and follow their versions.
 
 #[cfg(feature = "client")]
 mod client;

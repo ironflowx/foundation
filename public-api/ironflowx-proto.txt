@@ -51,6 +51,7 @@ pub fn ironflowx_proto::Call::fmt(&self, &mut core::fmt::Formatter<'_>) -> core:
 pub struct ironflowx_proto::Client
 impl ironflowx_proto::Client
 pub fn ironflowx_proto::Client::new(&str) -> core::result::Result<Self, ironflowx_proto::InvalidUrl>
+pub fn ironflowx_proto::Client::with_timeout(self, core::time::Duration) -> Self
 impl core::fmt::Debug for ironflowx_proto::Client
 pub fn ironflowx_proto::Client::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl ironflowx_proto::Operations for ironflowx_proto::Client

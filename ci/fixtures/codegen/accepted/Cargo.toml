@@ -1,0 +1,12 @@
+[package]
+name = "accepted"
+version = "0.0.0"
+edition = "2024"
+build = "../build.rs"
+
+[lib]
+path = "lib.rs"
+
+[build-dependencies]
+ironflowx-codegen.workspace = true
+protox.workspace = true

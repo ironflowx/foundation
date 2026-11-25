@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package ironflowx.v1;
+
+import "google/protobuf/descriptor.proto";
+
+// What the generator reads of each method and field, beside the proto itself (D52). It refuses a
+// method without `cli`, `summary` or an `example` that its request's schema allows.
+extend google.protobuf.MethodOptions {
+  // The command: "events emit".
+  optional string cli = 50001;
+  // One line about the command.
+  optional string summary = 50002;
+  // One request, as wire JSON.
+  optional string example = 50003;
+}
+
+extend google.protobuf.FieldOptions {
+  // A string that holds JSON text.
+  optional bool json_text = 50001;
+}

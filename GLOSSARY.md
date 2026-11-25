@@ -144,6 +144,9 @@ A way in from outside the process, such as an HTTP server.
 **HTTP door**:
 The first door: turns Connect, gRPC and gRPC-Web calls into `Operations` calls and back.
 
+**Envelope**:
+The one JSON shape of every CLI error: `code`, `message`, `retryable` and, when there is one, `hint`.
+
 **Embedder**:
 An app that links foundation. One that calls the ledger directly, without keys, is trusted by it, the attribution it supplies included.
 

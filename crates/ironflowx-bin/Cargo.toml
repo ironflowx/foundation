@@ -16,6 +16,7 @@ test = false
 
 [dependencies]
 ironflowx-cell.workspace = true
+ironflowx-cli = { path = "../ironflowx-cli" }
 ironflowx-core.workspace = true
 ironflowx-doors = { path = "../ironflowx-doors", features = ["http"] }
 ironflowx-operations.workspace = true
@@ -35,6 +36,8 @@ ironflowx-authz.workspace = true
 ironflowx-core = { workspace = true, features = ["__fault-points"] }
 ironflowx-operations = { workspace = true, features = ["__fault-points"] }
 ironflowx-proto = { workspace = true, features = ["client"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 rusqlite = { version = "0.43.0", default-features = false, features = ["bundled"] }
+rustix = { version = "1.1.6", default-features = false, features = ["pty", "std"] }
 serde_json.workspace = true
 tokio = { version = "1.54.1", default-features = false, features = ["test-util"] }
