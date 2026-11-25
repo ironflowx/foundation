@@ -26,7 +26,8 @@ pub fn write(data_dir: &Path, key: &Secret) -> io::Result<()> {
         .prefix("admin.key.")
         .suffix(".tmp")
         .permissions(Permissions::from_mode(0o400))
-        .tempfile_in(data_dir)?;
+        .tempfile_in(data_dir)
+        .map_err(tempfile_error)?;
     // The process umask may have taken the owner's bit too.
     temporary
         .as_file()
@@ -36,8 +37,14 @@ pub fn write(data_dir: &Path, key: &Secret) -> io::Result<()> {
     temporary.as_file().sync_all()?;
     // Not a rename, which would replace an `admin.key`.
     std::fs::hard_link(temporary.path(), path(data_dir))?;
-    temporary.close()?;
+    temporary.close().map_err(tempfile_error)?;
     File::open(data_dir)?.sync_all()
+}
+
+// Tempfile wraps filesystem errors with its own rendering of the path. The caller already
+// supplies a safe locator. Keep the error kind without including the wrapped path.
+fn tempfile_error(error: io::Error) -> io::Error {
+    error.kind().into()
 }
 
 const RELATIVE: &str = "configured data directory";
@@ -119,7 +126,8 @@ fn probe_with_link(
     let mut temporary = tempfile::Builder::new()
         .prefix(".admin-key-probe.")
         .permissions(Permissions::from_mode(0o400))
-        .tempfile_in(data_dir)?;
+        .tempfile_in(data_dir)
+        .map_err(tempfile_error)?;
     let mut link = temporary.path().as_os_str().to_owned();
     link.push(".link");
     let link = PathBuf::from(link);

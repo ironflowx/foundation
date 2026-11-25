@@ -87,6 +87,10 @@ async fn recovery_distinguishes_wrong_format_from_a_control_plane_fault() {
     let error = refusal(recovery(dir.path()).output().unwrap(), 8);
     assert_eq!(error["code"], "unavailable");
     assert_eq!(error["retryable"], true);
+    assert_eq!(
+        error["hint"],
+        "list recovered keys before retrying and again after reopening the engine. Revoke any key whose secret was lost"
+    );
     assert!(!dir.path().join("admin.key").exists());
 }
 
@@ -111,6 +115,37 @@ async fn a_failed_probe_leaves_no_recovered_key() {
     assert_eq!(keys(&opened.engine, admin).await.len(), 1, "only bootstrap");
     assert!(!dir.path().join("admin.key").exists());
     opened.engine.close().await;
+}
+
+#[test]
+fn failed_probe_prints_only_the_safe_directory_locator() {
+    let temp = tempfile::tempdir().unwrap();
+    for (name, absolute) in [
+        ("quoted\"root", true),
+        ("back\\slash", true),
+        ("new\nline", true),
+        ("relative", false),
+        ("ordinary", true),
+    ] {
+        let dir = temp.path().join(name);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, Permissions::from_mode(0o500)).unwrap();
+        let argument = if absolute { &dir } else { Path::new(name) };
+        let out = recovery(argument).current_dir(temp.path()).output();
+        std::fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
+
+        let error = refusal(out.unwrap(), 1);
+        let locator = if name == "ordinary" {
+            dir.to_str().unwrap()
+        } else {
+            "the configured data directory"
+        };
+        assert_eq!(
+            error["message"],
+            format!("cannot probe writes and hard links in {locator}: permission denied")
+        );
+        assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0);
+    }
 }
 
 #[tokio::test]

@@ -5,7 +5,7 @@ use std::io::{self, IsTerminal as _, Write as _};
 use std::path::Path;
 
 use ironflowx_core::{ErrorKind, KeyId, Secret};
-use ironflowx_operations::{HostClock, RecoverError, StoreError, key_id, recover_admin_key};
+use ironflowx_operations::{HostClock, RecoverError, key_id, recover_admin_key};
 use ironflowx_proto::OpError;
 
 use crate::{key_file, logging::public_text};
@@ -95,13 +95,12 @@ fn preflight(data_dir: &Path) -> Result<(), OpError> {
 fn recovery_error(e: RecoverError) -> OpError {
     let kind = match &e {
         RecoverError::NotReady => ErrorKind::Invalid,
-        RecoverError::Store(StoreError::Format) => ErrorKind::Internal,
-        RecoverError::Store(StoreError::Failed(_)) => ErrorKind::Unavailable,
+        RecoverError::Store(e) => crate::store_kind(e),
     };
     let mut error = error(kind, e.to_string());
     if kind == ErrorKind::Unavailable {
         error.hint = Some(
-            "list recovered keys before retrying and again after reopening the engine; revoke any key whose secret was lost".into()
+            "list recovered keys before retrying and again after reopening the engine. Revoke any key whose secret was lost".into()
         );
     }
     error
