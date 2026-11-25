@@ -430,7 +430,8 @@ fn refused_as_invalid(w: &mut Serve) {
     let e = answer.as_ref().expect_err("the call is refused");
     assert_eq!(e.code, ErrorCode::InvalidArgument);
     let e = op_error(e).expect("the engine's own error");
-    assert_eq!(e.kind, ErrorKind::Invalid);
+    let message = "a time is in whole milliseconds and in years 0001 to 9999";
+    assert_eq!((e.kind, &*e.message), (ErrorKind::Invalid, message));
 }
 
 #[then("listing keys shows only the bootstrap key")]

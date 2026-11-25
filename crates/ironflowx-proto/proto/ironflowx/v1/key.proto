@@ -27,7 +27,8 @@ service KeyService {
   rpc RevokeKey(RevokeKeyRequest) returns (RevokeKeyResponse) {
     option (ironflowx.v1.cli) = "keys revoke";
     option (ironflowx.v1.summary) =
-      "Revoke a key. Safe to repeat: revoking a revoked key succeeds";
+      "Revoke a key. Repeat it safely: revoking a revoked key succeeds, and a key that revoked "
+      "itself is refused";
     option (ironflowx.v1.example) = "{\"key_id\": \"0190b5f0-0000-7000-8000-000000000001\"}";
   }
 }

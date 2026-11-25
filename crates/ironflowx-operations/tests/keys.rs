@@ -237,7 +237,7 @@ async fn a_creator_that_expires_before_its_key_is_stored_is_refused() {
     opened.engine.close().await;
 }
 
-/// A key change that fails in SQLite is `Unavailable`, retried at once, and writes nothing; the
+/// A key change that fails in SQLite is `Unavailable`, and before its commit writes nothing; the
 /// engine stays open.
 #[tokio::test]
 async fn a_failed_insert_is_unavailable_and_writes_nothing() {

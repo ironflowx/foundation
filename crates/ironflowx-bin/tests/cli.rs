@@ -202,7 +202,7 @@ fn a_state_change_no_engine_answers_is_unknown() {
         (
             ["keys", "revoke"],
             "unknown",
-            Some("retry: revoking a revoked key succeeds"),
+            Some("retry: revoking a revoked key succeeds, and one that revoked itself is refused"),
         ),
     ] {
         let mut command = command(&args);
@@ -584,7 +584,15 @@ fn a_call_is_given_30_seconds() {
 #[test]
 fn an_answer_that_cannot_be_printed_is_a_failure() {
     let served = Served::answering(Ok(whoami()));
-    for mut command in [served.whoami(), command(&["version"]), command(&["--help"])] {
+    let mut create = command(&["keys", "create"]);
+    create.env("IRONFLOWX_URL", &served.url);
+    let lost = "the key is stored and its secret lost: list the keys, revoke it";
+    for (mut command, hint) in [
+        (served.whoami(), None),
+        (command(&["version"]), None),
+        (command(&["--help"]), None),
+        (create, Some(lost)),
+    ] {
         // A pipe nothing reads.
         let (reader, writer) = std::io::pipe().unwrap();
         drop(reader);
@@ -592,7 +600,10 @@ fn an_answer_that_cannot_be_printed_is_a_failure() {
         drop(command);
         let (envelope, exit) = envelope(&child.unwrap().wait_with_output().unwrap());
         let message = "cannot write to stdout: Broken pipe (os error 32)";
-        let expected = json!({"code": "internal", "message": message, "retryable": false});
+        let mut expected = json!({"code": "internal", "message": message, "retryable": false});
+        if let Some(hint) = hint {
+            expected["hint"] = json!(hint);
+        }
         assert_eq!((envelope, exit), (expected, 1));
     }
 }

@@ -9,12 +9,13 @@ pub enum ErrorKind {
     Invalid,
     /// No such resource, or its ID does not parse.
     NotFound,
-    /// The outcome is unknown; the ledger is now unavailable until reopened.
+    /// The outcome is unknown: of an emit, and the ledger is now unavailable until reopened; or,
+    /// from the proto client, of a call that changes state and that no engine answered.
     Unknown,
     /// The ledger failed and refuses every call until it is reopened; or the control plane failed
     /// this call, which can be retried at once, unless a call has panicked under its lock: then
     /// only after a reopen. Through a door, the engine is not open yet; from the proto client, no
-    /// engine answered.
+    /// engine answered a read.
     Unavailable,
     /// No key, or a key that is not valid for this environment.
     Unauthenticated,

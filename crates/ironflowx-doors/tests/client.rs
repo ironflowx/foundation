@@ -172,7 +172,12 @@ async fn an_expiry_outside_the_wires_years_is_not_sent() {
             ..Default::default()
         };
         let e = client.create_key(&call(KEY), request).await.unwrap_err();
-        assert_eq!((e.kind, e.hint), (ErrorKind::Invalid, None), "{outside}");
+        let refused = OpError {
+            kind: ErrorKind::Invalid,
+            message: "a time is in whole milliseconds and in years 0001 to 9999".into(),
+            hint: None,
+        };
+        assert_eq!(e, refused, "{outside}");
     }
     assert_eq!(operations.take(), []);
 }
@@ -246,7 +251,7 @@ fn unanswered(op: Operation) -> (ErrorKind, Option<&'static str>) {
         ),
         Operation::RevokeKey => (
             ErrorKind::Unknown,
-            Some("retry: revoking a revoked key succeeds"),
+            Some("retry: revoking a revoked key succeeds, and one that revoked itself is refused"),
         ),
         _ => (ErrorKind::Unavailable, None),
     }
@@ -274,7 +279,9 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
     // a message that does not decode.
     let short = b"\n\x01x";
     let answers = [
-        // Decodes as an answer that holds nothing, but is none of Connect's.
+        // Holds nothing, as a revoke's answer does, and a page with nothing.
+        http("200 OK", "application/proto", b""),
+        // As that, but none of Connect's.
         http("204 No Content", "application/proto", b""),
         http("202 Accepted", "application/proto", b""),
         b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n".to_vec(),
@@ -299,7 +306,8 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
             br#"{"code":"invalid_argument","details":[{"type":"ironflowx.v1.ErrorInfo","value":"CgNuZXc"}]}"#,
         ),
     ];
-    let ignored = [Some(&answers[13]), Some(&answers[14])];
+    let ignored = [Some(&answers[14]), Some(&answers[15])];
+    let nothing = Some(&answers[0]);
     for op in CARRIED {
         for answer in std::iter::once(None).chain(answers.iter().map(Some)) {
             let client = match answer {
@@ -311,6 +319,15 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
             // A revoke's answer holds nothing, so another message is one with fields it ignores.
             if op == Operation::RevokeKey && ignored.contains(&answer) {
                 assert_eq!(got, Ok("()".to_owned()), "{shown:?}");
+                continue;
+            }
+            if answer == nothing && !matches!(op, Operation::Whoami | Operation::CreateKey) {
+                let empty = match op {
+                    Operation::RevokeKey => "()",
+                    Operation::ListKeys => "KeyPage { keys: [], next: None }",
+                    _ => "[]",
+                };
+                assert_eq!(got, Ok(empty.to_owned()));
                 continue;
             }
             let e = got.unwrap_err();

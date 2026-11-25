@@ -183,7 +183,10 @@ where
                  engine reopens; revoke the one no holder has"
                     .into(),
             ),
-            Operation::RevokeKey => Some("retry: revoking a revoked key succeeds".into()),
+            Operation::RevokeKey => Some(
+                "retry: revoking a revoked key succeeds, and one that revoked itself is refused"
+                    .into(),
+            ),
             _ => None,
         },
     };
