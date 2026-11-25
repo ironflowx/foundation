@@ -9,7 +9,7 @@ mod key_file;
 use std::convert::Infallible;
 use std::fmt;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener};
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,14 +19,13 @@ use ironflowx_core::ErrorKind;
 use ironflowx_doors::{Readiness, Slot, WaitingOn, router};
 use ironflowx_operations::{ControlPlaneState, Engine, EngineError, Opened};
 use ironflowx_store::{BootstrapState, ControlPlane};
-use tokio::net::TcpListener;
 
 /// Why a host did not serve.
 #[derive(Debug)]
 pub enum ServeError {
     /// The data directory holds an `admin.key` that no finished bootstrap of it wrote.
     StaleKeyFile(PathBuf),
-    Bind(SocketAddr, io::Error),
+    Listen(io::Error),
     DataDir(PathBuf, io::Error),
     Engine(EngineError),
     /// The engine opened and minted a key, which could not be written to `admin.key`.
@@ -38,7 +37,7 @@ impl ServeError {
     pub const fn exit_code(&self) -> u8 {
         match self {
             Self::StaleKeyFile(_) => ErrorKind::Invalid,
-            Self::Bind(..) | Self::DataDir(..) | Self::Engine(_) | Self::KeyFile(..) => {
+            Self::Listen(_) | Self::DataDir(..) | Self::Engine(_) | Self::KeyFile(..) => {
                 ErrorKind::Internal
             }
         }
@@ -54,7 +53,7 @@ impl fmt::Display for ServeError {
                 "{} is another install's: no engine of this data directory wrote it",
                 path.display()
             ),
-            Self::Bind(addr, e) => write!(f, "cannot listen on {addr}: {e}"),
+            Self::Listen(e) => write!(f, "cannot listen: {e}"),
             Self::DataDir(path, e) => write!(f, "cannot create {}: {e}", path.display()),
             Self::Engine(e) => e.fmt(f),
             Self::KeyFile(path, e) => write!(f, "cannot write {}: {e}", path.display()),
@@ -71,19 +70,18 @@ impl std::error::Error for ServeError {}
 /// [`ServeError`], before anything is served or the data directory changed for a stale
 /// `admin.key` without a `control.db` and for an address it cannot listen on.
 pub async fn serve(data_dir: &Path, listen: SocketAddr) -> Result<Infallible, ServeError> {
-    let listener = bind(data_dir, listen).await?;
+    let listener = bind(data_dir, listen)?;
     run(listener, data_dir).await
 }
 
 /// The steps before the data directory is touched (D62).
-async fn bind(data_dir: &Path, listen: SocketAddr) -> Result<TcpListener, ServeError> {
-    let key_file = key_file::path(data_dir);
-    if key_file.exists() && !data_dir.join("control.db").exists() {
-        return Err(ServeError::StaleKeyFile(key_file));
+fn bind(data_dir: &Path, listen: SocketAddr) -> Result<TcpListener, ServeError> {
+    if key_file::exists(data_dir) && !data_dir.join("control.db").exists() {
+        return Err(ServeError::StaleKeyFile(key_file::path(data_dir)));
     }
-    let refused = |e| ServeError::Bind(listen, e);
-    let listener = TcpListener::bind(listen).await.map_err(refused)?;
-    let bound = listener.local_addr().map_err(refused)?;
+    let listener = TcpListener::bind(listen)
+        .map_err(|e| ServeError::Listen(io::Error::new(e.kind(), format!("{listen}: {e}"))))?;
+    let bound = listener.local_addr().map_err(ServeError::Listen)?;
     tracing::info!(url = format!("http://{bound}"), "listening");
     if !bound.ip().is_loopback() {
         tracing::warn!("keys travel in clear without a TLS proxy");
@@ -92,7 +90,15 @@ async fn bind(data_dir: &Path, listen: SocketAddr) -> Result<TcpListener, ServeE
 }
 
 /// Serves `/health` and the door at once, and the engine in `data_dir` when it has opened.
+///
+/// # Errors
+///
+/// As [`serve`].
 pub async fn run(listener: TcpListener, data_dir: &Path) -> Result<Infallible, ServeError> {
+    let listener = listener
+        .set_nonblocking(true)
+        .and_then(|()| tokio::net::TcpListener::from_std(listener))
+        .map_err(ServeError::Listen)?;
     let slot = Arc::new(Slot::starting());
     let accepting = tokio::spawn(accept::connections(listener, router(slot.clone())));
     let engine = Arc::new(open(data_dir).await?);
@@ -132,8 +138,7 @@ fn prepare(data_dir: &Path) -> Result<(), ServeError> {
         .mode(0o700)
         .create(data_dir)
         .map_err(|e| ServeError::DataDir(data_dir.to_owned(), e))?;
-    let key_file = key_file::path(data_dir);
-    if key_file.exists() {
+    if key_file::exists(data_dir) {
         match ControlPlane::bootstrap_state(&data_dir.join("control.db")) {
             // The open answers what a failed read means.
             Ok(BootstrapState::Marked { .. }) | Err(_) => {}
@@ -141,7 +146,7 @@ fn prepare(data_dir: &Path) -> Result<(), ServeError> {
                 BootstrapState::NoFile
                 | BootstrapState::Unbootstrapped
                 | BootstrapState::Unmarked { .. },
-            ) => return Err(ServeError::StaleKeyFile(key_file)),
+            ) => return Err(ServeError::StaleKeyFile(key_file::path(data_dir))),
         }
     }
     Ok(())

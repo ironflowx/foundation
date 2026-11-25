@@ -1,0 +1,4 @@
+# SRV-1 fixture: packages that depend on an engine crate, each in its own way, and one that may.
+[workspace]
+resolver = "3"
+members = ["direct", "renamed", "optional", "target-only", "at-build", "through", "facade", "allowed"]

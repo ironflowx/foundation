@@ -1,6 +1,7 @@
 //! A door in front of a recording `Operations`.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
 use ironflowx_core::{Address, Scope, Timestamp};
@@ -29,6 +30,8 @@ pub fn whoami() -> Whoami {
 pub struct Recording {
     pub keys: Mutex<Vec<Option<String>>>,
     pub answer: Mutex<Result<Whoami, OpError>>,
+    /// Whether a call waits for good instead.
+    pub hangs: AtomicBool,
 }
 
 impl Recording {
@@ -36,6 +39,7 @@ impl Recording {
         Arc::new(Self {
             keys: Mutex::default(),
             answer: Mutex::new(answer),
+            hangs: AtomicBool::new(false),
         })
     }
 
@@ -50,6 +54,9 @@ impl Operations for Recording {
         assert_eq!(req, WhoamiRequest {});
         let key = cx.key().map(|k| k.expose().to_owned());
         self.keys.lock().unwrap().push(key);
+        if self.hangs.load(Relaxed) {
+            std::future::pending::<()>().await;
+        }
         self.answer.lock().unwrap().clone()
     }
 

@@ -5,8 +5,8 @@
   <text x="20" y="30" font-size="16" font-weight="600">What foundation does, layer by layer</text>
   <text x="20" y="50" font-size="12.5" class="sub">The pills are each layer&#x27;s interface. Each layer depends only on those below it.</text>
   <rect class="card" x="20" y="66" width="700" height="56" rx="6" stroke-width="1.4" stroke-dasharray="5 3"/>
-  <text x="34" y="90" font-size="14.5" font-weight="600">Host: your app</text>
-  <text x="34" y="109" font-size="12">Opens an engine on a data directory, then presents a key with every call.</text>
+  <text x="34" y="90" font-size="14.5" font-weight="600">Host: ironflowx serve, or your app</text>
+  <text x="34" y="109" font-size="12">Opens an engine on a data directory; every call to it presents a key.</text>
   <rect class="card" x="730" y="66" width="110" height="56" rx="6" stroke-width="1.4" stroke-dasharray="5 3"/>
   <text x="740" y="90" font-size="14.5" font-weight="600">Embedder</text>
   <text x="740" y="109" font-size="12">direct, no keys</text>

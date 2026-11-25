@@ -3,7 +3,9 @@
 mod common;
 
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use common::{KEY, Ready, Recording, serve, serving, whoami};
 use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
@@ -128,7 +130,7 @@ async fn every_error_crosses_every_protocol() {
 
 type Headers = Vec<(&'static str, Vec<u8>)>;
 
-/// The Wire table's "Key" row (SRV-6): what each request presents to the engine.
+/// The Wire table's "Key" row: what each request presents to the engine.
 #[tokio::test]
 async fn the_key_is_the_one_authorization_headers_and_nothing_elses() {
     let (addr, operations) = serving(Ok(whoami())).await;
@@ -300,4 +302,25 @@ async fn a_request_that_does_not_decode_is_refused_before_its_key_is_read() {
         "{refused}"
     );
     assert_eq!(operations.take(), []);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_callers_deadline_is_honored_on_every_protocol() {
+    let (addr, operations) = serving(Ok(whoami())).await;
+    operations.hangs.store(true, Relaxed);
+    let headers = [JSON, ("connect-timeout-ms", b"50")];
+    let (head, refused) = send(addr, WHOAMI, &headers, b"{}").await;
+    assert!(head.starts_with("HTTP/1.0 504 "), "{head}");
+    assert!(
+        refused.contains(r#""code":"deadline_exceeded""#),
+        "{refused}"
+    );
+    for protocol in PROTOCOLS {
+        let client = client_of(protocol, addr);
+        let options = CallOptions::default().with_timeout(Duration::from_millis(50));
+        let answer = client.whoami_with_options(WhoamiRequest::default(), options);
+        let e = answer.await.err().unwrap();
+        assert_eq!(e.code, ErrorCode::DeadlineExceeded, "{protocol}");
+    }
+    assert_eq!(operations.take().len(), 1 + PROTOCOLS.len());
 }

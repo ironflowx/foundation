@@ -31,7 +31,7 @@ An app that needs no keys opens a ledger directly.
 
 ## Architecture
 
-The engine is linked, not run: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead. Event rules, credentials and core are pure; only the ledger, the control plane and the engine touch disk, the clock and randomness.
+The engine is a library: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead. `ironflowx serve`, in this repository and not released yet, is the first host we ship: it serves an engine over Connect, gRPC and gRPC-Web. Event rules, credentials and core are pure; only the ledger, the control plane and the engine touch disk, the clock and randomness.
 
 A write is acknowledged once its record is fsynced, and a read sees every write acknowledged before it arrived, whoever made it:
 
@@ -43,12 +43,14 @@ More diagrams (crates, modules and seams, crash recovery) and the details are in
 | --- | --- |
 | ironflowx-core | IDs, the environment reference, attribution, scopes, addresses, secrets, stored and event-clock time, the clock trait, error kinds |
 | ironflowx-events | event rules: what an event is and when an emit is refused |
-| ironflowx-proto | the Operations interface and its request and answer types |
+| ironflowx-proto | the Operations interface and its request and answer types; behind features, the proto, its wire messages and the proto client |
 | ironflowx-cell | the ledger: one environment's durable commit log and read store |
 | ironflowx-authz | credentials: the key format, and whether a key is valid and may make a call |
 | ironflowx-store | the control plane: which tenants, projects, environments and keys exist |
 | ironflowx-operations | the engine: admits every call, then runs it on the ledger or the keys |
 | ironflowx | every foundation crate, re-exported |
+| ironflowx-doors | the HTTP door, unpublished |
+| ironflowx-bin | the `ironflowx` binary and its host, unpublished |
 
 ## Use it
 

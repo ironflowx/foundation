@@ -1,0 +1,7 @@
+# SRV-14 fixture: its build script runs protoc and buf.
+[package]
+name = "needs-protoc"
+version = "0.0.0"
+edition = "2024"
+
+[workspace]

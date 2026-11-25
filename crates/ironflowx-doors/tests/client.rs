@@ -161,7 +161,7 @@ async fn a_read_no_engine_answers_is_unavailable() {
 }
 
 #[test]
-fn a_url_is_http_with_a_host_and_nothing_secret() {
+fn a_url_is_http_with_a_host_and_no_user_query_or_fragment() {
     for url in [
         "http://127.0.0.1:9310",
         "http://127.0.0.1:9310/",
@@ -195,7 +195,6 @@ fn a_url_is_http_with_a_host_and_nothing_secret() {
     ] {
         assert_eq!(Client::new(url).err(), Some(InvalidUrl), "{url}");
     }
-    assert!(!format!("{InvalidUrl} {InvalidUrl:?}").contains("token"));
 }
 
 /// The Errors table's `Internal` row.

@@ -2,7 +2,7 @@
 //! process-wide.
 
 use std::io::{Read as _, Write as _};
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -11,7 +11,6 @@ use std::time::Duration;
 use ironflowx_bin::{ServeError, run};
 use ironflowx_core::{ErrorKind, FaultPoint, Secret, set_fault_hook};
 use ironflowx_proto::{Call, Client, OpError, Operations, WhoamiRequest};
-use tokio::net::TcpListener;
 
 /// Says that the open has reached the barrier, then waits to be let go.
 static BARRIER: Mutex<Option<(Sender<()>, Receiver<()>)>> = Mutex::new(None);
@@ -31,8 +30,8 @@ fn barrier() -> (Receiver<()>, Sender<()>) {
     (reached, go)
 }
 
-async fn bound() -> (TcpListener, SocketAddr) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+fn bound() -> (TcpListener, SocketAddr) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     (listener, addr)
 }
@@ -66,7 +65,7 @@ async fn the_slot_answers_until_the_engine_is_open_and_the_key_is_written() {
     let data_dir = dir.path().join("data");
     let key_file = data_dir.join("admin.key");
     let (reached, go) = barrier();
-    let (listener, addr) = bound().await;
+    let (listener, addr) = bound();
     let host = tokio::spawn({
         let data_dir = data_dir.clone();
         async move { run(listener, &data_dir).await }
@@ -109,7 +108,7 @@ async fn the_slot_answers_until_the_engine_is_open_and_the_key_is_written() {
     let data_dir = dir.path().join("other");
     let key_file = data_dir.join("admin.key");
     let (reached, go) = barrier();
-    let (listener, _) = bound().await;
+    let (listener, _) = bound();
     let host = tokio::spawn({
         let data_dir = data_dir.clone();
         async move { run(listener, &data_dir).await }
@@ -127,7 +126,7 @@ async fn the_slot_answers_until_the_engine_is_open_and_the_key_is_written() {
     assert_eq!(std::fs::read_to_string(&key_file).unwrap(), "another's");
     assert_eq!(temporaries(&data_dir), 0);
     // The engine was closed: its root is free, and bootstrapped, so `admin.key` is not stale.
-    let (listener, addr) = bound().await;
+    let (listener, addr) = bound();
     tokio::spawn(async move { run(listener, &data_dir).await });
     for _ in 0..1_000 {
         if get(addr, "/ready").starts_with("HTTP/1.0 200 ") {

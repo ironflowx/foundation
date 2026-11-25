@@ -44,6 +44,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # SRV-14: protox compiles the proto; nothing calls protoc or buf.
+      - run: ci/no-protoc.sh cargo build --workspace --locked
+      - name: no-protoc rejects its fixture, which builds where there is a protoc and a buf
+        run: |
+          export PATH="$PWD/ci/fixtures/needs-protoc/bin:$PATH"
+          export PROTOC="$PWD/ci/fixtures/needs-protoc/bin/protoc"
+          export BUF="$PWD/ci/fixtures/needs-protoc/bin/buf"
+          cargo build --locked --manifest-path ci/fixtures/needs-protoc/Cargo.toml
+          ci/must-reject.sh "protoc did not run" "buf did not run" -- \
+            ci/no-protoc.sh cargo build --locked --manifest-path ci/fixtures/needs-protoc/Cargo.toml
 
   # A separate job, not a matrix, so the required `clippy` check keeps its name.
   clippy-macos:

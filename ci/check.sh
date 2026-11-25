@@ -26,6 +26,12 @@ step ci/must-reject.sh "ci/fixtures/comment-width/long.sh:3:" "ci/fixtures/comme
   ci/comment-width.sh ci/fixtures/comment-width
 step ci/comment-width.sh ci/fixtures/comment-width-ok
 step cargo clippy --workspace --all-targets --locked -- -D warnings
+step ci/no-protoc.sh cargo build --workspace --locked
+needs=$PWD/ci/fixtures/needs-protoc
+tools=(env PATH="$needs/bin:$PATH" PROTOC="$needs/bin/protoc" BUF="$needs/bin/buf")
+step "${tools[@]}" cargo build --locked --manifest-path "$needs/Cargo.toml"
+step "${tools[@]}" ci/must-reject.sh "protoc did not run" "buf did not run" -- \
+  ci/no-protoc.sh cargo build --locked --manifest-path "$needs/Cargo.toml"
 # CI's crash-test budget, whatever a replay left in the shell.
 step env -u CRASH_SEED CRASH_KILLS=100 cargo test --workspace --locked
 step cargo test -p ironflowx-events --locked --features serde_json/arbitrary_precision

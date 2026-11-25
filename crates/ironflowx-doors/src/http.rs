@@ -64,7 +64,7 @@ impl<O: Operations + 'static, R: Readiness + 'static> IdentityService for Door<O
 }
 
 /// The call a request makes: with the key of its one `Authorization` header, or with none. No
-/// value but a Bearer key is passed on (SRV-6).
+/// value but a Bearer key is passed on (architecture.md, Wire).
 fn call(headers: &HeaderMap) -> Call {
     let mut values = headers.get_all(AUTHORIZATION).iter();
     let Some(value) = values.next() else {

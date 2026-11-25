@@ -1,10 +1,9 @@
 //! `ironflowx serve`, as a process.
 
-use std::collections::BTreeMap;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStderr, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -90,15 +89,6 @@ fn mode(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
 }
 
-/// Every file of `dir`, by name, with its bytes.
-fn files(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
-    std::fs::read_dir(dir)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .map(|path| (path.clone(), std::fs::read(path).unwrap()))
-        .collect()
-}
-
 #[test]
 fn the_first_start_writes_the_key_and_a_later_one_keeps_what_is_there() {
     let dir = tempfile::tempdir().unwrap();
@@ -138,16 +128,29 @@ fn a_data_directory_that_is_there_keeps_its_mode() {
 
 #[test]
 fn a_key_file_without_a_control_plane_is_stale_before_the_address_is_bound() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("admin.key"), "another install's").unwrap();
-    let before = files(dir.path());
     let taken = TcpListener::bind("127.0.0.1:0").unwrap();
     let listen = taken.local_addr().unwrap().to_string();
-    let (code, log) = refused(dir.path(), &listen);
-    assert_eq!(code, Some(2), "{log}");
-    assert!(log.contains("admin.key is another install's"), "{log}");
-    assert!(!log.contains("listen"), "{log}");
-    assert_eq!(files(dir.path()), before);
+    for link in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let key_file = dir.path().join("admin.key");
+        if link {
+            std::os::unix::fs::symlink("nothing", &key_file).unwrap();
+        } else {
+            std::fs::write(&key_file, "another install's").unwrap();
+        }
+        let (code, log) = refused(dir.path(), &listen);
+        assert_eq!(code, Some(2), "{log}");
+        assert!(log.contains("admin.key is another install's"), "{log}");
+        assert!(!log.contains("listen"), "{log}");
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["admin.key"]);
+        if !link {
+            assert_eq!(std::fs::read(&key_file).unwrap(), b"another install's");
+        }
+    }
 }
 
 /// SRV-7: an open writes `admin.key` only once it has marked the bootstrap.
@@ -192,10 +195,7 @@ fn an_address_in_use_leaves_no_data_directory() {
     let listen = taken.local_addr().unwrap().to_string();
     let (code, log) = refused(&data_dir, &listen);
     assert_eq!(code, Some(1), "{log}");
-    assert!(
-        log.contains(&format!("cannot listen on {listen}: ")),
-        "{log}"
-    );
+    assert!(log.contains(&format!("cannot listen: {listen}: ")), "{log}");
     assert!(!data_dir.exists());
 }
 
@@ -256,6 +256,10 @@ fn closed_after(addr: SocketAddr, first: &[u8], idle: Duration, then: &[u8]) -> 
     }
 }
 
+/// A name, what is sent, how long to wait after its answer, what is sent then, and whether the host
+/// closes.
+type Probe = (&'static str, &'static [u8], Duration, &'static [u8], bool);
+
 /// The Wire table's "Timeouts" row: a head within 10 s, and no limit on an idle connection.
 #[test]
 fn a_head_is_read_within_10_s_and_an_idle_connection_has_no_limit() {
@@ -264,7 +268,7 @@ fn a_head_is_read_within_10_s_and_an_idle_connection_has_no_limit() {
     let addr = served.addr;
     const WHOLE: &[u8] = b"GET /health HTTP/1.1\r\nhost: x\r\n\r\n";
     let now = Duration::ZERO;
-    let cases: [(&str, &'static [u8], Duration, &'static [u8], bool); 7] = [
+    let cases: [Probe; 7] = [
         ("silent", b"", now, b"", true),
         (
             "part of a head",

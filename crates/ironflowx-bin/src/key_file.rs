@@ -11,6 +11,11 @@ pub fn path(data_dir: &Path) -> PathBuf {
     data_dir.join("admin.key")
 }
 
+/// Whether the name is taken, as by a symbolic link to nothing.
+pub fn exists(data_dir: &Path) -> bool {
+    std::fs::symlink_metadata(path(data_dir)).is_ok()
+}
+
 /// Writes `key` and a newline to `admin.key`, which must not exist. A crash leaves the whole key
 /// there or no `admin.key`, and at most a temporary file beside it.
 pub fn write(data_dir: &Path, key: &Secret) -> io::Result<()> {

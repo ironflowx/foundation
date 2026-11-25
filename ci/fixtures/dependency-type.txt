@@ -4,3 +4,9 @@ pub fn ironflowx_cell::Ledger::log(&self) -> &segment_log_core::engine::SegmentL
 pub fn ironflowx_cell::Ledger::runtime(&self) -> tokio::runtime::Handle
 pub fn ironflowx_cell::EventIdExt::uuid(&self) -> uuid::Uuid
 pub struct ironflowx_cell::Committed
+impl core::convert::From<connectrpc::error::ConnectError> for ironflowx_proto::OpError
+pub fn ironflowx_proto::Client::decode(&[u8]) -> core::result::Result<Self, buffa::error::DecodeError>
+pub fn ironflowx_proto::Client::time(buffa_types::google::protobuf::Timestamp)
+pub fn ironflowx_proto::Client::of(http::uri::Uri) -> Self
+impl core::convert::From<hyper::error::Error> for ironflowx_proto::InvalidUrl
+pub ironflowx_proto::Client::transport: hyper_util::client::legacy::Client

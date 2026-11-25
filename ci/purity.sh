@@ -3,7 +3,7 @@
 # LED-15, D17 and D36: the pure crates' dependency allowlists, the SequencedTime constructor
 # outside the ledger, SubmitAs::key outside the credentials crate, Grant::submit_as outside the
 # engine, the key digest codec outside the control plane (TEN-4), every crate-wide ban in every
-# clippy.toml; the crash test's fault
+# clippy.toml; the doors' engine crates (SRV-1); the crash test's fault
 # points in no published build; ci/red.sh, which records test checks landing red; and each check
 # rejecting its fixture. The clippy job enforces the call bans on the real crates.
 set -euo pipefail
@@ -18,6 +18,9 @@ ci/clippy-bans.sh .
 ci/no-digest-codec.sh crates
 # Comments may name the constructor.
 ci/no-key-attribution.sh ci/fixtures/key-attribution-in-comment
+ci/no-engine-deps.sh crates/ironflowx-doors/Cargo.toml
+# A dev-dependency does not ship.
+ci/no-engine-deps.sh ci/fixtures/engine-dep/allowed/Cargo.toml
 ci/no-fault-points.sh crates
 # The allowed route passes, and was checked: a skipped crate would pass too.
 forwarded=$(ci/no-fault-points.sh ci/fixtures/fault-points-forwarded)
@@ -52,6 +55,15 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     'disallowed type `std::collections::HashMap`' \
     'use of `println!`' -- \
     cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
+  ci/must-reject.sh \
+    "engine-dep/direct/Cargo.toml: engine crate: 'ironflowx-operations'" \
+    "engine-dep/renamed/Cargo.toml: engine crate: 'ironflowx-cell'" \
+    "engine-dep/optional/Cargo.toml: engine crate: 'ironflowx-store'" \
+    "engine-dep/target-only/Cargo.toml: engine crate: 'ironflowx-authz'" \
+    "engine-dep/at-build/Cargo.toml: engine crate: 'ironflowx-events'" \
+    "engine-dep/through/Cargo.toml: engine crate: 'ironflowx-operations'" \
+    "engine-dep/facade/Cargo.toml: engine crate: 'ironflowx'" -- \
+    ci/no-engine-deps.sh ci/fixtures/engine-dep/{direct,renamed,optional,target-only,at-build,through,facade}/Cargo.toml
   ci/must-reject.sh "incompatible with previous forbid" -- \
     cargo clippy --locked --manifest-path ci/fixtures/allow-past-ban/Cargo.toml -- -D warnings
   ci/must-reject.sh 'disallowed method `ironflowx_core::SequencedTime::from_event_clock`' -- \
