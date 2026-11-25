@@ -1,4 +1,7 @@
 //! Ironflow foundation crates in one dependency.
+//!
+//! Opt in to `client` for the proto client over HTTP, or `client-tls` for HTTPS as well.
+//! Both features are off by default. The proto client and the engine implement `proto::Operations`.
 
 pub use ironflowx_authz as authz;
 pub use ironflowx_cell as cell;
