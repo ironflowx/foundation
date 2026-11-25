@@ -221,9 +221,9 @@ fn flag(command: &Command, field: &'static Field) -> Arg {
         }
     };
     let help = match (&field.kind, field.list) {
-        (Kind::JsonText, _) => Some("JSON text, or @<file>"),
-        (_, true) => Some("May be repeated"),
-        _ => None,
+        (Kind::JsonText, _) => "JSON text, or @<file>",
+        (_, true) => "May be repeated",
+        _ => "",
     };
     Arg::new(field.name)
         // Leaked, once a run: clap takes static text.
