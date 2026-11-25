@@ -523,7 +523,7 @@ Seen with a fault-injecting VFS that fails the WAL's sync (macOS, [#135](https:/
 
 ## What is stored
 
-The engine and the ledger set no file modes, so the process umask applies, and encrypt nothing: the host keeps the directory private. `ironflowx serve` creates it, and what is missing above it, asking for mode `0700`; a directory that is there keeps its mode. A umask that takes one of the owner's bits leaves a new one narrower, and such a start exits 1 unless it may override permissions, as root may unless that capability was dropped; a default ACL of the parent's stands in for the umask, and a setgid parent passes its bit on (both Linux). Who can read it reads every event; who can write it has an admin's authority. A ledger has no delete and no retention.
+The engine and the ledger set no file modes, so the process umask applies, and encrypt nothing: the host keeps the directory private. `ironflowx serve` creates it, and what is missing above it, asking for mode `0700`; a directory that is there keeps its mode. A umask that takes one of the owner's bits leaves a new one narrower, and such a start exits 1 unless it may override permissions, as root may unless that capability was dropped; a default ACL of the parent's stands in for the umask, and a setgid parent passes its bit on (both Linux). On macOS an inheritable ACL entry of the parent's is inherited, by `admin.key` too, and grants what it says whatever the mode. Who can read it reads every event; who can write it has an admin's authority. A ledger has no delete and no retention.
 
 An engine's data directory, `<root>`:
 
