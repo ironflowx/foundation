@@ -238,7 +238,8 @@ fn any_other_refusal_exits_1_and_names_it() {
     for data_dir in [file.join("data"), file, link] {
         let (code, log) = refused(&data_dir, "127.0.0.1:0");
         assert_eq!(code, Some(1), "{log}");
-        assert!(log.contains("cannot create "), "{log}");
+        let path = data_dir.display();
+        assert!(log.contains(&format!("cannot create {path}: ")), "{log}");
     }
 }
 
@@ -289,6 +290,8 @@ fn under_umask(umask: &str, data_dir: &Path) -> Child {
 #[test]
 fn a_directory_above_the_data_directory_is_private_too() {
     let dir = tempfile::tempdir().unwrap();
+    // Not its parent's setgid bit, which a new directory takes on Linux.
+    std::fs::set_permissions(dir.path(), PermissionsExt::from_mode(0o700)).unwrap();
     let above = dir.path().join("above");
     let data_dir = above.join("data");
     let mut child = under_umask("0000", &data_dir);
