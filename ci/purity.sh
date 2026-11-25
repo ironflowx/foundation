@@ -22,6 +22,8 @@ ci/no-key-attribution.sh ci/fixtures/key-attribution-in-comment
 ci/no-engine-deps.sh crates/ironflowx-doors/Cargo.toml crates/ironflowx-cli/Cargo.toml
 # A dev-dependency does not ship.
 ci/no-engine-deps.sh ci/fixtures/engine-dep/allowed/Cargo.toml
+# A build-dependency is outside the host check's normal dependency boundary.
+ci/no-host-engine-deps.sh ci/fixtures/engine-dep/at-build/Cargo.toml
 ci/no-fault-points.sh crates
 # The allowed route passes, and was checked: a skipped crate would pass too.
 forwarded=$(ci/no-fault-points.sh ci/fixtures/fault-points-forwarded)
@@ -66,6 +68,12 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "engine-dep/facade/Cargo.toml: engine crate: 'ironflowx'" \
     "engine-dep/generator/Cargo.toml: linked at run time: 'ironflowx-codegen'" -- \
     ci/no-engine-deps.sh ci/fixtures/engine-dep/{direct,renamed,optional,target-only,at-build,through,facade,generator}/Cargo.toml
+  ci/must-reject.sh \
+    "host-engine-deps/Cargo.toml: direct engine dependency: 'ironflowx-authz'" \
+    "host-engine-deps/Cargo.toml: direct engine dependency: 'ironflowx-cell'" \
+    "host-engine-deps/Cargo.toml: direct engine dependency: 'ironflowx-events'" \
+    "host-engine-deps/Cargo.toml: direct engine dependency: 'ironflowx-store'" -- \
+    ci/no-host-engine-deps.sh ci/fixtures/host-engine-deps/Cargo.toml
   # Each refusal fails a build of its own; the package that has no fault builds.
   cargo test -q --locked -p accepted --manifest-path ci/fixtures/codegen/Cargo.toml
   ci/must-reject.sh \

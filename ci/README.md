@@ -41,6 +41,13 @@ A new pure crate needs all three, plus a `ci/check-deps.sh` line in `ci/purity.s
 any kind needs its name in `ci/public-api.sh`, in `published` or else in the loop after it, and a
 blessed snapshot.
 
+## Host dependencies
+
+The `purity` job runs `ci/no-host-engine-deps.sh crates/ironflowx-bin/Cargo.toml`. The binary
+reaches the ledger, control plane, event rules and credentials through the engine. The check
+reads the binary's direct normal dependencies from Cargo metadata, including renamed, optional
+and target-specific entries. Build, dev and transitive dependencies are outside the check.
+
 ## Fixtures
 
 Some crates in `fixtures/` build against the workspace's crates from outside the workspace, so

@@ -10,9 +10,9 @@ use std::path::Path;
 use std::process::{Child, ChildStderr, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use ironflowx_cell::{HostClock, new_env_ref};
+use ironflowx_cell::new_env_ref;
 use ironflowx_core::{ErrorKind, Scope, Secret};
-use ironflowx_operations::Engine;
+use ironflowx_operations::{Engine, HostClock};
 use ironflowx_proto::{
     Call, Client, CreateKeyRequest, KeyStatus, ListEnvironmentsRequest, ListKeysRequest, OpError,
     Operations as _, RevokeKeyRequest, WhoamiRequest,
