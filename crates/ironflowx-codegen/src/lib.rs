@@ -187,34 +187,34 @@ fn shape(field: &FieldDescriptor) -> Result<(Value, Option<Value>), CodegenError
     let json_text = option(&pool, &field.options(), "json_text") == Some(OptionValue::Bool(true));
     let (schema, default) = match field.kind() {
         Kind::String if json_text => (
-            json!({"type": "string", "contentMediaType": "application/json"}),
+            json!({"contentMediaType": "application/json", "type": "string"}),
             json!(""),
         ),
         _ if json_text => return Err(refused(field.full_name(), "JSON text is a string")),
         Kind::String => (json!({"type": "string"}), json!("")),
         Kind::Bool => (json!({"type": "boolean"}), json!(false)),
         Kind::Int32 | Kind::Sint32 | Kind::Sfixed32 => (
-            json!({"type": "integer", "minimum": i32::MIN, "maximum": i32::MAX}),
+            json!({"maximum": i32::MAX, "minimum": i32::MIN, "type": "integer"}),
             json!(0),
         ),
         Kind::Uint32 | Kind::Fixed32 => (
-            json!({"type": "integer", "minimum": 0, "maximum": u32::MAX}),
+            json!({"maximum": u32::MAX, "minimum": 0, "type": "integer"}),
             json!(0),
         ),
         // As protobuf prints them.
         Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => (
-            json!({"type": "string", "pattern": "^-?[0-9]+$"}),
+            json!({"pattern": "^-?[0-9]+$", "type": "string"}),
             json!("0"),
         ),
         Kind::Uint64 | Kind::Fixed64 => {
-            (json!({"type": "string", "pattern": "^[0-9]+$"}), json!("0"))
+            (json!({"pattern": "^[0-9]+$", "type": "string"}), json!("0"))
         }
         Kind::Message(m) if m.full_name() == "google.protobuf.Timestamp" => (
             // In whole milliseconds, as the wire takes one.
             json!({
-                "type": "string",
                 "format": "date-time",
                 "pattern": r"^[^.]*(\.[0-9]{1,3}0*)?[^.0-9][^.]*$",
+                "type": "string",
             }),
             Value::Null,
         ),
@@ -225,7 +225,7 @@ fn shape(field: &FieldDescriptor) -> Result<(Value, Option<Value>), CodegenError
         }
     };
     Ok(if field.is_list() {
-        (json!({"type": "array", "items": schema}), Some(json!([])))
+        (json!({"items": schema, "type": "array"}), Some(json!([])))
     } else {
         (schema, (!field.supports_presence()).then_some(default))
     })
@@ -239,7 +239,7 @@ fn object(message: &MessageDescriptor) -> Result<Value, CodegenError> {
     for field in message.fields() {
         properties.insert(field.json_name().to_owned(), shape(&field)?.0);
     }
-    Ok(json!({"type": "object", "properties": properties, "additionalProperties": false}))
+    Ok(json!({"additionalProperties": false, "properties": properties, "type": "object"}))
 }
 
 fn printed(message: &MessageDescriptor) -> Result<Vec<Printed>, CodegenError> {

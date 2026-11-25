@@ -52,15 +52,15 @@ fn a_method_becomes_a_command() {
           rpc EmitAll(Req) returns (Ans) {
             option (ironflowx.v1.cli) = "events emit-all";
             option (ironflowx.v1.summary) = "Say \"hi\"";
-            option (ironflowx.v1.example) = "{\"data\": \"{\\\"id\\\":1}\", \"at\": \"2026-01-02T03:04:05Z\"}";
+            option (ironflowx.v1.example) = "{\"at\": \"2026-01-02T03:04:05Z\", \"data\": \"{\\\"id\\\":1}\"}";
           }
         }
         message Req {
-          optional string data = 1 [(ironflowx.v1.json_text) = true];
-          string name = 2;
+          optional google.protobuf.Timestamp at = 1;
+          optional string data = 2 [(ironflowx.v1.json_text) = true];
           repeated Item items = 3;
-          optional google.protobuf.Timestamp at = 4;
-          message Item { bool on = 1; int64 big = 2; uint32 small = 3; }
+          string name = 4;
+          message Item { int64 big = 1; bool on = 2; uint32 small = 3; }
         }
         message Ans {
           string id = 1;

@@ -60,10 +60,13 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
     let root = root.subcommand(
         clap::Command::new("version").about("Show the version, the commit and the protocol"),
     );
-    let root = generated::COMMANDS.iter().fold(root, |root, command| {
+    // Apart from the hand-written ones, so that clap refuses a name both have.
+    let generated = generated::COMMANDS.iter();
+    let generated = generated.fold(clap::Command::new("generated"), |all, command| {
         let words: Vec<_> = command.path.split(' ').collect();
-        add(root, &words, command)
+        add(all, &words, command)
     });
+    let root = root.subcommands(generated.get_subcommands().cloned());
     group(root).try_get_matches().map_err(|e| {
         if !e.use_stderr() {
             return end(e.print().map_err(|e| unprinted(&e)));
@@ -72,7 +75,8 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
         let text = e.render().to_string();
         let first = text.split("\n\n").next().unwrap_or_default();
         // A key given where none goes, or the end of one, is not printed (TEN-3).
-        let key = |word: &str| word.contains(KEY_PREFIX) || word.len() >= SECRET_LEN;
+        let key =
+            |word: &str| word.contains(KEY_PREFIX) || word.trim_matches('\'').len() >= SECRET_LEN;
         let hide = |word| if key(word) { "<hidden>" } else { word };
         let words: Vec<_> = first.split_whitespace().map(hide).collect();
         let message = words.join(" ");
@@ -152,6 +156,11 @@ fn answer(command: &str, matches: &ArgMatches) -> Result<Value, OpError> {
     let mut answer = runtime
         .block_on(generated::call(command, &client, &cx))
         .map_err(|e| without_key(e, &cx))?;
+    let text = answer.to_string();
+    if sent_keys(&cx).any(|key| text.contains(key)) {
+        let message = "the answer repeats the key it was asked with, so it is not printed";
+        return Err(internal(message.to_owned()));
+    }
     let known = generated::COMMANDS.iter().find(|c| c.path == command);
     complete(&mut answer, known.expect("a command it called").answer);
     Ok(answer)
@@ -189,11 +198,18 @@ fn credential(matches: &ArgMatches) -> Result<Call, OpError> {
     Ok(Call::with_key(Secret::new(key)))
 }
 
+/// What `cx` holds that is as long as a key's secret, without what may be around it, as quotes are.
+/// Anything shorter is no one's secret, and may be in any answer.
+fn sent_keys(cx: &Call) -> impl Iterator<Item = &str> {
+    let key = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let text = cx.key().map_or("", Secret::expose);
+    text.split(move |c| !key(c))
+        .filter(|run| run.len() >= SECRET_LEN)
+}
+
 /// `e`, whose text may come from no engine, without the key it was sent (TEN-3).
 fn without_key(mut e: OpError, cx: &Call) -> OpError {
-    let key = cx.key().map(Secret::expose);
-    // Any other text is no one's key, and may be in any message.
-    if let Some(key) = key.filter(|k| k.contains(KEY_PREFIX)) {
+    for key in sent_keys(cx) {
         e.message = e.message.replace(key, "<key>");
         e.hint = e.hint.map(|hint| hint.replace(key, "<key>"));
     }

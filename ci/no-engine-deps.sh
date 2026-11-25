@@ -14,7 +14,7 @@ for manifest in "$@"; do
       --target all --prefix none --format '{p}' | awk 'NR > 1 { print $1 }' | sort -u
   }
   deps=$(tree normal,build)
-  linked=$(tree normal)
+  linked=$(tree normal,no-proc-macro)
   for dep in $deps; do
     case $dep in
       ironflowx-core | ironflowx-proto) ;;

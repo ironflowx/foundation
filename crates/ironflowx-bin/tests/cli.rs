@@ -15,7 +15,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
 
 use common::{KEY, Recording, serving, whoami};
-use ironflowx_core::ErrorKind;
+use ironflowx_core::{Address, ErrorKind};
 use ironflowx_proto::{OpError, Whoami};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use serde_json::{Value, json};
@@ -205,21 +205,57 @@ fn every_kind_is_one_envelope_and_one_exit_code() {
 #[test]
 fn a_key_an_answer_repeats_is_not_printed() {
     let served = Served::answering(Ok(whoami()));
-    for (key, message, hint) in [
-        (KEY, "no such key: '<key>'", "use another than <key><key>"),
-        // Not a key's, so any message may hold it.
-        ("e", "no such key: 'e'", "use another than ee"),
+    // As one in a file of variables can be.
+    let quoted = format!("'{KEY}'");
+    let cut = &KEY[..43];
+    let both = format!("{},{KEY}", KEY.replace('A', "B"));
+    for (given, key, hidden) in [
+        (KEY, KEY, "<key>"),
+        (&quoted, KEY, "<key>"),
+        (cut, cut, "<key>"),
+        // Without the start of its prefix, and the second of two.
+        (&KEY[1..], &KEY[1..], "<key>"),
+        (&both, KEY, "<key>"),
+        // Too short to hold a secret, so any message may hold it.
+        (&KEY[..42], &KEY[..42], &KEY[..42]),
+        ("ixk_", "ixk_", "ixk_"),
+        ("e", "e", "e"),
     ] {
         served.answers(Err(OpError {
             kind: ErrorKind::Unauthenticated,
             message: format!("no such key: '{key}'"),
-            hint: Some(format!("use another than {key}{key}")),
+            hint: Some(format!("use another than {key} {key}")),
         }));
-        let out = served.whoami().env("IRONFLOWX_KEY", key).output().unwrap();
+        let out = served
+            .whoami()
+            .env("IRONFLOWX_KEY", given)
+            .output()
+            .unwrap();
+        let message = format!("no such key: '{hidden}'");
+        let hint = format!("use another than {hidden} {hidden}");
         let expected = json!({
             "code": "unauthenticated", "message": message, "hint": hint, "retryable": false,
         });
         assert_eq!(envelope(&out), (expected, 3));
+
+        // Nor in an answer, whose one free text is the environment's name.
+        served.answers(Ok(Whoami {
+            environment: Address::new("default", &format!("a{key}")),
+            ..whoami()
+        }));
+        let out = served
+            .whoami()
+            .env("IRONFLOWX_KEY", given)
+            .output()
+            .unwrap();
+        if hidden == key {
+            let answer: Value = serde_json::from_str(stdout(&out)).unwrap();
+            assert_eq!(answer["environment"], format!("default/a{key}"));
+        } else {
+            let message = "the answer repeats the key it was asked with, so it is not printed";
+            let expected = json!({"code": "internal", "message": message, "retryable": false});
+            assert_eq!(envelope(&out), (expected, 1));
+        }
     }
 }
 
@@ -259,6 +295,10 @@ fn a_usage_error_is_an_envelope() {
         (
             &["whoami", &KEY[41..]],
             "unexpected argument <hidden> found",
+        ),
+        (
+            &["whoami", &KEY[42..]],
+            "unexpected argument 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' found",
         ),
         (&["whoami", &KEY[4..]], "unexpected argument <hidden> found"),
         (&["whoami", "ixk_x"], "unexpected argument <hidden> found"),

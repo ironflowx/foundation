@@ -384,7 +384,7 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 | `ResourceExhausted` | `create_key` when 1,000 created keys hold a slot: `key limit reached`, with `hint` saying to revoke keys, expired ones first (D44) | After a revoke, or once an expiry is recorded |
 | `Internal` | From the proto client, an operation it does not carry yet: every one but `whoami`; nothing is sent | No |
 | `Invalid` | From the CLI, before it sends anything: a usage error ([CLI](#cli)) | No |
-| `Internal` | From the CLI: an answer it cannot write to stdout | No |
+| `Internal` | From the CLI: an answer it cannot write to stdout, or one that repeats the key it was asked with | No |
 
 | Kind | `retryable` | Exit | Connect code |
 |---|---|---|---|
@@ -601,7 +601,7 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 - a field, in any message of ours, whose `json_name` is not its own snake_case name (D78);
 - `json_text` on a field that is not a `string`, and a type it has no schema for: today bytes, floats, enums, maps and Google's messages other than `Timestamp`.
 
-It does not know the hand-written commands: one that takes a name of theirs panics each start of a debug build, the tests' included.
+It does not know the hand-written commands: one that takes a name of theirs, or starts with it, panics each start of a debug build, the tests' included.
 
 It writes `cli.rs`: each command with its summary, the fields of its answer that need a default, and its call through `Operations`. A request's fields have no flags yet, so a command sends the empty request.
 
@@ -676,7 +676,7 @@ It writes `cli.rs`: each command with its summary, the fields of its answer that
 | Engine | `--url`, else `IRONFLOWX_URL`, else `http://127.0.0.1:9310`; `http://` only |
 | Key | `--key-file <path>`, else `IRONFLOWX_KEY`, else none, with surrounding whitespace trimmed. Nothing else: the CLI never reads `admin.key` unasked (D61). No key, and an empty one, is a call with no key, which the engine refuses; a file or a variable that is there and empty is still the one that was given. Text that is not UTF-8 is a malformed key |
 | Output | The answer as wire JSON on stdout: one line, or indented if stdout is a terminal. Every field that is not `optional` is printed, defaults included; an absent `optional` field stays absent. (A message field has no default: one that is not `optional` is always set, since the answer printed is mapped from the domain type, D53.) The wire is unchanged. `--help` prints text and exits 0: the one exception |
-| Errors | One line on stderr, the envelope; its kind's [exit code](#errors); nothing on stdout, unless a write to it failed midway. A message or hint that repeats the key the call sent has `<key>` in its place: what answered may be no engine |
+| Errors | One line on stderr, the envelope; its kind's [exit code](#errors); nothing on stdout, unless a write to it failed midway. What answered may be no engine, so a message or hint that repeats the key the call sent has `<key>` in its place, and an answer that does is not printed: `Internal`. A message can repeat the URL's path, where no key goes (D55) |
 | Usage errors | An argument that is missing, unknown or of the wrong form, a URL that is not `http://host[:port][/path]`, and a `--key-file` that cannot be read, are `Invalid`, exit 2, and nothing is sent. The message is one line and names a bad argument, its whitespace as single spaces, but `<hidden>` for a word that holds a key's `ixk_` or is as long as a key's secret; it never holds what `--key-file`, `--url` or `IRONFLOWX_URL` was set to, which may be or hold a secret |
 | Deadline | 30 s a call, sent as `Connect-Timeout-Ms` and held to by the client too: `Unavailable` after it, for a read |
 

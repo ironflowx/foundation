@@ -190,7 +190,8 @@ async fn a_call_ends_by_its_timeout() {
         let e = ended.expect("in time").unwrap_err();
         assert_eq!((e.kind, e.hint), (ErrorKind::Unavailable, None));
     }
-    let (_stream, head) = asked.await.unwrap();
+    let asked = tokio::time::timeout(late, asked).await;
+    let (_stream, head) = asked.expect("a call").unwrap();
     assert!(head.contains("\r\nconnect-timeout-ms: 250\r\n"), "{head}");
 }
 
