@@ -261,23 +261,26 @@ async fn run_with_seed(
     drop(listener);
     tracing::info!("stopping");
 
-    // An open already under way owns bootstrap. Let it return and publish its key even if
-    // draining has begun. An error from open still takes its ordinary exit path.
     let engine = match opened {
-        Some(engine) => engine,
-        None => Arc::new(opening.await?),
-    };
-    {
-        let mut draining = pin!(connections.drain(deadline));
-        tokio::select! {
-            biased;
-            _ = engine.faulted() => {
-                tracing::warn!("ledger fault during drain");
-                draining.await;
+        Some(engine) => {
+            let mut draining = pin!(connections.drain(deadline));
+            tokio::select! {
+                biased;
+                _ = engine.faulted() => {
+                    tracing::warn!("ledger fault during drain");
+                    draining.await;
+                }
+                () = &mut draining => {}
             }
-            () = &mut draining => {}
+            engine
         }
-    }
+        None => {
+            // Open owns bootstrap and key publication. Keep it running while the transport
+            // drains on its own deadline.
+            let (engine, ()) = tokio::join!(opening, connections.drain(deadline));
+            Arc::new(engine?)
+        }
+    };
     slot.close();
     let engine = Arc::into_inner(engine).expect("drain dropped every engine reference");
     // Take a fresh watch at the start of close. Its first poll sees an existing fault without

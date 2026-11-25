@@ -58,6 +58,31 @@ enum DispatchOutcome {
     Refused(ErrorKind),
 }
 
+/// Logs once unless admission handed the record to the Operations adapter.
+struct RefusalLog {
+    dispatch: Dispatch,
+    operation: &'static str,
+    started: Instant,
+    finished: bool,
+}
+
+impl Drop for RefusalLog {
+    fn drop(&mut self) {
+        let outcome = match self.dispatch.0.get() {
+            Some(DispatchOutcome::Admitted) => return,
+            Some(DispatchOutcome::Refused(kind)) => kind.as_str(),
+            None if self.finished => "refused",
+            None => "cancelled",
+        };
+        tracing::info!(
+            operation = self.operation,
+            outcome,
+            duration_ms = self.started.elapsed().as_secs_f64() * 1000.0,
+            "call"
+        );
+    }
+}
+
 async fn log_refusal(mut req: Request, next: Next) -> HttpResponse {
     let path = req.uri().path().strip_prefix('/').unwrap_or_default();
     if !path.starts_with("ironflowx.v1.") {
@@ -69,19 +94,14 @@ async fn log_refusal(mut req: Request, next: Next) -> HttpResponse {
         .map_or("unknown", |op| op.rpc());
     let dispatch = Dispatch::default();
     req.extensions_mut().insert(dispatch.clone());
-    let started = Instant::now();
-    let response = next.run(req).await;
-    let outcome = match dispatch.0.get() {
-        Some(DispatchOutcome::Admitted) => return response,
-        Some(DispatchOutcome::Refused(kind)) => kind.as_str(),
-        None => "refused",
-    };
-    tracing::info!(
+    let mut log = RefusalLog {
+        dispatch,
         operation,
-        outcome,
-        duration_ms = started.elapsed().as_secs_f64() * 1000.0,
-        "call"
-    );
+        started: Instant::now(),
+        finished: false,
+    };
+    let response = next.run(req).await;
+    log.finished = true;
     response
 }
 

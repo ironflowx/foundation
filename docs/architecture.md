@@ -745,7 +745,8 @@ acknowledgments already followed `fsync`. A dropped read can still hold `read.db
 close until its blocking query ends or the process exits. A detached control-plane write still
 uses a single SQLite transaction (D48, TEN-11).
 
-A signal during open lets it finish, including publishing any minted key, then closes the engine.
+A signal during open drains the transport on the same deadline while open finishes. The host
+publishes any minted key before it closes the engine.
 A second signal received during shutdown exits 1 immediately. The operating system can coalesce
 identical pending signals. A signal alone exits 0. A ledger fault present when close starts exits 8,
 even when a signal started the drain. A control-plane failure makes `/ready` answer
@@ -756,8 +757,9 @@ A sealed ledger opens again and faults on any emit that appends (D19). Serve it 
 `--log-level` takes `off`, `error`, `warn`, `info`, `debug` or `trace`.
 At `info`, the host logs one line per call, with the operation, duration, outcome kind and the
 presented key's ID, if the key is well formed. The ID is recorded even for a key the engine refuses.
-Before `Operations`, the door logs a refusal without a key ID. A transport refusal before the
-door can determine a domain kind has outcome `refused`. It labels an unknown RPC in
+Before `Operations`, the door logs without a key ID. A dropped request awaiting admission has
+outcome `cancelled`. A transport refusal before the door can determine a domain kind has outcome
+`refused`. It labels an unknown RPC in
 `ironflowx.v1` as `unknown` without recording its path. Logs carry no key, seed, event data or
 metadata. In a diagnostic path or message, the host hides words that could be credentials and
 escapes control characters. The refusal's envelope is the last stderr line, regardless of the log format or level.

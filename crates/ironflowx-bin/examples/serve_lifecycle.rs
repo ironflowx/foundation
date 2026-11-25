@@ -19,10 +19,11 @@ use hyper_util::rt::TokioIo;
 use ironflowx_core::{ErrorKind, FaultPoint, Scope, Secret, set_fault_hook};
 use ironflowx_proto::{
     Call, Client, CreateKeyRequest, EmitRequest, ListEnvironmentsRequest, ListEventsRequest,
-    ListKeysRequest, Operations as _, WhoamiRequest, wire,
+    ListKeysRequest, OpError, Operations as _, WhoamiRequest, wire,
 };
 use rustix::process::{Pid, Signal, kill_process};
 use serde_json::Value;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 const LATE: Duration = Duration::from_secs(20);
 
@@ -257,6 +258,37 @@ impl Connection {
     }
 }
 
+/// A request is in the door once Hyper asks for the body. Leave the body unsent.
+async fn held_body(addr: SocketAddr) -> tokio::net::TcpStream {
+    tokio::time::timeout(LATE, async {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(
+                b"POST /ironflowx.v1.IdentityService/Whoami HTTP/1.1\r\nHost: fixture\r\n\
+              Content-Type: application/json\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let interim = b"HTTP/1.1 100 Continue\r\n\r\n";
+        let mut bytes = [0; 25];
+        stream.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(&bytes, interim);
+        stream
+    })
+    .await
+    .expect("the request reached the door")
+}
+
+async fn body_cancelled(mut stream: tokio::net::TcpStream) -> Instant {
+    let mut byte = [0];
+    assert_eq!(
+        stream.read(&mut byte).await.unwrap(),
+        0,
+        "the held body got a response"
+    );
+    Instant::now()
+}
+
 const fn latest() -> ListEventsRequest {
     ListEventsRequest {
         limit: None,
@@ -289,11 +321,18 @@ fn emit(
     tokio::spawn(async move { client.emit(&call, event()).await })
 }
 
+async fn timed<T>(answer: impl Future<Output = T>) -> (Instant, T) {
+    let answer = answer.await;
+    (Instant::now(), answer)
+}
+
 async fn hold_key(
     host: &Host,
-) -> tokio::task::JoinHandle<Result<ironflowx_proto::CreatedKey, ironflowx_proto::OpError>> {
+) -> tokio::task::JoinHandle<(Instant, Result<ironflowx_proto::CreatedKey, OpError>)> {
     let (client, call) = host.client();
-    let request = tokio::spawn(async move { client.create_key(&call, key_request()).await });
+    let request = tokio::spawn(timed(async move {
+        client.create_key(&call, key_request()).await
+    }));
     host.barrier(FaultPoint::BeforeCreateCommit);
     request
 }
@@ -305,6 +344,12 @@ async fn during_open() {
         host.barrier(FaultPoint::BeforeRename);
         let mut connection = Connection::to(host.addr).await;
         assert_eq!(connection.get("/health").await.0, 200);
+        let body = if twice {
+            None
+        } else {
+            Some(held_body(host.addr).await)
+        };
+        let start = Instant::now();
         host.signal(Signal::TERM);
         host.until(|fields| fields["message"] == "stopping");
         assert_eq!(host.child.try_wait().unwrap(), None);
@@ -314,6 +359,13 @@ async fn during_open() {
             assert_eq!(host.exit(Duration::from_secs(2)).code(), Some(1));
             assert!(!host.key_file().exists());
         } else {
+            let deadline = tokio::time::Instant::from_std(start) + Duration::from_secs(12);
+            let ended = tokio::time::timeout_at(deadline, body_cancelled(body.unwrap()))
+                .await
+                .expect("transport drained while open was held");
+            assert!(ended.duration_since(start) >= Duration::from_secs(10));
+            assert_eq!(host.child.try_wait().unwrap(), None);
+            assert!(!host.key_file().exists());
             host.release(FaultPoint::BeforeRename);
             assert_eq!(host.exit(LATE).code(), Some(0));
             let published = std::fs::read_to_string(host.key_file())
@@ -398,12 +450,13 @@ async fn drain_at_limit() {
         "authorization",
         format!("Bearer {}", call.key().unwrap().expose()),
     );
-    let emitted = tokio::spawn(async move {
+    let emitted = tokio::spawn(timed(async move {
         grpc.emit_with_options(wire::EmitRequest::try_from(event()).unwrap(), options)
             .await
-    });
+    }));
     host.barrier(FaultPoint::AfterFsync);
     let created = hold_key(&host).await;
+    let pending_body = tokio::spawn(body_cancelled(held_body(host.addr).await));
     let start = Instant::now();
     host.signal(Signal::TERM);
     host.until(|fields| fields["message"] == "stopping");
@@ -417,14 +470,16 @@ async fn drain_at_limit() {
     let refused = ironflowx_proto::wire::op_error(&error).unwrap();
     assert_eq!(refused.kind, ErrorKind::Unavailable);
     assert_eq!(refused.hint.as_deref(), Some("the engine is stopping"));
-    let (_, ready) = connection.get("/ready").await;
-    assert_eq!(ready, r#"{"ready":false,"waiting_on":"open"}"#);
+    assert_eq!(
+        connection.get("/ready").await,
+        (503, r#"{"ready":false,"waiting_on":"open"}"#.into()),
+    );
     let line = host.until(|fields| fields["operation"] == "ironflowx.v1.IdentityService/Whoami");
     assert_eq!(line["outcome"], "unavailable");
     assert!(!line.as_object().unwrap().contains_key("key_id"));
     assert!(start.elapsed() < Duration::from_secs(10));
     let upper = tokio::time::Instant::from_std(start) + Duration::from_secs(12);
-    let emitted = tokio::time::timeout_at(upper, emitted)
+    let (emit_ended, emitted) = tokio::time::timeout_at(upper, emitted)
         .await
         .unwrap()
         .unwrap();
@@ -432,12 +487,26 @@ async fn drain_at_limit() {
         panic!("the HTTP/2 stream was not aborted");
     };
     assert_eq!(wire::op_error(&error), None);
-    let created = tokio::time::timeout_at(upper, created)
+    let (create_ended, created) = tokio::time::timeout_at(upper, created)
         .await
         .unwrap()
         .unwrap();
     assert!(matches!(created, Err(e) if e.kind == ErrorKind::Unknown));
-    assert!(start.elapsed() >= Duration::from_secs(10));
+    let ended = tokio::time::timeout_at(upper, pending_body)
+        .await
+        .expect("the held body was aborted")
+        .unwrap();
+    for (call, ended) in [
+        ("HTTP/2 emit", emit_ended),
+        ("create key", create_ended),
+        ("request body", ended),
+    ] {
+        let elapsed = ended.duration_since(start);
+        assert!(
+            (Duration::from_secs(10)..Duration::from_secs(12)).contains(&elapsed),
+            "{call} ended after {elapsed:?}",
+        );
+    }
     host.release(FaultPoint::BeforeCreateCommit);
     host.barrier(FaultPoint::AfterCreateCommit);
     host.release(FaultPoint::AfterFsync);
@@ -450,16 +519,19 @@ async fn drain_at_limit() {
         .filter(|fields| fields["message"] == "call")
         .collect();
     for (operation, outcome) in [
-        ("ironflowx.v1.EventService/Emit", "cancelled"),
-        ("ironflowx.v1.KeyService/CreateKey", "cancelled"),
-        ("ironflowx.v1.IdentityService/Whoami", "unavailable"),
+        ("ironflowx.v1.EventService/Emit", &["cancelled"][..]),
+        ("ironflowx.v1.KeyService/CreateKey", &["cancelled"][..]),
+        (
+            "ironflowx.v1.IdentityService/Whoami",
+            &["unavailable", "cancelled"][..],
+        ),
     ] {
         let actual = records
             .iter()
             .filter(|fields| fields["operation"] == operation)
             .map(|fields| fields["outcome"].as_str().unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(actual, [outcome], "{operation}");
+        assert_eq!(actual, outcome, "{operation}");
     }
     let restarted = Host::start(root.path(), "normal");
     restarted.ready().await;
