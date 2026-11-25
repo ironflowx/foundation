@@ -35,12 +35,12 @@ use tempfile::TempDir;
 
 /// The scenarios whose work has landed: every one must run and pass.
 const REGISTERED: &[&str] = &[
-    "HOST-001", "HOST-016", "HOST-021", "HOST-022", "HOST-023", "HOST-024", "HOST-025", "HOST-026",
-    "HOST-027", "HOST-029",
+    "HOST-001", "HOST-006", "HOST-016", "HOST-021", "HOST-022", "HOST-023", "HOST-024", "HOST-025",
+    "HOST-026", "HOST-027", "HOST-029",
 ];
 
 /// How many scenarios run, an outline once per example, so no example goes unnoticed.
-pub const RUNS: usize = 27;
+pub const RUNS: usize = 28;
 
 const LATE: Duration = Duration::from_secs(30);
 
@@ -394,6 +394,34 @@ fn served_with_key(w: &mut Serve) {
     w.serve("127.0.0.1:0");
     w.served().ready();
     w.read_key();
+}
+
+#[when("the engine is served and becomes ready")]
+fn starts_and_becomes_ready(w: &mut Serve) {
+    served(w);
+    becomes_ready(w);
+}
+
+#[then(expr = "GET {string} answers 200 with no key")]
+fn public_endpoint(w: &mut Serve, path: String) {
+    assert_eq!(get(&w.served().url(), &path), 200);
+}
+
+#[then(regex = r#"^"ironflowx describe" lists neither$"#)]
+fn no_health_operations(_: &mut Serve) {
+    let out = command().arg("describe").output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stderr.is_empty());
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    for op in answer["operations"].as_array().unwrap() {
+        for field in ["command", "rpc"] {
+            let name = op[field].as_str().unwrap().to_ascii_lowercase();
+            assert!(
+                !name.contains("health") && !name.contains("ready"),
+                "{name}"
+            );
+        }
+    }
 }
 
 #[then("the engine becomes ready")]

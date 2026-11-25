@@ -614,7 +614,7 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 **Generator.** `ironflowx-cli`'s `build.rs` gives `generate` the descriptor set, so a proto it refuses is a build that fails (D52). It refuses:
 
 - a method without a `cli`, a `summary` or an `example` (a blank one is none), a `cli` that is not kebab-case words, a `summary` of more than one line, and a command that is another's, or the group another is in;
-- an example that is not JSON, that its request's schema does not allow, or that does not decode as the request (SRV-12): a 64-bit number, a time or a `oneof` can fail only the latter. The schema is JSON Schema 2020-12, with `additionalProperties: false`: no field the request does not have, at any depth. It requires none, a time is in whole milliseconds, and of a `json_text` field it asks only a string, whose text it does not read;
+- an example that is not JSON, that its request's schema does not allow, or that does not decode as the request (SRV-12). The decoder also checks the cardinality of a `oneof`. The schema is JSON Schema 2020-12, with `additionalProperties: false`: no field the request does not have, at any depth. It requires none, a time is in whole milliseconds, and of a `json_text` field it asks only a string, whose text it does not read;
 - a field, in any message of ours, whose `json_name` is not its own snake_case name (D78);
 - `json_text` on a field that is not a `string`, and a type it has no schema for: today bytes, floats, enums, maps and Google's messages other than `Timestamp`.
 
@@ -622,7 +622,7 @@ It does not know the hand-written commands: one that takes a name of theirs, or 
 
 Nor does it know the CLI's own flags: a scalar field of a request named `help`, `json`, `key_file` or `url` panics each run of its command, likewise.
 
-It writes `cli.rs`: each command with its summary, the fields of its request and of its answer (name, kind, whether a list, default), and its call through `Operations`, which decodes the request from wire JSON.
+It writes `cli.rs`: each command with its RPC name, summary, input and output schemas, example, the fields of its request and answer (name, kind, whether a list, default), and its call through `Operations`, which decodes the request from wire JSON.
 
 | Rule | Is |
 |---|---|
@@ -719,7 +719,7 @@ not check the ledger. SQLite can rebuild `control.db-shm` from a WAL left by a c
 
 | Part | Rule |
 |---|---|
-| Commands | One per method of the proto, generated (D52): `environments list`, `events emit`, `events emit-batch`, `events get`, `events list`, `keys create`, `keys list`, `keys revoke` and `whoami`. Hand-written: `version` here, `serve` in the host |
+| Commands | One per method of the proto, generated (D52): `environments list`, `events emit`, `events emit-batch`, `events get`, `events list`, `keys create`, `keys list`, `keys revoke` and `whoami`. Hand-written: `describe` and `version` here, `serve` in the host |
 | Engine | `--url`, else `IRONFLOWX_URL`, else `http://127.0.0.1:9310`. `https://` too, for an engine behind a TLS proxy ([Wire](#wire)) |
 | Key | `--key-file <path>`, else `IRONFLOWX_KEY`, else none, with surrounding whitespace trimmed. Nothing else: the CLI never reads `admin.key` unasked (D61). No key, and an empty one, is a call with no key, which the engine refuses; a file or a variable that is there and empty is still the one that was given. Text that is not UTF-8 is a malformed key |
 | Arguments | A flag for each scalar field of the request, its name in kebab case (`--event-id`); the flag of a repeated field may be repeated (`--scopes read --scopes write`), and a field that holds messages has none. Its value is what wire JSON reads from a string (text, a number, an RFC 3339 time) or, for a `bool`, `true` or `false`; one its field does not take is a usage error that names the flag, but for what the wire mapping or the engine refuses (a limit of 0, an unknown scope). A `json_text` field takes JSON text, also text that begins with `-`, or `@<file>`, the file's text, and sends it byte for byte. Any other value that begins with `-` is given after `=`: `--label=-x`. A field without its flag is absent |
@@ -730,6 +730,29 @@ not check the ledger. SQLite can rebuild `control.db-shm` from a WAL left by a c
 | Deadline | 30 s a call, sent as `Connect-Timeout-Ms` and held to by the client too: after it, `Unavailable` for a read and `Unknown` for a state change |
 
 **The envelope** of a failure: `{"code": …, "message": …, "retryable": …, "hint": …}`. `code` is the kind's name in snake_case, as in `ErrorInfo`; `retryable` is `ErrorKind::retryable()`; `hint` is absent when there is none.
+
+**`describe`** works offline, without a key (D67). Its catalog contains operations only.
+Their scope and whether they change state come from the same rules as the engine and the client.
+
+| Call | Answers |
+|---|---|
+| `ironflowx describe` | `{version, protocol, operations: [{command, rpc, scope, summary, changes_state}], exit_codes: [{code, kind, retryable}]}` |
+| `ironflowx describe events emit` | The named operation's entry plus `input`, `output` and `example` |
+
+The schemas use JSON Schema 2020-12 and close each declared message object with
+`additionalProperties: false`. `input` describes the canonical wire JSON for `--json`,
+with `json_text` as strings and 64-bit integers as bounded decimal strings. Timestamp schemas
+check the local year and whole-millisecond precision. Enable the validator's `format`
+assertions to check calendar dates. The wire decoder also checks that
+applying the UTC offset leaves the instant in years 0001 through 9999. Run the example with `--json @file` or pipe it to
+`--json -`. The wire and engine also validate the request. `output` describes the CLI's
+printed answer, requiring the fields it always prints and allowing arbitrary JSON values
+inside `json_text` fields.
+
+After `unknown`, follow the operation's summary and the [error's hint](#errors). In particular,
+retry an emit only with the same idempotency key on every item, or check what landed first.
+After `unknown` or `unavailable` from `keys create`, use `keys list` before retrying, and
+again after an engine reopen. Revoke any key that landed whose secret was lost.
 
 **`version`** prints `{"version": …, "commit": …, "protocol": "ironflowx.v1"}`, and asks no engine. `commit` is the one the binary was built from, or `unknown` if it was not built in a git checkout.
 

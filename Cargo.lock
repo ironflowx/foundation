@@ -1260,6 +1260,8 @@ dependencies = [
  "ironflowx-events",
  "ironflowx-operations",
  "ironflowx-proto",
+ "jsonschema",
+ "prost-reflect",
  "serde_json",
  "tempfile",
  "tokio",

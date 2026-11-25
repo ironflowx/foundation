@@ -1217,9 +1217,11 @@ fn a_usage_error_is_an_envelope() {
         (
             &[][..],
             "'ironflowx' requires a subcommand but one was not provided \
-             [subcommands: serve, version, environments, events, whoami, keys]",
+             [subcommands: serve, version, describe, environments, events, whoami, keys]",
         ),
         (&["nope"], "unrecognized subcommand 'nope'"),
+        (&["describe", "health"], "unrecognized subcommand 'health'"),
+        (&["describe", KEY], "unrecognized subcommand <hidden>"),
         (&["help"], "unrecognized subcommand 'help'"),
         (&["--version"], "unexpected argument '--version' found"),
         (

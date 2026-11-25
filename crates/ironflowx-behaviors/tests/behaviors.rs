@@ -802,7 +802,7 @@ const EVENT_REMOTE_RUNS: usize = 93;
 
 /// Every feature file in `docs/behaviors/` and its scenario declarations.
 const SCENARIOS: &[(&str, usize)] = &[
-    ("cli.feature", 15),
+    ("cli.feature", 14),
     ("events.feature", 41),
     ("serve.feature", 26),
     ("tenancy.feature", 40),
