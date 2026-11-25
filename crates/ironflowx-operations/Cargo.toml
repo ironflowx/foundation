@@ -30,11 +30,11 @@ tokio = { version = "1.54.1", default-features = false, features = ["rt"] }
 uuid = { workspace = true, features = ["v7"] }
 
 [dev-dependencies]
-# For tests/unknown.rs, and tests/secrets.rs's key hook; a dev-dependency does not ship
-# (ci/no-fault-points.sh).
+# For tests/fault.rs, tests/unknown.rs, and tests/secrets.rs's key hook; a dev-dependency does
+# not ship (ci/no-fault-points.sh).
 ironflowx-operations = { path = ".", features = ["__fault-points"] }
 ironflowx-core = { workspace = true, features = ["__fault-points"] }
 ironflowx-cell = { workspace = true, features = ["__fault-points"] }
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", default-features = false, features = ["rt", "macros"] }
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "macros", "time"] }
 rusqlite = { version = "0.43.0", default-features = false, features = ["bundled"] }

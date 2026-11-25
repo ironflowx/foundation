@@ -1,6 +1,21 @@
 pub mod ironflowx_operations
+pub use ironflowx_operations::Fault
+pub use ironflowx_operations::LedgerState
 pub use ironflowx_operations::RecoverError
 pub use ironflowx_operations::SeedState
+pub enum ironflowx_operations::ControlPlaneState
+pub ironflowx_operations::ControlPlaneState::Failed
+pub ironflowx_operations::ControlPlaneState::Ok
+impl core::clone::Clone for ironflowx_operations::ControlPlaneState
+pub fn ironflowx_operations::ControlPlaneState::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_operations::ControlPlaneState
+impl core::cmp::Eq for ironflowx_operations::ControlPlaneState
+impl core::cmp::PartialEq for ironflowx_operations::ControlPlaneState
+pub fn ironflowx_operations::ControlPlaneState::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_operations::ControlPlaneState
+pub fn ironflowx_operations::ControlPlaneState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for ironflowx_operations::ControlPlaneState
+impl core::marker::StructuralPartialEq for ironflowx_operations::ControlPlaneState
 pub enum ironflowx_operations::EngineError
 pub ironflowx_operations::EngineError::Format
 pub ironflowx_operations::EngineError::Io(core::io::error::Error)
@@ -31,6 +46,8 @@ pub const fn ironflowx_operations::Authorized::grant(&self) -> &ironflowx_authz:
 pub struct ironflowx_operations::Engine
 impl ironflowx_operations::Engine
 pub async fn ironflowx_operations::Engine::close(self)
+pub fn ironflowx_operations::Engine::faulted(&self) -> impl core::future::future::Future<Output = ironflowx_cell::ledger::Fault> + core::marker::Send + 'static + use<>
+pub async fn ironflowx_operations::Engine::health(&self) -> ironflowx_operations::Health
 impl ironflowx_operations::Engine
 pub async fn ironflowx_operations::Engine::open(&std::path::Path, impl ironflowx_core::time::Clock + core::clone::Clone + core::marker::Send + core::marker::Sync + 'static, core::option::Option<ironflowx_core::secret::Secret>) -> core::result::Result<ironflowx_operations::Opened, ironflowx_operations::EngineError>
 impl ironflowx_proto::Operations for ironflowx_operations::Engine
@@ -43,6 +60,20 @@ pub async fn ironflowx_operations::Engine::list_events(&self, &ironflowx_proto::
 pub async fn ironflowx_operations::Engine::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> core::result::Result<(), ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::whoami(&self, &ironflowx_proto::Call, ironflowx_proto::WhoamiRequest) -> core::result::Result<ironflowx_proto::Whoami, ironflowx_proto::OpError>
+pub struct ironflowx_operations::Health
+pub ironflowx_operations::Health::control_plane: ironflowx_operations::ControlPlaneState
+pub ironflowx_operations::Health::ledger: ironflowx_cell::ledger::LedgerState
+impl core::clone::Clone for ironflowx_operations::Health
+pub fn ironflowx_operations::Health::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_operations::Health
+impl core::cmp::Eq for ironflowx_operations::Health
+pub fn ironflowx_operations::Health::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_operations::Health
+pub fn ironflowx_operations::Health::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_operations::Health
+pub fn ironflowx_operations::Health::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for ironflowx_operations::Health
+impl core::marker::StructuralPartialEq for ironflowx_operations::Health
 pub struct ironflowx_operations::Opened
 pub ironflowx_operations::Opened::engine: ironflowx_operations::Engine
 pub ironflowx_operations::Opened::lost_secret: bool

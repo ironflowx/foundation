@@ -62,6 +62,18 @@ pub enum ReadError {
     Unavailable,
 }
 
+/// Whether an open ledger has failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LedgerState {
+    Open,
+    /// It failed and refuses every call until it is reopened.
+    Unavailable,
+}
+
+/// A ledger failed while it was open (a ledger fault): it refuses every call until it is reopened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fault;
+
 /// Why a directory did not open.
 #[derive(Debug)]
 pub enum OpenError {
@@ -108,6 +120,8 @@ struct Progress {
     committed: u64,
     applied: u64,
     failed: bool,
+    /// The writer has joined: no failure counts from here on.
+    closed: bool,
 }
 
 struct Job {
@@ -147,7 +161,7 @@ impl Ledger {
     ///
     /// # Panics
     ///
-    /// Outside a tokio runtime.
+    /// Outside a tokio runtime, or on one that has shut down.
     pub async fn open(
         dir: &Path,
         env: EnvRef,
@@ -192,6 +206,7 @@ impl Ledger {
             committed: recovered.watermark,
             applied: recovered.watermark,
             failed: false,
+            closed: false,
         }));
         let store = Arc::new(Mutex::new(recovered.conn));
         #[cfg(any(test, feature = "__fault-points"))]
@@ -231,6 +246,34 @@ impl Ledger {
         self.env
     }
 
+    /// Whether the ledger has failed.
+    pub fn state(&self) -> LedgerState {
+        if self.progress.borrow().failed {
+            LedgerState::Unavailable
+        } else {
+            LedgerState::Open
+        }
+    }
+
+    /// Resolves once, when the ledger fails, with a call in flight or none; at once if it has
+    /// failed already.
+    ///
+    /// A close is no fault. What is pending when [`Ledger::close`] begins resolves only if the
+    /// ledger fails before `close` returns, as by the fold it finishes; after that it stays pending
+    /// for good. The same for a drop.
+    pub fn faulted(&self) -> impl Future<Output = Fault> + Send + 'static + use<> {
+        let mut gate = self.progress.subscribe();
+        async move {
+            // `wait_for` answers later when its task's budget is spent.
+            let failed = gate.borrow().failed;
+            if !failed && gate.wait_for(|p| p.failed).await.is_err() {
+                // Closed, and never failed.
+                std::future::pending::<()>().await;
+            }
+            Fault
+        }
+    }
+
     /// Commits a submission attributed to `by`. Answers once its record is durable, or at once
     /// when nothing is new. The ledger trusts its caller's attribution (D36).
     pub async fn submit(&self, sub: Submission, by: SubmitAs) -> Result<Committed, SubmitError> {
@@ -268,41 +311,58 @@ impl Ledger {
             return Err(ReadError::Unavailable);
         }
         let store = self.store.clone();
+        let gate = self.progress.clone();
         let answer = tokio::task::spawn_blocking(move || {
+            let _on_panic = FailOnPanic(gate.clone());
             // Poisoned: an earlier query panicked holding it.
-            let conn = store.lock().ok()?;
-            Some(q(&ReadStore(&conn)))
+            let answer = store.lock().ok().map(|conn| q(&ReadStore(&conn)));
+            match answer {
+                Some(Ok(r)) => Ok(r),
+                Some(Err(Error::Refused(r))) => Err(ReadError::Refused(r)),
+                // Here and not below, which an abandoned read never reaches.
+                Some(Err(Error::Store(_))) | None => {
+                    fail(&gate);
+                    Err(ReadError::Unavailable)
+                }
+            }
         })
         .await;
-        match answer {
-            Ok(Some(Ok(r))) => Ok(r),
-            Ok(Some(Err(Error::Refused(r)))) => Err(ReadError::Refused(r)),
-            // A store error, a poisoned store or a panicking query.
-            _ => {
-                fail(&self.progress);
-                Err(ReadError::Unavailable)
-            }
-        }
+        answer.unwrap_or_else(|_| {
+            fail(&self.progress);
+            Err(ReadError::Unavailable)
+        })
     }
 
-    /// Finishes queued submissions and the fold, then releases the directory.
+    /// Finishes queued submissions and the fold, then releases the directory. What
+    /// [`Ledger::faulted`] gave stays pending, unless the ledger has failed or does before this
+    /// returns.
     ///
     /// # Panics
     ///
-    /// Outside a tokio runtime.
+    /// Outside a tokio runtime, or on one that has shut down: the ledger is dropped then, its queue
+    /// already ended.
     pub async fn close(mut self) {
+        self.end_queue();
+        // The closure owns the writer: one that never runs drops the ledger, which joins it.
+        tokio::task::spawn_blocking(move || self.join())
+            .await
+            .expect("the runtime has not shut down");
+    }
+
+    /// Ends the queue, so that the writer ends.
+    fn end_queue(&mut self) {
         #[cfg(any(test, feature = "__fault-points"))]
         self.faults.release_fold();
-        let writer = self.writer.take();
         drop(self.jobs.take());
-        tokio::task::spawn_blocking(move || {
-            if let Some(writer) = writer {
-                let _ = writer.join();
-            }
-            drop(self);
-        })
-        .await
-        .expect("drop does not panic");
+    }
+
+    /// Waits for the writer. A panic of its own teardown fails the ledger.
+    fn join(&mut self) {
+        if let Some(writer) = self.writer.take()
+            && writer.join().is_err()
+        {
+            fail(&self.progress);
+        }
     }
 }
 
@@ -313,17 +373,15 @@ impl Ledger {
 impl Drop for Ledger {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::SeqCst);
-        #[cfg(any(test, feature = "__fault-points"))]
-        self.faults.release_fold();
-        drop(self.jobs.take());
-        if let Some(writer) = self.writer.take() {
-            let _ = writer.join();
-        }
+        self.end_queue();
+        self.join();
+        self.progress.send_modify(|p| p.closed = true);
     }
 }
 
+/// Fails the ledger, unless it has closed: a query its caller abandoned may outlive it.
 fn fail(progress: &watch::Sender<Progress>) {
-    progress.send_modify(|p| p.failed = true);
+    progress.send_modify(|p| p.failed |= !p.closed);
 }
 
 /// Losing the reply during an append leaves its outcome uncertain.
@@ -357,20 +415,24 @@ struct Writer {
     faults: Arc<faults::Faults>,
 }
 
-/// However the writer ends, a panic included, the ledger is failed, so no read waits forever.
-struct FailOnExit(Arc<watch::Sender<Progress>>);
+/// A panic while this is held fails the ledger: no read waits forever, and the fault is signalled.
+struct FailOnPanic(Arc<watch::Sender<Progress>>);
 
-impl Drop for FailOnExit {
+impl Drop for FailOnPanic {
     fn drop(&mut self) {
-        fail(&self.0);
+        if thread::panicking() {
+            fail(&self.0);
+        }
     }
 }
 
 impl Writer {
     /// One submission at a time: decide, append, fsync, publish, acknowledge, fold (D15).
     fn run(mut self, mut queue: mpsc::Receiver<Job>) {
-        let _exit = FailOnExit(self.progress.clone());
         while let Some(job) = queue.blocking_recv() {
+            // After `job`, and again after `reply`, so that it drops first: a caller whose reply a
+            // panic loses finds the ledger failed.
+            let _on_panic = FailOnPanic(self.progress.clone());
             if self.stopping.load(Ordering::SeqCst) || self.progress.borrow().failed {
                 let _ = job.reply.send(Err(SubmitError::Unavailable));
                 continue;
@@ -392,6 +454,7 @@ impl Writer {
             let emitted_by = Emitter::from(job.by);
             let payload = record::events(self.env.token(), &emitted_by, &record);
             let reply = AppendReply(Some(job.reply));
+            let _on_panic = FailOnPanic(self.progress.clone());
             let offset = match self.append(payload) {
                 Ok(offset) => offset,
                 Err(e) => {

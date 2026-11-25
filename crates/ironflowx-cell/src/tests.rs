@@ -9,7 +9,8 @@ use ironflowx_events::{Emit, Event, ItemOutcome, Submission};
 use segment_log_core::{ExpectedRevision, NewRecord, Options, SegmentLog, Submit};
 
 use crate::{
-    Ledger, ManualClock, OpenError, ReadError, ReadStore, SubmitError, new_env_ref, record,
+    Ledger, LedgerState, ManualClock, OpenError, ReadError, ReadStore, SubmitError, new_env_ref,
+    record,
 };
 
 const T: i64 = 1_800_000_000_000;
@@ -1027,8 +1028,9 @@ async fn a_writer_panic_before_append_refuses_queued_work() {
         () = std::future::ready(()) => {}
     }
     release.send(()).unwrap();
-    assert_eq!(second.await.unwrap_err(), SubmitError::Unavailable);
     assert_eq!(first.await.unwrap_err(), SubmitError::Unavailable);
+    assert_eq!(ledger.state(), LedgerState::Unavailable);
+    assert_eq!(second.await.unwrap_err(), SubmitError::Unavailable);
 }
 
 #[tokio::test]
@@ -1170,4 +1172,383 @@ async fn opening_an_existing_ledger_opens_or_refuses_it_as_open_does() {
     std::fs::remove_file(dir.path().join("read.db")).unwrap();
     let ledger = Ledger::open_existing_blocking(dir.path(), env, clock()).unwrap();
     assert_eq!(names(&ledger).await, ["b", "a"]);
+}
+
+/// Whether `f` is ready when polled once.
+fn ready<F: Future>(f: std::pin::Pin<&mut F>) -> bool {
+    f.poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+        .is_ready()
+}
+
+/// Starts `call`, then gives up waiting for it.
+async fn abandon<T: std::fmt::Debug>(call: impl Future<Output = T>) {
+    tokio::select! {
+        biased;
+        r = call => panic!("answered {r:?}"),
+        () = std::future::ready(()) => {}
+    }
+}
+
+/// Reads `T` each time the test sends `false`; panics when it sends `true`.
+struct Stepped(std::sync::mpsc::Receiver<bool>);
+
+impl ironflowx_core::Clock for Stepped {
+    fn now(&self) -> Timestamp {
+        assert!(!self.0.recv().unwrap(), "the clock panics");
+        Timestamp::from_millis(T)
+    }
+}
+
+/// A way a ledger fails: its failing call, held until the test has arranged the failure.
+struct Way {
+    name: &'static str,
+    /// The failing call is a read, whose query is held; else an emit, whose decision is.
+    reads: bool,
+    /// The query, or the clock the decision reads, panics.
+    panics: bool,
+    /// The log is sealed before the ledger opens.
+    sealed: bool,
+    /// Run on `read.db`.
+    sql: &'static str,
+    arrange: fn(&Ledger),
+}
+
+const WAY: Way = Way {
+    name: "",
+    reads: false,
+    panics: false,
+    sealed: false,
+    sql: "",
+    arrange: |_| {},
+};
+
+const WAYS: [Way; 9] = [
+    Way {
+        name: "append lost",
+        arrange: |l| l.fail_next_append(false),
+        ..WAY
+    },
+    Way {
+        name: "append landed",
+        arrange: |l| l.fail_next_append(true),
+        ..WAY
+    },
+    Way {
+        name: "sealed log",
+        sealed: true,
+        ..WAY
+    },
+    Way {
+        name: "fold",
+        arrange: Ledger::fail_next_fold,
+        ..WAY
+    },
+    Way {
+        name: "fold in the read store",
+        sql: "CREATE TRIGGER t BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'x'); END",
+        ..WAY
+    },
+    Way {
+        name: "emit in the read store",
+        sql: "DROP TABLE events",
+        ..WAY
+    },
+    Way {
+        name: "read in the read store",
+        reads: true,
+        sql: "DROP TABLE events",
+        ..WAY
+    },
+    Way {
+        name: "panicking query",
+        reads: true,
+        panics: true,
+        ..WAY
+    },
+    Way {
+        name: "writer panic",
+        panics: true,
+        ..WAY
+    },
+];
+
+/// Each way a ledger fails, the failing call started and then abandoned, so nobody waits for an
+/// answer when it happens: the fault is signalled all the same, and stays.
+#[tokio::test]
+async fn each_failure_is_signalled_with_no_call_in_flight() {
+    for way in WAYS {
+        let name = way.name;
+        let dir = tempfile::tempdir().unwrap();
+        let env = new_env_ref();
+        open(dir.path(), env).await.close().await;
+        if way.sealed {
+            SegmentLog::open(dir.path().join("log"), Options::default())
+                .unwrap()
+                .seal()
+                .unwrap();
+        }
+        let (step, steps) = std::sync::mpsc::channel();
+        let ledger = Ledger::open(dir.path(), env, Stepped(steps)).await.unwrap();
+        let mut faulted = std::pin::pin!(ledger.faulted());
+        assert!(!ready(faulted.as_mut()), "{name}: open");
+        assert_eq!(ledger.state(), LedgerState::Open, "{name}");
+
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        if way.reads {
+            let read = ledger.read(move |v| {
+                gone.recv().unwrap();
+                assert!(!way.panics, "a query bug");
+                ironflowx_events::list_events(v, env.token(), None, None)
+            });
+            abandon(read).await;
+        } else {
+            abandon(emit(&ledger, named("a"))).await;
+        }
+        let db = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
+        db.execute_batch(way.sql).unwrap();
+        (way.arrange)(&ledger);
+        assert!(!ready(faulted.as_mut()), "{name}: not yet");
+        if way.reads {
+            go.send(()).unwrap();
+        } else {
+            step.send(way.panics).unwrap();
+        }
+
+        let signalled = tokio::time::timeout(Duration::from_secs(10), faulted).await;
+        assert!(signalled.is_ok(), "{name}: not signalled");
+        assert_eq!(ledger.state(), LedgerState::Unavailable, "{name}");
+        // At once, also to a task that has spent its budget.
+        while tokio::task::coop::has_budget_remaining() {
+            tokio::task::consume_budget().await;
+        }
+        let later = std::pin::pin!(ledger.faulted());
+        assert!(ready(later), "{name}: taken after the fault");
+        // Not settled by what failed: a later call is refused too.
+        let refused = emit(&ledger, named("b")).await.unwrap_err();
+        assert_eq!(refused, SubmitError::Unavailable, "{name}");
+        ledger.close().await;
+    }
+}
+
+/// A ledger that answers is not faulted, whatever it refuses, and neither its close nor its drop is
+/// a fault: what `faulted` gave before stays pending.
+#[tokio::test]
+async fn neither_a_refusal_nor_a_close_is_a_fault() {
+    for close in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = open(dir.path(), new_env_ref()).await;
+        let mut faulted = std::pin::pin!(ledger.faulted());
+        emit(&ledger, keyed("a", "k")).await.unwrap();
+        emit(&ledger, keyed("a", "k")).await.unwrap();
+        let refused = emit(&ledger, named("a..b")).await;
+        let Err(SubmitError::Refused(r)) = refused else {
+            panic!("{refused:?}");
+        };
+        let name = (ErrorKind::Invalid, "event name has an empty segment");
+        assert_eq!((r.kind(), r.message()), name);
+        let token = ledger.env().token();
+        let refused = ledger
+            .read(move |v| ironflowx_events::list_events(v, token, None, Some("bad")))
+            .await;
+        let Err(ReadError::Refused(r)) = refused else {
+            panic!("{refused:?}");
+        };
+        let cursor = (ErrorKind::Invalid, "invalid cursor");
+        assert_eq!((r.kind(), r.message()), cursor);
+        assert!(!ready(faulted.as_mut()));
+        assert_eq!(ledger.state(), LedgerState::Open);
+        // Queued behind the held fold: a close commits it, a drop refuses it.
+        ledger.hold_fold();
+        emit(&ledger, named("b")).await.unwrap();
+        abandon(emit(&ledger, named("queued"))).await;
+        let mut unpolled = std::pin::pin!(ledger.faulted());
+        if close {
+            ledger.close().await;
+        } else {
+            drop(ledger);
+        }
+        assert!(!ready(faulted.as_mut()), "close: {close}");
+        assert!(!ready(unpolled.as_mut()), "close: {close}");
+    }
+}
+
+/// A fault while a close or a drop finishes the fold is one, and outlasts the ledger.
+#[tokio::test]
+async fn a_fault_during_a_close_or_drop_is_signalled() {
+    for close in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = open(dir.path(), new_env_ref()).await;
+        ledger.hold_fold();
+        ledger.fail_next_fold();
+        emit(&ledger, named("a")).await.unwrap();
+        let mut faulted = std::pin::pin!(ledger.faulted());
+        assert!(!ready(faulted.as_mut()));
+        if close {
+            ledger.close().await;
+        } else {
+            drop(ledger);
+        }
+        assert!(ready(faulted), "close: {close}");
+    }
+}
+
+/// Panics when it is dropped, as the writer ends.
+struct PanicsOnDrop;
+
+impl ironflowx_core::Clock for PanicsOnDrop {
+    fn now(&self) -> Timestamp {
+        Timestamp::from_millis(T)
+    }
+}
+
+impl Drop for PanicsOnDrop {
+    fn drop(&mut self) {
+        panic!("the clock's drop panics");
+    }
+}
+
+#[tokio::test]
+async fn a_panic_as_the_writer_ends_is_signalled() {
+    for close in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(dir.path(), new_env_ref(), PanicsOnDrop).await;
+        let ledger = ledger.unwrap();
+        let mut faulted = std::pin::pin!(ledger.faulted());
+        assert!(!ready(faulted.as_mut()));
+        if close {
+            ledger.close().await;
+        } else {
+            drop(ledger);
+        }
+        assert!(ready(faulted), "close: {close}");
+    }
+}
+
+/// Poisons the read store's lock without failing the ledger, as another thread may find it between
+/// a query's panic and the fault: whoever finds it fails the ledger.
+#[tokio::test]
+async fn whoever_finds_the_read_store_poisoned_fails_the_ledger() {
+    for finder in ["read", "decide", "fold"] {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = open(dir.path(), new_env_ref()).await;
+        let faulted = ledger.faulted();
+        ledger.hold_fold();
+        if finder == "fold" {
+            emit(&ledger, named("a")).await.unwrap();
+        }
+        let store = ledger.store.clone();
+        let poison = std::thread::spawn(move || {
+            let _held = store.lock().unwrap();
+            panic!("a query bug");
+        });
+        poison.join().unwrap_err();
+        assert_eq!(ledger.state(), LedgerState::Open, "{finder}");
+        match finder {
+            "read" => assert_eq!(all(&ledger).await.unwrap_err(), ReadError::Unavailable),
+            "decide" => {
+                let refused = emit(&ledger, named("a")).await.unwrap_err();
+                assert_eq!(refused, SubmitError::Unavailable);
+            }
+            _ => ledger.release_fold(),
+        }
+        let signalled = tokio::time::timeout(Duration::from_secs(10), faulted).await;
+        assert!(signalled.is_ok(), "{finder}: not signalled");
+        ledger.close().await;
+    }
+}
+
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+}
+
+/// A query its caller abandoned can end after the ledger closed, which is no fault.
+#[test]
+fn a_query_that_fails_after_close_is_no_fault() {
+    for panics in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let (start, started) = std::sync::mpsc::channel::<()>();
+        let rt = runtime();
+        let ledger = rt.block_on(open(dir.path(), new_env_ref()));
+        let mut faulted = std::pin::pin!(ledger.faulted());
+        let token = ledger.env().token();
+        rt.block_on(async {
+            let read = ledger.read(move |v| {
+                start.send(()).unwrap();
+                gone.recv().unwrap();
+                assert!(!panics, "a query bug");
+                ironflowx_events::list_events(v, token, None, None)
+            });
+            abandon(read).await;
+            started.recv().unwrap();
+            let db = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
+            db.execute_batch("DROP TABLE events").unwrap();
+            ledger.close().await;
+        });
+        go.send(()).unwrap();
+        // Waits for the query to end.
+        drop(rt);
+        assert!(!ready(faulted.as_mut()), "panics: {panics}");
+    }
+}
+
+/// A read whose query never ran, its runtime shut down, answers as a failed ledger, so it fails it.
+#[test]
+fn a_read_on_a_runtime_that_shut_down_fails_the_ledger() {
+    let dir = tempfile::tempdir().unwrap();
+    let rt = runtime();
+    let ledger = rt.block_on(open(dir.path(), new_env_ref()));
+    let handle = rt.handle().clone();
+    drop(rt);
+    let read = handle.block_on(all(&ledger));
+    assert_eq!(read.unwrap_err(), ReadError::Unavailable);
+    assert_eq!(ledger.state(), LedgerState::Unavailable);
+}
+
+/// A close first polled on a runtime that has shut down drops the ledger, which joins the writer:
+/// only a join finds the panic of its end.
+#[test]
+fn a_close_on_a_runtime_that_shut_down_joins_the_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let rt = runtime();
+    let ledger = rt.block_on(Ledger::open(dir.path(), new_env_ref(), PanicsOnDrop));
+    let ledger = ledger.unwrap();
+    let faulted = std::pin::pin!(ledger.faulted());
+    let handle = rt.handle().clone();
+    drop(rt);
+    let close = std::panic::AssertUnwindSafe(|| handle.block_on(ledger.close()));
+    std::panic::catch_unwind(close).unwrap_err();
+    assert!(ready(faulted));
+}
+
+/// Its drop, as the writer ends, ends the receiver's wait.
+struct Telling(std::sync::mpsc::Sender<()>);
+
+impl ironflowx_core::Clock for Telling {
+    fn now(&self) -> Timestamp {
+        let _ = self.0.send(());
+        Timestamp::from_millis(T)
+    }
+}
+
+/// A close ends the queue before its blocking work has a thread: the only one here is busy until
+/// the writer has ended.
+#[test]
+fn a_close_ends_the_queue_without_a_blocking_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tell, told) = std::sync::mpsc::channel();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .enable_time()
+        .build()
+        .unwrap();
+    let closed = rt.block_on(async {
+        let ledger = Ledger::open(dir.path(), new_env_ref(), Telling(tell)).await;
+        tokio::task::spawn_blocking(move || while told.recv().is_ok() {});
+        tokio::time::timeout(Duration::from_secs(10), ledger.unwrap().close()).await
+    });
+    rt.shutdown_background();
+    closed.expect("the close ended the queue");
 }

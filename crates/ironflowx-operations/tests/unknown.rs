@@ -3,7 +3,9 @@
 //! returns the original event if it landed, else stores it once. Its own test binary, since the
 //! fault hook is process-wide.
 
+use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Waker};
 
 use ironflowx_cell::{FaultPoint, ManualClock, set_fault_hook};
 use ironflowx_core::{ErrorKind, Secret, Timestamp};
@@ -51,6 +53,11 @@ fn told<T: std::fmt::Debug>(answer: Result<T, OpError>) -> (ErrorKind, bool, Opt
     (err.kind, err.kind.retryable(), err.hint)
 }
 
+/// Whether `f` is ready when polled once.
+fn ready<F: Future>(f: std::pin::Pin<&mut F>) -> bool {
+    f.poll(&mut Context::from_waker(Waker::noop())).is_ready()
+}
+
 #[tokio::test]
 async fn an_unknown_emit_is_settled_by_a_keyed_retry_after_reopening_the_engine() {
     set_fault_hook(lose_the_append);
@@ -64,6 +71,8 @@ async fn an_unknown_emit_is_settled_by_a_keyed_retry_after_reopening_the_engine(
         LANDED.store(landed, Ordering::SeqCst);
         ARMED.store(true, Ordering::SeqCst);
         let (kind, retryable, hint) = told(engine.emit(&cx, emit()).await);
+        // The fault is signalled before the answer.
+        assert!(ready(pin!(engine.faulted())));
         assert_eq!((kind, retryable), (ErrorKind::Unknown, false));
         assert_eq!(
             hint.as_deref(),

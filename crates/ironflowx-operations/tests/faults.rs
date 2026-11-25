@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ironflowx_cell::ManualClock;
 use ironflowx_core::{Clock, ErrorKind, Scope, Secret, Timestamp};
-use ironflowx_operations::Engine;
+use ironflowx_operations::{ControlPlaneState, Engine, Health, LedgerState};
 use ironflowx_proto::{
     Call, CreateKeyRequest, EmitRequest, ListEnvironmentsRequest, ListEventsRequest,
     ListKeysRequest, OpError, Operations, RevokeKeyRequest, WhoamiRequest,
@@ -156,6 +156,11 @@ async fn a_panic_under_the_control_planes_lock_is_unavailable_until_reopened() {
     panics.store(false, Ordering::SeqCst);
     let later = opened.engine.whoami(&k, WhoamiRequest {}).await;
     assert_unavailable(later, "after the panic");
+    let health = Health {
+        control_plane: ControlPlaneState::Failed,
+        ledger: LedgerState::Open,
+    };
+    assert_eq!(opened.engine.health().await, health);
     opened.engine.close().await;
     let opened = Engine::open(dir.path(), clock, None).await.unwrap();
     opened.engine.whoami(&k, WhoamiRequest {}).await.unwrap();
