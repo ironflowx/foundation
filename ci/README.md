@@ -30,6 +30,9 @@ The `test` job also builds and tests the facade in three separate Cargo invocati
 default features, with `client`, and with `client-tls`. Each asserts exactly which facade features
 are on. Both client builds compile the `whoami` example and check the schemes the client accepts.
 Separate invocations keep the workspace's CLI from switching on the proto client's TLS support.
+`ci/no-facade-http.sh` also checks the default facade dependency graph for the HTTP and TLS
+packages used by the proto client. The facade with `client-tls` enabled supplies its rejecting
+fixture.
 
 ## Pure crates
 

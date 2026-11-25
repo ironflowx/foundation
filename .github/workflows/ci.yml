@@ -77,6 +77,12 @@ jobs:
       - run: cargo test -p ironflowx --locked --test features
         env:
           IRONFLOWX_FACADE_FEATURES: none
+      - name: Facade defaults build without the HTTP stack
+        run: |
+          ci/no-facade-http.sh
+          ci/must-reject.sh "dependency 'connectrpc'" "dependency 'http'" "dependency 'hyper'" \
+            "dependency 'hyper-util'" "dependency 'rustls'" "dependency 'rustls-native-certs'" -- \
+            ci/no-facade-http.sh --features client-tls
       - run: cargo test -p ironflowx --locked --features client --test features --example whoami
         env:
           IRONFLOWX_FACADE_FEATURES: client
