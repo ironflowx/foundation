@@ -215,6 +215,7 @@ fn bind(data_dir: &Path, listen: SocketAddr) -> Result<TcpListener, ServeError> 
     Ok(listener)
 }
 
+/// Serves from a bound listener, with signal handling left to the caller.
 /// Serves `/health` and the door at once, and the engine in `data_dir` when it has opened.
 ///
 /// # Errors
@@ -423,6 +424,13 @@ mod tests {
             assert_eq!(error.exit_code(), expected, "{error}");
             assert_eq!(error.envelope().kind.exit_code(), expected, "{error}");
         }
+    }
+
+    #[test]
+    fn signal_registration_failure_is_internal() {
+        let error = ServeError::Signals(io::Error::other("fixture"));
+        assert_eq!(error.envelope().kind, ErrorKind::Internal);
+        assert_eq!(error.exit_code(), 1);
     }
 
     #[test]

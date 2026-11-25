@@ -205,7 +205,7 @@ fn run(matches: &ArgMatches) -> ExitCode;                        // a command of
 
 // ironflowx-bin (tokio)
 async fn serve(data_dir: &Path, listen: SocketAddr) -> Result<(), ServeError>;
-async fn run(listener: std::net::TcpListener, data_dir: &Path) -> Result<(), ServeError>;   // serve, from a bound listener
+async fn run(listener: std::net::TcpListener, data_dir: &Path) -> Result<(), ServeError>;   // bound listener. The caller handles signals
 async fn serve_with_seed(data_dir: &Path, listen: SocketAddr, seed: Option<Secret>) -> Result<(), ServeError>;
 // ServeError StaleKeyFile(PathBuf) | Listen(io::Error) | Signals(io::Error) | LedgerFault
 // | DataDir(PathBuf, io::Error) | KeyLookup(PathBuf, io::Error) | Engine(EngineError)
