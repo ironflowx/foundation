@@ -425,8 +425,8 @@ fn no_secret_is_stored_or_logged() {
         assert_eq!(leak(half, [high_key.expose()]), Some("a secret's text"));
     }
     // And each half within base64 of what holds it, alone after `key_<id>_`, `xkey_<id>_` and
-    // `Bearer key_<id>_`, so at each place in a group; then a whole `Authorization` value's,
-    // and the bits after an `x`.
+    // `Bearer key_<id>_`; then a whole `Authorization` value's; then the first half and the bits
+    // after an `x`. So at each place in a group.
     for form in [
         "a2V5XzAxOWE5ZjNlLTdjMmItN2Q0MS04YTNlLTIwMDAwMDAwMDBlMF80T0hpNC1UbDV1Zm82ZXJyN08zdTcuLi4uLi4uLi4uLi4uLi4uLi4uLi4u",
         "a2V5XzAxOWE5ZjNlLTdjMmItN2Q0MS04YTNlLTIwMDAwMDAwMDBlMF8uLi4uLi4uLi4uLi4uLi4uLi4uLi5fRHg4dlAwOWZiMy1QbjYtX3o5X3Y4",
@@ -435,6 +435,7 @@ fn no_secret_is_stored_or_logged() {
         "QmVhcmVyIGtleV8wMTlhOWYzZS03YzJiLTdkNDEtOGEzZS0yMDAwMDAwMDAwZTBfNE9IaTQtVGw1dWZvNmVycjdPM3U3Li4uLi4uLi4uLi4uLi4uLi4uLi4uLg==",
         "QmVhcmVyIGtleV8wMTlhOWYzZS03YzJiLTdkNDEtOGEzZS0yMDAwMDAwMDAwZTBfLi4uLi4uLi4uLi4uLi4uLi4uLi4uX0R4OHZQMDlmYjMtUG42LV96OV92OA==",
         "QmVhcmVyIGl4a18wMTlhOWYzZS03YzJiLTdkNDEtOGEzZS0yMDAwMDAwMDAwZTBfNE9IaTQtVGw1dWZvNmVycjdPM3U3X0R4OHZQMDlmYjMtUG42LV96OV92OA==",
+        "eDRPSGk0LVRsNXVmbzZlcnI3TzN1Ny4uLi4uLi4uLi4uLi4uLi4uLi4uLi4=",
         "eODh4uPk5ebn6Onq6+zt7u/w8fLz9PX29/j5+vv8/f7/",
     ] {
         for form in [form.to_owned(), form.replace('+', "-").replace('/', "_")] {

@@ -46,8 +46,10 @@ fn halves(key: &str) -> [Vec<u8>; 4] {
 /// half as it is, in either base64 alphabet, as a list of numbers, decimal or hex, as a run of hex
 /// digits, whatever the case, the spaces and the `0x` between them, or as `escape_ascii` writes
 /// it: what one usual call to std's formatting gives; or within base64 of any text that holds it,
-/// such as a header. In no other form: not with a `char` for each
-/// byte, unless in a path, nor as hex with anything else between.
+/// such as a header, where the groups of 3 it fills are enough: from 12 bytes, fewer than a half,
+/// which is stricter and harmless. In no other form: not with a `char` for each byte, unless in a
+/// path, nor as hex with anything else between, nor in base64 that is wrapped into shorter lines
+/// (of 16 characters, say), nor in base64 of base64.
 pub fn leak<'a>(text: &str, keys: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
     let list: String = text.split_whitespace().collect();
     let list = list.to_lowercase().replace("0x", "");
