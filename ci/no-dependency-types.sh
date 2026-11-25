@@ -8,11 +8,12 @@
 set -euo pipefail
 # perl: the path's root is what no path and no name precedes. Its $ARGV is perl's.
 # shellcheck disable=SC2016
-found=$(perl -ne '
+crates=$(cd "$(dirname "$0")/../crates" && printf '%s|' * | tr - _)
+found=$(CRATES=${crates%|} perl -ne '
   my $line = $_;
   $line =~ s/-> axum::routing::Router$// if /^pub fn ironflowx_doors::router</;
   while ($line =~ /(?<![\w:])([a-z_]\w*)::/g) {
-    next if $1 =~ /^(core|alloc|std|ironflowx(_\w+)?)$/;
+    next if $1 =~ /^(core|alloc|std|$ENV{CRATES})$/;
     print "$ARGV:$.: $_";
     last;
   }

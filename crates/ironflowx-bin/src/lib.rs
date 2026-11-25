@@ -8,9 +8,10 @@ mod key_file;
 
 use std::convert::Infallible;
 use std::fmt;
+use std::fs::Permissions;
 use std::io;
 use std::net::{SocketAddr, TcpListener};
-use std::os::unix::fs::DirBuilderExt as _;
+use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::sync::Arc;
@@ -135,11 +136,7 @@ async fn open(data_dir: &Path) -> Result<Engine, ServeError> {
 /// Creates the data directory, and refuses an `admin.key` that no open of it wrote: one writes it
 /// only once the bootstrap is marked.
 fn prepare(data_dir: &Path) -> Result<(), ServeError> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(data_dir)
-        .map_err(|e| ServeError::DataDir(data_dir.to_owned(), e))?;
+    create(data_dir).map_err(|e| ServeError::DataDir(data_dir.to_owned(), e))?;
     if key_file::exists(data_dir) {
         match ControlPlane::bootstrap_state(&data_dir.join("control.db")) {
             // The open answers what a failed read means.
@@ -152,6 +149,19 @@ fn prepare(data_dir: &Path) -> Result<(), ServeError> {
         }
     }
     Ok(())
+}
+
+/// Creates `dir` with mode `0700`, whatever the process umask; one that is there keeps its mode.
+fn create(dir: &Path) -> io::Result<()> {
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let private = Permissions::from_mode(0o700);
+    match std::fs::DirBuilder::new().mode(private.mode()).create(dir) {
+        Ok(()) => std::fs::set_permissions(dir, private),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {

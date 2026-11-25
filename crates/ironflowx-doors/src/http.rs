@@ -5,7 +5,8 @@ use std::sync::Arc;
 use axum::Router;
 use axum::routing::get;
 use connectrpc::{
-    ConnectRpcService, Encodable, Limits, RequestContext, Response, ServiceRequest, ServiceResult,
+    CompressionRegistry, ConnectRpcService, Encodable, Limits, RequestContext, Response,
+    ServiceRequest, ServiceResult,
 };
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use http::{HeaderMap, HeaderName, StatusCode};
@@ -22,8 +23,10 @@ pub fn router<O: Operations + 'static, R: Readiness + 'static>(slot: Arc<Slot<O,
     let limits = Limits::default()
         .with_max_request_body_size(wire::MAX_MESSAGE)
         .with_max_message_size(wire::MAX_MESSAGE);
-    let rpcs =
-        ConnectRpcService::new(IdentityServiceServer::new(Door(slot.clone()))).with_limits(limits);
+    let rpcs = ConnectRpcService::new(IdentityServiceServer::new(Door(slot.clone())))
+        .with_limits(limits)
+        // Another crate of the build may switch gzip or zstd on in `connectrpc`.
+        .with_compression(CompressionRegistry::new());
     Router::new()
         .route("/health", get(|| async { StatusCode::OK }))
         .route("/ready", get(move || async move { ready(&slot).await }))

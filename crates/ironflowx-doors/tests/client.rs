@@ -207,6 +207,10 @@ fn a_url_is_http_with_a_host_and_no_user_query_or_fragment() {
         "http://[fe80::1%25en0]",
         "http://u@[::1]:80",
         "http://h@h",
+        "http://h@h:80",
+        "http://host-user:pw@host:80/",
+        "http://[::1]x:80",
+        "http://h:80:80",
         "http:// h",
         "http://h /",
     ] {

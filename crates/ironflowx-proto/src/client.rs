@@ -3,8 +3,8 @@
 use std::fmt;
 use std::net::Ipv6Addr;
 
-use connectrpc::ConnectError;
 use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
+use connectrpc::{CompressionRegistry, ConnectError};
 use http::header::{AUTHORIZATION, HeaderValue};
 use http::uri::{Scheme, Uri};
 use ironflowx_core::ErrorKind;
@@ -56,15 +56,17 @@ impl Client {
         let uri: Uri = url.parse().map_err(|_| InvalidUrl)?;
         let authority = uri.authority().ok_or(InvalidUrl)?;
         let host = authority.host();
-        // `Uri` takes any text in brackets, and any after the host's colon.
+        // `Uri` takes any text in brackets, and any after the host.
         let address = match host.strip_prefix('[') {
             Some(v6) => v6.trim_end_matches(']').parse::<Ipv6Addr>().is_ok(),
             None => !host.is_empty(),
         };
-        // `None` after a user.
+        // A user comes before the host, or looks like it.
         let port = match authority.as_str().strip_prefix(host) {
             Some("") => true,
-            Some(port) => authority.port_u16().is_some() && !port.contains('+'),
+            Some(rest) => rest.strip_prefix(':').is_some_and(|port| {
+                port.bytes().all(|b| b.is_ascii_digit()) && port.parse::<u16>().is_ok()
+            }),
             None => false,
         };
         // `Uri` drops a fragment as it parses.
@@ -72,7 +74,10 @@ impl Client {
         if uri.scheme() != Some(&Scheme::HTTP) || !(address && port && bare) {
             return Err(InvalidUrl);
         }
-        let config = ClientConfig::new(uri).with_default_max_message_size(wire::MAX_MESSAGE);
+        let config = ClientConfig::new(uri)
+            .with_default_max_message_size(wire::MAX_MESSAGE)
+            // Another crate of the build may switch gzip or zstd on in `connectrpc`.
+            .with_compression(CompressionRegistry::new());
         Ok(Self {
             identity: IdentityServiceClient::new(HttpClient::plaintext(), config),
         })

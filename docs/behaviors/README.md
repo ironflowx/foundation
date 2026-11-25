@@ -16,12 +16,12 @@ Each scenario of 0.1, in `events.feature`, is mapped to the spec stories that ow
 
 ## How they run
 
-The steps call `Operations`, never a URL or a status code, but for `/health` and `/ready`, which are the interface. Those of `serve.feature` also start the binary and read its log:
+The steps call `Operations`, never a URL or a status code, but for `/health` and `/ready`, which are the interface. Those of `serve.feature` also start the binary, read its log and, where a scenario names a protocol, call with a client of that protocol generated from the proto:
 
 | Adapter | Drives | When |
 |---|---|---|
 | The engine (`Engine`) | An engine in the test's process, on a temporary directory, with a `ManualClock` | Every PR: `events.feature`, `tenancy.feature` |
-| Proto client (`Client`) | The `ironflowx` binary, built once at the suite's start with `cargo build -p ironflowx-bin --locked` (Cargo gives a test a binary's path only within its own package), started by each scenario on a fresh data directory and `127.0.0.1:0` | Every PR: `serve.feature` |
+| Proto client (`Client`) | The `ironflowx` binary, built once at the suite's start with `cargo build -p ironflowx-bin --locked` (Cargo gives a test a binary's path only within its own package), started by each scenario on a fresh data directory and `127.0.0.1:0` | Every PR: `serve.feature`, but for the calls that name a protocol |
 
 The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It runs the files in this folder in place; they are not copied. It fails unless the `.feature` files here are exactly those its `SCENARIOS` table names, each with that many scenario declarations (before outline expansion), so a new scenario updates its count and a new file is added there (`crates/ironflowx-behaviors/tests/behaviors.rs`). Each file runs on its own World: an engine each, or a started binary. Every scenario of `events.feature` and `tenancy.feature` runs; of `serve.feature`, those in `REGISTERED` (`tests/behaviors/serve.rs`): each lands with the work that makes it pass. The runner fails unless as many scenarios of each file pass, an outline once per example, as `EVENT_RUNS` and each `RUNS` say (`tests/behaviors/tenancy.rs`, `tests/behaviors/serve.rs`). Run them alone with `cargo test -p ironflowx-behaviors --test behaviors`.
 

@@ -255,7 +255,36 @@ fn a_silent_connection_is_closed() {
     assert_eq!(stream.read(&mut [0]).unwrap(), 0);
 }
 
-/// Under a umask that takes the owner's bits too.
+/// Under a umask, which takes some of the owner's bits too.
+fn under_umask(umask: &str, data_dir: &Path) -> Child {
+    let shell = "umask $2; exec \"$0\" serve --listen 127.0.0.1:0 --data-dir \"$1\"";
+    Command::new("sh")
+        .args(["-c", shell, env!("CARGO_BIN_EXE_ironflowx")])
+        .arg(data_dir)
+        .arg(umask)
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
+#[test]
+fn the_data_directory_is_its_owners_whatever_the_umask() {
+    for umask in ["0277", "0477", "0777"] {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        let mut child = under_umask(umask, &data_dir);
+        let lock = data_dir.join("engine.lock");
+        let started = Instant::now();
+        // The engine may not open, its own files being the umask's.
+        while !lock.exists() && started.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(mode(&data_dir), 0o700, "{umask}");
+    }
+}
+
 #[test]
 fn the_key_file_is_its_owners_to_read_whatever_the_umask() {
     let dir = tempfile::tempdir().unwrap();
@@ -269,13 +298,7 @@ fn the_key_file_is_its_owners_to_read_whatever_the_umask() {
     let unmark = "UPDATE environments SET ledger_created_at = NULL";
     assert_eq!(control.execute(unmark, []).unwrap(), 1);
     drop(control);
-    let shell = "umask 0477; exec \"$0\" serve --listen 127.0.0.1:0 --data-dir \"$1\"";
-    let mut child = Command::new("sh")
-        .args(["-c", shell, env!("CARGO_BIN_EXE_ironflowx")])
-        .arg(dir.path())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut child = under_umask("0477", dir.path());
     let started = Instant::now();
     while !key_file.exists() && started.elapsed() < Duration::from_secs(30) {
         std::thread::sleep(Duration::from_millis(10));
