@@ -1,6 +1,6 @@
-//! The host's accept loop: HTTP/1.1 and cleartext HTTP/2. A connection has 10 s to send its first
-//! request's head, and on HTTP/1.1 10 s for each later one from its first byte. Nothing else limits
-//! an idle connection.
+//! The host's accept loop: HTTP/1.1 and cleartext HTTP/2. A connection sends its first request's
+//! head within 10 s, and on HTTP/1.1 each later one within 10 s of its first byte. A later head that
+//! arrives with the request before it, and later HTTP/2 heads, count as idle, which has no limit.
 
 use std::convert::Infallible;
 use std::io;
@@ -75,7 +75,7 @@ where
 
 /// Times an HTTP/1.1 head from its first byte. hyper's own timer runs from the end of the request
 /// before, which would close an idle connection; the first head has the connection's deadline.
-/// One whose first bytes came with the request before it counts as idle, and has no limit.
+/// One that arrives with the request before it is timed from what comes of it after that.
 #[derive(Clone)]
 struct HeadTimer(Arc<AtomicBool>);
 
@@ -237,6 +237,43 @@ mod tests {
             stream.write_all(b"E").await.unwrap();
             let after = closed_after(&mut stream).await.unwrap();
             assert_10_s(Some(after + Duration::from_secs(9)), &format!("{idle:?}"));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_head_that_arrives_with_the_request_before_it_counts_as_idle() {
+        let mut stream = connect();
+        stream.write_all(WHOLE).await.unwrap();
+        stream.write_all(b"GET /he").await.unwrap();
+        assert_eq!(closed_after(&mut stream).await, None);
+        stream.write_all(b"a").await.unwrap();
+        assert_10_s(closed_after(&mut stream).await, "more of it");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_later_http_2_head_counts_as_idle() {
+        let frame = |kind: u8, flags: u8, stream: u8, payload: &[u8]| {
+            let len = u8::try_from(payload.len()).unwrap();
+            [&[0, 0, len, kind, flags, 0, 0, 0, stream], payload].concat()
+        };
+        let (headers, end_stream, end_headers) = (1, 1, 4);
+        // GET, http, /health, x: HPACK, with no Huffman code.
+        let get = b"\x82\x86\x04\x07/health\x01\x01x";
+        let settings = frame(4, 0, 0, b"");
+        let whole = frame(headers, end_stream | end_headers, 1, get);
+        let unended = frame(headers, end_stream, 3, get);
+        for part in [&unended[..], &unended[..12]] {
+            let mut stream = connect();
+            let preface = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+            let sent = [&preface[..], &settings, &whole].concat();
+            stream.write_all(&sent).await.unwrap();
+            // The answer's HEADERS, on stream 1.
+            let mut answer = Vec::new();
+            while !answer.windows(5).any(|w| w == [0, 0, 0, 1, 0x88]) {
+                assert_ne!(stream.read_buf(&mut answer).await.unwrap(), 0);
+            }
+            stream.write_all(part).await.unwrap();
+            assert_eq!(closed_after(&mut stream).await, None);
         }
     }
 
