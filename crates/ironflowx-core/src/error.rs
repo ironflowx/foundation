@@ -10,28 +10,29 @@ pub enum ErrorKind {
     /// No such resource, or its ID does not parse.
     NotFound,
     /// The outcome is unknown: of an emit, and the ledger is now unavailable until reopened; or,
-    /// from the proto client, of a call that changes state and that no engine answered.
+    /// from the proto client, of a call that changes state, that may have reached the engine and
+    /// that no engine answered.
     Unknown,
     /// The ledger failed and refuses every call until it is reopened; or the control plane failed
     /// this call, which can be retried at once, a `create_key` once the keys are listed (see
     /// [`Self::retryable`]), unless a call has panicked under its lock: then only after a reopen.
     /// Through a door, the engine is not open yet; from the proto client, no engine answered a
-    /// read.
+    /// read, or no connection opened.
     Unavailable,
     /// No key, or a key that is not valid for this environment.
     Unauthenticated,
     /// A valid key that lacks the operation's scope; the hint names it.
     PermissionDenied,
-    /// A limit is reached; the hint says what frees room.
+    /// A limit is reached; the hint, when there is one, says what frees room.
     ResourceExhausted,
-    /// A fault of the server, not of the request.
+    /// A fault of the server, not of the request; or, from the proto client, an engine too old to
+    /// have the operation.
     Internal,
 }
 
 impl ErrorKind {
     /// True only when the same request, sent again unchanged, may succeed and stores no second
-    /// event. The error's hint, when there is one, says what to do, retryable or not; that of an
-    /// emit's [`Self::Unknown`] assumes an idempotency key on every item, and
+    /// event. The error's hint, when there is one, says what to do, retryable or not;
     /// [`Self::Unavailable`] says when "at once" is not enough.
     ///
     /// It promises no second event, not no second key: a `create_key` that answered `Unavailable`

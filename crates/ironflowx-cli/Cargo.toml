@@ -10,7 +10,7 @@ license.workspace = true
 # No engine crate: ci/no-engine-deps.sh (SRV-1).
 [dependencies]
 ironflowx-core.workspace = true
-ironflowx-proto = { workspace = true, features = ["client", "wire"] }
+ironflowx-proto = { workspace = true, features = ["client-tls", "wire"] }
 # Exact: ironflowx-cli refuses a clap that prints arguments by what this one does (TEN-3).
 clap = { version = "=4.6.9", default-features = false, features = ["error-context", "help", "std", "usage"] }
 serde_json.workspace = true

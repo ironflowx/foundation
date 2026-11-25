@@ -140,11 +140,19 @@ impl Engine {
         &self.ledger
     }
 
-    /// The engine's one way to submit: attributed to the admitted call's grant (TEN-6).
-    async fn submit(&self, a: &Authorized, sub: Submission) -> Result<Vec<ItemOutcome>, OpError> {
+    /// The engine's one way to submit: attributed to the admitted call's grant (TEN-6). The hint
+    /// of an `Unknown` is `if_unknown`.
+    async fn submit(
+        &self,
+        a: &Authorized,
+        sub: Submission,
+        if_unknown: &str,
+    ) -> Result<Vec<ItemOutcome>, OpError> {
         let by = a.grant().submit_as();
         let committed = self.ledger(a).submit(sub, by).await;
-        Ok(committed.map_err(events::submit_error)?.outcome)
+        Ok(committed
+            .map_err(|e| events::submit_error(e, if_unknown))?
+            .outcome)
     }
 
     /// The key records, reached only with a proof of admission (TEN-1).
@@ -206,8 +214,9 @@ impl Operations for Engine {
     /// `Unknown` if the append's outcome is unknown; `Unavailable` if the ledger failed.
     async fn emit(&self, cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError> {
         let a = self.admit(cx, Operation::Emit).await?;
+        let if_unknown = events::if_unknown(&req);
         let sub = Submission::Emit(events::emit(req));
-        let outcomes = self.submit(&a, sub).await?;
+        let outcomes = self.submit(&a, sub, if_unknown).await?;
         let [outcome] = <[_; 1]>::try_from(outcomes).expect("one outcome per emit");
         events::response(outcome)
     }
@@ -225,7 +234,7 @@ impl Operations for Engine {
     ) -> Result<EmitBatchResponse, OpError> {
         let a = self.admit(cx, Operation::EmitBatch).await?;
         let sub = Submission::Batch(req.items.into_iter().map(events::emit).collect());
-        let outcomes = self.submit(&a, sub).await?;
+        let outcomes = self.submit(&a, sub, events::BATCH_IF_UNKNOWN).await?;
         Ok(EmitBatchResponse {
             items: outcomes.into_iter().map(events::response).collect(),
         })

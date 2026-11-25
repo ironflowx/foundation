@@ -19,6 +19,9 @@ static LANDED: AtomicBool = AtomicBool::new(false);
 /// Whether the next append is the one to lose.
 static ARMED: AtomicBool = AtomicBool::new(false);
 
+/// One test at a time loses an append.
+static ALONE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Kills the writer during an append, so its reply is lost.
 fn lose_the_append(point: FaultPoint) {
     let at = if LANDED.load(Ordering::SeqCst) {
@@ -60,6 +63,7 @@ fn ready<F: Future>(f: std::pin::Pin<&mut F>) -> bool {
 
 #[tokio::test]
 async fn an_unknown_emit_is_settled_by_a_keyed_retry_after_reopening_the_engine() {
+    let _alone = ALONE.lock().await;
     set_fault_hook(lose_the_append);
     for landed in [true, false] {
         let dir = tempfile::tempdir().unwrap();
@@ -106,6 +110,54 @@ async fn an_unknown_emit_is_settled_by_a_keyed_retry_after_reopening_the_engine(
         let after = engine.list_events(&cx, first_page()).await.unwrap().events;
         let ids: Vec<_> = after.iter().map(|e| e.event_id).collect();
         assert_eq!(ids, [retry.event_id]);
+        engine.close().await;
+    }
+}
+
+/// The hint fits the request, and the message says nothing it does not.
+#[tokio::test]
+async fn an_unknown_emits_hint_fits_its_keys() {
+    let _alone = ALONE.lock().await;
+    set_fault_hook(lose_the_append);
+    LANDED.store(true, Ordering::SeqCst);
+    let unkeyed = || EmitRequest {
+        idempotency_key: None,
+        ..emit()
+    };
+    let batch = "reopen the engine, then retry unchanged only if every item had an idempotency \
+                 key and keeps it; else check first what landed";
+    for (items, hint) in [
+        (
+            Err(emit()),
+            "reopen the engine, then retry with the same idempotency key",
+        ),
+        (
+            Err(unkeyed()),
+            "reopen the engine, then check first what landed: a retry may store a second event",
+        ),
+        (Ok(vec![emit()]), batch),
+        (Ok(vec![emit(), unkeyed()]), batch),
+        (Ok(vec![unkeyed()]), batch),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::new(Timestamp::from_millis(1_800_000_000_000));
+        let opened = Engine::open(dir.path(), clock, None).await.unwrap();
+        let (engine, key) = (opened.engine, opened.minted.unwrap());
+        let cx = Call::with_key(key);
+        ARMED.store(true, Ordering::SeqCst);
+        let answer = match items {
+            Ok(items) => {
+                let batch = EmitBatchRequest { items };
+                engine.emit_batch(&cx, batch).await.map(drop)
+            }
+            Err(one) => engine.emit(&cx, one).await.map(drop),
+        };
+        let unknown = OpError {
+            kind: ErrorKind::Unknown,
+            message: "the outcome is unknown".into(),
+            hint: Some(hint.into()),
+        };
+        assert_eq!(answer, Err(unknown));
         engine.close().await;
     }
 }

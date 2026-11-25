@@ -13,6 +13,8 @@ allow = [
   # The wire, in ironflowx-proto's features: connectrpc and buffa, which serve and call it, and
   # their smoothutf8 and sync_wrapper; protox's prost and miette, which compile the proto.
   "Apache-2.0",
+  # client-tls's aws-lc-rs and aws-lc-sys, rustls-webpki and untrusted: the proto client's `https`.
+  "ISC",
   # foldhash: buffa's hash tables.
   "Zlib",
   # borrow-or-share: under jsonschema, which checks the proto's examples as ironflowx-cli builds.
