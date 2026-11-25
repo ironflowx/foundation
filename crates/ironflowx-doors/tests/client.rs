@@ -656,14 +656,18 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
                 refusal,
             ),
         ),
-        // Nor is the engine's own error: 'kind' "not_found", 'message' "m".
         (
-            status(404),
-            http(
-                "404 x",
-                "text/html",
-                br#"{"details":[{"type":"ironflowx.v1.ErrorInfo","value":"Cglub3RfZm91bmQSAW0"}]}"#,
-            ),
+            status(400),
+            json("400 x", r#"{"code":"invalid_argument","message":null}"#),
+        ),
+        // Not from its first byte.
+        (
+            status(400),
+            json("400 x", "\n{\"code\":\"invalid_argument\"}"),
+        ),
+        (
+            status(400),
+            json("400 x", " {\"code\":\"invalid_argument\"}"),
         ),
         // Cut off, and one that the library cannot read.
         (code("unavailable"), vec![]),
@@ -800,7 +804,7 @@ async fn a_code_of_the_library_is_the_kind_it_means() {
                 "Application/JSON; charset=utf-8",
                 "application/json ;charset=\"UTF-8\"",
             ][i % 3];
-            let body = format!(r#" {{"code":"{code}","message":"{CREATED}"}}"#);
+            let body = format!(r#"{{"code":"{code}","message":"{CREATED}"}}"#);
             let client = stub.answering(http(&format!("{own} x"), kind_sent, body.as_bytes()));
             let e = ask_one(&client, &call(KEY), op).await.unwrap_err();
             let ended = (e.kind, e.hint.as_deref());
@@ -850,25 +854,98 @@ async fn an_older_engine_says_so() {
     }
 }
 
-/// SRV-3, rule 1: the engine's own error, also under a code this client does not know.
+/// SRV-3, rule 1: the engine's own error, whatever came of the answer around it: a code this client
+/// does not know, and a status, a type or an encoding the engine did not give it.
 #[tokio::test]
 async fn the_engines_own_error_is_first() {
     let stub = Stub::new().await;
     // 'kind' "not_found", 'message' "m".
     let detail = r#"[{"type":"ironflowx.v1.ErrorInfo","value":"Cglub3RfZm91bmQSAW0"}]"#;
-    for code in ["", r#""code":"new","#, r#""code":"unimplemented","#] {
-        for op in Operation::ALL.iter().copied() {
+    let heads = [
+        "404 x\r\ncontent-type: application/json",
+        "503 x\r\ncontent-type: application/json",
+        "503 x\r\ncontent-type: application/json; profile=rpc",
+        "503 x\r\ncontent-type: text/html",
+        "503 x",
+        // Said to be compressed, and not.
+        "404 x\r\ncontent-type: application/json\r\ncontent-encoding: gzip",
+    ];
+    for head in heads {
+        for code in ["", r#""code":"new","#, r#""code":"unimplemented","#] {
             let body = format!(r#"{{{code}"details":{detail}}}"#);
-            let client = stub.answering(json("503 x", &body));
-            let e = ask_one(&client, &call(KEY), op).await.unwrap_err();
-            let own = OpError {
-                kind: ErrorKind::NotFound,
-                message: "m".into(),
-                hint: None,
-            };
-            assert_eq!(e, own, "{op:?} {code}");
+            let length = body.len();
+            let answer = format!("HTTP/1.1 {head}\r\ncontent-length: {length}\r\n\r\n{body}");
+            for op in Operation::ALL.iter().copied() {
+                let client = stub.answering(answer.clone().into_bytes());
+                let e = ask_one(&client, &call(KEY), op).await.unwrap_err();
+                let own = OpError {
+                    kind: ErrorKind::NotFound,
+                    message: "m".into(),
+                    hint: None,
+                };
+                assert_eq!(e, own, "{op:?} {code} {head}");
+            }
         }
     }
+}
+
+/// SRV-4: an event's name can make its whole request read as an engine's error after the newline
+/// it begins with, where the byte that says how long the name is, 123, is a brace. Sent back, as a
+/// proxy can, it is none.
+#[tokio::test]
+async fn a_request_sent_back_is_no_engines_error() {
+    // 'kind' "unavailable", which may be sent again at once.
+    let error = r#""code":"unavailable","details":[{"type":"ironflowx.v1.ErrorInfo","value":"Cgt1bmF2YWlsYWJsZQ"}],"x":""#;
+    let name = format!("{error}{}\"}}", "x".repeat(123 - error.len() - 2));
+    let mut got = Vec::new();
+    let mut expected = Vec::new();
+    for head in [
+        "502 x\r\ncontent-type: application/json",
+        "502 x\r\ncontent-type: application/json; profile=rpc",
+        "502 x\r\ncontent-type: text/html",
+        "502 x\r\ncontent-type: application/proto",
+        "502 x",
+        "503 x\r\ncontent-type: text/html",
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = Client::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let echo = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut read = Vec::new();
+            // The head, and the body: the name, its tag and its length.
+            let body = loop {
+                let end = read.windows(4).position(|w| w == b"\r\n\r\n");
+                match end.map(|end| &read[end + 4..]) {
+                    Some(body) if body.len() == 125 => break body.to_vec(),
+                    _ => assert_ne!(stream.read_buf(&mut read).await.unwrap(), 0),
+                }
+            };
+            let answer = format!("HTTP/1.1 {head}\r\ncontent-length: 125\r\n\r\n");
+            let answer = [answer.as_bytes(), &body].concat();
+            stream.write_all(&answer).await.unwrap();
+            body
+        });
+        let unkeyed = EmitRequest {
+            name: name.clone(),
+            data: None,
+            metadata: None,
+            version: None,
+            idempotency_key: None,
+        };
+        let e = client.emit(&call(KEY), unkeyed).await.unwrap_err();
+        let unknown = OpError {
+            kind: ErrorKind::Unknown,
+            message: format!(
+                "the engine did not answer: an HTTP {} that is not Connect's",
+                &head[..3]
+            ),
+            hint: Some("check first what landed: a retry may store a second event".into()),
+        };
+        got.push(e);
+        expected.push(unknown);
+        assert_eq!(echo.await.unwrap(), [b"\n{", name.as_bytes()].concat());
+    }
+    assert_eq!(got, expected);
 }
 
 /// The hint of an `Unknown` fits the request: a retry of an emit stores one event only if it has an

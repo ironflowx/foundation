@@ -41,10 +41,11 @@ use crate::{
 ///
 /// - `ResourceExhausted`, with nothing sent, for a request over 16 MiB; `Invalid` for one the wire
 ///   does not carry, as the call says.
-/// - The engine's own error, unchanged.
+/// - The engine's own error, unchanged, whatever the HTTP status and type it comes with.
 /// - `Unavailable` if the connection never opened: nothing ran.
-/// - What the server's library refused, as a Connect server sends it: `Invalid`, `ResourceExhausted`, or `Internal` where the
-///   engine is older than this client and has no such operation.
+/// - What the server's library refused, as a Connect server sends it: `Invalid`,
+///   `ResourceExhausted`, or `Internal` where the engine is older than this client and has no such
+///   operation.
 /// - Any other failure, as a drop, the timeout or a proxy's error: `Unavailable` of a read, and
 ///   `Unknown` of a call that changes state, which may have run; its hint says what to do.
 pub struct Client {
@@ -241,14 +242,15 @@ fn failure(answer: &Parts, body: Option<&[u8]>) -> ConnectError {
     struct Failure {
         code: Option<String>,
         // Not printed, but a text in what a server of Connect's sends.
-        #[serde(rename = "message")]
-        _message: Option<String>,
+        #[serde(default, rename = "message")]
+        _message: String,
         #[serde(default)]
         details: Vec<ErrorDetail>,
     }
-    // An object: serde takes an array for a struct too.
-    let json = body.filter(|b| is_json(&answer.headers) && b.trim_ascii_start().starts_with(b"{"));
-    let failure = json.and_then(|body| JsonCodec::decode::<Failure>(body).ok());
+    // From its first byte, which begins no request of ours: one sent back can be whitespace, then
+    // an object with an error of its own. (And serde takes an array for a struct too.)
+    let object = body.filter(|body| body.starts_with(b"{"));
+    let failure = object.and_then(|body| JsonCodec::decode::<Failure>(body).ok());
     let (code, details) = match failure {
         Some(f) => (f.code, f.details),
         None => (None, Vec::new()),
@@ -259,12 +261,15 @@ fn failure(answer: &Parts, body: Option<&[u8]>) -> ConnectError {
         let missing = *code == ErrorCode::Unimplemented && answer.status == StatusCode::NOT_FOUND;
         code.http_status() == answer.status || missing
     };
-    let code = code.and_then(|code| code.parse().ok()).filter(sent);
+    let code = code
+        .filter(|_| is_json(&answer.headers))
+        .and_then(|code| code.parse().ok())
+        .filter(sent);
     let mut e = match code {
         Some(code) => ConnectError::new(code, "").with_source(Instead::Connect),
         None => ConnectError::new(ErrorCode::Unknown, "").with_source(Instead::Http(answer.status)),
     };
-    // Those of a code this client does not know can hold the engine's own error too.
+    // They can hold the engine's own error, whatever a proxy made of the status and the type.
     e.details = details;
     e
 }
