@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use clap::error::ContextKind;
 use clap::{Arg, ArgAction, ArgMatches, value_parser};
 use ironflowx_core::{ErrorKind, Secret};
 use ironflowx_proto::{Call, Client, OpError, wire};
@@ -95,12 +96,13 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
         if !e.use_stderr() {
             return end(e.print().map_err(|e| unprinted(&e)));
         }
+        // Without what clap adds after it, the last of each: an argument can hold the same.
         let text = e.render().to_string();
-        // What clap adds after it, on lines of their own; an argument can hold an empty one.
-        let after = ["\n\nUsage: ", "\n\nFor more information"];
-        let ends = after.into_iter().filter_map(|a| text.find(a));
-        let first = &text[..ends.min().unwrap_or(text.len())];
-        let message = without_keys(first);
+        let footer = text.rsplit_once("\n\nFor more information");
+        let text = footer.map_or(&*text, |(text, _)| text);
+        let usage = e.get(ContextKind::Usage);
+        let usage = usage.and_then(|_| text.rsplit_once("\n\nUsage: "));
+        let message = without_keys(usage.map_or(text, |(text, _)| text));
         end(Err(OpError {
             hint: Some("--help says what a command takes".to_owned()),
             ..invalid(message.trim_start_matches("error: "))
@@ -109,18 +111,20 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
 }
 
 /// `text`, its whitespace as single spaces, without a word that may be a key.
-fn without_keys(text: &str) -> String {
-    let hide = |word| if is_key(word) { "<hidden>" } else { word };
+fn without_keys<'a>(text: &'a str) -> String {
+    let hide = |word: &'a str| {
+        // Without clap's quotes, one on each side.
+        let bare = word.strip_prefix('\'').unwrap_or(word);
+        let bare = bare.strip_suffix('\'').unwrap_or(bare);
+        if is_key(bare) { "<hidden>" } else { word }
+    };
     let words: Vec<_> = text.split_whitespace().map(hide).collect();
     words.join(" ")
 }
 
 /// Whether `word` may be a key given where none goes, or the end of one (TEN-3).
 fn is_key(word: &str) -> bool {
-    // Without clap's quotes, one on each side.
-    let bare = word.strip_prefix('\'').unwrap_or(word);
-    let bare = bare.strip_suffix('\'').unwrap_or(bare);
-    word.contains(KEY_PREFIX) || bare.len() >= SECRET_LEN
+    word.contains(KEY_PREFIX) || word.len() >= SECRET_LEN
 }
 
 /// Runs the CLI's own command that [`parse`] found: the process's exit code.
@@ -217,9 +221,9 @@ fn flag(command: &Command, field: &'static Field) -> Arg {
         }
     };
     let help = match (&field.kind, field.list) {
-        (Kind::JsonText, _) => "JSON text, or @<file>",
-        (_, true) => "May be repeated",
-        _ => "",
+        (Kind::JsonText, _) => Some("JSON text, or @<file>"),
+        (_, true) => Some("May be repeated"),
+        _ => None,
     };
     Arg::new(field.name)
         // Leaked, once a run: clap takes static text.
@@ -300,8 +304,8 @@ impl<'de> DeserializeSeed<'de> for &Check<'_> {
 
     fn deserialize<D: Deserializer<'de>>(self, json: D) -> Result<(), D::Error> {
         match self.kind {
-            _ if self.list => json.deserialize_any(self),
-            Kind::Message(_) => json.deserialize_any(self),
+            _ if self.list => json.deserialize_option(self),
+            Kind::Message(_) => json.deserialize_option(self),
             // As bytes, which any string is, one that does not decode too.
             Kind::JsonText => json.deserialize_bytes(self).inspect_err(|_| {
                 let refused = OpError {
@@ -323,8 +327,16 @@ impl<'de> Visitor<'de> for &Check<'_> {
     }
 
     /// An absent one, or it does not decode.
-    fn visit_unit<E>(self) -> Result<(), E> {
+    fn visit_none<E>(self) -> Result<(), E> {
         Ok(())
+    }
+
+    /// Asked for by what it must be: a build with `arbitrary_precision` offers a number as a map.
+    fn visit_some<D: Deserializer<'de>>(self, json: D) -> Result<(), D::Error> {
+        match self.list {
+            true => json.deserialize_seq(self),
+            false => json.deserialize_map(self),
+        }
     }
 
     fn visit_bytes<E>(self, _: &[u8]) -> Result<(), E> {
@@ -349,7 +361,7 @@ impl<'de> Visitor<'de> for &Check<'_> {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut object: A) -> Result<(), A::Error> {
-        let (Kind::Message(fields), false) = (self.kind, self.list) else {
+        let Kind::Message(fields) = self.kind else {
             return Err(A::Error::invalid_type(Unexpected::Map, &self));
         };
         let under = match &*self.at {
@@ -843,7 +855,7 @@ mod tests {
         for (bad, why) in [
             (
                 "[]",
-                "invalid type: sequence, expected an object at line 1 column 2",
+                "invalid type: sequence, expected an object at line 1 column 0",
             ),
             (
                 r#""x""#,
@@ -851,19 +863,19 @@ mod tests {
             ),
             (
                 r#"{"one":["1"]}"#,
-                "invalid type: sequence, expected an object at line 1 column 8",
+                "invalid type: sequence, expected an object at line 1 column 7",
             ),
             (
                 r#"{"items":[{},["1"]]}"#,
-                "invalid type: sequence, expected an object at line 1 column 14",
+                "invalid type: sequence, expected an object at line 1 column 13",
             ),
             (
                 r#"{"items":{"x":1}}"#,
-                "invalid type: map, expected an array at line 1 column 10",
+                "invalid type: map, expected an array at line 1 column 9",
             ),
             (
                 r#"{"names":{"x":1}}"#,
-                "invalid type: map, expected an array at line 1 column 10",
+                "invalid type: map, expected an array at line 1 column 9",
             ),
             (
                 r#"{"items":"x"}"#,
@@ -884,6 +896,15 @@ mod tests {
             "[".repeat(200),
             "]".repeat(200)
         );
+        // Whatever the build makes of it: `arbitrary_precision` offers a number as a map.
+        for number in ["1e400", r#"{"items":[1.5]}"#, r#"{"one":1e400}"#] {
+            let e = check(number).unwrap_err();
+            assert!(
+                e.message.starts_with("the request does not decode: "),
+                "{e:?}"
+            );
+        }
+        let quoted = format!(r#"{{"'{}'":1}}"#, "n".repeat(SECRET_LEN - 2));
         let long = "n".repeat(SECRET_LEN - 1);
         let hidden = format!(r#"{{"one":{{"{long}n":1}}}}"#);
         let shown = format!(r#"{{"one":{{"{long}":1}}}}"#);
@@ -905,6 +926,7 @@ mod tests {
                 "the request has no field 'items[1].one'",
             ),
             (r#"{"ixk_":1}"#, "the request has no field '<hidden>'"),
+            (&quoted, "the request has no field '<hidden>'"),
             (&hidden, "the request has no field 'one.<hidden>'"),
             (&shown, &format!("the request has no field 'one.{long}'")),
         ] {

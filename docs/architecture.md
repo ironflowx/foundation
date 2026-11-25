@@ -332,7 +332,7 @@ fn PageBudget::take(&mut self, bytes: usize) -> bool;   // only list_events make
 | Idempotency key | Absent means no key; otherwise 1–256 bytes, no NUL. One key per environment, across names, for as long as its event exists | EVT-030–037 |
 | Batch | An empty batch answers with no results | EVT-023 |
 
-If a build turns on `serde_json`'s `arbitrary_precision` feature, which Cargo's feature unification can do from any crate in the embedder's graph, an object whose first key is `$serde_json::private::Number` is read as a number and so may be refused. A default build reads that key like any other. A door in such a build also refuses a JSON `limit` or `version` written with a fraction or an exponent (`5.0`, `1e0`), which a default build reads as the nearest `f64`, so a fraction too fine for one is lost. CI runs the event-rule tests in both builds, and the CLI's own: what it prints of an event is read the same in either.
+If a build turns on `serde_json`'s `arbitrary_precision` feature, which Cargo's feature unification can do from any crate in the embedder's graph, an object whose first key is `$serde_json::private::Number` is read as a number and so may be refused. A default build reads that key like any other. A door in such a build, and the CLI's `--json`, also refuses a JSON `limit` or `version` written with a fraction or an exponent (`5.0`, `1e0`), which a default build reads as the nearest `f64`, so a fraction too fine for one is lost. CI runs the event-rule tests in both builds, and the CLI's own: what it prints of an event is read the same in either.
 
 A list query, not `decide`, checks the cursor: a token that does not decode, or names another incarnation, is `Invalid` (EVT-045, EVT-055). A cursor encodes the incarnation token and the last event sequence returned, and stays valid across reopen. A page lists the events older than the cursor's sequence, whether or not an event has that sequence, so a cursor past every sequence lists from the newest. It is an encoding, not a signature: a forged one is not detected.
 
@@ -623,7 +623,7 @@ It writes `cli.rs`: each command with its summary, the fields of its request and
 |---|---|
 | Names | `Operation::rpc()` is `<package>.<Service>/<Method>`, and the methods of the proto are those (D49) |
 | Field names in JSON | The proto's snake_case names: every multiword field sets `json_name` to its own name (D78). A camelCase name is an unknown field. The generator refuses a field without it |
-| Unknown JSON fields | Ignored, as protobuf does |
+| Unknown JSON fields | The door ignores them, as protobuf does; the CLI refuses them in `--json` (D79) |
 | A JSON array for a message | Read as the message's fields in the proto's order (`[["read"]]` is `{"scopes":["read"]}`), by the library; then checked as any |
 | Event data and metadata | `optional string` fields with `json_text`: the JSON text itself, so bytes, key order and large integers survive every codec (D54, SRV-5). A client sends `"data": "{\"id\": 1}"`; a JSON value that is neither a string nor `null` does not decode. An event's `data` is always there |
 | Presence | A field whose absence means something (`data`, `metadata`, `version`, `idempotency_key`, `expires_at`, `label`, `created_by`, `limit`, `cursor`, `next`, `hint`) is `optional`; absent, and in JSON `null`, is `None` |

@@ -84,6 +84,15 @@ impl Served {
         *self.operations.answer.lock().unwrap() = answer;
     }
 
+    /// What it answers of events: this one, and a page of it.
+    fn holds(&self, event: Event, next: Option<&str>) {
+        *self.operations.event.lock().unwrap() = Some(event.clone());
+        *self.operations.page.lock().unwrap() = Some(EventPage {
+            events: vec![event],
+            next: next.map(str::to_owned),
+        });
+    }
+
     fn whoami(&self) -> Command {
         let mut command = command(&["whoami"]);
         command.env("IRONFLOWX_URL", &self.url);
@@ -611,17 +620,30 @@ fn what_is_no_request_is_a_usage_error() {
             json(r#"{"name":"a.b","data ":"1"}"#),
             invalid("the request has no field 'data '"),
         ),
-        // Its scope is no string; the caller's key is looked for in what it holds all the same.
+        // Its label is no text; the caller's key is looked for in it all the same.
         (
-            vec![
-                "keys",
-                "create",
-                "--json",
-                r#"{"label":"x","scopes":[1e400]}"#,
-            ],
-            decoding("number out of range at line 1 column 28"),
+            vec!["keys", "create", "--json", r#"{"label":"\ud800"}"#],
+            decoding("unexpected end of hex escape at line 1 column 17"),
         ),
-        // An argument's empty line does not end the message.
+        // What an argument holds does not end the message, as what clap adds does.
+        (
+            emit(&["--version", "7\n\nUsage: x"]),
+            unread(&format!(
+                "invalid value '7 Usage: x' for '--version <VERSION>': invalid value: string \
+                 \"7\\n\\nUsage: x\", {number}"
+            )),
+        ),
+        (
+            emit(&["--version", "7\n\nFor more information"]),
+            unread(&format!(
+                "invalid value '7 For more information' for '--version <VERSION>': invalid \
+                 value: string \"7\\n\\nFor more information\", {number}"
+            )),
+        ),
+        (
+            emit(&["x\n\nUsage: y"]),
+            unread("unexpected argument 'x Usage: y' found"),
+        ),
         (
             emit(&["--version", "7\n\nx"]),
             unread(&format!(
@@ -706,11 +728,11 @@ fn what_is_no_request_is_a_usage_error() {
         ),
         (
             vec!["keys", "create", "--json", r#"[["read"]]"#],
-            decoding("invalid type: sequence, expected an object at line 1 column 1"),
+            decoding("invalid type: sequence, expected an object at line 1 column 0"),
         ),
         (
             vec!["events", "emit-batch", "--json", r#"{"items":[["a"]]}"#],
-            decoding("invalid type: sequence, expected an object at line 1 column 11"),
+            decoding("invalid type: sequence, expected an object at line 1 column 10"),
         ),
     ] {
         let mut command = command(&args);
@@ -738,10 +760,20 @@ fn stored_data_that_repeats_the_callers_key_is_not_printed() {
     };
     let message = "the answer is not printed, since it repeats the key the CLI was given";
     let refused = json!({"code": "internal", "message": message, "retryable": false});
+    let plain = || event_page().events.remove(1);
+    let printed = |data: &str, rest: &str| {
+        format!(
+            concat!(
+                r#"{{"data":{},"emitted_by":"embedder:a b","#,
+                r#""event_id":"0190b5f0-0000-7000-8000-000000000005",{}"#,
+                r#""name":"commande.passée","time":"2023-11-14T22:13:20.120Z","version":"1"}}"#,
+            ),
+            data, rest
+        )
+    };
     for held in [KEY, secret] {
         let text = format!("{{ \"note\" : \"the key is {held}.\" }}");
         let compact = format!("{{\"note\":\"the key is {held}.\"}}");
-        let plain = || event_page().events.remove(1);
         for (event, data, rest) in [
             (
                 Event {
@@ -768,19 +800,8 @@ fn stored_data_that_repeats_the_callers_key_is_not_printed() {
                 format!(r#""idempotency_key":"{held}","#),
             ),
         ] {
-            let printed = format!(
-                concat!(
-                    r#"{{"data":{},"emitted_by":"embedder:a b","#,
-                    r#""event_id":"0190b5f0-0000-7000-8000-000000000005",{}"#,
-                    r#""name":"commande.passée","time":"2023-11-14T22:13:20.120Z","version":"1"}}"#,
-                ),
-                data, rest
-            );
-            let page = EventPage {
-                events: vec![event],
-                next: Some("0123.7".into()),
-            };
-            *served.operations.page.lock().unwrap() = Some(page);
+            let printed = printed(data, &rest);
+            served.holds(event, Some("0123.7"));
             for (args, printed) in [
                 (["events", "get"], format!("{printed}\n")),
                 (
@@ -799,16 +820,14 @@ fn stored_data_that_repeats_the_callers_key_is_not_printed() {
     }
     // A repeat that its JSON writes another way is not found.
     let data = format!("\"{}\\u0041{}\"", &KEY[41..60], &KEY[61..]);
-    let page = EventPage {
-        events: vec![Event {
-            data: data.clone().into(),
-            ..event()
-        }],
-        next: None,
+    let event = Event {
+        data: data.clone().into(),
+        ..plain()
     };
-    *served.operations.page.lock().unwrap() = Some(page);
+    served.holds(event, None);
     let out = call(&["events", "get"], KEY);
-    assert!(stdout(&out).starts_with(&format!("{{\"data\":{data},")));
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(stdout(&out), format!("{}\n", printed(&data, "")));
 }
 
 /// What answers may be no engine: JSON text that is none does not make its line JSON.
@@ -827,11 +846,7 @@ fn json_text_that_is_no_json_is_not_printed() {
             data: data.into(),
             ..event()
         };
-        let page = EventPage {
-            events: vec![event],
-            next: None,
-        };
-        *served.operations.page.lock().unwrap() = Some(page);
+        served.holds(event, None);
         for args in [["events", "get"], ["events", "list"]] {
             let mut command = command(&args);
             let out = command.env("IRONFLOWX_URL", &served.url).output().unwrap();
