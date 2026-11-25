@@ -4,7 +4,9 @@
 
 #![forbid(unsafe_code)]
 
+use std::cell::OnceCell;
 use std::ffi::OsString;
+use std::fmt;
 use std::io::{self, IsTerminal as _, Write as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -13,6 +15,10 @@ use std::time::Duration;
 use clap::{Arg, ArgAction, ArgMatches, value_parser};
 use ironflowx_core::{ErrorKind, Secret};
 use ironflowx_proto::{Call, Client, OpError, wire};
+use serde_core::de::{
+    Deserialize as _, DeserializeSeed, Deserializer, Error as _, IgnoredAny, MapAccess, SeqAccess,
+    Unexpected, Visitor,
+};
 use serde_json::{Value, json};
 
 /// The most a call takes.
@@ -89,9 +95,11 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
         if !e.use_stderr() {
             return end(e.print().map_err(|e| unprinted(&e)));
         }
-        // Its first paragraph; the rest is the usage.
         let text = e.render().to_string();
-        let first = text.split("\n\n").next().unwrap_or_default();
+        // What clap adds after it, on lines of their own; an argument can hold an empty one.
+        let after = ["\n\nUsage: ", "\n\n  tip: ", "\n\nFor more information"];
+        let ends = after.into_iter().filter_map(|a| text.find(a));
+        let first = &text[..ends.min().unwrap_or(text.len())];
         let message = without_keys(first);
         end(Err(OpError {
             hint: Some("--help says what a command takes".to_owned()),
@@ -100,18 +108,19 @@ pub fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode> {
     })
 }
 
-/// `text`, its whitespace as single spaces, without a word that may be a key given where none goes,
-/// or the end of one (TEN-3).
+/// `text`, its whitespace as single spaces, without a word that may be a key.
 fn without_keys(text: &str) -> String {
-    let key = |word: &str| {
-        // Without clap's quotes, one on each side.
-        let bare = word.strip_prefix('\'').unwrap_or(word);
-        let bare = bare.strip_suffix('\'').unwrap_or(bare);
-        word.contains(KEY_PREFIX) || bare.len() >= SECRET_LEN
-    };
-    let hide = |word| if key(word) { "<hidden>" } else { word };
+    let hide = |word| if is_key(word) { "<hidden>" } else { word };
     let words: Vec<_> = text.split_whitespace().map(hide).collect();
     words.join(" ")
+}
+
+/// Whether `word` may be a key given where none goes, or the end of one (TEN-3).
+fn is_key(word: &str) -> bool {
+    // Without clap's quotes, one on each side.
+    let bare = word.strip_prefix('\'').unwrap_or(word);
+    let bare = bare.strip_suffix('\'').unwrap_or(bare);
+    word.contains(KEY_PREFIX) || bare.len() >= SECRET_LEN
 }
 
 /// Runs the CLI's own command that [`parse`] found: the process's exit code.
@@ -250,51 +259,123 @@ fn request(command: &Command, matches: &ArgMatches) -> Result<String, OpError> {
     };
     // Without the path, as of --key-file.
     let text = text.map_err(|e| invalid(format!("cannot read what --json names: {e}")))?;
-    let value = serde_json::from_str(&text).map_err(|e| undecoded(&e))?;
-    check(&value, command.request, None)?;
+    check(&text, command.request)?;
     Ok(text)
 }
 
-/// Refuses what decoding ignores or takes for something else: a field that a message, the request
-/// or the one at `at` in it, does not have (D79), an array for a message, and JSON for its text.
-fn check(value: &Value, fields: &[Field], at: Option<&str>) -> Result<(), OpError> {
-    let object = match value {
-        Value::Object(object) => object,
-        // An absent one, or it does not decode.
-        Value::Null => return Ok(()),
-        _ => {
-            let at = at.unwrap_or("the request");
-            return Err(invalid(format!("{at} is not an object")));
-        }
+/// Refuses what decoding a request ignores or takes for something else: a field that a message of
+/// it does not have (D79), an array for a message, and JSON for its text.
+fn check(text: &str, fields: &'static [Field]) -> Result<(), OpError> {
+    // First, so that nothing below fails for its syntax.
+    serde_json::from_str::<IgnoredAny>(text).map_err(|e| undecoded(&e))?;
+    let refused = OnceCell::new();
+    let request = Check {
+        kind: &Kind::Message(fields),
+        list: false,
+        name: "",
+        at: String::new(),
+        refused: &refused,
     };
-    let under = at.map_or(String::new(), |at| format!("{at}."));
-    for (name, value) in object {
-        let Some(field) = fields.iter().find(|f| f.name == name) else {
-            let name = without_keys(name);
-            return Err(invalid(format!("the request has no field '{under}{name}'")));
-        };
-        let at = format!("{under}{name}");
-        let items = match value {
-            Value::Array(items) if field.list => {
-                let item = |(i, item)| (format!("{at}[{i}]"), item);
-                items.iter().enumerate().map(item).collect()
-            }
-            one => vec![(at, one)],
-        };
-        for (at, value) in items {
-            match field.kind {
-                Kind::Message(fields) => check(value, fields, Some(&at))?,
-                Kind::JsonText if !value.is_string() => {
-                    return Err(OpError {
-                        hint: Some(format!("{name} is JSON text: pass a string")),
-                        ..invalid(format!("{at} is not a string"))
-                    });
-                }
-                _ => {}
-            }
+    let read = request.deserialize(&mut serde_json::Deserializer::from_str(text));
+    match refused.into_inner() {
+        Some(e) => Err(e),
+        None => read.map_err(|e| undecoded(&e)),
+    }
+}
+
+/// A value of a request, as its text is read. Not through `Value`, which reads each number and
+/// fails on one out of range, whatever it is in.
+struct Check<'a> {
+    kind: &'a Kind,
+    list: bool,
+    /// The field it is of, and where that is.
+    name: &'static str,
+    at: String,
+    /// Set before an error that stands for it.
+    refused: &'a OnceCell<OpError>,
+}
+
+impl<'de> DeserializeSeed<'de> for &Check<'_> {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, json: D) -> Result<(), D::Error> {
+        match self.kind {
+            _ if self.list => json.deserialize_any(self),
+            Kind::Message(_) => json.deserialize_any(self),
+            // As bytes, which any string is, one that does not decode too.
+            Kind::JsonText => json.deserialize_bytes(self).inspect_err(|_| {
+                let refused = OpError {
+                    hint: Some(format!("{} is JSON text: pass a string", self.name)),
+                    ..invalid(format!("{} is not a string", self.at))
+                };
+                let _ = self.refused.set(refused);
+            }),
+            Kind::Text | Kind::Bool => IgnoredAny::deserialize(json).map(drop),
         }
     }
-    Ok(())
+}
+
+impl<'de> Visitor<'de> for &Check<'_> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(if self.list { "an array" } else { "an object" })
+    }
+
+    /// An absent one, or it does not decode.
+    fn visit_unit<E>(self) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_bytes<E>(self, _: &[u8]) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut items: A) -> Result<(), A::Error> {
+        if !self.list {
+            return Err(A::Error::invalid_type(Unexpected::Seq, &self));
+        }
+        for i in 0.. {
+            let item = Check {
+                list: false,
+                at: format!("{}[{i}]", self.at),
+                ..*self
+            };
+            if items.next_element_seed(&item)?.is_none() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut object: A) -> Result<(), A::Error> {
+        let (Kind::Message(fields), false) = (self.kind, self.list) else {
+            return Err(A::Error::invalid_type(Unexpected::Map, &self));
+        };
+        let under = match &*self.at {
+            "" => String::new(),
+            at => format!("{at}."),
+        };
+        while let Some(name) = object.next_key::<String>()? {
+            let Some(field) = fields.iter().find(|f| f.name == name) else {
+                let name = match name.split_whitespace().any(is_key) {
+                    true => "<hidden>",
+                    false => &name,
+                };
+                let message = format!("the request has no field '{under}{name}'");
+                let _ = self.refused.set(invalid(message));
+                return Err(A::Error::custom("an unknown field"));
+            };
+            object.next_value_seed(&Check {
+                kind: &field.kind,
+                list: field.list,
+                name: field.name,
+                at: format!("{under}{name}"),
+                refused: self.refused,
+            })?;
+        }
+        Ok(())
+    }
 }
 
 /// The text to print.
@@ -315,7 +396,7 @@ fn answer(command: &str, matches: &ArgMatches) -> Result<String, OpError> {
     let cx = credential(matches)?;
     // Its answer repeats the label, so it would not be printed, and the new key in it lost.
     if command == "keys create" {
-        let decoded: Value = serde_json::from_str(&request).expect("it was read as JSON");
+        let decoded: Value = serde_json::from_str(&request).map_err(|e| undecoded(&e))?;
         if repeats_secret(&decoded.to_string(), &cx) {
             let message = "no key is created, since the request repeats the key the CLI was given";
             return Err(invalid(message));
@@ -452,8 +533,9 @@ fn render(value: &Value, kind: &Kind, indent: Option<usize>) -> Result<String, O
 /// JSON text without the whitespace between its tokens: its values, the order of its keys and its
 /// numbers are as they were sent.
 fn compact(json: &str) -> Result<String, serde_json::Error> {
-    // What answered may be no engine.
-    serde_json::from_str::<Value>(json)?;
+    // What answered may be no engine. Not as `Value`, which reads no number out of range and, in a
+    // build with `arbitrary_precision`, an object whose first key is serde_json's own as a number.
+    serde_json::from_str::<IgnoredAny>(json)?;
     let (mut in_string, mut escaped) = (false, false);
     let kept = |c: &char| {
         let between = !in_string && c.is_ascii_whitespace();
@@ -633,13 +715,13 @@ mod tests {
             field("part", Kind::Message(PART), None),
         ]);
         let answer = json!({
+            "\"": {"data": "[ ]"},
             "data": " {\n\"b\": 1.50, \"a\" :[ ] } ",
             "name": "[ ]",
             "none": {},
             "part": {"data": "1 "},
             "parts": [{"data": " \"x y\""}, {}],
             "texts": ["[ 1 ]", "2"],
-            "\"": {"data": "[ ]"},
         });
         let line = concat!(
             r#"{"\"":{"data":"[ ]"},"data":{"b":1.50,"a":[]},"name":"[ ]","none":{},"#,
@@ -699,6 +781,12 @@ mod tests {
             (r#"[ "\\" , " " ]"#, r#"["\\"," "]"#),
             (r#"[ "\\\" \\" , " " ]"#, r#"["\\\" \\"," "]"#),
             (r#"[ "\\n" , "\n \u0020" ]"#, r#"["\\n","\n \u0020"]"#),
+            // What `Value` does not read, or reads as something else.
+            ("[ 1e400 ]", "[1e400]"),
+            (
+                r#"{ "$serde_json::private::Number" : "x" }"#,
+                r#"{"$serde_json::private::Number":"x"}"#,
+            ),
             // Not between tokens.
             ("\"\u{a0}\u{2028} \u{feff}\"", "\"\u{a0}\u{2028} \u{feff}\""),
         ] {
@@ -737,7 +825,7 @@ mod tests {
             list("items", Kind::Message(INNER)),
             list("names", Kind::Text),
         ];
-        let check = |text: &str| check(&serde_json::from_str(text).unwrap(), REQUEST, None);
+        let check = |text: &str| check(text, REQUEST);
         for good in [
             "{}",
             // Absent, or it does not decode.
@@ -746,10 +834,56 @@ mod tests {
             r#"{"items":[null]}"#,
             r#"{"data":"1","texts":["1","{"],"one":{"data":"x"},"items":[{},{"data":"","n":[]}]}"#,
             // No message of ours, so what it holds is the decoder's to say.
-            r#"{"names":[{"x":1}]}"#,
+            r#"{"names":[{"x":1}],"one":{"n":1e400}}"#,
+            // A string, if none that decodes.
+            r#"{"data":"\ud800"}"#,
         ] {
             assert_eq!(check(good), Ok(()), "{good}");
         }
+        for (bad, why) in [
+            (
+                "[]",
+                "invalid type: sequence, expected an object at line 1 column 2",
+            ),
+            (
+                r#""x""#,
+                "invalid type: string \"x\", expected an object at line 1 column 3",
+            ),
+            (
+                r#"{"one":["1"]}"#,
+                "invalid type: sequence, expected an object at line 1 column 8",
+            ),
+            (
+                r#"{"items":[{},["1"]]}"#,
+                "invalid type: sequence, expected an object at line 1 column 14",
+            ),
+            (
+                r#"{"items":{"x":1}}"#,
+                "invalid type: map, expected an array at line 1 column 10",
+            ),
+            (
+                r#"{"names":{"x":1}}"#,
+                "invalid type: map, expected an array at line 1 column 10",
+            ),
+            (
+                r#"{"items":"x"}"#,
+                "invalid type: string \"x\", expected an array at line 1 column 12",
+            ),
+            (
+                r#"{"data":"1}"#,
+                "EOF while parsing a string at line 1 column 11",
+            ),
+            (r#"{"data":1,}"#, "key must be a string at line 1 column 11"),
+            (r#"{"dat":1} 2"#, "trailing characters at line 1 column 11"),
+        ] {
+            let expected = invalid(format!("the request does not decode: {why}"));
+            assert_eq!(check(bad), Err(expected), "{bad}");
+        }
+        let deep = format!(
+            r#"{{"one":{{"m":{}{}}}}}"#,
+            "[".repeat(200),
+            "]".repeat(200)
+        );
         let long = "n".repeat(SECRET_LEN - 1);
         let hidden = format!(r#"{{"one":{{"{long}n":1}}}}"#);
         let shown = format!(r#"{{"one":{{"{long}":1}}}}"#);
@@ -757,22 +891,22 @@ mod tests {
             (r#"{"dat":"1"}"#, "the request has no field 'dat'"),
             (r#"{"Data":"1"}"#, "the request has no field 'Data'"),
             (r#"{"":1}"#, "the request has no field ''"),
+            // As it is written, since `data` is one.
+            (r#"{" data\n":"1"}"#, "the request has no field ' data\n'"),
+            (r#"{"a ixk_ b":1}"#, "the request has no field '<hidden>'"),
+            // Whatever it holds, if that is JSON.
+            (r#"{"dat":1e400}"#, "the request has no field 'dat'"),
+            (r#"{"dat":"\ud800"}"#, "the request has no field 'dat'"),
+            (&deep, "the request has no field 'one.m'"),
             (r#"{"n":1}"#, "the request has no field 'n'"),
             (r#"{"one":{"m":1}}"#, "the request has no field 'one.m'"),
             (
                 r#"{"items":[{},{"one":1}]}"#,
                 "the request has no field 'items[1].one'",
             ),
-            // Not in a list: what decoding says of that comes after.
-            (r#"{"items":{"x":1}}"#, "the request has no field 'items.x'"),
             (r#"{"ixk_":1}"#, "the request has no field '<hidden>'"),
             (&hidden, "the request has no field 'one.<hidden>'"),
             (&shown, &format!("the request has no field 'one.{long}'")),
-            ("[]", "the request is not an object"),
-            (r#""x""#, "the request is not an object"),
-            (r#"{"one":["1"]}"#, "one is not an object"),
-            (r#"{"items":[{},["1"]]}"#, "items[1] is not an object"),
-            (r#"{"items":"x"}"#, "items is not an object"),
         ] {
             assert_eq!(check(bad), Err(invalid(message)), "{bad}");
         }
@@ -781,8 +915,10 @@ mod tests {
             (r#"{"data":null}"#, "data", "data"),
             (r#"{"data":1}"#, "data", "data"),
             (r#"{"data":["1"]}"#, "data", "data"),
+            (r#"{"data":1e400}"#, "data", "data"),
+            (r#"{"data":1e400,"dat":1}"#, "data", "data"),
             (r#"{"texts":["1",2]}"#, "texts[1]", "texts"),
-            (r#"{"texts":"1","one":{"data":true}}"#, "one.data", "data"),
+            (r#"{"texts":null,"one":{"data":true}}"#, "one.data", "data"),
             (
                 r#"{"items":[{"data":"1"},{"data":[]}]}"#,
                 "items[1].data",
@@ -855,7 +991,8 @@ mod tests {
             let matches = parse(args).unwrap();
             let (_, leaf) = chosen(&matches);
             let given = request(&command, leaf).unwrap();
-            assert_eq!(given, expected.to_string(), "{args:?}");
+            let given: Value = serde_json::from_str(&given).unwrap();
+            assert_eq!(given, expected, "{args:?}");
         }
         for (args, why) in [
             (&["--one", "x"][..], "unexpected argument '--one' found"),

@@ -15,7 +15,7 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
 
-use common::{CREATED, KEY, Recording, event, serving, whoami};
+use common::{CREATED, KEY, Recording, event, event_page, serving, whoami};
 use ironflowx_core::{Address, ErrorKind, Scope, Timestamp};
 use ironflowx_proto::{
     CreateKeyRequest, EmitBatchRequest, EmitRequest, Event, EventPage, GetEventRequest,
@@ -447,7 +447,14 @@ fn a_request_is_what_its_flags_or_its_json_give() {
         let taken = served.operations.take_requests();
         // A recording batch answers more results than these items, which the client refuses.
         if args[1] == "emit-batch" {
-            assert_eq!(envelope(&out).1, 6, "{args:?}");
+            let refused = json!({
+                "code": "unknown",
+                "hint": "retry unchanged only if every item had an idempotency key and keeps it; \
+                         else check first what landed",
+                "message": "the engine did not answer: unknown",
+                "retryable": false,
+            });
+            assert_eq!(envelope(&out), (refused, 6), "{args:?}");
         } else {
             assert_eq!(
                 (out.status.code(), &*out.stderr),
@@ -594,9 +601,35 @@ fn what_is_no_request_is_a_usage_error() {
         // What decoding would ignore, unread.
         (
             json(r#"{"name":"a.b","nope":1e400}"#),
-            decoding("number out of range at line 1 column 26"),
+            invalid("the request has no field 'nope'"),
         ),
-        // The decoder's own: not a later one of two.
+        (
+            json(r#"{"name":"a.b","data":1e400}"#),
+            hinted("data is not a string", text),
+        ),
+        (
+            json(r#"{"name":"a.b","data ":"1"}"#),
+            invalid("the request has no field 'data '"),
+        ),
+        // Its scope is no string; the caller's key is looked for in what it holds all the same.
+        (
+            vec![
+                "keys",
+                "create",
+                "--json",
+                r#"{"label":"x","scopes":[1e400]}"#,
+            ],
+            decoding("number out of range at line 1 column 28"),
+        ),
+        // An argument's empty line does not end the message.
+        (
+            emit(&["--version", "7\n\nx"]),
+            unread(&format!(
+                "invalid value '7 x' for '--version <VERSION>': invalid value: string \
+                 \"7\\n\\nx\", {number}"
+            )),
+        ),
+        // The decoder's own: not a later one of two; nor is the earlier one unread.
         (
             json(r#"{"idempotency_key":"a","idempotency_key":"b"}"#),
             decoding("duplicate field `idempotency_key` at line 1 column 40"),
@@ -608,7 +641,7 @@ fn what_is_no_request_is_a_usage_error() {
                 "--json",
                 r#"{"items":[{"nope":1}],"items":[]}"#,
             ],
-            decoding("duplicate field `items` at line 1 column 29"),
+            invalid("the request has no field 'items[0].nope'"),
         ),
         (
             json(r#"{"version":1.5}"#),
@@ -673,11 +706,11 @@ fn what_is_no_request_is_a_usage_error() {
         ),
         (
             vec!["keys", "create", "--json", r#"[["read"]]"#],
-            invalid("the request is not an object"),
+            decoding("invalid type: sequence, expected an object at line 1 column 1"),
         ),
         (
             vec!["events", "emit-batch", "--json", r#"{"items":[["a"]]}"#],
-            invalid("items[0] is not an object"),
+            decoding("invalid type: sequence, expected an object at line 1 column 11"),
         ),
     ] {
         let mut command = command(&args);
@@ -707,32 +740,60 @@ fn stored_data_that_repeats_the_callers_key_is_not_printed() {
     let refused = json!({"code": "internal", "message": message, "retryable": false});
     for held in [KEY, secret] {
         let text = format!("{{ \"note\" : \"the key is {held}.\" }}");
-        for event in [
-            Event {
-                data: text.clone().into(),
-                ..event()
-            },
-            Event {
-                metadata: Some(text.clone().into()),
-                ..event()
-            },
-            Event {
-                idempotency_key: Some(held.to_owned()),
-                ..event()
-            },
+        let compact = format!("{{\"note\":\"the key is {held}.\"}}");
+        let plain = || event_page().events.remove(1);
+        for (event, data, rest) in [
+            (
+                Event {
+                    data: text.clone().into(),
+                    ..plain()
+                },
+                &*compact,
+                String::new(),
+            ),
+            (
+                Event {
+                    metadata: Some(text.clone().into()),
+                    ..plain()
+                },
+                "null",
+                format!(r#""metadata":{compact},"#),
+            ),
+            (
+                Event {
+                    idempotency_key: Some(held.to_owned()),
+                    ..plain()
+                },
+                "null",
+                format!(r#""idempotency_key":"{held}","#),
+            ),
         ] {
+            let printed = format!(
+                concat!(
+                    r#"{{"data":{},"emitted_by":"embedder:a b","#,
+                    r#""event_id":"0190b5f0-0000-7000-8000-000000000005",{}"#,
+                    r#""name":"commande.passée","time":"2023-11-14T22:13:20.120Z","version":"1"}}"#,
+                ),
+                data, rest
+            );
             let page = EventPage {
                 events: vec![event],
                 next: Some("0123.7".into()),
             };
             *served.operations.page.lock().unwrap() = Some(page);
-            for args in [["events", "get"], ["events", "list"]] {
+            for (args, printed) in [
+                (["events", "get"], format!("{printed}\n")),
+                (
+                    ["events", "list"],
+                    format!("{{\"events\":[{printed}],\"next\":\"0123.7\"}}\n"),
+                ),
+            ] {
                 let out = call(&args, KEY);
                 assert_eq!(envelope(&out), (refused.clone(), 1), "{args:?} {held}");
                 // Another key's holder reads it.
                 let out = call(&args, &other);
                 assert_eq!(out.status.code(), Some(0), "{args:?} {held}");
-                assert!(stdout(&out).contains(held), "{args:?} {held}");
+                assert_eq!(stdout(&out), printed, "{args:?} {held}");
             }
         }
     }
@@ -750,12 +811,44 @@ fn stored_data_that_repeats_the_callers_key_is_not_printed() {
     assert!(stdout(&out).starts_with(&format!("{{\"data\":{data},")));
 }
 
+/// What answers may be no engine: JSON text that is none does not make its line JSON.
+#[test]
+fn json_text_that_is_no_json_is_not_printed() {
+    let served = Served::answering(Ok(whoami()));
+    for data in [
+        "1 2",
+        "",
+        "1,\"name\":\"another\"",
+        "{\"a\":1}\n{\"b\":2}",
+        "\"\n\"",
+        "'a'",
+    ] {
+        let event = Event {
+            data: data.into(),
+            ..event()
+        };
+        let page = EventPage {
+            events: vec![event],
+            next: None,
+        };
+        *served.operations.page.lock().unwrap() = Some(page);
+        for args in [["events", "get"], ["events", "list"]] {
+            let mut command = command(&args);
+            let out = command.env("IRONFLOWX_URL", &served.url).output().unwrap();
+            let message = "the answer holds JSON text that is no JSON";
+            let refused = json!({"code": "internal", "message": message, "retryable": false});
+            assert_eq!(envelope(&out), (refused, 1), "{data}");
+        }
+    }
+}
+
 /// TEN-3: a label is in the answer, which would not be printed, and the new key in it lost.
 #[test]
 fn a_key_is_not_created_with_the_callers_in_its_label() {
     let served = Served::answering(Ok(whoami()));
     let own = &KEY[41..];
     let part = &KEY[42..];
+    let other = KEY.replace('A', "B");
     let labelled = |label: &str| format!(r#"{{"label":"{label}"}}"#);
     let escaped = labelled(&format!("{}\\u0041{}", &KEY[41..60], &KEY[61..]));
     let message = "no key is created, since the request repeats the key the CLI was given";
@@ -766,17 +859,23 @@ fn a_key_is_not_created_with_the_callers_in_its_label() {
         (&["--json", &escaped], true),
         (&["--label", part], false),
         (&["--json", &labelled(part)], false),
-        (&["--label", &KEY.replace('A', "B")], false),
+        (&["--label", &other], false),
     ] {
         let mut command = command(&[&["keys", "create"], args].concat());
         command.env("IRONFLOWX_URL", &served.url);
         let out = command.env("IRONFLOWX_KEY", KEY).output().unwrap();
+        let sent = served.operations.take_requests();
         if refused {
             assert_eq!(envelope(&out), invalid(message), "{args:?}");
-            assert!(served.operations.take().is_empty(), "{args:?}");
+            assert!(sent.is_empty(), "{args:?}");
         } else {
             assert_eq!(out.status.code(), Some(0), "{args:?}");
-            assert_eq!(served.operations.take().len(), 1, "{args:?}");
+            let label = if args[1] == other { &*other } else { part };
+            let request = CreateKeyRequest {
+                label: Some(label.to_owned()),
+                ..Default::default()
+            };
+            assert_eq!(sent, [format!("{request:?}")], "{args:?}");
         }
     }
 }

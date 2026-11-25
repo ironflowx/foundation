@@ -104,11 +104,12 @@ impl Cli {
         let given = self.variables.insert("IRONFLOWX_KEY", self.key());
         let scopes: String = scopes.iter().map(|s| format!(" --scopes {s}")).collect();
         self.run(&format!("ironflowx keys create{scopes}"), "");
+        let key = self.succeeded()["key"].as_str().expect("a key").to_owned();
         match given {
             Some(key) => self.variables.insert("IRONFLOWX_KEY", key),
             None => self.variables.remove("IRONFLOWX_KEY"),
         };
-        self.answer()["key"].as_str().expect("a key").to_owned()
+        key
     }
 
     /// The answer of a command that must succeed.

@@ -157,7 +157,7 @@ pub struct Recording {
     /// Each as it prints.
     pub requests: Mutex<Vec<String>>,
     pub answer: Mutex<Result<Whoami, OpError>>,
-    /// What a `list_events` answers instead, and, of it, the first a `get_event`.
+    /// What a `list_events` answers instead, and, of it, the first a `get_event`, if any.
     pub page: Mutex<Option<EventPage>>,
     /// Whether a call waits for good instead.
     pub hangs: AtomicBool,
@@ -240,7 +240,8 @@ impl Operations for Recording {
     async fn get_event(&self, cx: &Call, req: GetEventRequest) -> Result<Event, OpError> {
         let page = self.page.lock().unwrap().clone();
         let answer = self.record(cx, req).await;
-        answer.map(|_| page.map_or_else(event, |mut page| page.events.remove(0)))
+        let first = page.and_then(|page| page.events.into_iter().next());
+        answer.map(|_| first.unwrap_or_else(event))
     }
 
     async fn list_events(&self, cx: &Call, req: ListEventsRequest) -> Result<EventPage, OpError> {
