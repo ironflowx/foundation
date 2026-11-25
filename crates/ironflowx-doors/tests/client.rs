@@ -594,10 +594,7 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
             json("503 x", r#"{"code":"failed_precondition"}"#),
         ),
         (status(429), json("429 x", r#"{"code":"unimplemented"}"#)),
-        (
-            status(400),
-            json("400 x", r#"["invalid_argument",null,[]]"#),
-        ),
+        (status(400), json("400 x", r#"["invalid_argument","",[]]"#)),
         (status(400), http("400 x", "text/html", refusal)),
         (
             status(400),
@@ -659,6 +656,79 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
         (
             status(400),
             json("400 x", r#"{"code":"invalid_argument","message":null}"#),
+        ),
+        (
+            status(400),
+            json("400 x", r#"{"code":"invalid_argument","x":1}"#),
+        ),
+        // Details that are none, of an error that would be the library's without them.
+        (
+            status(400),
+            json("400 x", r#"{"code":"invalid_argument","details":null}"#),
+        ),
+        (
+            status(400),
+            json("400 x", r#"{"code":"invalid_argument","details":{}}"#),
+        ),
+        (
+            status(400),
+            json(
+                "400 x",
+                r#"{"code":"invalid_argument","details":[],"details":[]}"#,
+            ),
+        ),
+        (
+            code("invalid_argument"),
+            json("400 x", r#"{"code":"invalid_argument","details":[{}]}"#),
+        ),
+        (
+            code("invalid_argument"),
+            json(
+                "400 x",
+                r#"{"code":"invalid_argument","details":[{"type":"x","type":"x"}]}"#,
+            ),
+        ),
+        (
+            status(400),
+            json("400 x", r#"{"code":["invalid_argument"]}"#),
+        ),
+        // The engine's error, of a kind this client knows, 'kind' "not_found", where it is not sent
+        // as the engine sends it: an array, a field of a proxy's own, after one of no known kind,
+        // and printed over lines.
+        (
+            status(502),
+            json(
+                "502 x",
+                r#"{"details":[["ironflowx.v1.ErrorInfo","Cglub3RfZm91bmQSAW0",null]]}"#,
+            ),
+        ),
+        (
+            code("not_found"),
+            json(
+                "404 x",
+                r#"{"code":"not_found","details":[["ironflowx.v1.ErrorInfo","Cglub3RfZm91bmQSAW0",null]]}"#,
+            ),
+        ),
+        (
+            status(404),
+            json(
+                "404 x",
+                r#"{"code":"not_found","details":[{"type":"ironflowx.v1.ErrorInfo","value":"Cglub3RfZm91bmQSAW0"}],"trace_id":"x"}"#,
+            ),
+        ),
+        (
+            code("not_found"),
+            json(
+                "404 x",
+                r#"{"code":"not_found","details":[{"type":"ironflowx.v1.ErrorInfo","value":"CgNuZXc"},{"type":"ironflowx.v1.ErrorInfo","value":"Cglub3RfZm91bmQSAW0"}]}"#,
+            ),
+        ),
+        (
+            status(404),
+            json(
+                "404 x",
+                "{\n\"code\":\"not_found\",\"details\":[{\"type\":\"ironflowx.v1.ErrorInfo\",\"value\":\"Cglub3RfZm91bmQSAW0\"}]}",
+            ),
         ),
         // Not from its first byte.
         (
@@ -871,8 +941,13 @@ async fn the_engines_own_error_is_first() {
         "404 x\r\ncontent-type: application/json\r\ncontent-encoding: gzip",
     ];
     for head in heads {
-        for code in ["", r#""code":"new","#, r#""code":"unimplemented","#] {
-            let body = format!(r#"{{{code}"details":{detail}}}"#);
+        for rest in [
+            "",
+            r#""code":"new","#,
+            r#""code":"unimplemented","message":"x","#,
+            r#""code":null,"message":null,"#,
+        ] {
+            let body = format!(r#"{{{rest}"details":{detail}}}"#);
             let length = body.len();
             let answer = format!("HTTP/1.1 {head}\r\ncontent-length: {length}\r\n\r\n{body}");
             for op in Operation::ALL.iter().copied() {
@@ -883,69 +958,155 @@ async fn the_engines_own_error_is_first() {
                     message: "m".into(),
                     hint: None,
                 };
-                assert_eq!(e, own, "{op:?} {code} {head}");
+                assert_eq!(e, own, "{op:?} {rest} {head}");
             }
         }
     }
 }
 
-/// SRV-4: an event's name can make its whole request read as an engine's error after the newline
-/// it begins with, where the byte that says how long the name is, 123, is a brace. Sent back, as a
-/// proxy can, it is none.
-#[tokio::test]
-async fn a_request_sent_back_is_no_engines_error() {
-    // 'kind' "unavailable", which may be sent again at once.
-    let error = r#""code":"unavailable","details":[{"type":"ironflowx.v1.ErrorInfo","value":"Cgt1bmF2YWlsYWJsZQ"}],"x":""#;
-    let name = format!("{error}{}\"}}", "x".repeat(123 - error.len() - 2));
-    let mut got = Vec::new();
-    let mut expected = Vec::new();
-    for head in [
-        "502 x\r\ncontent-type: application/json",
-        "502 x\r\ncontent-type: application/json; profile=rpc",
-        "502 x\r\ncontent-type: text/html",
-        "502 x\r\ncontent-type: application/proto",
-        "502 x",
-        "503 x\r\ncontent-type: text/html",
-    ] {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let client = Client::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
-        let echo = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut read = Vec::new();
-            // The head, and the body: the name, its tag and its length.
-            let body = loop {
-                let end = read.windows(4).position(|w| w == b"\r\n\r\n");
-                match end.map(|end| &read[end + 4..]) {
-                    Some(body) if body.len() == 125 => break body.to_vec(),
-                    _ => assert_ne!(stream.read_buf(&mut read).await.unwrap(), 0),
+/// Answers one request with `head` and a copy of the request's body in the place of `wrap`'s `@`.
+async fn copying(head: &str, wrap: &'static str) -> Client {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client = Client::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+    let head = head.to_owned();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut read = Vec::new();
+        let body = loop {
+            if let Some(end) = read.windows(4).position(|w| w == b"\r\n\r\n") {
+                let text = String::from_utf8_lossy(&read[..end]).to_lowercase();
+                let length = text.split("\r\ncontent-length: ").nth(1);
+                // None of a request that holds nothing.
+                let length = length.map_or(0, |l| l.lines().next().unwrap().parse().unwrap());
+                if read.len() >= end + 4 + length {
+                    break read[end + 4..].to_vec();
                 }
-            };
-            let answer = format!("HTTP/1.1 {head}\r\ncontent-length: 125\r\n\r\n");
-            let answer = [answer.as_bytes(), &body].concat();
-            stream.write_all(&answer).await.unwrap();
-            body
-        });
-        let unkeyed = EmitRequest {
-            name: name.clone(),
-            data: None,
-            metadata: None,
-            version: None,
-            idempotency_key: None,
+            }
+            assert_ne!(stream.read_buf(&mut read).await.unwrap(), 0);
         };
-        let e = client.emit(&call(KEY), unkeyed).await.unwrap_err();
+        let (before, after) = wrap.split_once('@').unwrap();
+        let body = [before.as_bytes(), &body, after.as_bytes()].concat();
+        let length = body.len();
+        let head = format!("HTTP/1.1 {head}\r\ncontent-length: {length}\r\n\r\n");
+        let _ = stream.write_all(&[head.as_bytes(), &body].concat()).await;
+    });
+    client
+}
+
+/// SRV-4: an event's name or its idempotency key can make a request, copied as it is into an
+/// answer, part of an engine's error there. No such answer is one: the event may be stored.
+#[tokio::test]
+async fn a_request_copied_into_an_answer_is_no_engines_error() {
+    // ErrorInfo of 'kind' "unavailable", which may be sent again at once, and "invalid".
+    let unavailable = r#"{"type":"ironflowx.v1.ErrorInfo","value":"Cgt1bmF2YWlsYWJsZQ"}"#;
+    let invalid = r#"{"type":"ironflowx.v1.ErrorInfo","value":"CgdpbnZhbGlk"}"#;
+    let filled = |text: String, length: usize, end: &str| {
+        let fill = "1".repeat(length - text.len() - end.len());
+        format!("{text}{fill}{end}")
+    };
+    let unkeyed = |name: String| EmitRequest {
+        name,
+        data: None,
+        metadata: None,
+        version: None,
+        idempotency_key: None,
+    };
+    // A request begins with a newline and its name's length: 123 is a brace, 91 a bracket, and 34 a
+    // quote, so that the name is an object, a list, or the end of a text.
+    let object = unkeyed(filled(
+        format!(r#""code":"unavailable","details":[{unavailable}],"x":""#),
+        123,
+        "\"}",
+    ));
+    let closing = unkeyed(filled(
+        format!(r#""a":1}},"details":[{unavailable}],"x":1"#),
+        123,
+        "",
+    ));
+    let fields = |info: &str| info[1..info.len() - 1].to_owned();
+    let element = unkeyed(filled(
+        format!(r#"{},"x":""#, fields(unavailable)),
+        123,
+        "\"}",
+    ));
+    let list = unkeyed(filled(
+        format!(r#"{{{},"x":""#, fields(unavailable)),
+        91,
+        "\"}]",
+    ));
+    let text = EmitRequest {
+        idempotency_key: Some(format!(r#"","details":[{invalid}]"#)),
+        ..unkeyed("a".repeat(34))
+    };
+    let mut rows = Vec::new();
+    for kind in [
+        "\r\ncontent-type: application/json",
+        "\r\ncontent-type: application/json; profile=rpc",
+        "\r\ncontent-type: text/html",
+        "\r\ncontent-type: application/proto",
+        "",
+    ] {
+        rows.push((format!("502 x{kind}"), "@", &object));
+    }
+    for kind in ["application/json", "text/html"] {
+        let head = format!("502 x\r\ncontent-type: {kind}");
+        for wrap in [
+            r#"{"error":"bad gateway","request":@}"#,
+            r#"{"code":"x","request":@}"#,
+            r#"{"message":@}"#,
+            r#"{"code":@}"#,
+        ] {
+            rows.push((head.clone(), wrap, &closing));
+        }
+        rows.push((head.clone(), r#"{"message":@}"#, &text));
+        rows.push((head.clone(), r#"{"code":@}"#, &text));
+        rows.push((head.clone(), r#"{"error":"bad","message":@}"#, &text));
+        rows.push((
+            head.clone(),
+            r#"{"code":"x","message":"y","details":[@]}"#,
+            &element,
+        ));
+        rows.push((head, r#"{"message":"y","details":@}"#, &list));
+    }
+    let json = "503 x\r\ncontent-type: application/json".to_owned();
+    rows.push((json, r#"{"code":"unavailable","message":@}"#, &text));
+    rows.push(("503 x\r\ncontent-type: text/html".to_owned(), "@", &object));
+    let (mut got, mut expected) = (Vec::new(), Vec::new());
+    for (head, wrap, request) in rows {
+        let client = copying(&head, wrap).await;
+        let e = client.emit(&call(KEY), request.clone()).await.unwrap_err();
+        let hint = match request.idempotency_key {
+            Some(_) => "retry with the same idempotency key",
+            None => "check first what landed: a retry may store a second event",
+        };
         let unknown = OpError {
             kind: ErrorKind::Unknown,
             message: format!(
                 "the engine did not answer: an HTTP {} that is not Connect's",
                 &head[..3]
             ),
-            hint: Some("check first what landed: a retry may store a second event".into()),
+            hint: Some(hint.into()),
         };
-        got.push(e);
-        expected.push(unknown);
-        assert_eq!(echo.await.unwrap(), [b"\n{", name.as_bytes()].concat());
+        got.push((head.clone(), wrap, e));
+        expected.push((head, wrap, unknown));
     }
     assert_eq!(got, expected);
+}
+
+/// Rule 4's known limit, with nothing of the request in the answer to tell it by: a `create_key`
+/// that asks for nothing is empty, so a copy of it is.
+#[tokio::test]
+async fn an_answer_as_a_connect_server_sends_is_taken_for_one() {
+    let wrap = r#"{"code":"invalid_argument","message":"@"}"#;
+    let client = copying("400 x\r\ncontent-type: application/json", wrap).await;
+    let empty = CreateKeyRequest::default();
+    let e = client.create_key(&call(KEY), empty).await.unwrap_err();
+    let refused = OpError {
+        kind: ErrorKind::Invalid,
+        message: "the call was refused: invalid_argument".into(),
+        hint: None,
+    };
+    assert_eq!(e, refused);
 }
 
 /// The hint of an `Unknown` fits the request: a retry of an emit stores one event only if it has an

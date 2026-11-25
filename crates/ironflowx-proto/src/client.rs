@@ -19,7 +19,9 @@ use http::uri::{Scheme, Uri};
 use http::{Request, Response, StatusCode};
 use hyper_util::client::legacy;
 use ironflowx_core::ErrorKind;
-use serde::Deserialize;
+use serde::de::value::MapAccessDeserializer;
+use serde::de::{IgnoredAny, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 
 use crate::wire::{
     self, EnvironmentServiceClient, EventServiceClient, IdentityServiceClient, KeyServiceClient,
@@ -41,7 +43,7 @@ use crate::{
 ///
 /// - `ResourceExhausted`, with nothing sent, for a request over 16 MiB; `Invalid` for one the wire
 ///   does not carry, as the call says.
-/// - The engine's own error, unchanged, whatever the HTTP status and type it comes with.
+/// - The engine's own error, unchanged, whatever the status and type of the failure it comes with.
 /// - `Unavailable` if the connection never opened: nothing ran.
 /// - What the server's library refused, as a Connect server sends it: `Invalid`,
 ///   `ResourceExhausted`, or `Internal` where the engine is older than this client and has no such
@@ -176,8 +178,11 @@ struct Transport(HttpClient);
 /// What came instead of an answer: the source of the error made from it.
 #[derive(Debug)]
 enum Instead {
-    /// An error of Connect's: JSON that names one of its codes, under that code's HTTP status.
-    /// What sends all of that is taken for a server of Connect's: nothing tells it apart.
+    /// An error of Connect's as the server's library sends one, with no detail: JSON that names
+    /// one of its codes, under that code's HTTP status. What sends all of that is taken for the
+    /// library: nothing tells it apart.
+    Refusal,
+    /// As that, with details, so not the library's.
     Connect,
     /// None of Connect's.
     Http(StatusCode),
@@ -186,7 +191,7 @@ enum Instead {
 impl fmt::Display for Instead {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Connect => f.write_str("an error of Connect's"),
+            Self::Refusal | Self::Connect => f.write_str("an error of Connect's"),
             Self::Http(status) => {
                 write!(f, "an HTTP {} that is not Connect's", status.as_u16())
             }
@@ -238,40 +243,79 @@ async fn read(mut body: Incoming) -> Option<Vec<u8>> {
 
 /// An answer, with the whole of its body if it was read, that is no success of Connect's.
 fn failure(answer: &Parts, body: Option<&[u8]>) -> ConnectError {
-    #[derive(Deserialize)]
-    struct Failure {
-        code: Option<String>,
-        // Not printed, but a text in what a server of Connect's sends.
-        #[serde(default, rename = "message")]
-        _message: String,
-        #[serde(default)]
-        details: Vec<ErrorDetail>,
-    }
-    // From its first byte, which begins no request of ours: one sent back can be whitespace, then
-    // an object with an error of its own. (And serde takes an array for a struct too.)
-    let object = body.filter(|body| body.starts_with(b"{"));
-    let failure = object.and_then(|body| JsonCodec::decode::<Failure>(body).ok());
-    let (code, details) = match failure {
-        Some(f) => (f.code, f.details),
-        None => (None, Vec::new()),
-    };
-    // As a server of Connect's sends it: each code under its own status, and a method it does not
-    // have as not found.
-    let sent = |code: &ErrorCode| {
-        let missing = *code == ErrorCode::Unimplemented && answer.status == StatusCode::NOT_FOUND;
-        code.http_status() == answer.status || missing
-    };
-    let code = code
+    // Every request that can store an event or change a key holds a byte below a space, but a
+    // `create_key` of nothing, and no error of a server of Connect's does, or begins otherwise: a
+    // copy of a request in another's error is read for nothing.
+    let object = body.filter(|body| body.starts_with(b"{") && body.iter().all(|b| *b >= b' '));
+    let error = object.and_then(|body| JsonCodec::decode::<EngineError>(body).ok());
+    let refusal = object
         .filter(|_| is_json(&answer.headers))
-        .and_then(|code| code.parse().ok())
-        .filter(sent);
+        .and_then(|body| JsonCodec::decode::<Refusal>(body).ok());
+    let code = refusal.and_then(|refusal| {
+        let code: ErrorCode = refusal.code.parse().ok()?;
+        // As a server of Connect's sends it: each code under its own status, and a method it does
+        // not have as not found.
+        let missing = code == ErrorCode::Unimplemented && answer.status == StatusCode::NOT_FOUND;
+        let alone = refusal.details.is_empty();
+        (code.http_status() == answer.status || missing).then_some((code, alone))
+    });
     let mut e = match code {
-        Some(code) => ConnectError::new(code, "").with_source(Instead::Connect),
+        Some((code, true)) => ConnectError::new(code, "").with_source(Instead::Refusal),
+        Some((code, false)) => ConnectError::new(code, "").with_source(Instead::Connect),
         None => ConnectError::new(ErrorCode::Unknown, "").with_source(Instead::Http(answer.status)),
     };
     // They can hold the engine's own error, whatever a proxy made of the status and the type.
-    e.details = details;
+    let details = error.map_or_else(Vec::new, |error| error.details);
+    e.details = details.into_iter().map(|detail| detail.0).collect();
     e
+}
+
+/// What the library's own refusal holds (architecture.md, Wire, rule 4).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Refusal {
+    code: String,
+    // Not printed, but a text in what a server of Connect's sends.
+    #[serde(default, rename = "message")]
+    _message: String,
+    // The library attaches none.
+    #[serde(default)]
+    details: Vec<IgnoredAny>,
+}
+
+/// What holds the engine's own error (rule 1).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EngineError {
+    #[serde(rename = "code")]
+    _code: Option<String>,
+    #[serde(rename = "message")]
+    _message: Option<String>,
+    #[serde(default)]
+    details: Vec<Detail>,
+}
+
+/// A detail that is an object: serde takes an array for a struct too.
+struct Detail(ErrorDetail);
+
+impl<'de> Deserialize<'de> for Detail {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Object;
+
+        impl<'de> Visitor<'de> for Object {
+            type Value = Detail;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Detail, A::Error> {
+                ErrorDetail::deserialize(MapAccessDeserializer::new(map)).map(Detail)
+            }
+        }
+
+        deserializer.deserialize_map(Object)
+    }
 }
 
 /// Whether a body is JSON as it is: its one type says so, and it has no encoding.
@@ -379,10 +423,7 @@ where
         message: format!("the call was refused: {why}"),
         hint: hint.map(str::to_owned),
     };
-    // The library attaches no detail, so one that is no error this client knows is the engine's.
-    if let Some(Instead::Connect) = instead
-        && e.details.is_empty()
-    {
+    if let Some(Instead::Refusal) = instead {
         match e.code {
             ErrorCode::InvalidArgument | ErrorCode::OutOfRange | ErrorCode::FailedPrecondition => {
                 return Err(refused(ErrorKind::Invalid, None));
