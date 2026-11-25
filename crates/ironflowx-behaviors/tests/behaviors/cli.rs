@@ -623,6 +623,24 @@ fn input_edges(_: &mut Cli) {
     }
 }
 
+#[then("the batch output schema requires exactly one result per item")]
+fn batch_output_alternatives(_: &mut Cli) {
+    let mut w = Cli::new();
+    w.run("ironflowx describe events emit-batch", "");
+    let output = schema(&w.succeeded()["output"]);
+    let ok = json!({"event_id": "0190b5f0-0000-7000-8000-000000000001", "duplicate": false});
+    let error = json!({"kind": "invalid", "message": "event name is required"});
+    for (item, expected) in [
+        (json!({"ok": ok}), true),
+        (json!({"error": error}), true),
+        (json!({"ok": ok, "error": error}), false),
+        (json!({}), false),
+    ] {
+        let answer = json!({"items": [item]});
+        assert_eq!(output.is_valid(&answer), expected, "batch output: {answer}");
+    }
+}
+
 pub async fn run(parser: super::Unescaped) -> (bool, usize) {
     let writer = Cli::cucumber::<&str>()
         .with_parser(parser)

@@ -126,6 +126,7 @@ Feature: CLI: generated commands, one envelope, and describe
     And with IRONFLOWX_KEY holding a "write" key, "ironflowx events emit --json" given the example exits with code 0
     And every described example works against a fresh engine with the bootstrap key
     And the published inputs enforce the wire limits, scopes and IDs
+    And the batch output schema requires exactly one result per item
 
   @CLI-010 @release-0.3 @door:cli
   Scenario: describe publishes the exit-code table

@@ -742,7 +742,8 @@ Their scope and whether they change state come from the same rules as the engine
 The schemas use JSON Schema 2020-12 and close each declared message object with
 `additionalProperties: false`. `input` describes the canonical wire JSON for `--json`,
 with `json_text` as strings and 64-bit integers as bounded decimal strings. Timestamp schemas
-check the local year and whole-millisecond precision. The wire decoder also checks that
+check the local year and whole-millisecond precision. Enable the validator's `format`
+assertions to check calendar dates. The wire decoder also checks that
 applying the UTC offset leaves the instant in years 0001 through 9999. Run the example with `--json @file` or pipe it to
 `--json -`. The wire and engine also validate the request. `output` describes the CLI's
 printed answer, requiring the fields it always prints and allowing arbitrary JSON values
