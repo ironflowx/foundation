@@ -89,6 +89,26 @@ impl From<OpenError> for EngineError {
     }
 }
 
+/// Reads whether the bootstrap in `root` is marked. Creates no directory or database.
+/// SQLite can rebuild the shared-memory file of a WAL left by a crash.
+///
+/// This blocking read takes no engine lock and does not check the ledger.
+///
+/// # Errors
+///
+/// [`EngineError::Format`] for another control-plane format, or [`EngineError::Store`]
+/// if the state cannot be read.
+pub fn is_bootstrapped(root: &Path) -> Result<bool, EngineError> {
+    Ok(matches!(
+        bootstrap_state(root)?,
+        BootstrapState::Marked { .. }
+    ))
+}
+
+fn bootstrap_state(root: &Path) -> Result<BootstrapState, StoreError> {
+    ControlPlane::bootstrap_state(&root.join("control.db"))
+}
+
 /// Runs blocking work off the runtime.
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, EngineError> + Send + 'static,
@@ -278,7 +298,7 @@ fn lock_root(root: &Path) -> Result<File, EngineError> {
 
 /// Reads which kind of open this is, deleting a leftover staging directory.
 fn classify(root: &Path) -> Result<BootstrapState, EngineError> {
-    let state = ControlPlane::bootstrap_state(&root.join("control.db"))?;
+    let state = bootstrap_state(root)?;
     // A staging directory never holds anything acknowledged.
     match std::fs::remove_dir_all(staging(root)) {
         Err(e) if e.kind() != NotFound => return Err(e.into()),

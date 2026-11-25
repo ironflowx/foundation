@@ -1,11 +1,11 @@
 //! Engine rows of the Open and Errors tables in architecture.md that no scenario covers yet.
 
 use ironflowx_authz::mint;
-use ironflowx_cell::ManualClock;
+use ironflowx_cell::{ManualClock, new_env_ref};
 use ironflowx_core::{ErrorKind, Secret, Timestamp};
-use ironflowx_operations::{Engine, SeedState};
+use ironflowx_operations::{Engine, EngineError, SeedState, StoreError, is_bootstrapped};
 use ironflowx_proto::{Call, ListEnvironmentsRequest, Operations, WhoamiRequest};
-use ironflowx_store::ControlPlane;
+use ironflowx_store::{Bootstrap, ControlPlane};
 
 fn clock() -> ManualClock {
     ManualClock::new(Timestamp::from_millis(1_800_000_000_000))
@@ -13,6 +13,48 @@ fn clock() -> ManualClock {
 
 fn uuid(n: u8) -> String {
     format!("019a9f3e-7c2b-7d41-8a3e-1000000000{n:02x}")
+}
+
+#[test]
+fn a_missing_control_plane_is_not_bootstrapped() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing");
+    assert!(!is_bootstrapped(&missing).unwrap());
+    assert!(!missing.exists());
+    assert!(!is_bootstrapped(dir.path()).unwrap());
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn only_a_marked_bootstrap_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let control = ControlPlane::open(&dir.path().join("control.db")).unwrap();
+    assert!(!is_bootstrapped(dir.path()).unwrap(), "unbootstrapped");
+
+    let id = uuid(5).parse().unwrap();
+    let (_, digest) = mint(id, [7; 32]);
+    let env = new_env_ref();
+    let bootstrap = Bootstrap {
+        env,
+        tenant: uuid(1).parse().unwrap(),
+        project: uuid(2).parse().unwrap(),
+        key: ironflowx_authz::KeyParts { id, digest },
+        by_seed: false,
+    };
+    control.ensure_bootstrap(&bootstrap, &clock()).unwrap();
+    assert!(!is_bootstrapped(dir.path()).unwrap(), "unmarked");
+
+    control.mark_ledger_created(&env, &clock()).unwrap();
+    drop(control);
+    assert!(is_bootstrapped(dir.path()).unwrap(), "marked");
+}
+
+#[test]
+fn a_broken_control_plane_is_a_bootstrap_read_error() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("control.db"), "not a database").unwrap();
+    let error = is_bootstrapped(dir.path()).expect_err("bootstrap read failed");
+    assert!(matches!(error, EngineError::Store(StoreError::Failed(_))));
 }
 
 /// A `control.db` with no bootstrap in it is bootstrapped, with a seed or without: one with its

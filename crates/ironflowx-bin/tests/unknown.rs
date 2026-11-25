@@ -7,10 +7,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ironflowx_cell::HostClock;
 use ironflowx_core::{ErrorKind, FaultPoint, Secret, set_fault_hook};
 use ironflowx_doors::{Readiness, Slot, WaitingOn, router};
-use ironflowx_operations::{Engine, Opened};
+use ironflowx_operations::{Engine, HostClock, Opened};
 use ironflowx_proto::{
     Call, Client, CreateKeyRequest, EmitBatchRequest, EmitRequest, KeyStatus, ListEventsRequest,
     ListKeysRequest, OpError, Operations as _, RevokeKeyRequest, WhoamiRequest,

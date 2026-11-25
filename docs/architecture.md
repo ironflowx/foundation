@@ -26,7 +26,7 @@ Around the engine, not in the diagram, each depending on what its line names:
 - `ironflowx-doors`: the HTTP door, on `ironflowx-proto` and `ironflowx-core`, and no engine crate (SRV-1). Unpublished.
 - `ironflowx-cli`: the CLI, on `ironflowx-proto` and `ironflowx-core`, and no engine crate (SRV-1); at build time, on `ironflowx-codegen`. Unpublished.
 - `ironflowx-codegen`: the generator, which `ironflowx-cli`'s `build.rs` calls; on no crate of ours. Unpublished.
-- `ironflowx-bin`: the `ironflowx` binary and its host, on `ironflowx-cli`, `ironflowx-doors`, `ironflowx-operations`, `ironflowx-cell`, `ironflowx-store` and `ironflowx-core`. Unpublished.
+- `ironflowx-bin`: the `ironflowx` binary and its host, on `ironflowx-cli`, `ironflowx-doors`, `ironflowx-operations` and `ironflowx-core`. The host reaches the ledger, control plane, event rules and credentials through the engine. Unpublished.
 
 ## C3: Modules and seams
 
@@ -75,7 +75,7 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 | Host | Turns a data directory and an address into a served engine | `ironflowx serve`, `admin.key`, exit codes | `ironflowx-bin` |
 | CLI | Calls an operation from a shell | The generated commands, one per method of the proto; `version`; the envelope and exit codes | `ironflowx-cli` |
 | Generator | Derives the CLI's commands from the proto at build time, and refuses a proto that does not say enough | `generate(descriptor_set, out_dir)`, from `build.rs` | `ironflowx-codegen` |
-| Engine | Opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records; reports its health and a ledger fault to the host | `Engine::open`, `health`, `faulted`, `close`, `Operations`, `recover_admin_key` | `ironflowx-operations` |
+| Engine | Reads whether the bootstrap is marked; opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records; reports its health and a ledger fault to the host | `is_bootstrapped`, `Engine::open`, `health`, `faulted`, `close`, `Operations`, `recover_admin_key` | `ironflowx-operations` |
 | Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create` | `ironflowx-authz` |
 | Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `undo_bootstrap`, `mark_ledger_created`, `finish_bootstrap`, `check_seed`, `apply_seed`, `lookup_key`, `record_expiry`, `insert_key`, `insert_recovered`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
 | Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Scope`, `KeyOrigin`, `Address`, `Secret`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
@@ -105,7 +105,7 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 | Seam | Adapters | Today |
 |---|---|---|
 | `Operations` | The engine (`Engine`) · the proto client (`Client`) | Both. The behaviors drive each |
-| `Clock` | `HostClock` · `ManualClock`, which a test sets and steps, backwards too | Both, in `ironflowx-cell`. The crash test and the behaviors on the engine use `ManualClock`; the binary, so the behaviors against it, uses `HostClock` |
+| `Clock` | `HostClock` · `ManualClock`, which a test sets and steps, backwards too | Both in `ironflowx-cell`. The crash test and the behaviors on the engine use `ManualClock`. The host uses `HostClock` through `ironflowx-operations` |
 | Control plane | SQLite · a shared database for clusters | SQLite only: hypothetical, so no trait |
 | Ledger, event rules, credentials, door, host, CLI, generator | One adapter each | Module interfaces, not seams |
 
@@ -204,7 +204,9 @@ async fn serve(data_dir: &Path, listen: SocketAddr) -> Result<Infallible, ServeE
 async fn run(listener: std::net::TcpListener, data_dir: &Path) -> Result<Infallible, ServeError>;   // serve, from a bound listener
 // ServeError StaleKeyFile(PathBuf) | Listen(io::Error) | DataDir(PathBuf, io::Error) | Engine(EngineError) | KeyFile(PathBuf, io::Error)
 
-// ironflowx-operations (tokio)
+// ironflowx-operations also exports HostClock, OpenError and StoreError.
+fn is_bootstrapped(root: &Path) -> Result<bool, EngineError>;   // blocking; reads the bootstrap mark
+// These Engine methods use tokio.
 impl Engine {
     async fn open(root: &Path, clock: impl Clock + Clone + Send + Sync + 'static, seed: Option<Secret>)
         -> Result<Opened, EngineError>;
@@ -682,9 +684,14 @@ With `client-tls`, `Client` calls an `https` URL as it does an `http` one. It tr
 2. Bind the listen address. Nothing in the data directory is touched before (D62).
 3. Log `listening` with the bound URL, also when port 0 picked the address. An address that is not loopback also logs a warning that keys travel in clear without a TLS proxy (D59).
 4. Serve `/health` and the door, the slot `Starting`.
-5. Create the data directory, and what is missing above it, asking for mode `0700` ([What is stored](#what-is-stored)). If it holds `admin.key` and its bootstrap is not marked (`ControlPlane::bootstrap_state`), exit 2: no open before the mark wrote that file, so it is stale. An error of that read is left for the open. Then `Engine::open(data_dir, HostClock, None)`.
+5. Create the data directory, and what is missing above it, asking for mode `0700` ([What is stored](#what-is-stored)). If it holds `admin.key` and the engine's `is_bootstrapped` answers `Ok(false)`, exit 2: no open before the mark wrote that file, so it is stale. An error of that read is left for the open. Then `Engine::open(data_dir, HostClock, None)`.
 6. Write a minted key to `admin.key` and log its path, never the key. If it cannot be written, close the engine and exit 1; the key stays stored, its secret lost ([Engine open](#engine-open), "Recovery").
 7. Set the slot `Open`.
+
+`is_bootstrapped` reads the control plane without creating a directory or database. It answers
+`true` for a marked bootstrap and `false` for a missing control plane, a control plane that
+has never been bootstrapped, or an unmarked bootstrap. The read takes no engine lock and does
+not check the ledger. SQLite can rebuild `control.db-shm` from a WAL left by a crash.
 
 **Writing a key file.** Write the key and a newline to a new file in the data directory, `admin.key.<random>.tmp`, mode `0400`, and sync it; hard-link it to `admin.key`, which fails if the name is taken, by a symbolic link to nothing too; remove the temporary name; sync the directory. A crash leaves either no `admin.key` or the whole key, and at most the temporary file. A crash after the open marked the bootstrap and before the link leaves no `admin.key` and no sign to the next open: recover an admin key and revoke the minted one.
 

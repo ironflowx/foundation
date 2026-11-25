@@ -1,6 +1,8 @@
 //! The Ironflow X control plane: which tenants, projects, environments and keys exist, in
 //! `<root>/control.db` (SQLite).
 //!
+//! The engine uses this crate. Apps that open an engine use `ironflowx-operations`.
+//!
 //! Blocking: the engine calls it under `spawn_blocking`, a recovery on its caller's thread. Every
 //! change is one transaction that takes SQLite's write lock first (TEN-11); one that needs now
 //! then reads it from the clock it is given.
