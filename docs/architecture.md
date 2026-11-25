@@ -392,7 +392,7 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 | `ResourceExhausted` | From the proto client: a request over 16 MiB, which it does not send; or `resource_exhausted` without the engine's own error ([Wire](#wire), rule 4). No hint | No: a request too large stays so |
 | `Invalid` | From the proto client: `invalid_argument`, `out_of_range` or `failed_precondition` without the engine's own error ([Wire](#wire), rule 4) | No |
 | `Internal` | From the proto client: `unimplemented` without the engine's own error ([Wire](#wire), rule 4), with the hint `the engine is older than this client` | No |
-| `Invalid` | From the CLI, before it sends anything: a usage error ([CLI](#cli)) | No |
+| `Invalid` | From the CLI, before it sends anything: a usage error, or a `keys create` whose request repeats the key the CLI was given ([CLI](#cli)) | No |
 | `Internal` | From the CLI: an answer it cannot write to stdout (one that is closed, or not open for writing, takes it and drops it), the hint of a `keys create` saying that the key is stored and its secret lost; one that repeats the key the CLI was given; or one whose JSON text is no JSON, which no engine stores | No |
 
 | Kind | `retryable` | Exit | Connect code |
