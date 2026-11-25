@@ -1,0 +1,22 @@
+# Throwaway crate of #160, never merged. Detached: not a member of the workspace above it.
+[package]
+name = "spike"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+# The issue's list.
+connectrpc = { version = "0.9.1", default-features = false, features = ["axum", "client", "client-tls", "json", "server"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["http1", "http2", "server-auto", "service", "tokio"] }
+ironflowx-operations = { path = "../../crates/ironflowx-operations" }
+rustls-native-certs = "0.8.5"
+# What main.rs names beside it, each in the graph above already.
+axum = { version = "0.8.9", default-features = false }
+http = "1.5.0"
+ironflowx-cell = { path = "../../crates/ironflowx-cell" }
+ironflowx-proto = { path = "../../crates/ironflowx-proto" }
+rustls = { version = "0.23", default-features = false }
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "net", "rt-multi-thread", "time"] }

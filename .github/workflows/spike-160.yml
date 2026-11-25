@@ -1,0 +1,95 @@
+# Throwaway, #160: runs on its own branch only, publishes nothing, and never merges.
+name: spike-160
+
+on:
+  push:
+    branches: [t3/implement-issue-160]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  prove:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, arch: x86_64 }
+          - { os: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      TARGET: ${{ matrix.arch }}-unknown-linux-musl
+    defaults:
+      run:
+        working-directory: spike/musl-tls
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: The machine, and that nothing is cached
+        run: |
+          git rev-parse HEAD
+          uname -a; head -2 /etc/os-release; nproc; docker version -f '{{.Server.Version}} {{.Server.Arch}}'
+          test "$(uname -m)" = "${{ matrix.arch }}"
+          rustc --version; cargo --version; gcc --version | head -1
+          ls -d ~/.cargo/registry ~/.cargo/git target ../../target 2>&1 || true
+          test ! -e target && test ! -e ../../target && test ! -e ~/.cargo/registry/cache
+      - name: Versions
+        run: ./versions.sh "$TARGET"
+      - name: Build packages
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y --no-install-recommends musl-tools
+          dpkg-query -W -f '${Package} ${Version}\n' gcc libc6-dev musl-tools musl-dev
+          rustup target add "$TARGET"
+      - name: Build, release, musl
+        run: |
+          cargo fetch --locked --target "$TARGET"
+          time cargo build --release --locked --target "$TARGET"
+      - name: Build the controls (glibc) and the ironflowx of main (musl)
+        run: |
+          cargo build --release --locked
+          cd ../..
+          time cargo build --release --locked -p ironflowx-bin --target "$TARGET"
+          git diff --exit-code
+      - name: Size
+        run: |
+          for bin in target/$TARGET/release/spike target/release/spike ../../target/$TARGET/release/ironflowx; do
+            strip -o /tmp/stripped "$bin"
+            echo "$(stat -c %s "$bin") bytes, stripped $(stat -c %s /tmp/stripped), gzip of that $(gzip -9c /tmp/stripped | wc -c): $bin"
+            sha256sum "$bin"
+          done
+      - name: The C code each one holds
+        run: |
+          for bin in target/$TARGET/release/spike; do
+            nm "$bin" >/tmp/nm
+            for symbol in aws_lc_ sqlite3_ ring_core_; do echo "$symbol: $(grep -c "$symbol" /tmp/nm || true)"; done
+          done
+          grep -q 'aws_lc_' /tmp/nm && grep -q 'sqlite3_open' /tmp/nm
+      - name: Each binary is static, and a glibc one is refused
+        run: |
+          ./static.sh "target/$TARGET/release/spike"
+          ./static.sh "../../target/$TARGET/release/ironflowx"
+          ../../ci/must-reject.sh "static: file says it is not" "static: ldd says it is not" \
+            "static: it names an interpreter" "static: it needs a library" -- \
+            ./static.sh target/release/spike
+      - name: In containers with no glibc
+        run: ./containers.sh "target/$TARGET/release/spike" target/release/spike "../../target/$TARGET/release/ironflowx"
+
+  # The packages a build needs, one at a time, in a bare image: a runner's has too much in it to say.
+  packages:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: docker run --rm -v "$PWD:/src:ro" ubuntu:24.04 /src/spike/musl-tls/packages.sh /src
