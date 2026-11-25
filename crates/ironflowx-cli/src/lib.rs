@@ -838,6 +838,7 @@ mod tests {
             list("names", Kind::Text),
         ];
         let check = |text: &str| check(text, REQUEST);
+        let undecodable = |why: &str| invalid(format!("the request does not decode: {why}"));
         for good in [
             "{}",
             // Absent, or it does not decode.
@@ -888,21 +889,32 @@ mod tests {
             (r#"{"data":1,}"#, "key must be a string at line 1 column 11"),
             (r#"{"dat":1} 2"#, "trailing characters at line 1 column 11"),
         ] {
-            let expected = invalid(format!("the request does not decode: {why}"));
-            assert_eq!(check(bad), Err(expected), "{bad}");
+            assert_eq!(check(bad), Err(undecodable(why)), "{bad}");
         }
         let deep = format!(
             r#"{{"one":{{"m":{}{}}}}}"#,
             "[".repeat(200),
             "]".repeat(200)
         );
-        // Whatever the build makes of it: `arbitrary_precision` offers a number as a map.
-        for number in ["1e400", r#"{"items":[1.5]}"#, r#"{"one":1e400}"#] {
-            let e = check(number).unwrap_err();
-            assert!(
-                e.message.starts_with("the request does not decode: "),
-                "{e:?}"
-            );
+        // As a default build reads a number, or one with `arbitrary_precision`.
+        for (bad, default, precise) in [
+            ("1e400", "number out of range at line 1 column 5", 5),
+            (
+                r#"{"items":[1.5]}"#,
+                "invalid type: floating point `1.5`, expected an object at line 1 column 13",
+                13,
+            ),
+            (
+                r#"{"one":1e400}"#,
+                "number out of range at line 1 column 12",
+                12,
+            ),
+        ] {
+            let precise =
+                format!("invalid type: number, expected an object at line 1 column {precise}");
+            let either = [default, &precise].map(undecodable);
+            let refused = check(bad).unwrap_err();
+            assert!(either.contains(&refused), "{bad}: {refused:?}");
         }
         let quoted = format!(r#"{{"'{}'":1}}"#, "n".repeat(SECRET_LEN - 2));
         let long = "n".repeat(SECRET_LEN - 1);

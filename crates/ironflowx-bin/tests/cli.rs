@@ -666,9 +666,9 @@ fn what_is_no_request_is_a_usage_error() {
             invalid("the request has no field 'items[0].nope'"),
         ),
         (
-            json(r#"{"version":1.5}"#),
+            json(r#"{"version":true}"#),
             decoding(&format!(
-                "invalid value: floating point `1.5`, {number} at line 1 column 14"
+                "invalid type: boolean `true`, {number} at line 1 column 15"
             )),
         ),
         (
