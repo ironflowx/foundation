@@ -1,5 +1,9 @@
 //! `serve.feature` on the `ironflowx` binary, started by each scenario.
 
+#[allow(dead_code)]
+#[path = "../../../ironflowx-operations/tests/leak/mod.rs"]
+mod leak;
+
 use std::fmt;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::TcpStream;
@@ -313,7 +317,7 @@ fn log_names(w: &mut Serve, name: String) {
     let path = serde_json::to_string(&path.to_string_lossy()).unwrap();
     until("logged", || w.served().log().contains(&path).then_some(()));
     let log = w.served().log();
-    assert!(!log.contains(&w.key()[41..]), "{log}");
+    assert_eq!(leak::leak(&log, [w.key()]), None, "{log}");
 }
 
 #[then(regex = r#"^with the key in "admin.key", whoami names scopes "read", "write" and "admin"$"#)]
@@ -329,7 +333,7 @@ async fn key_scopes(w: &mut Serve) {
     assert_eq!(me.expires_at, None);
     // The log, once it is whole.
     let log = w.served.take().expect("a served engine").stop();
-    assert!(!log.contains(&w.key()[41..]), "{log}");
+    assert_eq!(leak::leak(&log, [w.key()]), None, "{log}");
 }
 
 #[then(regex = r#"^the log has one "listening" line whose URL answers GET "/health" with 200$"#)]

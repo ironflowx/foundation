@@ -115,8 +115,8 @@ impl Client {
     }
 }
 
-/// Passes on no success that is not Connect's: the library takes any 2xx, of any type that starts as
-/// its own or of none, and an empty one decodes as an answer that says yes or lists nothing.
+/// Passes on no success that is not Connect's: the library takes any 2xx, of any type that starts
+/// as its own or of none, and an empty one decodes as an answer that says yes or lists nothing.
 #[derive(Clone)]
 struct Transport(HttpClient);
 
@@ -131,9 +131,9 @@ impl ClientTransport for Transport {
         let answer = self.0.send(request);
         Box::pin(async move {
             let answer = answer.await?;
-            let kinds: Vec<_> = answer.headers().get_all(CONTENT_TYPE).iter().collect();
+            let types: Vec<_> = answer.headers().get_all(CONTENT_TYPE).iter().collect();
             if answer.status().is_success()
-                && (answer.status() != StatusCode::OK || kinds != ["application/proto"])
+                && (answer.status() != StatusCode::OK || types != ["application/proto"])
             {
                 let message = format!("an HTTP {} that is not Connect's", answer.status().as_u16());
                 return Err(ConnectError::new(ErrorCode::Unknown, message));

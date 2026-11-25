@@ -1,9 +1,12 @@
 //! `ironflowx serve`, as a process.
 
+#[path = "../../ironflowx-operations/tests/leak/mod.rs"]
+mod leak;
+
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStderr, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -15,6 +18,7 @@ use ironflowx_proto::{
     Operations as _, RevokeKeyRequest, WhoamiRequest,
 };
 use ironflowx_store::{Bootstrap, ControlPlane};
+use leak::{files, leak, leak_in};
 use serde_json::Value;
 
 const ID: &str = "0190b5f0-0000-7000-8000-000000000001";
@@ -129,7 +133,7 @@ fn the_first_start_writes_the_key_and_a_later_one_keeps_what_is_there() {
     let key = written.strip_suffix('\n').unwrap();
     assert_eq!((key.len(), &key[..4]), (84, "ixk_"));
     assert!(log.contains(&logged(&key_file)), "{log}");
-    assert!(!log.contains(&key[41..]), "{log}");
+    assert_eq!(leak(&log, [key]), None, "{log}");
     assert!(!log.contains("TLS proxy"), "{log}");
     let names: Vec<_> = std::fs::read_dir(&data_dir)
         .unwrap()
@@ -142,7 +146,7 @@ fn the_first_start_writes_the_key_and_a_later_one_keeps_what_is_there() {
     let log = Served::start(&data_dir, "127.0.0.1:0").stop();
     assert_eq!(std::fs::read_to_string(&key_file).unwrap(), written);
     assert!(!log.contains("admin.key"), "{log}");
-    assert!(!log.contains(&key[41..]), "{log}");
+    assert_eq!(leak(&log, [key]), None, "{log}");
     std::fs::remove_file(&key_file).unwrap();
     Served::start(&data_dir, "127.0.0.1:0").stop();
     assert!(!key_file.exists());
@@ -383,30 +387,19 @@ async fn one_client_gets_each_keys_own_answer_and_no_key_is_kept() {
     drop(control);
 
     let log = served.stop();
-    let mut kept = vec![(PathBuf::from("the log"), log.into_bytes())];
-    let mut stack = vec![dir.path().to_owned()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                stack.push(path);
-            } else {
-                let bytes = std::fs::read(&path).unwrap();
-                kept.push((path, bytes));
-            }
+    let all = || [&admin, read, revoked].map(String::as_str);
+    assert_eq!(leak(&log, all()), None);
+    let files = files(dir.path());
+    for file in &files {
+        if file.0 == Path::new("admin.key") {
+            assert_eq!(file.1, format!("{admin}\n"));
+        } else {
+            assert_eq!(leak_in(file, all()), None, "{:?}", file.0);
         }
     }
-    let holds = |secret: &str| {
-        let secret = secret.as_bytes();
-        let held = kept
-            .iter()
-            .filter(|(_, bytes)| bytes.windows(secret.len()).any(|w| w == secret));
-        held.map(|(path, _)| path.clone()).collect::<Vec<_>>()
-    };
-    assert_eq!(holds(&admin[41..]), [dir.path().join("admin.key")]);
-    for key in &made {
-        assert_eq!(holds(&key[41..]), Vec::<PathBuf>::new());
-        assert_eq!(holds(&key[41..62]), Vec::<PathBuf>::new());
+    // What is stored is searched.
+    for key in all() {
+        assert!(files.iter().any(|(_, bytes)| bytes.contains(&key[4..40])));
     }
 }
 

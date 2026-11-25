@@ -289,6 +289,22 @@ fn a_key_that_is_not_what_the_proto_says_does_not_decode() {
     }
 }
 
+/// D46: 43 characters hold 258 bits, so a key's last one has 2 that are zero.
+#[test]
+fn a_created_key_ends_as_credentials_take_it() {
+    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let taken: String = alphabet
+        .chars()
+        .filter(|last| {
+            let mut answer = wire::CreateKeyResponse::from(created());
+            answer.key.replace_range(83..84, &last.to_string());
+            CreatedKey::try_from(answer).is_ok()
+        })
+        .collect();
+    let multiples_of_4: String = alphabet.chars().step_by(4).collect();
+    assert_eq!(taken, multiples_of_4);
+}
+
 /// TEN-3: the message that holds a key, its views included, prints none.
 #[test]
 fn a_create_key_answer_prints_no_key() {

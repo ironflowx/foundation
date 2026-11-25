@@ -305,6 +305,16 @@ async fn a_request_the_wire_cannot_carry_is_invalid_before_its_key_is_read() {
         ..Default::default()
     };
     assert_eq!(operations.take_requests(), [format!("{asked:?}")]);
+    // As is an array.
+    let (head, _) = send(open, line, &[JSON], br#"[["admin"]]"#).await;
+    assert!(head.starts_with("HTTP/1.0 200 "), "{head}");
+    let asked = ironflowx_proto::CreateKeyRequest {
+        scopes: [Scope::Admin].into(),
+        ..Default::default()
+    };
+    assert_eq!(operations.take_requests(), [format!("{asked:?}")]);
+    let (head, _) = send(open, line, &[JSON], br#"[["own"]]"#).await;
+    assert!(head.starts_with("HTTP/1.0 400 "), "{head}");
     // Their neighbors are carried.
     for (time, millis) in [
         ((-62_135_596_800, 0), -62_135_596_800_000),
