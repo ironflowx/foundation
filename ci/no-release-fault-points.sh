@@ -2,9 +2,12 @@
 # Usage: ci/no-release-fault-points.sh [release.yml] [Cargo.toml]
 # Archive builds use a direct, package-only Cargo command in release.yml. Steps that do not mention
 # cargo, cross, __fault-points, or --all-features may use arbitrary shell syntax. Any step that
-# mentions them must invoke cargo/cross directly (no wrappers, heredocs, arithmetic shifts, or
-# process substitutions) and select only ironflowx-bin without dev targets or private features.
-# Commands hidden in external scripts or constructed from shell variables are outside this check.
+# mentions them must invoke cargo/cross directly (no wrappers, Cargo aliases, heredocs, arithmetic
+# shifts, or process substitutions) and select only ironflowx-bin without dev targets or private
+# features. Standalone echo/printf logging of cargo text is exempt only outside pipes, redirects,
+# substitutions, and compound/grouped blocks (so e.g. `if ...; then echo 'cargo ...'; fi` or
+# `{ echo 'cargo ...'; exit 1; }` is refused; release.yml has none). Commands hidden in external
+# scripts or constructed from shell variables are outside this check.
 set -euo pipefail
 
 workflow=${1:-.github/workflows/release.yml}
@@ -14,11 +17,13 @@ ruby -ryaml - "$workflow" <<'RUBY'
   CARGO_READONLY_SUBCOMMANDS = %w[
     metadata version help fetch tree pkgid locate-project verify-project
   ].freeze
-  GROUP_OPEN_WORDS = %w[{ if for while until case].freeze
-  GROUP_CLOSE_WORDS = %w[} fi done esac].freeze
+  COMPOUND_WORDS = %w[{ } if then elif else fi for while until do done case esac].freeze
   DESCRIPTIVE_KEYS = %w[name description].freeze
   CARGO_WORD = /(?<![A-Za-z0-9_])(?:cargo|cross)(?![A-Za-z0-9_])/.freeze
-  INTERESTING = /(?<![A-Za-z0-9_])(?:cargo|cross)(?![A-Za-z0-9_])|__fault-points|--all-features/.freeze
+  INTERESTING =
+    /(?<![A-Za-z0-9_])(?:cargo|cross)(?![A-Za-z0-9_])|__fault-points|--all-features|(?i:CARGO_ALIAS_)/.freeze
+  ALIAS_ENV = /\ACARGO_ALIAS_/i.freeze
+  ALIAS_CONFIG = /\balias(?:\.|\s*=)/.freeze
 
   # Extract the inner body of $(...) starting at '('. Returns [inner, next_index].
   def extract_parens(script, open_idx)
@@ -119,8 +124,8 @@ ruby -ryaml - "$workflow" <<'RUBY'
   end
 
   # Tokenize a step that mentions cargo/cross or private feature flags. Returns
-  # [commands, unsupported_syntax], recording words, piped, nested, redirected, and grouped.
-  # Heredocs (<<), process substitutions (<( or >()), and arithmetic (( fail closed.
+  # [commands, unsupported_syntax, has_grouping]. Heredocs (<<), process substitutions (<( or >()),
+  # and arithmetic (( fail closed. Any compound/grouping syntax latches has_grouping for the step.
   def commands(script, nested: false)
     out = []
     current = []
@@ -128,7 +133,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
     in_word = false
     word_quoted = false
     piped_prev = false
-    group_depth = 0
+    has_grouping = false
     unsupported = false
 
     flush_word = lambda do
@@ -143,28 +148,19 @@ ruby -ryaml - "$workflow" <<'RUBY'
       flush_word.call
       redirected = current.any? { |kind, _| kind == :redir }
       words = strip_redirs(current)
-      while !words.empty? && GROUP_OPEN_WORDS.include?(words.first)
-        group_depth += 1
+      while !words.empty? && COMPOUND_WORDS.include?(words.first)
+        has_grouping = true
         words.shift
       end
-      while !words.empty? && %w[then do else elif].include?(words.first)
-        words.shift
-      end
-      closing = 0
-      while !words.empty? && GROUP_CLOSE_WORDS.include?(words.first)
-        closing += 1
-        words.shift
-      end
+      has_grouping ||= words.any? { |tok| COMPOUND_WORDS.include?(tok) }
       unless words.empty?
         out << {
           words: words,
           piped: piped_prev || piped_next,
           nested: nested,
-          redirected: redirected,
-          grouped: group_depth > 0
+          redirected: redirected
         }
       end
-      group_depth = [group_depth - closing, 0].max
       current = []
       piped_prev = piped_next
     end
@@ -189,7 +185,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
         word_quoted = true
         i += 1
         close = script.index("'", i)
-        return [out, true] unless close
+        return [out, true, has_grouping] unless close
         word << script[i...close]
         i = close + 1
       elsif ch == '"'
@@ -217,14 +213,14 @@ ruby -ryaml - "$workflow" <<'RUBY'
             closed = true
             break
           elsif c == "$" && script[i + 1] == "("
-            return [out, true] if script[i + 2] == "("
+            return [out, true, has_grouping] if script[i + 2] == "("
             inner, i = extract_parens(script, i + 1)
-            sub_cmds, sub_unsup = commands(inner, nested: true)
+            sub_cmds, sub_unsup, = commands(inner, nested: true)
             out.concat(sub_cmds)
             unsupported ||= sub_unsup
           elsif c == "`"
             inner, i = extract_backticks(script, i)
-            sub_cmds, sub_unsup = commands(inner, nested: true)
+            sub_cmds, sub_unsup, = commands(inner, nested: true)
             out.concat(sub_cmds)
             unsupported ||= sub_unsup
           else
@@ -232,25 +228,25 @@ ruby -ryaml - "$workflow" <<'RUBY'
             i += 1
           end
         end
-        return [out, true] unless closed
+        return [out, true, has_grouping] unless closed
       elsif ch == "#" && !in_word
         nl = script.index("\n", i)
         i = nl || n
       elsif ch == "$" && script[i + 1] == "("
-        return [out, true] if script[i + 2] == "("
+        return [out, true, has_grouping] if script[i + 2] == "("
         in_word = true
         inner, i = extract_parens(script, i + 1)
-        sub_cmds, sub_unsup = commands(inner, nested: true)
+        sub_cmds, sub_unsup, = commands(inner, nested: true)
         out.concat(sub_cmds)
         unsupported ||= sub_unsup
       elsif ch == "`"
         in_word = true
         inner, i = extract_backticks(script, i)
-        sub_cmds, sub_unsup = commands(inner, nested: true)
+        sub_cmds, sub_unsup, = commands(inner, nested: true)
         out.concat(sub_cmds)
         unsupported ||= sub_unsup
       elsif script[i, 2] == "<<" || script[i, 2] == ">(" || script[i, 2] == "<(" || script[i, 2] == "(("
-        return [out, true]
+        return [out, true, has_grouping]
       elsif ch == "<" || ch == ">" || (ch == "&" && script[i + 1] == ">")
         if ch != "&" && in_word && !word_quoted && word.match?(/\A[0-9]+\z/)
           word = +""
@@ -277,13 +273,9 @@ ruby -ryaml - "$workflow" <<'RUBY'
       elsif ch == "|"
         flush_cmd.call(true)
         i += 1
-      elsif ch == "("
+      elsif ch == "(" || ch == ")"
         flush_cmd.call(false)
-        group_depth += 1
-        i += 1
-      elsif ch == ")"
-        flush_cmd.call(false)
-        group_depth = [group_depth - 1, 0].max
+        has_grouping = true
         i += 1
       elsif "\n;&".include?(ch)
         flush_cmd.call(false)
@@ -295,9 +287,9 @@ ruby -ryaml - "$workflow" <<'RUBY'
       end
     end
     flush_cmd.call(false)
-    [out, unsupported]
+    [out, unsupported, has_grouping]
   rescue ArgumentError
-    [out, true]
+    [out, true, has_grouping]
   end
 
   def split_env(tokens)
@@ -327,14 +319,15 @@ ruby -ryaml - "$workflow" <<'RUBY'
     nil
   end
 
-  def executable_strings(node)
+  def executable_strings(node, in_env: false)
     case node
     when Hash
       node.flat_map do |key, value|
-        next [] if key == "run" || DESCRIPTIVE_KEYS.include?(key)
-        executable_strings(value)
+        next [] if !in_env && (key == "run" || DESCRIPTIVE_KEYS.include?(key))
+        out = in_env ? [key.to_s] : []
+        out + executable_strings(value, in_env: in_env || key == "env")
       end
-    when Array then node.flat_map { |value| executable_strings(value) }
+    when Array then node.flat_map { |value| executable_strings(value, in_env: in_env) }
     when String then [node]
     else []
     end
@@ -346,6 +339,9 @@ ruby -ryaml - "$workflow" <<'RUBY'
     end
     if tokens.any? { |text| text.include?("--all-features") }
       bad << "#{label}: release workflow enables --all-features"
+    end
+    if tokens.any? { |text| text.match?(ALIAS_ENV) }
+      bad << "#{label}: release Cargo build must select only ironflowx-bin without dev targets"
     end
   end
 
@@ -363,7 +359,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
       probe = script.gsub(/\\\r?\n/, "").gsub(/[\\'"]/, "")
       next unless probe.match?(INTERESTING)
 
-      cmds, unsupported = commands(script)
+      cmds, unsupported, has_grouping = commands(script)
       if unsupported
         bad << "#{name}: release Cargo build must select only ironflowx-bin without dev targets"
       end
@@ -376,6 +372,10 @@ ruby -ryaml - "$workflow" <<'RUBY'
         if %w[cargo cross].include?(exe)
           cargo_args = args.take_while { |arg| arg != "--" }
           check_tokens(cargo_args, name, bad)
+          if cargo_args.any? { |arg| arg.match?(ALIAS_CONFIG) }
+            bad << "#{name}: release Cargo build must select only ironflowx-bin without dev targets"
+            next
+          end
           sub, sub_idx = find_subcommand(cargo_args)
           next unless sub
           next if CARGO_READONLY_SUBCOMMANDS.include?(sub)
@@ -400,7 +400,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
           check_tokens(cmd, name, bad)
           standalone_output =
             %w[echo printf].include?(exe) &&
-            !entry[:piped] && !entry[:nested] && !entry[:redirected] && !entry[:grouped]
+            !entry[:piped] && !entry[:nested] && !entry[:redirected] && !has_grouping
           if !standalone_output && cmd.any? { |tok| tok.match?(CARGO_WORD) }
             bad << "#{name}: release Cargo build must select only ironflowx-bin without dev targets"
           end

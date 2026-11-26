@@ -111,3 +111,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: CARGO_ALIAS_RELEASE_BUILD='build --release --workspace' cargo release-build
+  case_script:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          case "$target" in
+            *) echo 'cargo build --release --workspace' ;;
+          esac > build.sh
+          bash build.sh
+  nested_if_script:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          if true; then if true; then true; fi
+            echo 'cargo build --release --workspace'
+          fi > build.sh
+          bash build.sh
+  then_for_script:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          if true; then for x in 1; do true; done
+            printf '%s\n' 'cargo build --release --workspace'
+          fi > build.sh
+          bash build.sh
+  alias_override:
+    runs-on: ubuntu-latest
+    steps:
+      - run: CARGO_ALIAS_B='build --all-targets' cargo b --release -p ironflowx-bin
+  job_env_alias:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_ALIAS_B: "build --all-targets"
+    steps:
+      - run: cargo b --release -p ironflowx-bin
