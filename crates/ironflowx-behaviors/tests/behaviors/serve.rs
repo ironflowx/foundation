@@ -1071,7 +1071,11 @@ fn another_seed(w: &mut Serve) {
 
 #[given(r#""not-a-key-but-secret" as the value of IRONFLOWX_SEED"#)]
 fn malformed_seed(w: &mut Serve) {
-    w.client_key = Some("not-a-key-but-secret".into());
+    const SECRET: &str = "but-secret";
+    let malformed = format!("not-a-key-{SECRET}");
+    w.audit.presented(&Secret::new(malformed.clone()));
+    w.audit.presented(&Secret::new(SECRET.to_owned()));
+    w.client_key = Some(malformed);
 }
 
 #[when("the engine is served")]

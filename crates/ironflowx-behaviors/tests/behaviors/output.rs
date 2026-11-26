@@ -4,6 +4,7 @@
 #[path = "../../../ironflowx-operations/tests/leak/mod.rs"]
 pub mod leak;
 
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::process::Output;
 
@@ -175,15 +176,19 @@ impl Audit {
             return;
         }
         for (path, bytes) in leak::files(root) {
+            let mode = std::fs::symlink_metadata(root.join(&path))
+                .ok()
+                .filter(|meta| meta.is_file())
+                .map(|meta| meta.permissions().mode() & 0o7777);
             assert_eq!(
-                self.entry_leak(&path, &bytes),
+                self.entry_leak(&path, &bytes, mode),
                 None,
                 "TEN-3: data directory"
             );
         }
     }
 
-    fn entry_leak(&self, path: &Path, bytes: &str) -> Option<&'static str> {
+    fn entry_leak(&self, path: &Path, bytes: &str, mode: Option<u32>) -> Option<&'static str> {
         if leak::leak_in(
             &(path.to_owned(), String::new()),
             self.keys.iter().map(String::as_str),
@@ -201,9 +206,10 @@ impl Audit {
                 !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric())
             });
         let content = bytes.strip_suffix('\n');
-        if name == "admin.key" && self.file_key.is_some() && content == self.file_key.as_deref()
-            || temporary && self.published.iter().any(|key| content == Some(key))
-        {
+        let expected =
+            name == "admin.key" && self.file_key.is_some() && content == self.file_key.as_deref()
+                || temporary && self.published.iter().any(|key| content == Some(key));
+        if expected && mode == Some(0o400) {
             return None;
         }
         self.leaked_text(bytes).map(|_| "credential in file")
@@ -246,9 +252,15 @@ pub fn fixtures() {
     audit.file_key(key);
     audit.remember(other);
     let expected = format!("{key}\n");
-    let file = |path: &str, bytes: &str| audit.entry_leak(Path::new(path), bytes);
+    let file = |path: &str, bytes: &str| audit.entry_leak(Path::new(path), bytes, Some(0o400));
     assert_eq!(file("admin.key", &expected), None);
     assert_eq!(file("admin.key.leftover.tmp", &expected), None);
+    for path in ["admin.key", "admin.key.leftover.tmp"] {
+        assert_eq!(
+            audit.entry_leak(Path::new(path), &expected, Some(0o644)),
+            Some("credential in file")
+        );
+    }
     assert_eq!(file("control.db", &expected), Some("credential in file"));
     assert_eq!(
         file("admin.key.leftover.tmp", &other[41..]),
@@ -264,15 +276,15 @@ pub fn fixtures() {
     );
     audit.file_key(other);
     assert_eq!(
-        audit.entry_leak(Path::new("admin.key.leftover.tmp"), &expected),
+        audit.entry_leak(Path::new("admin.key.leftover.tmp"), &expected, Some(0o400)),
         None
     );
     assert_eq!(
-        audit.entry_leak(Path::new("admin.key"), &expected),
+        audit.entry_leak(Path::new("admin.key"), &expected, Some(0o400)),
         Some("credential in file")
     );
     assert_eq!(
-        Audit::default().entry_leak(Path::new("admin.key"), &expected),
+        Audit::default().entry_leak(Path::new("admin.key"), &expected, Some(0o400)),
         Some("credential in file")
     );
 
@@ -281,7 +293,7 @@ pub fn fixtures() {
     audit.remember(&format!("ixk_{id}_{encoded}"));
     let displayed = "\u{e1}".repeat(16);
     assert_eq!(
-        audit.entry_leak(Path::new(&displayed), ""),
+        audit.entry_leak(Path::new(&displayed), "", None),
         Some("credential in path")
     );
 
@@ -293,11 +305,11 @@ pub fn fixtures() {
         Some("a malformed credential")
     );
     assert_eq!(
-        audit.entry_leak(Path::new("control.db"), malformed),
+        audit.entry_leak(Path::new("control.db"), malformed, Some(0o600)),
         Some("credential in file")
     );
     assert_eq!(
-        audit.entry_leak(Path::new(malformed), ""),
+        audit.entry_leak(Path::new(malformed), "", None),
         Some("credential in path")
     );
     audit.presented(&Secret::new(String::new()));
