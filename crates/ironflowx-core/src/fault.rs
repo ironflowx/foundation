@@ -61,6 +61,14 @@ pub enum FaultPoint {
     BeforeExpiryCommit,
     /// The recorded expiry is durable and its refusal not yet answered.
     AfterExpiryCommit,
+    /// Inside `insert_recovered`'s transaction, its row written.
+    BeforeRecoveredCommit,
+    /// The recovered key is durable and the transaction has not returned to the caller.
+    AfterRecoveredCommit,
+    /// The temporary admin key file is synced and the final name has not been linked.
+    BeforeAdminKeyLink,
+    /// The final name is linked, before the temporary name is removed or the directory synced.
+    AfterAdminKeyLink,
 }
 
 impl FaultPoint {
@@ -92,6 +100,10 @@ impl FaultPoint {
             Self::AfterRevokeCommit => "after-revoke-commit",
             Self::BeforeExpiryCommit => "before-expiry-commit",
             Self::AfterExpiryCommit => "after-expiry-commit",
+            Self::BeforeRecoveredCommit => "before-recovered-commit",
+            Self::AfterRecoveredCommit => "after-recovered-commit",
+            Self::BeforeAdminKeyLink => "before-admin-key-link",
+            Self::AfterAdminKeyLink => "after-admin-key-link",
         }
     }
 }

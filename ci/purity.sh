@@ -25,6 +25,19 @@ ci/no-engine-deps.sh ci/fixtures/engine-dep/allowed/Cargo.toml
 # A build-dependency is outside the host check's normal dependency boundary.
 ci/no-host-engine-deps.sh ci/fixtures/engine-dep/at-build/Cargo.toml
 ci/no-fault-points.sh crates
+ci/no-release-fault-points.sh
+ci/no-release-fault-points.sh ci/fixtures/release-fault-points/allowed.yml
+ci/must-reject.sh "release workflow names __fault-points" \
+  "release workflow enables --all-features" -- \
+  ci/no-release-fault-points.sh ci/fixtures/release-fault-points/release.yml
+ci/must-reject.sh "release Cargo build must select only ironflowx-bin without dev targets" -- \
+  ci/no-release-fault-points.sh ci/fixtures/release-fault-points/workspace.yml
+ci/must-reject.sh "ironflowx-bin: ordinary release graph enables __fault-points" -- \
+  ci/no-release-fault-points.sh .github/workflows/release.yml \
+  ci/fixtures/release-fault-points/default/Cargo.toml
+ci/must-reject.sh "ironflowx-bin: ordinary release graph enables __fault-points" -- \
+  ci/no-release-fault-points.sh .github/workflows/release.yml \
+  ci/fixtures/release-fault-points/opt-in/Cargo.toml
 # The allowed route passes, and was checked: a skipped crate would pass too.
 forwarded=$(ci/no-fault-points.sh ci/fixtures/fault-points-forwarded)
 grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$forwarded" || {

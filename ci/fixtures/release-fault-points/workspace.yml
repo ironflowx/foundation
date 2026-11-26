@@ -1,0 +1,7 @@
+name: release
+on: workflow_dispatch
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo build --release --workspace

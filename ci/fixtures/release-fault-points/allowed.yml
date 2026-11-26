@@ -1,0 +1,15 @@
+name: release
+on: workflow_dispatch
+jobs:
+  archive:
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-musl]
+    runs-on: ubuntu-latest
+    steps:
+      - run: >-
+          cargo build --release --locked --package ironflowx-bin
+          --target "${{ matrix.target }}"
+      - run: |
+          cargo +stable build --release --locked \
+            --package=ironflowx-bin

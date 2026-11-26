@@ -1,5 +1,7 @@
 //! `ironflowx`: the settings of `serve`, its log and its exit code, and the CLI.
 
+#[cfg(feature = "__fault-points")]
+mod crash_hook;
 mod settings;
 
 use std::io;
@@ -11,6 +13,9 @@ use ironflowx_proto::OpError;
 use tracing_subscriber::{Layer as _, filter, prelude::*};
 
 fn main() -> ExitCode {
+    #[cfg(feature = "__fault-points")]
+    crash_hook::install();
+
     let root = Command::new("ironflowx")
         .subcommand(settings::command())
         .subcommand(

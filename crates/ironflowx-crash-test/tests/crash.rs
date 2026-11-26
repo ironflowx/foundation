@@ -1027,6 +1027,11 @@ const _: fn(FaultPoint) = |p| match p {
     | FaultPoint::AfterRevokeCommit
     | FaultPoint::BeforeExpiryCommit
     | FaultPoint::AfterExpiryCommit => {}
+    // The host's server crash test covers recovery and key publication.
+    FaultPoint::BeforeRecoveredCommit
+    | FaultPoint::AfterRecoveredCommit
+    | FaultPoint::BeforeAdminKeyLink
+    | FaultPoint::AfterAdminKeyLink => {}
 };
 
 /// splitmix64: the seed is all a run depends on, so a run replays.
