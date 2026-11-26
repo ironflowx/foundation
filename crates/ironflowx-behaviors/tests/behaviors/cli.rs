@@ -15,13 +15,8 @@ use prost_reflect::DescriptorPool;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+use super::output::{Audit, Delivery};
 use super::serve::{Served, command, serve_command};
-
-/// The scenarios whose work has landed: every one must run and pass.
-const REGISTERED: &[&str] = &[
-    "CLI-001", "CLI-002", "CLI-003", "CLI-004", "CLI-006", "CLI-007", "CLI-008", "CLI-009",
-    "CLI-010", "CLI-012", "CLI-013", "CLI-014", "CLI-015", "CLI-016",
-];
 
 /// How many scenarios run, an outline once per example, so no example goes unnoticed.
 pub const RUNS: usize = 22;
@@ -36,6 +31,7 @@ pub struct Cli {
     ran: Option<Output>,
     /// A key with the `read` scope alone.
     read: Option<String>,
+    audit: Audit,
 }
 
 /// The default: where a CLI that looked for an admin key would look.
@@ -57,6 +53,7 @@ impl Cli {
             variables: BTreeMap::new(),
             ran: None,
             read: None,
+            audit: Audit::default(),
         }
     }
 
@@ -101,7 +98,15 @@ impl Cli {
             .unwrap();
         // One that reads none of it can end first.
         let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
-        self.ran = Some(child.wait_with_output().unwrap());
+        let out = child.wait_with_output().unwrap();
+        let mut words = args.split_whitespace();
+        let delivery = match (words.next(), words.next()) {
+            (Some("keys"), Some("create")) => Some(Delivery::Create),
+            (Some("seed"), Some("generate")) => Some(Delivery::SeedOrRecovery),
+            _ => None,
+        };
+        self.audit.output(&out, delivery);
+        self.ran = Some(out);
     }
 
     /// A key with these scopes, made from the CLI with the bootstrap key.
@@ -119,7 +124,7 @@ impl Cli {
 
     /// The answer of a command that must succeed.
     fn succeeded(&self) -> Value {
-        assert_eq!(self.ran().status.code(), Some(0), "{:?}", self.ran());
+        assert_eq!(self.ran().status.code(), Some(0));
         assert_eq!(self.stderr(), "");
         self.answer()
     }
@@ -127,16 +132,22 @@ impl Cli {
     /// Stdout, as the one JSON line it must be.
     fn answer(&self) -> Value {
         let line = self.stdout().strip_suffix('\n').expect("a line");
-        assert!(!line.contains('\n'), "{line}");
+        assert!(!line.contains('\n'), "expected one line of JSON");
         serde_json::from_str(line).expect("one JSON value")
     }
 
     /// The envelope of the command that failed, with nothing on stdout.
     fn envelope(&self) -> Value {
-        assert_eq!(self.stdout(), "");
+        assert!(self.stdout().is_empty(), "expected no stdout");
         let line = self.stderr().strip_suffix('\n').expect("a line");
         assert!(!line.contains('\n'), "{line}");
         serde_json::from_str(line).expect("one JSON value")
+    }
+
+    fn finish(&mut self) {
+        if let Some(server) = self.served.take() {
+            server.stop(&self.dir.path().join(DATA_DIR), &mut self.audit);
+        }
     }
 }
 
@@ -144,6 +155,7 @@ impl Cli {
 fn served(w: &mut Cli) {
     let served = Served::start(&w.dir.path().join(DATA_DIR), "127.0.0.1:0");
     served.ready();
+    w.audit.file_key(&w.key());
     w.served = Some(served);
 }
 
@@ -342,7 +354,7 @@ fn exits(w: &mut Cli, code: i32) {
 
 #[then("stdout is empty")]
 fn no_stdout(w: &mut Cli) {
-    assert_eq!(w.stdout(), "");
+    assert!(w.stdout().is_empty(), "expected no stdout");
 }
 
 #[then(
@@ -548,6 +560,7 @@ fn every_example(_: &mut Cli) {
             assert_eq!(w.ran().status.code(), Some(5), "{path}");
             assert_eq!(w.envelope()["code"], "not_found", "{path}");
             if path == "keys revoke" {
+                w.finish();
                 continue;
             }
             // The advertised ID is absent. Read a real event to exercise the answer schema.
@@ -574,6 +587,7 @@ fn every_example(_: &mut Cli) {
             }
             _ => {}
         }
+        w.finish();
     }
 }
 
@@ -658,7 +672,8 @@ fn printed_seed(w: &mut Cli) {
 async fn use_seed(w: &mut Cli) {
     let seed = w.succeeded();
     let key = seed["key"].as_str().unwrap();
-    let mut cmd = serve_command(&w.dir.path().join("seeded"), "127.0.0.1:0");
+    let dir = w.dir.path().join("seeded");
+    let mut cmd = serve_command(&dir, "127.0.0.1:0");
     let served = Served::start_command(cmd.env("IRONFLOWX_SEED", key));
     served.ready();
     let client = Client::new(&served.url()).unwrap();
@@ -666,22 +681,23 @@ async fn use_seed(w: &mut Cli) {
     let me = client.whoami(&cx, WhoamiRequest {}).await.unwrap();
     assert_eq!(me.key_id.to_string(), seed["key_id"]);
     assert!(me.scopes.contains(&Scope::Admin));
+    served.stop(&dir, &mut w.audit);
 }
 
 pub async fn run(parser: super::Unescaped) -> (bool, usize) {
     let writer = Cli::cucumber::<&str>()
         .with_parser(parser)
+        .after(|_, _, _, _, world| {
+            if let Some(world) = world {
+                world.finish();
+            }
+            Box::pin(async {})
+        })
         .fail_on_skipped()
-        .filter_run(
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../docs/behaviors/cli.feature"
-            ),
-            |_, _, scenario| {
-                let registered = |tag: &String| REGISTERED.contains(&tag.as_str());
-                scenario.tags.iter().any(registered)
-            },
-        )
+        .run(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/behaviors/cli.feature"
+        ))
         .await;
     let passed = writer.scenarios_stats().passed;
     (writer.execution_has_failed(), passed)

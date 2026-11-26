@@ -1,12 +1,9 @@
 //! `serve.feature` on the `ironflowx` binary, started by each scenario.
 
-#[allow(dead_code)]
-#[path = "../../../ironflowx-operations/tests/leak/mod.rs"]
-mod leak;
-
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::fs::File;
+use std::io::{BufRead as _, BufReader, Read as _, Seek as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -35,13 +32,7 @@ use rustix::process::{Pid, Signal, kill_process};
 use serde_json::Value;
 use tempfile::TempDir;
 
-/// The scenarios whose work has landed: every one must run and pass.
-const REGISTERED: &[&str] = &[
-    "HOST-001", "HOST-006", "HOST-016", "HOST-021", "HOST-022", "HOST-023", "HOST-024", "HOST-025",
-    "HOST-026", "HOST-027", "HOST-029", "HOST-002", "HOST-003", "HOST-004", "HOST-005", "HOST-009",
-    "HOST-010", "HOST-011", "HOST-012", "HOST-013", "HOST-014", "HOST-015", "HOST-017", "HOST-018",
-    "HOST-019", "HOST-030",
-];
+use super::output::{Audit, Delivery, leak};
 
 /// How many scenarios run, an outline once per example, so no example goes unnoticed.
 pub const RUNS: usize = 47;
@@ -85,6 +76,7 @@ pub fn command() -> Command {
 /// A started `ironflowx serve`, killed when dropped, and what it has logged.
 pub struct Served {
     child: Child,
+    stdout: File,
     log: Arc<Mutex<Vec<String>>>,
     /// Ends once the whole log is in `log`.
     reader: Option<JoinHandle<()>>,
@@ -98,11 +90,33 @@ impl Drop for Served {
 }
 
 impl Served {
-    /// Stops it; all it logged.
-    fn stop(mut self) -> String {
-        self.child.kill().unwrap();
+    pub fn scan(&self, data_dir: &Path, audit: &mut Audit) {
+        if let Ok(key) = std::fs::read_to_string(data_dir.join("admin.key")) {
+            audit.bootstrap_file(key.strip_suffix('\n').expect("admin.key ends in a newline"));
+        }
+        audit.directory(data_dir);
+    }
+
+    /// Scans the live engine, then stops it with SIGTERM and checks the entire output and disk.
+    pub fn stop(mut self, data_dir: &Path, audit: &mut Audit) -> String {
+        self.ready();
+        self.scan(data_dir, audit);
+        kill_process(Pid::from_child(&self.child), Signal::TERM).unwrap();
+        let status = until("stopped", || self.child.try_wait().unwrap());
+        assert_eq!(status.code(), Some(0));
+        self.finished(data_dir, audit)
+    }
+
+    fn finished(mut self, data_dir: &Path, audit: &Audit) -> String {
         self.reader.take().unwrap().join().unwrap();
-        self.log()
+        self.stdout.rewind().unwrap();
+        let mut stdout = Vec::new();
+        self.stdout.read_to_end(&mut stdout).unwrap();
+        assert!(stdout.is_empty(), "TEN-3: serve stdout");
+        let log = self.log();
+        audit.diagnostics(log.as_bytes(), "serve stderr");
+        audit.directory(data_dir);
+        log
     }
 
     pub fn start(data_dir: &Path, listen: &str) -> Self {
@@ -110,9 +124,10 @@ impl Served {
     }
 
     pub fn start_command(command: &mut Command) -> Self {
+        let stdout = tempfile::tempfile().unwrap();
         let mut child = command
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(stdout.try_clone().unwrap())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
@@ -120,12 +135,14 @@ impl Served {
         let log = Arc::<Mutex<Vec<String>>>::default();
         let kept = log.clone();
         let reader = std::thread::spawn(move || {
-            for line in stderr.lines().map_while(Result::ok) {
+            for line in stderr.lines() {
+                let line = line.expect("serve stderr is UTF-8");
                 kept.lock().unwrap().push(line);
             }
         });
         Self {
             child,
+            stdout,
             log,
             reader: Some(reader),
         }
@@ -219,17 +236,12 @@ pub struct Serve {
     event: Option<Event>,
     acknowledged: Vec<ironflowx_core::EventId>,
     signalled: Option<Instant>,
+    audit: Audit,
 }
 
 impl fmt::Debug for Serve {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Serve")
-            .field("log", &self.served.as_ref().map(Served::log))
-            .field("answer", &self.answer)
-            .field("created", &self.created)
-            .field("emitted", &self.emitted)
-            .field("batch", &self.batch)
-            .finish_non_exhaustive()
+        f.debug_struct("Serve").finish_non_exhaustive()
     }
 }
 
@@ -297,6 +309,7 @@ impl Serve {
             event: None,
             acknowledged: Vec::new(),
             signalled: None,
+            audit: Audit::default(),
         }
     }
 
@@ -311,7 +324,9 @@ impl Serve {
 
     fn refused(&mut self, cmd: &mut Command) {
         let out = cmd.output().unwrap();
-        assert_eq!(out.stdout, b"");
+        assert!(!out.status.success(), "serve must refuse");
+        self.audit.output(&out, None);
+        self.audit.directory(&self.data_dir());
         self.refused_start = Some(out);
     }
 
@@ -341,7 +356,13 @@ impl Serve {
         let text = std::fs::read_to_string(self.data_dir().join("admin.key")).unwrap();
         let key = text.strip_suffix('\n').expect("a newline").to_owned();
         assert_eq!(key.len(), 84, "one whole key");
+        self.audit.file_key(&key);
         self.key = Some(key);
+    }
+
+    fn stop(&mut self) -> String {
+        let data_dir = self.data_dir();
+        self.served.take().unwrap().stop(&data_dir, &mut self.audit)
     }
 
     fn config(&self) -> ClientConfig {
@@ -375,7 +396,7 @@ impl Serve {
     }
 
     /// Creates a key with the scopes `names` quotes, with the admin key; its text.
-    async fn create(&self, names: &str) -> String {
+    async fn create(&mut self, names: &str) -> String {
         let client = Client::new(&self.served().url()).unwrap();
         let cx = Call::with_key(Secret::new(self.key().to_owned()));
         let scopes = names.split('"').skip(1).step_by(2);
@@ -384,6 +405,7 @@ impl Serve {
             ..Default::default()
         };
         let created = client.create_key(&cx, request).await.unwrap();
+        self.audit.remember(created.key.expose());
         created.key.expose().to_owned()
     }
 
@@ -392,7 +414,9 @@ impl Serve {
         let emitted = self.emitted.as_ref().and_then(|a| a.as_ref().err());
         let batch = self.batch.as_ref().and_then(|a| a.as_ref().err());
         let created = self.created.as_ref().and_then(|a| a.as_ref().err());
-        emitted.or(batch).or(created).expect("a refused call")
+        let error = emitted.or(batch).or(created).expect("a refused call");
+        self.audit.connect_error(error);
+        error
     }
 
     async fn whoami<T>(&mut self, client: IdentityServiceClient<T>, options: CallOptions)
@@ -402,6 +426,9 @@ impl Serve {
     {
         let request = WhoamiRequest::default();
         let answer = client.whoami_with_options(request, options).await;
+        if let Err(error) = &answer {
+            self.audit.connect_error(error);
+        }
         self.answer = Some(answer.map(connectrpc::UnaryResponse::into_owned));
     }
 
@@ -457,6 +484,7 @@ fn public_endpoint(w: &mut Serve, path: String) {
 #[then(regex = r#"^"ironflowx describe" lists neither$"#)]
 fn no_health_operations(_: &mut Serve) {
     let out = command().arg("describe").output().unwrap();
+    Audit::default().output(&out, None);
     assert_eq!(out.status.code(), Some(0));
     assert!(out.stderr.is_empty());
     let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -499,7 +527,7 @@ fn log_names(w: &mut Serve, name: String) {
     let path = serde_json::to_string(&path.to_string_lossy()).unwrap();
     until("logged", || w.served().log().contains(&path).then_some(()));
     let log = w.served().log();
-    assert_eq!(leak::leak(&log, [w.key()]), None, "{log}");
+    w.audit.check(log.as_bytes(), "bootstrap log");
 }
 
 #[then(regex = r#"^with the key in "admin.key", whoami names scopes "read", "write" and "admin"$"#)]
@@ -514,8 +542,7 @@ async fn key_scopes(w: &mut Serve) {
     assert_eq!(me.scopes, all.into());
     assert_eq!(me.expires_at, None);
     // The log, once it is whole.
-    let log = w.served.take().expect("a served engine").stop();
-    assert_eq!(leak::leak(&log, [w.key()]), None, "{log}");
+    w.stop();
 }
 
 #[then(regex = r#"^the log has one "listening" line whose URL answers GET "/health" with 200$"#)]
@@ -843,14 +870,23 @@ async fn only_the_bootstrap_key(w: &mut Serve) {
 
 pub fn serve_command(data_dir: &Path, listen: &str) -> Command {
     let mut cmd = command();
-    cmd.args(["serve", "--listen", listen, "--data-dir"])
-        .arg(data_dir);
+    cmd.args([
+        "serve",
+        "--log-level",
+        "trace",
+        "--listen",
+        listen,
+        "--data-dir",
+    ])
+    .arg(data_dir);
     cmd
 }
 
-fn new_seed() -> String {
+fn new_seed(audit: &mut Audit) -> String {
     let out = command().args(["seed", "generate"]).output().unwrap();
-    assert_eq!((out.status.code(), out.stderr), (Some(0), vec![]));
+    assert_eq!(out.status.code(), Some(0));
+    audit.output(&out, Some(Delivery::SeedOrRecovery));
+    assert!(out.stderr.is_empty(), "seed generation wrote stderr");
     let json: Value = serde_json::from_slice(&out.stdout).unwrap();
     json["key"].as_str().unwrap().to_owned()
 }
@@ -858,7 +894,7 @@ fn new_seed() -> String {
 #[given("the engine was served once and stopped")]
 fn was_served(w: &mut Serve) {
     served_with_key(w);
-    w.served.take().unwrap().stop();
+    w.stop();
 }
 
 #[given(r#""admin.key" was deleted"#)]
@@ -922,7 +958,10 @@ fn recover(w: &mut Serve, stdout: bool) {
     if stdout {
         cmd.arg("--stdout");
     }
-    w.recovery = Some(cmd.output().unwrap());
+    let out = cmd.output().unwrap();
+    w.audit
+        .output(&out, stdout.then_some(Delivery::SeedOrRecovery));
+    w.recovery = Some(out);
 }
 
 #[then(r#""admin.key", with mode "0400", holds a key that authenticates with scopes "read", "write" and "admin""#)]
@@ -977,13 +1016,7 @@ async fn recovered_origin(w: &mut Serve) {
     );
     assert_eq!(keys[1].1, KeyOrigin::Minted);
     assert_eq!(page.next, None);
-    let log = w.served.take().unwrap().stop();
-    assert_eq!(leak::leak(&log, [w.key()]), None);
-    for file in leak::files(&w.data_dir()) {
-        if file.0 != Path::new("admin.key") {
-            assert_eq!(leak::leak_in(&file, [w.key()]), None);
-        }
-    }
+    w.stop();
 }
 
 #[then("it exits with code 2 and an envelope whose hint names --stdout")]
@@ -1012,7 +1045,7 @@ fn unchanged_key(w: &mut Serve) {
 #[given(r#"a seed key made with "ironflowx seed generate""#)]
 #[given("a seed key A in a file named by --seed-file")]
 fn generated_seed(w: &mut Serve) {
-    w.seed = Some(new_seed());
+    w.seed = Some(new_seed(&mut w.audit));
 }
 
 #[when(regex = "^the engine is served with the seed given (.*)$")]
@@ -1035,7 +1068,7 @@ fn serve_seed(w: &mut Serve, source: String) {
 
 #[given("a seed key B as the value of IRONFLOWX_SEED")]
 fn another_seed(w: &mut Serve) {
-    w.client_key = Some(new_seed());
+    w.client_key = Some(new_seed(&mut w.audit));
 }
 
 #[given(r#""not-a-key-but-secret" as the value of IRONFLOWX_SEED"#)]
@@ -1093,7 +1126,10 @@ fn seed_format(w: &mut Serve) {
 fn secret_is_absent(w: &mut Serve, secret: String) {
     let out = w.refused_start.as_ref().unwrap();
     for bytes in [&out.stderr, &out.stdout] {
-        assert!(!std::str::from_utf8(bytes).unwrap().contains(&secret));
+        assert!(
+            !std::str::from_utf8(bytes).unwrap().contains(&secret),
+            "TEN-3: malformed seed in diagnostic"
+        );
     }
 }
 
@@ -1182,7 +1218,7 @@ fn unknown_setting(w: &mut Serve) {
 #[then("the log warns once that IRONFLOWX_LISEN is not a setting")]
 fn setting_warning(w: &mut Serve) {
     w.served().ready();
-    let log = w.served.take().unwrap().stop();
+    let log = w.stop();
     assert_eq!(log.matches("IRONFLOWX_LISEN is not a setting").count(), 1);
 }
 
@@ -1252,6 +1288,7 @@ async fn revoked_seed(w: &mut Serve) {
         )
         .await
         .unwrap();
+    w.audit.remember(k.key.expose());
     let k = Call::with_key(k.key);
     client
         .revoke_key(
@@ -1262,7 +1299,7 @@ async fn revoked_seed(w: &mut Serve) {
         )
         .await
         .unwrap();
-    w.served.take().unwrap().stop();
+    w.stop();
 }
 
 #[when("the engine is served with seed key A")]
@@ -1297,17 +1334,19 @@ async fn old_seed_refused(w: &mut Serve) {
 pub async fn run(parser: super::Unescaped) -> (bool, usize) {
     let writer = Serve::cucumber::<&str>()
         .with_parser(parser)
+        .after(|_, _, _, _, world| {
+            if let Some(world) = world
+                && world.served.is_some()
+            {
+                world.stop();
+            }
+            Box::pin(async {})
+        })
         .fail_on_skipped()
-        .filter_run(
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../docs/behaviors/serve.feature"
-            ),
-            |_, _, scenario| {
-                let registered = |tag: &String| REGISTERED.contains(&tag.as_str());
-                scenario.tags.iter().any(registered)
-            },
-        )
+        .run(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/behaviors/serve.feature"
+        ))
         .await;
     let passed = writer.scenarios_stats().passed;
     (writer.execution_has_failed(), passed)
@@ -1338,6 +1377,7 @@ async fn acknowledged_events(w: &mut Serve) {
 
 #[when("serve receives SIGTERM")]
 fn signal(w: &mut Serve) {
+    w.served.as_ref().unwrap().scan(&w.data_dir(), &mut w.audit);
     w.signalled = Some(Instant::now());
     kill_process(Pid::from_child(&w.served().child), Signal::TERM).unwrap();
 }
@@ -1353,6 +1393,7 @@ async fn stopped(w: &mut Serve) {
         );
         if let Some(status) = served.child.try_wait().unwrap() {
             assert_eq!(status.code(), Some(0));
+            served.finished(&w.data_dir(), &w.audit);
             return;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;

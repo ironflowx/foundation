@@ -1,10 +1,11 @@
 //! What the steps of `events.feature` and `tenancy.feature` call: an engine in the test's process,
 //! or the `ironflowx` binary through the proto client.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use cucumber::gherkin::Scenario;
-use ironflowx_operations::Engine;
+use ironflowx_operations::{Engine, key_id};
 use ironflowx_proto::{
     Call, Client, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
     EmitResponse, Environment, Event, EventPage, GetEventRequest, KeyPage, ListEnvironmentsRequest,
@@ -12,6 +13,7 @@ use ironflowx_proto::{
     WhoamiRequest,
 };
 
+use super::output::Audit;
 use super::serve::Served;
 
 /// How many scenarios run at once against the binary, each with one of its own to start.
@@ -24,8 +26,28 @@ pub fn runs_remotely(scenario: &Scenario) -> bool {
 
 pub enum Adapter {
     Engine(Engine),
-    // The binary is killed when it is dropped.
-    Binary(Box<Client>, #[allow(dead_code)] Served),
+    Binary(Box<Remote>),
+}
+
+pub struct Remote {
+    client: Client,
+    served: Served,
+    data_dir: PathBuf,
+    audit: Mutex<Audit>,
+}
+
+impl Remote {
+    fn presented(&self, call: &Call) {
+        if let Some(key) = call.key()
+            && key_id(key).is_some()
+        {
+            self.audit.lock().unwrap().remember(key.expose());
+        }
+    }
+
+    fn diagnostic(&self, error: &OpError) {
+        self.audit.lock().unwrap().op_error(error);
+    }
 }
 
 impl Adapter {
@@ -34,8 +56,9 @@ impl Adapter {
         let key_file = data_dir.join("admin.key");
         let data_dir = data_dir.to_owned();
         // Off the thread every scenario runs on.
+        let dir = data_dir.clone();
         let start = tokio::task::spawn_blocking(move || {
-            let served = Served::start(&data_dir, "127.0.0.1:0");
+            let served = Served::start(&dir, "127.0.0.1:0");
             served.ready();
             served
         });
@@ -43,13 +66,34 @@ impl Adapter {
         let key = std::fs::read_to_string(key_file).unwrap();
         let key = key.strip_suffix('\n').expect("a newline").to_owned();
         let client = Client::new(&served.url()).unwrap();
-        (Self::Binary(Box::new(client), served), key)
+        let mut audit = Audit::default();
+        audit.file_key(&key);
+        let remote = Remote {
+            client,
+            served,
+            data_dir,
+            audit: Mutex::new(audit),
+        };
+        (Self::Binary(Box::new(remote)), key)
     }
 
     /// `close`, not a drop, of an engine: dropping joins the writer thread on the runtime.
     pub async fn close(self) {
-        if let Self::Engine(engine) = self {
-            engine.close().await;
+        match self {
+            Self::Engine(engine) => engine.close().await,
+            Self::Binary(remote) => {
+                tokio::task::spawn_blocking(move || {
+                    let Remote {
+                        served,
+                        data_dir,
+                        audit,
+                        ..
+                    } = *remote;
+                    served.stop(&data_dir, &mut audit.into_inner().unwrap());
+                })
+                .await
+                .unwrap();
+            }
         }
     }
 }
@@ -60,9 +104,27 @@ macro_rules! either {
             $(async fn $name(&self, cx: &Call, req: $request) -> Result<$answer, OpError> {
                 match self {
                     Self::Engine(engine) => engine.$name(cx, req).await,
-                    Self::Binary(client, _) => client.$name(cx, req).await,
+                    Self::Binary(remote) => {
+                        remote.presented(cx);
+                        remote.client.$name(cx, req).await.inspect_err(|error| remote.diagnostic(error))
+                    }
                 }
             })*
+
+            async fn create_key(&self, cx: &Call, req: CreateKeyRequest) -> Result<CreatedKey, OpError> {
+                match self {
+                    Self::Engine(engine) => engine.create_key(cx, req).await,
+                    Self::Binary(remote) => {
+                        remote.presented(cx);
+                        let answer = remote.client.create_key(cx, req).await;
+                        match &answer {
+                            Ok(created) => remote.audit.lock().unwrap().remember(created.key.expose()),
+                            Err(error) => remote.diagnostic(error),
+                        }
+                        answer
+                    }
+                }
+            }
         }
     };
 }
@@ -74,7 +136,6 @@ either! {
     list_events(ListEventsRequest) -> EventPage;
     whoami(WhoamiRequest) -> Whoami;
     list_environments(ListEnvironmentsRequest) -> Vec<Environment>;
-    create_key(CreateKeyRequest) -> CreatedKey;
     list_keys(ListKeysRequest) -> KeyPage;
     revoke_key(RevokeKeyRequest) -> ();
 }

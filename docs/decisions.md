@@ -88,4 +88,5 @@ From 0.2 on, a milestone's PRD issue assigns its decision numbers up front and e
 | D78 | 0.3 | Every multiword field sets a snake_case `json_name`; the generator refuses one without it | One spelling on the wire, in `--json`, `describe` and CLI output |
 | D79 | 0.3 | The CLI refuses an unknown field in `--json`, at any depth; the door ignores it | A mistyped `idempotency_key` would store a second event on a retry; an older engine still accepts a newer client |
 | D80 | 0.3 | The host's `Operations` adapter logs each call with the presented key ID when well formed; the door logs refusals before `Operations` without a key ID | The door has no credentials dependency |
+| D81 | 0.3 | Linux release archives use static musl binaries | The binaries run on clean Linux systems of the target architecture, regardless of their installed libc |
 | D82 | 0.3 | No embedded skill: an agent learns the operations from `describe`. Withdraws D66 and the skill half of D52 | Embedding operational instructions in the foundation was a planning mistake ([#168](https://github.com/ironflowx/foundation/issues/168)). No release shipped one |

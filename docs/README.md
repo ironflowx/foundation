@@ -4,9 +4,9 @@ The system as it is now. Each PR that changes it updates these files; milestone 
 
 | File | Read it for |
 |---|---|
-| [`architecture.md`](architecture.md) | C1, C2, C3, the flows, modules, seams, interfaces, event rules, errors, storage |
+| [`architecture.md`](architecture.md) | C1, C2, C3, the flows, modules, seams, interfaces, event rules, errors, storage, wire, host and CLI |
 | [`decisions.md`](decisions.md) | Every decision (D1, D2, …), numbered across milestones |
-| [`invariants.md`](invariants.md) | The properties the system proves, and how; the crash test |
+| [`invariants.md`](invariants.md) | Ledger, tenancy and serving properties and their proofs, including the crash tests |
 | [`behaviors/`](behaviors/README.md) | The executable scenarios, how they run, what is out of scope |
 | [`agents/`](agents/) | How agents use the issue tracker, triage labels and these docs |
 
