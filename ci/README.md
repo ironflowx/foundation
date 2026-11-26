@@ -27,6 +27,14 @@ skips what is already done. Rehearse it first with
 | `soak` | The crash test's longer soak before publishing: `inputs.kills` seeded kills (10000 by default) on Linux and macOS. Runs only when started by hand, with every other job, and is not required | `gh workflow run ci --ref <branch> -f kills=10000`; on your machine, `env -u CRASH_SEED CRASH_KILLS=10000 cargo test -p ironflowx-crash-test --locked --test crash seeded_random_kills` | Replay the printed `CRASH_SEED=<seed> CRASH_KILLS=1` and fix the ledger, the open or the key change it fails in |
 | `lint-ci` | actionlint and shellcheck over the workflow, `ci/*.sh` and `.githooks/*`; the `main` ruleset requires exactly the jobs of `ci.yml` but `soak` (`ci/required-checks.sh`, which reads the live ruleset) | `actionlint && shellcheck -x ci/*.sh .githooks/* && ci/required-checks.sh` | Fix the script; for a job, add it to the ruleset's required checks, or remove it there |
 
+The Linux and macOS `test` jobs also run `ci/server-crash.sh`. The binary is built with
+`__fault-points` in `target/server-crash` (under `CARGO_TARGET_DIR` if set), then used for
+the [server crash matrix](../docs/invariants.md#server-crash-test). Replay the printed
+`SERVER_CRASH_SEED=<seed> ci/server-crash.sh seeded_random_kill`. The `purity` job uses
+`ci/no-release-fault-points.sh` to check `release.yml` and the build graph of
+`ironflowx-bin` with its ordinary features on all targets, with fixtures for the explicit feature, all features,
+a workspace build and an enabled default or opt-in feature. Select only `ironflowx-bin` for an archive build.
+
 The `test` job also builds and tests the facade in three separate Cargo invocations, with its
 default features, with `client`, and with `client-tls`. Each asserts exactly which facade features
 are on. Both client builds compile the `whoami` example and check the schemes the client accepts.

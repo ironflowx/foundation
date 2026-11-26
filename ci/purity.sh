@@ -25,6 +25,54 @@ ci/no-engine-deps.sh ci/fixtures/engine-dep/allowed/Cargo.toml
 # A build-dependency is outside the host check's normal dependency boundary.
 ci/no-host-engine-deps.sh ci/fixtures/engine-dep/at-build/Cargo.toml
 ci/no-fault-points.sh crates
+ci/no-release-fault-points.sh
+ci/no-release-fault-points.sh ci/fixtures/release-fault-points/allowed.yml
+ci/must-reject.sh "release workflow names __fault-points" \
+  "release workflow enables --all-features" -- \
+  ci/no-release-fault-points.sh ci/fixtures/release-fault-points/release.yml
+ci/must-reject.sh "escaped_feature: release workflow names __fault-points" \
+  "continued_feature: release workflow names __fault-points" -- \
+  ci/no-release-fault-points.sh ci/fixtures/release-fault-points/escaped-feature.yml
+ci/must-reject.sh "cargo_global: release Cargo build must select only ironflowx-bin" \
+  "comment_scope: release Cargo build must select only ironflowx-bin" \
+  "cross_build: release Cargo build must select only ironflowx-bin" \
+  "zigbuild: release Cargo build must select only ironflowx-bin" \
+  "locked_global: release Cargo build must select only ironflowx-bin" \
+  "implicit_run: release Cargo build must select only ironflowx-bin" \
+  "subshell_group: release Cargo build must select only ironflowx-bin" \
+  "command_subst: release Cargo build must select only ironflowx-bin" \
+  "test_no_run: release Cargo build must select only ironflowx-bin" \
+  "test_integration: release Cargo build must select only ironflowx-bin" \
+  "time_flag: release Cargo build must select only ironflowx-bin" \
+  "leading_redir: release Cargo build must select only ironflowx-bin" \
+  "devnull_redir: release Cargo build must select only ironflowx-bin" \
+  "command_double_dash: release Cargo build must select only ironflowx-bin" \
+  "time_o_flag: release Cargo build must select only ironflowx-bin" \
+  "heredoc_bash: release Cargo build must select only ironflowx-bin" \
+  "arith_shift: release Cargo build must select only ironflowx-bin" \
+  "proc_subst: release Cargo build must select only ironflowx-bin" \
+  "brace_fd: release Cargo build must select only ironflowx-bin" \
+  "exec_combined: release Cargo build must select only ironflowx-bin" \
+  "dollar_heredoc: release Cargo build must select only ironflowx-bin" \
+  "subshell_printf: release Cargo build must select only ironflowx-bin" \
+  "brace_script: release Cargo build must select only ironflowx-bin" \
+  "cargo_alias: release Cargo build must select only ironflowx-bin" \
+  "case_script: release Cargo build must select only ironflowx-bin" \
+  "nested_if_script: release Cargo build must select only ironflowx-bin" \
+  "then_for_script: release Cargo build must select only ironflowx-bin" \
+  "alias_override: release Cargo build must select only ironflowx-bin" \
+  "job_env_alias: release Cargo build must select only ironflowx-bin" \
+  "shorthand_b: release Cargo build must select only ironflowx-bin" \
+  "pkg_zig: release Cargo build must select only ironflowx-bin" \
+  "batched_env_alias: release Cargo build must select only ironflowx-bin" \
+  "inline_alias_config: release Cargo build must select only ironflowx-bin" -- \
+  ci/no-release-fault-points.sh ci/fixtures/release-fault-points/workspace.yml
+ci/must-reject.sh "ironflowx-bin: ordinary release graph enables __fault-points" -- \
+  ci/no-release-fault-points.sh .github/workflows/release.yml \
+  ci/fixtures/release-fault-points/default/Cargo.toml
+ci/must-reject.sh "ironflowx-bin: ordinary release graph enables __fault-points" -- \
+  ci/no-release-fault-points.sh .github/workflows/release.yml \
+  ci/fixtures/release-fault-points/opt-in/Cargo.toml
 # The allowed route passes, and was checked: a skipped crate would pass too.
 forwarded=$(ci/no-fault-points.sh ci/fixtures/fault-points-forwarded)
 grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$forwarded" || {

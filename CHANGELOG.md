@@ -4,6 +4,8 @@ Each release lists what it adds and changes. All published crates share one vers
 
 ## Unreleased
 
+- **Server crash tests** ([#154](https://github.com/ironflowx/foundation/issues/154)). Linux and macOS exercise the real host's restart after SIGKILL under load, during drain, and around bootstrap and recovery key publication. The release workflow check rejects builds with the private fault hooks.
+
 - **Serve shutdown** ([#153](https://github.com/ironflowx/foundation/issues/153)): SIGINT or SIGTERM stops admitting calls and drains for up to 10 seconds before closing the engine. A signal during open lets it finish and publish a minted key. A second signal exits 1 immediately. A ledger fault before close exits 8 even without traffic. A control-plane failure still allows serving. The dev and release binaries abort on panic (D63, D72).
 
 - **Docs** ([#134](https://github.com/ironflowx/foundation/issues/134)): corrects 0.2.0's #97 entry and `Engine::open`'s page. A bootstrapping open that fails before its ledger is in place tries to undo itself; if the undo fails, a bootstrap it did not delete stays unmarked, for a later open to finish. If an open's mark commits but it does not return, no later open reports its lost secret. No behavior change.

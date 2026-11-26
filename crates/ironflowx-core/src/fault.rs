@@ -15,6 +15,8 @@ pub enum FaultPoint {
     AfterFsync,
     /// The submitter is answered and the record not yet folded into the read store.
     AfterAck,
+    /// A read observed a committed head beyond its applied position. An observation only.
+    ReadWaitingForFold,
     /// Inside the writer's read store transaction for one record: its rows written, the
     /// applied position not yet moved, nothing committed.
     MidFold,
@@ -61,6 +63,14 @@ pub enum FaultPoint {
     BeforeExpiryCommit,
     /// The recorded expiry is durable and its refusal not yet answered.
     AfterExpiryCommit,
+    /// Inside `insert_recovered`'s transaction, its row written.
+    BeforeRecoveredCommit,
+    /// The recovered key is durable and the transaction has not returned to the caller.
+    AfterRecoveredCommit,
+    /// The temporary admin key file is synced and the final name has not been linked.
+    BeforeAdminKeyLink,
+    /// The final name is linked, before the temporary name is removed or the directory synced.
+    AfterAdminKeyLink,
 }
 
 impl FaultPoint {
@@ -70,6 +80,7 @@ impl FaultPoint {
             Self::BeforeAppend => "before-append",
             Self::AfterFsync => "after-fsync",
             Self::AfterAck => "after-ack",
+            Self::ReadWaitingForFold => "read-waiting-for-fold",
             Self::MidFold => "mid-fold",
             Self::DuringOpen => "during-open",
             Self::BeforeSchemaCommit => "before-schema-commit",
@@ -92,6 +103,10 @@ impl FaultPoint {
             Self::AfterRevokeCommit => "after-revoke-commit",
             Self::BeforeExpiryCommit => "before-expiry-commit",
             Self::AfterExpiryCommit => "after-expiry-commit",
+            Self::BeforeRecoveredCommit => "before-recovered-commit",
+            Self::AfterRecoveredCommit => "after-recovered-commit",
+            Self::BeforeAdminKeyLink => "before-admin-key-link",
+            Self::AfterAdminKeyLink => "after-admin-key-link",
         }
     }
 }

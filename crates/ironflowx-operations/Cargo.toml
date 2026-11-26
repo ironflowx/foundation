@@ -16,7 +16,11 @@ authors.workspace = true
 # Internal and unstable, not part of the API: calls the crash test's hook in ironflowx-core at each
 # named fault point (D23). ci/no-fault-points.sh fails if a published build can enable it any
 # other way.
-__fault-points = ["ironflowx-core/__fault-points"]
+__fault-points = [
+  "ironflowx-cell/__fault-points",
+  "ironflowx-core/__fault-points",
+  "ironflowx-store/__fault-points",
+]
 
 [dependencies]
 ironflowx-authz.workspace = true

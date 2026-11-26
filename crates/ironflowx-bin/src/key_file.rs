@@ -37,7 +37,11 @@ pub fn write(data_dir: &Path, key: &Secret) -> io::Result<()> {
     file.write_all(b"\n")?;
     file.sync_all()?;
     // Not a rename, which would replace an `admin.key`.
+    #[cfg(feature = "__fault-points")]
+    ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeAdminKeyLink);
     std::fs::hard_link(temporary.path(), path(data_dir))?;
+    #[cfg(feature = "__fault-points")]
+    ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterAdminKeyLink);
     close_temporary(temporary)?;
     File::open(data_dir)?.sync_all()
 }

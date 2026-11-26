@@ -525,7 +525,11 @@ impl ControlPlane {
                 return Ok(Err(RecoverError::NotReady));
             };
             insert_admin(&tx, key, &env, RECOVERED, Some(RECOVERED), now)?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::BeforeRecoveredCommit);
             tx.commit()?;
+            #[cfg(feature = "__fault-points")]
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterRecoveredCommit);
             Ok(Ok(()))
         })?
     }

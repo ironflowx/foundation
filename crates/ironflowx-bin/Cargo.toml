@@ -15,7 +15,11 @@ doc = false
 test = false
 
 [features]
-__fault-points = []
+__fault-points = ["ironflowx-core/__fault-points", "ironflowx-operations/__fault-points"]
+
+[[test]]
+name = "server_crash"
+required-features = ["__fault-points"]
 
 [[example]]
 name = "serve_lifecycle"
