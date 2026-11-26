@@ -154,7 +154,12 @@ impl Audit {
     }
 
     fn entry_leak(&self, path: &Path, bytes: &str, expected: Option<&str>) -> Option<&'static str> {
-        if self.leaked(path.as_os_str().as_encoded_bytes()).is_some() {
+        if leak::leak_in(
+            &(path.to_owned(), String::new()),
+            self.keys.iter().map(String::as_str),
+        )
+        .is_some()
+        {
             return Some("credential in path");
         }
         let name = path.to_str().unwrap_or_default();
@@ -217,6 +222,15 @@ pub fn fixtures() {
     );
     assert_eq!(
         file(&format!("admin.key.{}.tmp", &key[41..]), &expected),
+        Some("credential in path")
+    );
+
+    // The secret is 32 copies of 0xe1. The path holds the first half as characters.
+    let encoded = format!("{}4eE", "4eHh".repeat(10));
+    audit.remember(&format!("ixk_{id}_{encoded}"));
+    let displayed = "\u{e1}".repeat(16);
+    assert_eq!(
+        audit.entry_leak(Path::new(&displayed), "", None),
         Some("credential in path")
     );
 }

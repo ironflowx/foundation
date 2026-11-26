@@ -482,9 +482,10 @@ fn public_endpoint(w: &mut Serve, path: String) {
 }
 
 #[then(regex = r#"^"ironflowx describe" lists neither$"#)]
-fn no_health_operations(_: &mut Serve) {
+fn no_health_operations(w: &mut Serve) {
+    w.read_key();
     let out = command().arg("describe").output().unwrap();
-    Audit::default().output(&out, None);
+    w.audit.output(&out, None);
     assert_eq!(out.status.code(), Some(0));
     assert!(out.stderr.is_empty());
     let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -1325,6 +1326,7 @@ async fn old_seed_refused(w: &mut Serve) {
         .whoami(&cx, ironflowx_proto::WhoamiRequest {})
         .await
         .unwrap_err();
+    w.audit.op_error(&error);
     assert_eq!(
         (error.kind, error.message.as_str()),
         (ErrorKind::Unauthenticated, "invalid API key")
