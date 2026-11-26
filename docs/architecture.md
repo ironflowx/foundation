@@ -282,7 +282,7 @@ impl ControlPlane {
     fn environment(&self, env: &EnvRef) -> Result<EnvironmentRecord, StoreError>;
 }
 
-// ironflowx-cell (tokio)
+// ironflowx-cell (tokio). Re-exports Submission, Emit, Event, EventPage, ItemOutcome and Refusal, the event types its API names (D83)
 impl Ledger {
     // open, get_event, list_events and close panic outside a tokio runtime; open and close also on one that has shut down, and close drops the ledger then
     async fn open(dir: &Path, env: EnvRef, clock: impl Clock + Send + 'static) -> Result<Ledger, OpenError>;
@@ -305,7 +305,7 @@ fn new_env_ref() -> EnvRef;   // a fresh UUIDv7 ID and a 128-bit token from the 
 // ItemOutcome New(EventId) | Duplicate(EventId) | Refused(Refusal)   // Refused only inside a batch
 // SubmitError Refused(Refusal) | Unknown | Unavailable              // Refused: a single emit, or a whole batch
 // ReadError   Refused(Refusal) | Unavailable                        // a read-store failure fails the ledger
-// SubmitError, ReadError and Refusal are std errors; Display shows a refusal's message. No error has a source(): Display shows the inner error
+// SubmitError, ReadError and Refusal are std errors; Display shows a refusal's message. No error has a source(): Display shows the inner error (D84)
 
 // ironflowx-events: pure. `fresh` yields one event ID per new event, minted by the writer.
 fn decide<V: EventsView>(view: &V, sub: &Submission, now: SequencedTime,

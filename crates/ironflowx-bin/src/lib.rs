@@ -41,6 +41,8 @@ fn drain_deadline(start: Instant) -> Instant {
 }
 
 /// Why a host did not serve.
+/// Its `Display` shows the inner error, and it has no `source()`, so a reporter that walks the
+/// chain shows the cause once (D84).
 #[derive(Debug)]
 pub enum ServeError {
     /// The data directory holds an `admin.key` that no finished bootstrap of it wrote.

@@ -15,6 +15,8 @@ use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, SeedError, StoreE
 use crate::{Engine, Opened};
 
 /// Why an engine did not open.
+/// Its `Display` shows the inner error, and it has no `source()`, so a reporter that walks the
+/// chain shows the cause once (D84).
 #[derive(Debug)]
 pub enum EngineError {
     /// The seed is not in the key format. Its message names the format, never the seed.
@@ -37,7 +39,6 @@ pub enum EngineError {
     Io(std::io::Error),
 }
 
-/// Shows the inner error. No `source()`, so a reporter that walks the chain shows it once.
 impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

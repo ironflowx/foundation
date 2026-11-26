@@ -1567,7 +1567,8 @@ async fn the_ledger_gets_an_event_and_lists_pages_of_its_own() {
     let ledger = open(dir.path(), new_env_ref()).await;
     let a = emit(&ledger, named("a")).await.unwrap();
     emit(&ledger, named("b")).await.unwrap();
-    assert_eq!(ledger.get_event(&a.to_string()).await.unwrap().name, "a");
+    let got = ledger.get_event(&a.to_string()).await.unwrap();
+    assert_eq!((got.id, &*got.name), (a, "a"));
     let Err(ReadError::Refused(r)) = ledger.get_event("evt_unknown").await else {
         panic!("an unknown ID was found");
     };
@@ -1615,7 +1616,9 @@ async fn a_cursor_from_another_incarnation_is_refused() {
 
 #[tokio::test]
 async fn the_ledger_errors_are_rust_errors_that_say_what_failed() {
+    // D84: `Display` carries the inner text, so no error has a `source()`.
     fn shown(e: &impl std::error::Error) -> String {
+        assert!(e.source().is_none(), "{e} has a source()");
         e.to_string()
     }
     let dir = tempfile::tempdir().unwrap();

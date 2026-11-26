@@ -46,6 +46,8 @@ pub struct Committed {
 }
 
 /// A submission failed.
+/// Its `Display` shows a refusal's message, and it has no `source()`, so a reporter that walks the
+/// chain shows the cause once (D84).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmitError {
     /// A single emit, or a whole batch, was refused by a rule.
@@ -57,6 +59,8 @@ pub enum SubmitError {
 }
 
 /// A read failed.
+/// Its `Display` shows a refusal's message, and it has no `source()`, so a reporter that walks the
+/// chain shows the cause once (D84).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadError {
     /// A query refused the request: an unknown event, or a bad cursor.
@@ -67,7 +71,6 @@ pub enum ReadError {
 
 const UNAVAILABLE: &str = "the ledger is unavailable until it is reopened";
 
-/// Shows a refusal's message. No `source()`, so a reporter that walks the chain shows it once.
 impl fmt::Display for SubmitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -80,7 +83,6 @@ impl fmt::Display for SubmitError {
 
 impl std::error::Error for SubmitError {}
 
-/// Shows a refusal's message. No `source()`, so a reporter that walks the chain shows it once.
 impl fmt::Display for ReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -105,6 +107,8 @@ pub enum LedgerState {
 pub struct Fault;
 
 /// Why a directory did not open.
+/// Its `Display` shows the inner error, and it has no `source()`, so a reporter that walks the
+/// chain shows the cause once (D84).
 #[derive(Debug)]
 pub enum OpenError {
     /// Another process or `Ledger` holds the directory.
@@ -121,7 +125,6 @@ pub enum OpenError {
     Io(std::io::Error),
 }
 
-/// Shows the inner I/O error. No `source()`, so a reporter that walks the chain shows it once.
 impl fmt::Display for OpenError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -345,8 +348,9 @@ impl Ledger {
     ///
     /// # Errors
     ///
-    /// `Refused` with `Invalid` for a cursor this incarnation did not give; `Unavailable` if
-    /// the ledger failed.
+    /// `Refused` with `Invalid` for a cursor that does not decode or names another incarnation;
+    /// a well-formed cursor of this incarnation is not checked further. `Unavailable` if the
+    /// ledger failed.
     ///
     /// # Panics
     ///

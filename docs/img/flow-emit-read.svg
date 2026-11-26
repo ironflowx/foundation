@@ -46,7 +46,7 @@
   <text x="708" y="391" font-size="11" text-anchor="start">one txn: rows +</text>
   <text x="708" y="406" font-size="11" text-anchor="start">applied = p + 1</text>
   <path d="M90 450 H914" stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#a-flow-emit-read)"/>
-  <text x="505.0" y="444" font-size="11" text-anchor="middle">read(get_event(id)), any client</text>
+  <text x="505.0" y="444" font-size="11" text-anchor="middle">get_event(id), any client</text>
   <rect class="band" x="840" y="462" width="140" height="36" rx="4"/>
   <rect x="840" y="462" width="140" height="36" rx="4" fill="none" stroke="currentColor" stroke-width="1"/>
   <text x="848" y="477" font-size="11" text-anchor="start">head h ≥ p + 1; waits</text>

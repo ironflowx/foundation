@@ -100,7 +100,8 @@ pub struct Decision {
     pub record: Option<Record>,
 }
 
-/// A rule refused the request.
+/// A rule refused the request. Its `Display` shows the message; it wraps no error, so it has no
+/// `source()` (D84).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
     kind: ErrorKind,
@@ -131,7 +132,6 @@ impl Refusal {
     }
 }
 
-/// Shows the message.
 impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
