@@ -139,7 +139,7 @@ The `.proto` files of `ironflowx.v1`, the one definition of the wire: each opera
 _Avoid_: Remote client
 
 **Door**:
-A way in from outside the process, such as an HTTP server.
+A transport adapter for calls from outside the engine's process.
 
 **HTTP door**:
 The first door: turns Connect, gRPC and gRPC-Web calls into `Operations` calls and back.
@@ -151,7 +151,7 @@ The one JSON shape of every CLI error: `code`, `message`, `retryable` and, when 
 An app that links foundation. One that calls the ledger directly, without keys, is trusted by it, the attribution it supplies included.
 
 **Host**:
-An embedder that opens an engine on a data directory. `ironflowx serve` is the first host we ship.
+An embedder that opens an engine on a data directory. The built-in host, `ironflowx serve`, reads settings, opens the engine, serves it through the HTTP door, and stops it.
 
 ### Testing
 

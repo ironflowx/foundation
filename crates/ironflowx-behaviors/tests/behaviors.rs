@@ -7,6 +7,8 @@
 mod adapter;
 #[path = "behaviors/cli.rs"]
 mod cli;
+#[path = "behaviors/output.rs"]
+mod output;
 #[path = "behaviors/serve.rs"]
 mod serve;
 #[path = "behaviors/tenancy.rs"]
@@ -859,6 +861,7 @@ async fn events(remote: bool) -> (bool, usize) {
 
 #[tokio::main]
 async fn main() {
+    output::fixtures();
     discover();
     serve::build();
     let mut runs = Vec::new();

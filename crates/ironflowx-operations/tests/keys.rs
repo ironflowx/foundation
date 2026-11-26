@@ -237,8 +237,8 @@ async fn a_creator_that_expires_before_its_key_is_stored_is_refused() {
     opened.engine.close().await;
 }
 
-/// A key change that fails in SQLite is `Unavailable`, and before its commit writes nothing; the
-/// engine stays open.
+/// A trigger that aborts the insert leaves only the bootstrap key and returns `Unavailable`.
+/// After the trigger is removed, the same open engine accepts a new key.
 #[tokio::test]
 async fn a_failed_insert_is_unavailable_and_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();

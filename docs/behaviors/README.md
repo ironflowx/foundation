@@ -27,7 +27,9 @@ The steps call `Operations`, never a URL or a status code, but for `/health` and
 
 Against the binary, "a fresh environment" and "a fresh engine directory" are a binary started on a fresh data directory; "the bootstrap key" is the key in `admin.key`; and "now", "in one hour" and "an hour ago" are the machine's clock, read once per scenario, so ACC-010's creation time is checked to lie between that and the answer. "A client" and "another client" call through the scenario's one `Client`. `Client` refuses EVT-016's two rows that are not UTF-8 itself, and HOST-025 sends such bytes raw.
 
-The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It runs the files in this folder in place; they are not copied. It fails unless the `.feature` files here are exactly those its `SCENARIOS` table names, each with that many scenario declarations (before outline expansion), so a new scenario updates its count and a new file is added there (`crates/ironflowx-behaviors/tests/behaviors.rs`). Each file runs on its own World: an engine each, or a started binary. Every scenario of `events.feature` and `tenancy.feature` runs on the engine, and every one that is not `@local` against the binary; of `serve.feature` and `cli.feature`, those in each `REGISTERED` (`tests/behaviors/serve.rs`, `tests/behaviors/cli.rs`): each lands with the work that makes it pass. The runner fails unless as many scenarios of each file pass with each adapter, an outline once per example, as `EVENT_RUNS` and `EVENT_REMOTE_RUNS` (95 and 93), `RUNS` and `REMOTE_RUNS` of `tests/behaviors/tenancy.rs` (70 and 41) and each `RUNS` of `serve.rs` and `cli.rs` say. Run them alone with `cargo test -p ironflowx-behaviors --test behaviors`.
+The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It runs the files in this folder in place; they are not copied. It fails unless the `.feature` files here are exactly those its `SCENARIOS` table names, each with that many scenario declarations (before outline expansion), so a new scenario updates its count and a new file is added there (`crates/ironflowx-behaviors/tests/behaviors.rs`). Each file runs on its own World: an engine each, or a started binary. Every scenario of `events.feature` and `tenancy.feature` runs on the engine. All scenarios without `@local` run again against the binary. Every scenario of `serve.feature` and `cli.feature` runs against the binary. The runner checks the number of passing cases, counting each outline example separately.
+
+The behavior suites start `serve` at `--log-level trace`, including for remote calls. They capture stdout and stderr separately. Successful `keys create`, `recover-key --stdout` and `seed generate` each deliver a credential in the top-level JSON `key` field with its matching ID. The searches in [TEN-3](../invariants.md) cover the other output and the data directory before and after shutdown. Run the scenarios with `cargo test -p ironflowx-behaviors --locked --test behaviors`.
 
 ## Conventions
 
@@ -46,7 +48,6 @@ The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It 
 
 | Left out | Where |
 |---|---|
-| The scenarios of `serve.feature` and `cli.feature` that are not in `REGISTERED` | Later in 0.3 |
 | Emits from a run, the version a function receives, paging back, totals, filters, listing event names | 0.4 |
 | Approval requests | 0.7 |
 | Users, roles, policies, audit, a key's last use, more than one environment | 0.9 |

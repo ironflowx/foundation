@@ -1499,6 +1499,7 @@ fn an_answer_that_cannot_be_printed_is_a_failure() {
         (served.whoami(), None),
         (command(&["version"]), None),
         (command(&["--help"]), None),
+        (command(&["seed", "generate"]), None),
         (create, Some(lost)),
     ] {
         // A pipe nothing reads.
@@ -1514,6 +1515,129 @@ fn an_answer_that_cannot_be_printed_is_a_failure() {
         }
         assert_eq!((envelope, exit), (expected, 1));
     }
+}
+
+#[test]
+fn a_short_write_leaves_only_the_response_prefix() {
+    use ironflowx_core::KeyOrigin;
+    use ironflowx_operations::{Engine, HostClock};
+    use ironflowx_proto::{Call, ListKeysRequest, Operations as _};
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    use std::io::{Seek as _, SeekFrom};
+    use std::os::unix::process::CommandExt as _;
+
+    const CHILD: &str = "IRONFLOWX_TEST_SHORT_WRITE";
+    const URL: &str = "IRONFLOWX_TEST_SHORT_WRITE_URL";
+    const RECOVER: &str = "IRONFLOWX_TEST_SHORT_WRITE_RECOVER";
+    const SEED_PREFIX: &[u8] = b"{\"key\":\"";
+    // The recovery database must still be writable under the subprocess limit.
+    const LIMIT: u64 = 16 * 1024 * 1024;
+    const START: u64 = LIMIT - SEED_PREFIX.len() as u64;
+    if let Some(path) = std::env::var_os(CHILD) {
+        let mut stdout = File::options().write(true).open(path).unwrap();
+        stdout.seek(SeekFrom::Start(START)).unwrap();
+        setrlimit(
+            Resource::Fsize,
+            Rlimit {
+                current: Some(LIMIT),
+                maximum: getrlimit(Resource::Fsize).maximum,
+            },
+        )
+        .unwrap();
+        let mut cmd = if let Some(url) = std::env::var_os(URL) {
+            let mut cmd = command(&["keys", "create"]);
+            cmd.env("IRONFLOWX_URL", url);
+            cmd
+        } else if let Some(dir) = std::env::var_os(RECOVER) {
+            let mut cmd = command(&["recover-key", "--stdout", "--data-dir"]);
+            cmd.arg(dir);
+            cmd
+        } else {
+            command(&["seed", "generate"])
+        };
+        let err = cmd.stdout(stdout).exec();
+        panic!("cannot launch command under file limit: {err}");
+    }
+
+    let served = Served::answering(Ok(whoami()));
+    let created = command(&["keys", "create"])
+        .env("IRONFLOWX_URL", &served.url)
+        .output()
+        .unwrap();
+    assert_eq!(created.status.code(), Some(0));
+    assert!(created.stderr.is_empty());
+
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let opened = runtime
+        .block_on(Engine::open(dir.path(), HostClock, None))
+        .unwrap();
+    let call = Call::with_key(opened.minted.unwrap());
+    for (name, prefix) in [
+        ("seed", SEED_PREFIX),
+        ("create", &created.stdout[..SEED_PREFIX.len()]),
+        ("recover", SEED_PREFIX),
+    ] {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut child = Command::new("/bin/sh");
+        child
+            .args(["-c", "trap '' XFSZ && exec \"$@\"", "short-write"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", "a_short_write_leaves_only_the_response_prefix"])
+            .env(CHILD, file.path())
+            .env_remove(URL)
+            .env_remove(RECOVER);
+        match name {
+            "create" => child.env(URL, &served.url),
+            "recover" => child.env(RECOVER, dir.path()),
+            _ => &mut child,
+        };
+        let out = child.output().unwrap();
+        let mut capture = file.reopen().unwrap();
+        capture.seek(SeekFrom::Start(START)).unwrap();
+        let mut bytes = Vec::new();
+        capture.read_to_end(&mut bytes).unwrap();
+        assert!(
+            bytes == prefix,
+            "stdout must contain only the start of the response"
+        );
+        let error = std::io::Error::from(rustix::io::Errno::FBIG);
+        let mut expected = json!({
+            "code": "internal",
+            "message": format!("cannot write to stdout: {error}"),
+            "retryable": false,
+        });
+        if name == "create" {
+            expected["hint"] =
+                json!("the key is stored and its secret lost: list the keys, revoke it");
+        }
+        if name == "recover" {
+            let page = runtime
+                .block_on(opened.engine.list_keys(&call, ListKeysRequest::default()))
+                .unwrap();
+            assert_eq!(page.keys.len(), 2);
+            let id = page
+                .keys
+                .iter()
+                .find(|key| key.origin == KeyOrigin::Recovered)
+                .expect("the key was committed")
+                .key_id;
+            expected["message"] = json!(format!(
+                "cannot deliver recovered key {id} to stdout: {error}"
+            ));
+            expected["hint"] = json!(format!(
+                "use a working admin key or recover one with ironflowx recover-key --stdout, then revoke {id}"
+            ));
+            assert!(!dir.path().join("admin.key").exists());
+        }
+        let actual: Value = serde_json::from_slice(&out.stderr).expect("stderr is an envelope");
+        assert!(
+            actual == expected,
+            "stderr must contain only the write refusal"
+        );
+        assert_eq!(out.status.code(), Some(1));
+    }
+    runtime.block_on(opened.engine.close());
 }
 
 #[test]

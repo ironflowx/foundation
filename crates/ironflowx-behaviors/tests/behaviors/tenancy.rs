@@ -470,12 +470,9 @@ async fn lists_presenting(w: &mut Tenancy, key: String) {
     w.open().await;
     let bootstrap = w.bootstrap_key.clone().unwrap();
     let text = match key.as_str() {
-        // Well formed: the prefix, a UUIDv7 key ID and 43 base64url characters.
+        // Use nonzero random secret bytes so SQLite padding is not a TEN-3 match.
         "a well-formed key no engine minted" => {
-            format!(
-                "ixk_019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f_{}",
-                "A".repeat(43)
-            )
+            ironflowx_operations::generate_seed().1.expose().to_owned()
         }
         "the bootstrap key's ID with another secret" => {
             // The secret's first character: every bit of it is data, unlike the last one's.
