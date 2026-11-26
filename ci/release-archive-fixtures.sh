@@ -33,21 +33,32 @@ printf 'wrong licence\n' >"$work/original/LICENSE"
 repack ironflowx LICENSE
 ci/must-reject.sh 'archive licence does not match LICENSE' -- "$verify" "$target" "$version" "$fixture"
 ci/must-reject.sh 'archive binary did not report version 0.0.0' -- "$verify" "$target" 0.0.0 "$archive"
+cp LICENSE "$work/original/LICENSE"
+mv "$work/original/ironflowx" "$work/real-ironflowx"
 
-cat >"$work/cli" <<'SH'
+cat >"$work/original/ironflowx" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "$1" != whoami ]; then
-  exec "$RELEASE_FIXTURE_BINARY" "$@"
-fi
-case "$RELEASE_FIXTURE_MODE" in
-  untrusted) SSL_CERT_FILE=/dev/null exec "$RELEASE_FIXTURE_BINARY" "$@" ;;
-  extra-scope) "$RELEASE_FIXTURE_BINARY" "$@" | jq '.scopes += ["extra"]' ;;
+case "$RELEASE_FIXTURE_MODE:$1" in
+  stale-commit:version)
+    "$RELEASE_FIXTURE_BINARY" "$@" | jq '.commit |= ((if startswith("0") then "1" else "0" end) + .[1:])'
+    ;;
+  two-objects:version) "$RELEASE_FIXTURE_BINARY" "$@" | jq -c '(.version = "0.2.0"), .' ;;
+  wrong-protocol:version) "$RELEASE_FIXTURE_BINARY" "$@" | jq '.protocol = "ironflowx.v0"' ;;
+  untrusted:whoami) SSL_CERT_FILE=/dev/null exec "$RELEASE_FIXTURE_BINARY" "$@" ;;
+  extra-scope:whoami) "$RELEASE_FIXTURE_BINARY" "$@" | jq '.scopes += ["extra"]' ;;
+  *) exec "$RELEASE_FIXTURE_BINARY" "$@" ;;
 esac
 SH
-chmod +x "$work/cli"
-export RELEASE_FIXTURE_BINARY="$work/original/ironflowx"
+cli="$work/original/ironflowx"
+chmod +x "$cli"
+export RELEASE_FIXTURE_BINARY="$work/real-ironflowx"
+repack ironflowx LICENSE
+for mode in stale-commit two-objects wrong-protocol; do
+  ci/must-reject.sh "archive binary did not report version $version" -- \
+    env RELEASE_FIXTURE_MODE="$mode" "$verify" "$target" "$version" "$fixture"
+done
 ci/must-reject.sh '"code":"unavailable"' -- env RELEASE_FIXTURE_MODE=untrusted \
-  python3 ci/release-https.py "$work/cli" "$work/untrusted"
+  python3 ci/release-https.py "$cli" "$work/untrusted"
 ci/must-reject.sh "archive's HTTPS whoami did not authenticate as admin" -- \
-  env RELEASE_FIXTURE_MODE=extra-scope python3 ci/release-https.py "$work/cli" "$work/extra-scope"
+  env RELEASE_FIXTURE_MODE=extra-scope python3 ci/release-https.py "$cli" "$work/extra-scope"

@@ -25,7 +25,8 @@ can create a GitHub release.
 
 The archive matrix builds on native Linux x86-64 and AArch64 runners with `musl-tools` and on a
 native Apple silicon runner. Each job checks the archive files and checksum, runs the extracted
-binary, and calls a fresh engine over loopback HTTPS with a test trust root. Linux jobs
+binary to verify its version, checkout commit and protocol, and calls a fresh engine over
+loopback HTTPS with a test trust root. Linux jobs
 also check the extracted binary for an ELF interpreter or dynamic library dependencies (D81).
 Each Linux job builds two rejecting ELF fixtures, one for each violation, and accepts a static
 ELF as a control. The Apple silicon job exercises rejecting fixtures for the shared checks:
