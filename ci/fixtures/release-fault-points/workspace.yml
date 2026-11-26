@@ -42,3 +42,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: cargo test --release --locked --no-run -p ironflowx-bin --test recovery
+  time_flag:
+    runs-on: ubuntu-latest
+    steps:
+      - run: time -p cargo build --release --workspace
+  leading_redir:
+    runs-on: ubuntu-latest
+    steps:
+      - run: 2>build.log cargo build --release --workspace
+  devnull_redir:
+    runs-on: ubuntu-latest
+    steps:
+      - run: '>/dev/null cargo build --release --workspace'
+  command_double_dash:
+    runs-on: ubuntu-latest
+    steps:
+      - run: command -- cargo build --release --workspace

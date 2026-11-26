@@ -18,3 +18,10 @@ jobs:
       - name: Compile without --all-features
         run: echo cargo build --release
       - run: cargo run --release -p ironflowx-bin -- version --all-features
+      - run: |
+          cat <<'NOTES' >> "$GITHUB_STEP_SUMMARY"
+          It's ready.
+          NOTES
+          artifact=$(printf '%s' ok # unmatched (
+          )
+          echo "$artifact"

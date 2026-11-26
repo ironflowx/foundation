@@ -42,7 +42,11 @@ ci/must-reject.sh "cargo_global: release Cargo build must select only ironflowx-
   "subshell_group: release Cargo build must select only ironflowx-bin" \
   "command_subst: release Cargo build must select only ironflowx-bin" \
   "test_no_run: release Cargo build must select only ironflowx-bin" \
-  "test_integration: release Cargo build must select only ironflowx-bin" -- \
+  "test_integration: release Cargo build must select only ironflowx-bin" \
+  "time_flag: release Cargo build must select only ironflowx-bin" \
+  "leading_redir: release Cargo build must select only ironflowx-bin" \
+  "devnull_redir: release Cargo build must select only ironflowx-bin" \
+  "command_double_dash: release Cargo build must select only ironflowx-bin" -- \
   ci/no-release-fault-points.sh ci/fixtures/release-fault-points/workspace.yml
 ci/must-reject.sh "ironflowx-bin: ordinary release graph enables __fault-points" -- \
   ci/no-release-fault-points.sh .github/workflows/release.yml \

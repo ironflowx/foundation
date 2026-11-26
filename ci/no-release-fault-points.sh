@@ -8,8 +8,15 @@ set -euo pipefail
 
 workflow=${1:-.github/workflows/release.yml}
 ruby -ryaml - "$workflow" <<'RUBY'
-  SHELL_PREFIXES = %w[if then elif else do ! time exec command nohup {].freeze
-  ENV_VALUE_FLAGS = %w[-u --unset -C --chdir -S --split-string].freeze
+  SHELL_KEYWORDS = %w[if then elif else do ! {].freeze
+  PREFIX_FLAGS = {
+    "time" => { value: [] },
+    "command" => { value: [] },
+    "nohup" => { value: [] },
+    "builtin" => { value: [] },
+    "exec" => { value: %w[-a] },
+    "env" => { value: %w[-u --unset -C --chdir -S --split-string], env: true }
+  }.freeze
   CARGO_GLOBAL_VALUE_FLAGS = %w[-C --color --config -Z --explain].freeze
   DESCRIPTIVE_KEYS = %w[name description].freeze
 
@@ -19,6 +26,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
     depth = 1
     in_single = false
     in_double = false
+    at_word_start = true
     while i < script.length && depth > 0
       ch = script[i]
       if in_single
@@ -29,17 +37,29 @@ ruby -ryaml - "$workflow" <<'RUBY'
         elsif ch == '"'
           in_double = false
         end
+      elsif ch == "#" && at_word_start
+        nl = script.index("\n", i)
+        break unless nl
+        i = nl
+        at_word_start = true
       elsif ch == "\\" && i + 1 < script.length
         i += 1
+        at_word_start = false
       elsif ch == "'"
         in_single = true
+        at_word_start = false
       elsif ch == '"'
         in_double = true
+        at_word_start = false
       elsif ch == "("
         depth += 1
+        at_word_start = true
       elsif ch == ")"
         depth -= 1
         return [script[(open_idx + 1)...i], i + 1] if depth == 0
+        at_word_start = true
+      else
+        at_word_start = " \t\r\n;&|".include?(ch)
       end
       i += 1
     end
@@ -74,26 +94,93 @@ ruby -ryaml - "$workflow" <<'RUBY'
     raise ArgumentError, "unterminated backtick"
   end
 
-  # Tokenize literal shell commands, including subshells and command substitutions, without
-  # evaluating variables. Backslash-newline continuations outside single quotes join tokens.
+  # Extract command substitutions inside an unquoted heredoc without parsing prose quotes.
+  def scan_heredoc(body)
+    out = []
+    i = 0
+    n = body.length
+    while i < n
+      ch = body[i]
+      if ch == "\\" && i + 1 < n
+        i += 2
+      elsif ch == "$" && body[i + 1] == "("
+        inner, i = extract_parens(body, i + 1)
+        out.concat(commands(inner))
+      elsif ch == "`"
+        inner, i = extract_backticks(body, i)
+        out.concat(commands(inner))
+      else
+        i += 1
+      end
+    end
+    out
+  end
+
+  # Consume pending heredoc bodies starting right after a newline. Returns new index.
+  def consume_heredocs(script, i, pending, out)
+    pending.each do |delim, strip_tabs, quoted|
+      body = +""
+      while i < script.length
+        nl = script.index("\n", i)
+        line_end = nl ? nl + 1 : script.length
+        raw = script[i...line_end]
+        i = line_end
+        candidate = raw.chomp("\n").chomp("\r")
+        candidate = candidate.sub(/\A\t+/, "") if strip_tabs
+        break if candidate == delim
+        body << raw
+      end
+      out.concat(scan_heredoc(body)) unless quoted
+    end
+    pending.clear
+    i
+  end
+
+  # Strip redirections and their target words, returning only command words.
+  def strip_redirs(items)
+    words = []
+    i = 0
+    while i < items.length
+      kind, text = items[i]
+      if kind == :redir
+        i += 1
+        i += 1 if i < items.length && items[i][0] == :word
+      else
+        words << text
+        i += 1
+      end
+    end
+    words
+  end
+
+  # Tokenize literal shell commands, including subshells, redirections, heredocs and command
+  # substitutions, without evaluating variables. Backslash-newline outside single quotes joins.
   def commands(script)
     out = []
     current = []
     word = +""
     in_word = false
+    word_quoted = false
+    expect_heredoc = nil
+    pending_heredocs = []
+
     flush_word = lambda do
       if in_word
-        current << word
+        if expect_heredoc
+          pending_heredocs << [word, expect_heredoc == "<<-", word_quoted]
+          expect_heredoc = nil
+        end
+        current << [:word, word]
         word = +""
         in_word = false
+        word_quoted = false
       end
     end
     flush_cmd = lambda do
       flush_word.call
-      unless current.empty?
-        out << current
-        current = []
-      end
+      words = strip_redirs(current)
+      out << words unless words.empty?
+      current = []
     end
 
     i = 0
@@ -107,11 +194,13 @@ ruby -ryaml - "$workflow" <<'RUBY'
           i += 3
         else
           in_word = true
+          word_quoted = true
           word << script[i + 1]
           i += 2
         end
       elsif ch == "'"
         in_word = true
+        word_quoted = true
         i += 1
         close = script.index("'", i)
         raise ArgumentError, "unterminated single quote" unless close
@@ -119,6 +208,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
         i = close + 1
       elsif ch == '"'
         in_word = true
+        word_quoted = true
         i += 1
         closed = false
         while i < n
@@ -163,10 +253,32 @@ ruby -ryaml - "$workflow" <<'RUBY'
         in_word = true
         inner, i = extract_backticks(script, i)
         out.concat(commands(inner))
+      elsif ch == "<" || ch == ">" || (ch == "&" && script[i + 1] == ">")
+        if ch != "&" && in_word && !word_quoted && word.match?(/\A[0-9]+\z/)
+          word = +""
+          in_word = false
+        else
+          flush_word.call
+        end
+        op =
+          if script[i, 3] == "<<-" || script[i, 3] == "<<<" || script[i, 3] == "&>>"
+            script[i, 3]
+          elsif %w[<< <& <> >> >& >| &>].include?(script[i, 2])
+            script[i, 2]
+          else
+            ch
+          end
+        current << [:redir, op]
+        expect_heredoc = op if op == "<<" || op == "<<-"
+        i += op.length
+      elsif ch == "\n"
+        flush_cmd.call
+        i += 1
+        i = consume_heredocs(script, i, pending_heredocs, out) unless pending_heredocs.empty?
       elsif ch == " " || ch == "\t" || ch == "\r"
         flush_word.call
         i += 1
-      elsif "\n;&|()".include?(ch)
+      elsif ";&|()".include?(ch)
         flush_cmd.call
         i += 1
       else
@@ -187,19 +299,19 @@ ruby -ryaml - "$workflow" <<'RUBY'
       if tok.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
         env << tok
         i += 1
-      elsif SHELL_PREFIXES.include?(tok)
+      elsif SHELL_KEYWORDS.include?(tok)
         i += 1
-      elsif File.basename(tok) == "env"
+      elsif (spec = PREFIX_FLAGS[File.basename(tok)])
         i += 1
         while i < tokens.length
           if tokens[i] == "--"
             i += 1
             break
-          elsif ENV_VALUE_FLAGS.include?(tokens[i])
+          elsif spec[:value].include?(tokens[i])
             i += 2
           elsif tokens[i].start_with?("-")
             i += 1
-          elsif tokens[i].match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
+          elsif spec[:env] && tokens[i].match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
             env << tokens[i]
             i += 1
           else
