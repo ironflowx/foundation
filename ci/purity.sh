@@ -61,7 +61,11 @@ ci/must-reject.sh "cargo_global: release Cargo build must select only ironflowx-
   "nested_if_script: release Cargo build must select only ironflowx-bin" \
   "then_for_script: release Cargo build must select only ironflowx-bin" \
   "alias_override: release Cargo build must select only ironflowx-bin" \
-  "job_env_alias: release Cargo build must select only ironflowx-bin" -- \
+  "job_env_alias: release Cargo build must select only ironflowx-bin" \
+  "shorthand_b: release Cargo build must select only ironflowx-bin" \
+  "pkg_zig: release Cargo build must select only ironflowx-bin" \
+  "batched_env_alias: release Cargo build must select only ironflowx-bin" \
+  "inline_alias_config: release Cargo build must select only ironflowx-bin" -- \
   ci/no-release-fault-points.sh ci/fixtures/release-fault-points/workspace.yml
 ci/must-reject.sh "ironflowx-bin: ordinary release graph enables __fault-points" -- \
   ci/no-release-fault-points.sh .github/workflows/release.yml \

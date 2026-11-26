@@ -145,3 +145,20 @@ jobs:
       CARGO_ALIAS_B: "build --all-targets"
     steps:
       - run: cargo b --release -p ironflowx-bin
+  shorthand_b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo b --release -p ironflowx-bin
+  pkg_zig:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo zigbuild --release -p ironflowx-bin
+  batched_env_alias:
+    runs-on: ubuntu-latest
+    steps:
+      - run: printf 'RUST_LOG=info\nCARGO_ALIAS_B=build --all-targets\n' >> "$GITHUB_ENV"
+      - run: cargo build --release -p ironflowx-bin
+  inline_alias_config:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo --config 'alias.b="build --all-targets"' build --release -p ironflowx-bin

@@ -42,3 +42,7 @@ jobs:
           false || printf '%s\n' 'cargo build finished'
           cargo build --release --locked -p ironflowx-bin
           echo "$tag"
+          echo 'cargo' 'done'
+      - run: |
+          cargo metadata --manifest-path tools/alias.toml --no-deps --format-version 1
+          cargo --config 'env.BUILD_FILE="alias.toml"' build --release -p ironflowx-bin

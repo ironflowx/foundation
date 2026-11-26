@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # Usage: ci/no-release-fault-points.sh [release.yml] [Cargo.toml]
-# Archive builds use a direct, package-only Cargo command in release.yml. Steps that do not mention
-# cargo, cross, __fault-points, or --all-features may use arbitrary shell syntax. Any step that
-# mentions them must invoke cargo/cross directly (no wrappers, Cargo aliases, heredocs, arithmetic
-# shifts, or process substitutions) and select only ironflowx-bin without dev targets or private
-# features. Standalone echo/printf logging of cargo text is exempt only outside pipes, redirects,
-# substitutions, and compound/grouped blocks (so e.g. `if ...; then echo 'cargo ...'; fi` or
-# `{ echo 'cargo ...'; exit 1; }` is refused; release.yml has none). Commands hidden in external
-# scripts or constructed from shell variables are outside this check.
+# Archive builds use a direct, package-only canonical Cargo built-in (`build`, `rustc`, `run`) in
+# release.yml; aliasable shorthands (`b`, `r`, `zigbuild`) and custom aliases are rejected. Steps
+# that do not mention cargo, cross, __fault-points, --all-features, or CARGO_ALIAS_ may use
+# arbitrary shell syntax. Any step that mentions them must invoke cargo/cross directly (no
+# wrappers, heredocs, arithmetic shifts, or process substitutions) and select only ironflowx-bin
+# without dev targets, private features, or alias overrides. Standalone echo/printf logging of
+# cargo text is exempt only outside pipes, redirects, and substitutions in steps with no unquoted
+# grouping or compound-keyword tokens ((, ), {, }, if/then/.../esac), so logging in a step with an
+# unrelated if/brace block or an unquoted keyword argument is refused (release.yml has none).
+# Commands hidden in external scripts or constructed from shell variables are outside this check.
 set -euo pipefail
 
 workflow=${1:-.github/workflows/release.yml}
 ruby -ryaml - "$workflow" <<'RUBY'
   CARGO_GLOBAL_VALUE_FLAGS = %w[-C --color --config -Z --explain].freeze
-  CARGO_BUILD_SUBCOMMANDS = %w[build b rustc zigbuild run r].freeze
+  CARGO_BUILD_SUBCOMMANDS = %w[build rustc run].freeze
   CARGO_READONLY_SUBCOMMANDS = %w[
     metadata version help fetch tree pkgid locate-project verify-project
   ].freeze
@@ -22,8 +24,8 @@ ruby -ryaml - "$workflow" <<'RUBY'
   CARGO_WORD = /(?<![A-Za-z0-9_])(?:cargo|cross)(?![A-Za-z0-9_])/.freeze
   INTERESTING =
     /(?<![A-Za-z0-9_])(?:cargo|cross)(?![A-Za-z0-9_])|__fault-points|--all-features|(?i:CARGO_ALIAS_)/.freeze
-  ALIAS_ENV = /\ACARGO_ALIAS_/i.freeze
-  ALIAS_CONFIG = /\balias(?:\.|\s*=)/.freeze
+  ALIAS_ENV = /(?i:CARGO_ALIAS_)/.freeze
+  ALIAS_CONFIG_KEY = /\A\s*["']?alias["']?\s*(?:\.|=)/.freeze
 
   # Extract the inner body of $(...) starting at '('. Returns [inner, next_index].
   def extract_parens(script, open_idx)
@@ -106,17 +108,17 @@ ruby -ryaml - "$workflow" <<'RUBY'
     raise ArgumentError, "unterminated backtick"
   end
 
-  # Strip simple redirections and their targets, returning command words.
+  # Strip simple redirections and their targets, returning [word, quoted] pairs.
   def strip_redirs(items)
     words = []
     i = 0
     while i < items.length
-      kind, text = items[i]
+      kind, text, quoted = items[i]
       if kind == :redir
         i += 1
         i += 1 if i < items.length && items[i][0] == :word
       else
-        words << text
+        words << [text, quoted]
         i += 1
       end
     end
@@ -125,7 +127,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
 
   # Tokenize a step that mentions cargo/cross or private feature flags. Returns
   # [commands, unsupported_syntax, has_grouping]. Heredocs (<<), process substitutions (<( or >()),
-  # and arithmetic (( fail closed. Any compound/grouping syntax latches has_grouping for the step.
+  # and arithmetic (( fail closed. Any unquoted grouping/compound token latches has_grouping.
   def commands(script, nested: false)
     out = []
     current = []
@@ -138,7 +140,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
 
     flush_word = lambda do
       if in_word
-        current << [:word, word]
+        current << [:word, word, word_quoted]
         word = +""
         in_word = false
         word_quoted = false
@@ -146,13 +148,14 @@ ruby -ryaml - "$workflow" <<'RUBY'
     end
     flush_cmd = lambda do |piped_next|
       flush_word.call
-      redirected = current.any? { |kind, _| kind == :redir }
-      words = strip_redirs(current)
-      while !words.empty? && COMPOUND_WORDS.include?(words.first)
+      redirected = current.any? { |kind, _, _| kind == :redir }
+      pairs = strip_redirs(current)
+      while !pairs.empty? && !pairs.first[1] && COMPOUND_WORDS.include?(pairs.first[0])
         has_grouping = true
-        words.shift
+        pairs.shift
       end
-      has_grouping ||= words.any? { |tok| COMPOUND_WORDS.include?(tok) }
+      has_grouping ||= pairs.any? { |text, quoted| !quoted && COMPOUND_WORDS.include?(text) }
+      words = pairs.map(&:first)
       unless words.empty?
         out << {
           words: words,
@@ -262,7 +265,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
           else
             ch
           end
-        current << [:redir, op]
+        current << [:redir, op, false]
         i += op.length
       elsif ch == " " || ch == "\t" || ch == "\r"
         flush_word.call
@@ -319,6 +322,24 @@ ruby -ryaml - "$workflow" <<'RUBY'
     nil
   end
 
+  def config_values(args)
+    values = []
+    i = 0
+    while i < args.length
+      case args[i]
+      when "--config"
+        values << args[i + 1] if i + 1 < args.length
+        i += 2
+      when /\A--config=(.*)\z/m
+        values << Regexp.last_match(1)
+        i += 1
+      else
+        i += 1
+      end
+    end
+    values
+  end
+
   def executable_strings(node, in_env: false)
     case node
     when Hash
@@ -372,7 +393,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
         if %w[cargo cross].include?(exe)
           cargo_args = args.take_while { |arg| arg != "--" }
           check_tokens(cargo_args, name, bad)
-          if cargo_args.any? { |arg| arg.match?(ALIAS_CONFIG) }
+          if config_values(cargo_args).any? { |val| val.match?(ALIAS_CONFIG_KEY) }
             bad << "#{name}: release Cargo build must select only ironflowx-bin without dev targets"
             next
           end
