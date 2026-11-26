@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 umask 077
 
 repo=$PWD
@@ -80,7 +80,7 @@ echo 'Fresh server became ready and wrote admin.key with mode 0400'
 # Keep all server and CLI output private except validated evidence.
 export IRONFLOWX_URL=http://127.0.0.1:9310
 cli() {
-  ./ironflowx --key-file "$work/data/admin.key" "$@" 2>cli.log
+  ./ironflowx "$@" --key-file "$work/data/admin.key" 2>cli.log
 }
 cli events emit --name proof.release --data '{"ticket":158}' >emit.json
 jq -e '(.event_id | type == "string" and length > 0) and .duplicate == false' emit.json >/dev/null
