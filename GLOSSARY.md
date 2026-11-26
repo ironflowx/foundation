@@ -129,7 +129,7 @@ An optional client value on an emit. A second emit with a key already used in th
 The crates any Ironflow X product links.
 
 **Facade**:
-The `ironflowx` crate, which re-exports the foundation crates.
+The `ironflowx` crate: an app's one dependency on foundation, holding what an app uses and none of the engine's own parts.
 
 **Proto**:
 The `.proto` files of `ironflowx.v1`, the one definition of the wire: each operation's request and answer, and the error a call fails with.

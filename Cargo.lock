@@ -1227,13 +1227,10 @@ dependencies = [
 name = "ironflowx"
 version = "0.3.0"
 dependencies = [
- "ironflowx-authz",
  "ironflowx-cell",
  "ironflowx-core",
- "ironflowx-events",
  "ironflowx-operations",
  "ironflowx-proto",
- "ironflowx-store",
  "tokio",
 ]
 

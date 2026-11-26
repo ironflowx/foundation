@@ -85,7 +85,8 @@ ci/must-reject.sh rusqlite::error::Error segment_log_core::engine tokio::runtime
   axum::routing::MethodRouter tower::util::BoxService clap_builder::error::Error \
   ironflowx_cli::matches clap_builder::builder::arg::Arg ironflowx_vendor::Handle \
   ironflowx_proto::ProbeError ironflowx_proto::probe_http connectrpc::client:: \
-  ironflowx_proto::zz_http -- \
+  ironflowx_proto::zz_http ironflowx::store ironflowx::authz ironflowx::events \
+  ironflowx_cell::Record -- \
   ci/no-dependency-types.sh ci/fixtures/dependency-type.txt
 
 # TEN-3, over every item: rustdoc's JSON of each published crate, private and hidden items included,

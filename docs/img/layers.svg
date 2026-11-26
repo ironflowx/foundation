@@ -1,4 +1,4 @@
-<svg width="860" height="734" viewBox="0 0 860 734" role="img" aria-label="What foundation does, layer by layer, with each layer&#x27;s interface; each layer depends only on those below it. A host opens an engine on a data directory and calls the nine operations of the Operations trait in ironflowx-proto with a key: emit and emit_batch need the write scope; get_event, list_events and list_environments read; whoami any valid key; create_key, list_keys and revoke_key admin. The engine in ironflowx-operations admits each call by parse, lookup_key, verify and admit, and only then runs its handler. Every call&#x27;s key lookup, and key changes, go to the control plane in ironflowx-store, which keeps tenants, projects, environments and keys in control.db. Event calls go to the ledger in ironflowx-cell, whose one writer decides, appends and fsyncs, acknowledges and folds, into the log, the source of truth, and read.db, rebuilt from it. An embedder without keys calls the ledger directly. The control plane uses the pure credentials in ironflowx-authz, the ledger the pure event rules in ironflowx-events; the engine uses both too, for admission and queries. The host alone calls Engine::open, health, faulted, close and recover_admin_key. ironflowx-core holds the types every layer shares, and ironflowx re-exports all seven crates." xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" fill="currentColor">
+<svg width="860" height="734" viewBox="0 0 860 734" role="img" aria-label="What foundation does, layer by layer, with each layer&#x27;s interface; each layer depends only on those below it. A host opens an engine on a data directory and calls the nine operations of the Operations trait in ironflowx-proto with a key: emit and emit_batch need the write scope; get_event, list_events and list_environments read; whoami any valid key; create_key, list_keys and revoke_key admin. The engine in ironflowx-operations admits each call by parse, lookup_key, verify and admit, and only then runs its handler. Every call&#x27;s key lookup, and key changes, go to the control plane in ironflowx-store, which keeps tenants, projects, environments and keys in control.db. Event calls go to the ledger in ironflowx-cell, whose one writer decides, appends and fsyncs, acknowledges and folds, into the log, the source of truth, and read.db, rebuilt from it. An embedder without keys calls the ledger directly. The control plane uses the pure credentials in ironflowx-authz, the ledger the pure event rules in ironflowx-events; the engine uses both too, for admission and event types. The host alone calls Engine::open, health, faulted, close and recover_admin_key. ironflowx-core holds the types every layer shares, and ironflowx re-exports core, proto, cell and operations." xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" fill="currentColor">
   <style>svg{color:#1b1b1b}.bg{fill:#fff}.card{fill:#fff;stroke:#8b95a1}.pure{fill:#e8f1fb;stroke:#2f7fd1}.io{fill:#fbf0df;stroke:#b9772a}.eng{fill:#efeafb;stroke:#7a55c7}.ok{fill:#e3f5e9;stroke:#2c8a4b}.tp{fill:#1c62ab}.ti{fill:#8a5413}.te{fill:#5f3cab}.tk{fill:#1f7039}.sp{stroke:#2f7fd1}.si{stroke:#b9772a}.se{stroke:#7a55c7}.sk{stroke:#2c8a4b}.sn{stroke:#8b95a1}.hp{fill:#2f7fd1}.hi{fill:#b9772a}.he{fill:#7a55c7}.sub{opacity:.75}@media (prefers-color-scheme:dark){svg{color:#e6e6e6}.bg{fill:#16181d}.card{fill:#16181d;stroke:#6b7683}.pure{fill:#18283a;stroke:#4d9be8}.io{fill:#332613;stroke:#d79b52}.eng{fill:#271f3d;stroke:#a88be8}.ok{fill:#14301f;stroke:#4fb873}.tp{fill:#84bdf5}.ti{fill:#eab978}.te{fill:#c3aef4}.tk{fill:#7dd79b}.sp{stroke:#4d9be8}.si{stroke:#d79b52}.se{stroke:#a88be8}.sk{stroke:#4fb873}.sn{stroke:#6b7683}.hp{fill:#4d9be8}.hi{fill:#d79b52}.he{fill:#a88be8}}</style>
   <rect class="bg" width="860" height="734" rx="8"/>
   <defs><marker id="a-layers-p" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path class="hp" d="M0,0 L8,4 L0,8 z"/></marker><marker id="a-layers-i" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path class="hi" d="M0,0 L8,4 L0,8 z"/></marker><marker id="a-layers-e" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path class="he" d="M0,0 L8,4 L0,8 z"/></marker></defs>
@@ -48,7 +48,8 @@
   <text x="682" y="290" font-size="11" class="sub" text-anchor="end">event calls</text>
   <path class="si" d="M787,122 V323" fill="none" stroke-width="1.6" stroke-dasharray="5 3" marker-end="url(#a-layers-i)"/>
   <text x="779" y="225" font-size="11" class="sub" text-anchor="end">submit,</text>
-  <text x="779" y="239" font-size="11" class="sub" text-anchor="end">read</text>
+  <text x="779" y="239" font-size="11" class="sub" text-anchor="end">get_event,</text>
+  <text x="779" y="253" font-size="11" class="sub" text-anchor="end">list_events</text>
   <rect class="io" x="20" y="324" width="402" height="134" rx="0" stroke-width="1.4"/>
   <text x="34" y="357"><tspan font-size="14.5" class="ti" font-weight="600">Control plane</tspan><tspan font-size="11" class="sub" dx="9">ironflowx-store</tspan></text>
   <text x="34" y="377" font-size="12">Remembers tenants, projects, environments and keys.</text>
@@ -70,11 +71,11 @@
   <text x="470.2" y="328" font-size="11" class="ti" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">open</text>
   <rect class="io" x="495.5" y="313" width="53.8" height="22" rx="11" stroke-width="1.4"/>
   <text x="522.4" y="328" font-size="11" class="ti" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">submit</text>
-  <rect class="io" x="554.3" y="313" width="40.5" height="22" rx="11" stroke-width="1.4"/>
-  <text x="574.5" y="328" font-size="11" class="ti" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">read</text>
-  <rect class="io" x="599.8" y="313" width="47.2" height="22" rx="11" stroke-width="1.4"/>
-  <text x="623.4" y="328" font-size="11" class="ti" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">close</text>
-  <text x="652.0" y="318" font-size="13" class="sub">…</text>
+  <rect class="io" x="554.3" y="313" width="73.3" height="22" rx="11" stroke-width="1.4"/>
+  <text x="590.9" y="328" font-size="11" class="ti" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">get_event</text>
+  <rect class="io" x="632.6" y="313" width="47.2" height="22" rx="11" stroke-width="1.4"/>
+  <text x="656.2" y="328" font-size="11" class="ti" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">close</text>
+  <text x="684.8" y="318" font-size="13" class="sub">…</text>
   <path class="io" stroke-width="1.4" d="M34,407 v36 a62.0,7 0 0 0 124,0 v-36 a62.0,7 0 0 0 -124,0 a62.0,7 0 0 0 124,0"/>
   <text x="96.0" y="430" font-size="12" class="ti" text-anchor="middle" font-weight="600" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">control.db</text>
   <text x="96.0" y="444" font-size="10.5" class="sub" text-anchor="middle">every key&#x27;s digest</text>
@@ -89,7 +90,7 @@
   <path class="se" d="M430,262 V482" fill="none" stroke-width="1.6"/>
   <path class="se" d="M430,482 H408 V515" fill="none" stroke-width="1.6" marker-end="url(#a-layers-e)"/>
   <path class="se" d="M430,482 H448 V515" fill="none" stroke-width="1.6" marker-end="url(#a-layers-e)"/>
-  <text x="452" y="486" font-size="11" class="sub">engine: admission, queries</text>
+  <text x="452" y="486" font-size="11" class="sub">engine: admission, event types</text>
   <rect class="pure" x="20" y="516" width="402" height="84" rx="0" stroke-width="1.4"/>
   <text x="34" y="549"><tspan font-size="14.5" class="tp" font-weight="600">Credentials</tspan><tspan font-size="11" class="sub" dx="9">ironflowx-authz</tspan></text>
   <text x="34" y="569" font-size="12">Is this key valid now? What may it do?</text>
@@ -151,5 +152,5 @@
   <text x="107" y="719" font-size="11.5" class="sub">owns what is on disk</text>
   <rect class="eng" x="244" y="708" width="13" height="13" rx="3" stroke-width="1.4"/>
   <text x="263" y="719" font-size="11.5" class="sub">admits every call</text>
-  <text x="840" y="719" font-size="11.5" class="sub" text-anchor="end">One crate to depend on: ironflowx re-exports all seven.</text>
+  <text x="840" y="719" font-size="11.5" class="sub" text-anchor="end">One crate to depend on: ironflowx re-exports what apps use.</text>
 </svg>

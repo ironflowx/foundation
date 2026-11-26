@@ -715,10 +715,7 @@ async fn foreign_cursor(w: &mut Env) {
             .await
             .unwrap();
     }
-    let page = ledger
-        .read(move |v| ironflowx_events::list_events(v, other.token(), 1.try_into().ok(), None))
-        .await
-        .unwrap();
+    let page = ledger.list_events(1.try_into().ok(), None).await.unwrap();
     w.cursor = page.next;
     ledger.close().await;
 }

@@ -169,6 +169,8 @@ pub struct KeyRow {
 
 /// Why a key change did not happen. Nothing was written, but for a calling key found newly
 /// expired, whose expiry it tries to record (D42), or for an unsettled commit (D48).
+/// Its `Display` shows the inner error, and it has no `source()`, so a reporter that walks the
+/// chain shows the cause once (D84).
 #[derive(Debug)]
 pub enum KeyChangeError {
     /// The calling key is unknown, revoked, expired, or of another environment, read again
@@ -198,6 +200,8 @@ impl fmt::Display for KeyChangeError {
 impl std::error::Error for KeyChangeError {}
 
 /// Why a seed was not applied. No key changed, but for an unsettled commit, if `Store` (D48).
+/// Its `Display` shows the inner error, and it has no `source()`, so a reporter that walks the
+/// chain shows the cause once (D84).
 #[derive(Debug)]
 pub enum SeedError {
     /// The seed's key ID is already a key, and not this seed.
@@ -217,6 +221,8 @@ impl fmt::Display for SeedError {
 impl std::error::Error for SeedError {}
 
 /// Why no key was recovered. No key changed, but for an unsettled commit, if `Store` (D48).
+/// Its `Display` shows the inner error, and it has no `source()`, so a reporter that walks the
+/// chain shows the cause once (D84).
 #[derive(Debug)]
 pub enum RecoverError {
     /// The bootstrap is not finished: there is none, or its ledger was not marked created.

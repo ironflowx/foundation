@@ -13,6 +13,7 @@
 mod json;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::num::NonZeroU32;
 
 use ironflowx_core::{Emitter, ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
@@ -99,7 +100,8 @@ pub struct Decision {
     pub record: Option<Record>,
 }
 
-/// A rule refused the request.
+/// A rule refused the request. Its `Display` shows the message; it wraps no error, so it has no
+/// `source()` (D84).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
     kind: ErrorKind,
@@ -129,6 +131,14 @@ impl Refusal {
         &self.message
     }
 }
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Refusal {}
 
 /// A call failed: refused by a rule, or the store failed.
 #[derive(Debug, Clone, PartialEq, Eq)]

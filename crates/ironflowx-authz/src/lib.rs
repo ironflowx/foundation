@@ -112,6 +112,14 @@ pub struct KeyRecord {
     pub revoked_at: Option<Timestamp>,
 }
 
+impl KeyRecord {
+    /// Whether the key has expired at `now`: from `expires_at` on, or, once an expiry is
+    /// recorded, whatever the clock says (D42). Revocation is separate.
+    pub fn expired(&self, now: Timestamp) -> bool {
+        self.expiry_recorded || self.expires_at.is_some_and(|t| now >= t)
+    }
+}
+
 /// What a verified key may do. Never stored; only [`verify`] and [`recheck`] make one.
 #[derive(Debug, Clone)]
 pub struct Grant {
@@ -195,12 +203,13 @@ pub fn verify(
 /// [`Refused`] for another environment or incarnation, a revoked key, a recorded expiry, or
 /// from `now >= expires_at`.
 pub fn recheck(record: &KeyRecord, env: &EnvRef, now: Timestamp) -> Result<Grant, Refused> {
-    if record.env != *env || record.revoked_at.is_some() || record.expiry_recorded {
+    if record.env != *env || record.revoked_at.is_some() {
         return Err(Refused::PLAIN);
     }
-    if record.expires_at.is_some_and(|t| now >= t) {
+    if record.expired(now) {
+        // A recorded expiry needs no second record (D42).
         return Err(Refused {
-            newly_expired: true,
+            newly_expired: !record.expiry_recorded,
         });
     }
     Ok(Grant {
