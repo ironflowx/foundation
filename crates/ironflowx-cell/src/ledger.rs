@@ -59,6 +59,7 @@ pub enum SubmitError {
 /// A read failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadError {
+    /// A query refused the request: an unknown event, or a bad cursor.
     Refused(Refusal),
     /// The ledger failed and refuses every call until it is reopened.
     Unavailable,
@@ -71,9 +72,7 @@ impl fmt::Display for SubmitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Refused(r) => r.fmt(f),
-            Self::Unknown => f.write_str(
-                "the submission's outcome is unknown, and the ledger is unavailable until it is reopened",
-            ),
+            Self::Unknown => write!(f, "the submission's outcome is unknown, and {UNAVAILABLE}"),
             Self::Unavailable => f.write_str(UNAVAILABLE),
         }
     }

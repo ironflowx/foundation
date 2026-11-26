@@ -1571,7 +1571,10 @@ async fn the_ledger_gets_an_event_and_lists_pages_of_its_own() {
     let Err(ReadError::Refused(r)) = ledger.get_event("evt_unknown").await else {
         panic!("an unknown ID was found");
     };
-    assert_eq!(r.kind(), ErrorKind::NotFound);
+    assert_eq!(
+        (r.kind(), r.message()),
+        (ErrorKind::NotFound, "event not found")
+    );
     let first = ledger.list_events(1.try_into().ok(), None).await.unwrap();
     assert_eq!(
         first.events.iter().map(|e| &*e.name).collect::<Vec<_>>(),

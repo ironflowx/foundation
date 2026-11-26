@@ -70,11 +70,11 @@
   <text x="470.2" y="328" font-size="11" class="ti" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">open</text>
   <rect class="io" x="495.5" y="313" width="53.8" height="22" rx="11" stroke-width="1.4"/>
   <text x="522.4" y="328" font-size="11" class="ti" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">submit</text>
-  <rect class="io" x="554.3" y="313" width="40.5" height="22" rx="11" stroke-width="1.4"/>
-  <text x="574.5" y="328" font-size="11" class="ti" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">read</text>
-  <rect class="io" x="599.8" y="313" width="47.2" height="22" rx="11" stroke-width="1.4"/>
-  <text x="623.4" y="328" font-size="11" class="ti" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">close</text>
-  <text x="652.0" y="318" font-size="13" class="sub">…</text>
+  <rect class="io" x="554.3" y="313" width="73.3" height="22" rx="11" stroke-width="1.4"/>
+  <text x="590.9" y="328" font-size="11" class="ti" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">get_event</text>
+  <rect class="io" x="632.6" y="313" width="47.2" height="22" rx="11" stroke-width="1.4"/>
+  <text x="656.2" y="328" font-size="11" class="ti" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">close</text>
+  <text x="684.8" y="318" font-size="13" class="sub">…</text>
   <path class="io" stroke-width="1.4" d="M34,407 v36 a62.0,7 0 0 0 124,0 v-36 a62.0,7 0 0 0 -124,0 a62.0,7 0 0 0 124,0"/>
   <text x="96.0" y="430" font-size="12" class="ti" text-anchor="middle" font-weight="600" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">control.db</text>
   <text x="96.0" y="444" font-size="10.5" class="sub" text-anchor="middle">every key&#x27;s digest</text>
