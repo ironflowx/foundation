@@ -11,10 +11,27 @@ before you push. `git config core.hooksPath .githooks` makes `git push` run it. 
 
 A release is `make release VERSION=X.Y.Z` (`ci/release.sh`): from a clean `main` that matches
 `origin/main` with green CI, it publishes every crate without `publish = false`, then tags and
-pushes `vX.Y.Z`; the tag starts `.github/workflows/release.yml`, which creates the GitHub
-release from that version's `CHANGELOG.md` section, so add the section before you start. A rerun
-skips what is already done. Rehearse it first with
-`make release-dry-run VERSION=X.Y.Z`, which runs every check and `cargo publish --dry-run`.
+pushes `vX.Y.Z`. The tag starts `.github/workflows/release.yml`, which builds the three archives
+and creates the GitHub release with their checksums and that version's `CHANGELOG.md` section.
+A rerun of `make release` skips crates that are already published. For a failed archive build,
+rerun the failed jobs in the tag's workflow run.
+
+Run `make check` before rehearsing the release. On a clean checkout,
+`make release-dry-run VERSION=X.Y.Z` verifies the unpublished packages via
+`cargo publish --dry-run`. The proto package is verified with `wire` enabled and with no
+`protoc` or `buf` on PATH. For the archives, run `gh workflow run release.yml --ref <branch>`.
+Manual runs upload workflow artifacts with the archives and their SHA-256 files. Only tag pushes
+can create a GitHub release.
+
+The archive matrix builds on native Linux x86-64 and AArch64 runners with `musl-tools` and on a
+native Apple silicon runner. Each job checks the archive files and checksum, runs the extracted
+binary to verify its version, checkout commit and protocol, and calls a fresh engine over
+loopback HTTPS with a test trust root. Linux jobs
+also check the extracted binary for an ELF interpreter or dynamic library dependencies (D81).
+Each Linux job builds two rejecting ELF fixtures, one for each violation, and accepts a static
+ELF as a control. The Apple silicon job exercises rejecting fixtures for the shared checks:
+checksum corruption or the wrong digest algorithm, archive members, licence, version and HTTPS.
+The rehearsal and publishing jobs use the same SHA-256 verifier.
 
 | Job | Enforces | Run locally | When it fails |
 |---|---|---|---|

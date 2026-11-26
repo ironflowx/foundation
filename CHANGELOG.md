@@ -4,6 +4,14 @@ Each release lists what it adds and changes. All published crates share one vers
 
 ## Unreleased
 
+## 0.3.0 - Serve
+
+The first `ironflowx` binary ([#139](https://github.com/ironflowx/foundation/issues/139)).
+Release archives contain the binary and MIT licence, with a separate SHA-256 checksum for each
+archive. They target Linux x86-64 and AArch64 (static musl, D81), and macOS on Apple silicon.
+The foundation crates and facade share version 0.3.0. The host, CLI, HTTP door and CLI generator
+are built from this repository and have `publish = false`.
+
 - **Server crash tests** ([#154](https://github.com/ironflowx/foundation/issues/154)). Linux and macOS exercise the real host's restart after SIGKILL under load, during drain, and around bootstrap and recovery key publication. The release workflow check rejects builds with the private fault hooks.
 
 - **Serve shutdown** ([#153](https://github.com/ironflowx/foundation/issues/153)): SIGINT or SIGTERM stops admitting calls and drains for up to 10 seconds before closing the engine. A signal during open lets it finish and publish a minted key. A second signal exits 1 immediately. A ledger fault before close exits 8 even without traffic. A control-plane failure still allows serving. The dev and release binaries abort on panic (D63, D72).
