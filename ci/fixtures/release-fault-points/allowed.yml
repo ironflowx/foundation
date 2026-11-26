@@ -24,4 +24,12 @@ jobs:
           NOTES
           artifact=$(printf '%s' ok # unmatched (
           )
-          echo "$artifact"
+          summary=$(cat <<'EOF'
+          It's ready.
+          EOF
+          )
+          continued=$( \
+          # unmatched (
+          printf '%s' ok
+          )
+          echo "$artifact $summary $continued"

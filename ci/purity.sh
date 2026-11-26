@@ -46,7 +46,14 @@ ci/must-reject.sh "cargo_global: release Cargo build must select only ironflowx-
   "time_flag: release Cargo build must select only ironflowx-bin" \
   "leading_redir: release Cargo build must select only ironflowx-bin" \
   "devnull_redir: release Cargo build must select only ironflowx-bin" \
-  "command_double_dash: release Cargo build must select only ironflowx-bin" -- \
+  "command_double_dash: release Cargo build must select only ironflowx-bin" \
+  "time_o_flag: release Cargo build must select only ironflowx-bin" \
+  "heredoc_bash: release Cargo build must select only ironflowx-bin" \
+  "arith_shift: release Cargo build must select only ironflowx-bin" \
+  "proc_subst: release Cargo build must select only ironflowx-bin" \
+  "brace_fd: release Cargo build must select only ironflowx-bin" \
+  "exec_combined: release Cargo build must select only ironflowx-bin" \
+  "dollar_heredoc: release Cargo build must select only ironflowx-bin" -- \
   ci/no-release-fault-points.sh ci/fixtures/release-fault-points/workspace.yml
 ci/must-reject.sh "ironflowx-bin: ordinary release graph enables __fault-points" -- \
   ci/no-release-fault-points.sh .github/workflows/release.yml \

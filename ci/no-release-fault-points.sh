@@ -1,24 +1,18 @@
 #!/usr/bin/env bash
 # Usage: ci/no-release-fault-points.sh [release.yml] [Cargo.toml]
-# Archive builds use an explicit, package-only Cargo command in release.yml. A workspace build or
-# test build can unify in the hooks from dev-dependencies or the crash-test crate. Commands hidden
-# in another script or constructed from shell variables are outside this check; keep archive build
-# arguments literal in release.yml.
+# Archive builds use a direct, package-only Cargo command in release.yml. Steps that do not mention
+# cargo, cross, __fault-points, or --all-features may use arbitrary shell syntax. Any step that
+# mentions them must invoke cargo/cross directly (no wrappers, heredocs, arithmetic shifts, or
+# process substitutions) and select only ironflowx-bin without dev targets or private features.
+# Commands hidden in external scripts or constructed from shell variables are outside this check.
 set -euo pipefail
 
 workflow=${1:-.github/workflows/release.yml}
 ruby -ryaml - "$workflow" <<'RUBY'
-  SHELL_KEYWORDS = %w[if then elif else do ! {].freeze
-  PREFIX_FLAGS = {
-    "time" => { value: [] },
-    "command" => { value: [] },
-    "nohup" => { value: [] },
-    "builtin" => { value: [] },
-    "exec" => { value: %w[-a] },
-    "env" => { value: %w[-u --unset -C --chdir -S --split-string], env: true }
-  }.freeze
   CARGO_GLOBAL_VALUE_FLAGS = %w[-C --color --config -Z --explain].freeze
   DESCRIPTIVE_KEYS = %w[name description].freeze
+  CARGO_WORD = /(?<![A-Za-z0-9_])(?:cargo|cross)(?![A-Za-z0-9_])/.freeze
+  INTERESTING = /(?<![A-Za-z0-9_])(?:cargo|cross)(?![A-Za-z0-9_])|__fault-points|--all-features/.freeze
 
   # Extract the inner body of $(...) starting at '('. Returns [inner, next_index].
   def extract_parens(script, open_idx)
@@ -43,6 +37,13 @@ ruby -ryaml - "$workflow" <<'RUBY'
         i = nl
         at_word_start = true
       elsif ch == "\\" && i + 1 < script.length
+        if script[i + 1] == "\n"
+          i += 2
+          next
+        elsif script[i + 1, 2] == "\r\n"
+          i += 3
+          next
+        end
         i += 1
         at_word_start = false
       elsif ch == "'"
@@ -94,49 +95,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
     raise ArgumentError, "unterminated backtick"
   end
 
-  # Extract command substitutions inside an unquoted heredoc without parsing prose quotes.
-  def scan_heredoc(body)
-    out = []
-    i = 0
-    n = body.length
-    while i < n
-      ch = body[i]
-      if ch == "\\" && i + 1 < n
-        i += 2
-      elsif ch == "$" && body[i + 1] == "("
-        inner, i = extract_parens(body, i + 1)
-        out.concat(commands(inner))
-      elsif ch == "`"
-        inner, i = extract_backticks(body, i)
-        out.concat(commands(inner))
-      else
-        i += 1
-      end
-    end
-    out
-  end
-
-  # Consume pending heredoc bodies starting right after a newline. Returns new index.
-  def consume_heredocs(script, i, pending, out)
-    pending.each do |delim, strip_tabs, quoted|
-      body = +""
-      while i < script.length
-        nl = script.index("\n", i)
-        line_end = nl ? nl + 1 : script.length
-        raw = script[i...line_end]
-        i = line_end
-        candidate = raw.chomp("\n").chomp("\r")
-        candidate = candidate.sub(/\A\t+/, "") if strip_tabs
-        break if candidate == delim
-        body << raw
-      end
-      out.concat(scan_heredoc(body)) unless quoted
-    end
-    pending.clear
-    i
-  end
-
-  # Strip redirections and their target words, returning only command words.
+  # Strip simple redirections and their targets, returning command words.
   def strip_redirs(items)
     words = []
     i = 0
@@ -153,34 +112,35 @@ ruby -ryaml - "$workflow" <<'RUBY'
     words
   end
 
-  # Tokenize literal shell commands, including subshells, redirections, heredocs and command
-  # substitutions, without evaluating variables. Backslash-newline outside single quotes joins.
-  def commands(script)
+  # Tokenize a step that mentions cargo/cross or private feature flags. Returns
+  # [commands, unsupported_syntax], where each command records words, piped, nested, redirected.
+  # Heredocs (<<), process substitutions (<( or >()), and arithmetic (( fail closed.
+  def commands(script, nested: false)
     out = []
     current = []
     word = +""
     in_word = false
     word_quoted = false
-    expect_heredoc = nil
-    pending_heredocs = []
+    piped_prev = false
+    unsupported = false
 
     flush_word = lambda do
       if in_word
-        if expect_heredoc
-          pending_heredocs << [word, expect_heredoc == "<<-", word_quoted]
-          expect_heredoc = nil
-        end
         current << [:word, word]
         word = +""
         in_word = false
         word_quoted = false
       end
     end
-    flush_cmd = lambda do
+    flush_cmd = lambda do |piped_next|
       flush_word.call
+      redirected = current.any? { |kind, _| kind == :redir }
       words = strip_redirs(current)
-      out << words unless words.empty?
+      unless words.empty?
+        out << { words: words, piped: piped_prev || piped_next, nested: nested, redirected: redirected }
+      end
       current = []
+      piped_prev = piped_next
     end
 
     i = 0
@@ -203,7 +163,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
         word_quoted = true
         i += 1
         close = script.index("'", i)
-        raise ArgumentError, "unterminated single quote" unless close
+        return [out, true] unless close
         word << script[i...close]
         i = close + 1
       elsif ch == '"'
@@ -231,28 +191,40 @@ ruby -ryaml - "$workflow" <<'RUBY'
             closed = true
             break
           elsif c == "$" && script[i + 1] == "("
+            return [out, true] if script[i + 2] == "("
             inner, i = extract_parens(script, i + 1)
-            out.concat(commands(inner))
+            sub_cmds, sub_unsup = commands(inner, nested: true)
+            out.concat(sub_cmds)
+            unsupported ||= sub_unsup
           elsif c == "`"
             inner, i = extract_backticks(script, i)
-            out.concat(commands(inner))
+            sub_cmds, sub_unsup = commands(inner, nested: true)
+            out.concat(sub_cmds)
+            unsupported ||= sub_unsup
           else
             word << c
             i += 1
           end
         end
-        raise ArgumentError, "unterminated double quote" unless closed
+        return [out, true] unless closed
       elsif ch == "#" && !in_word
         nl = script.index("\n", i)
         i = nl || n
       elsif ch == "$" && script[i + 1] == "("
+        return [out, true] if script[i + 2] == "("
         in_word = true
         inner, i = extract_parens(script, i + 1)
-        out.concat(commands(inner))
+        sub_cmds, sub_unsup = commands(inner, nested: true)
+        out.concat(sub_cmds)
+        unsupported ||= sub_unsup
       elsif ch == "`"
         in_word = true
         inner, i = extract_backticks(script, i)
-        out.concat(commands(inner))
+        sub_cmds, sub_unsup = commands(inner, nested: true)
+        out.concat(sub_cmds)
+        unsupported ||= sub_unsup
+      elsif script[i, 2] == "<<" || script[i, 2] == ">(" || script[i, 2] == "<(" || script[i, 2] == "(("
+        return [out, true]
       elsif ch == "<" || ch == ">" || (ch == "&" && script[i + 1] == ">")
         if ch != "&" && in_word && !word_quoted && word.match?(/\A[0-9]+\z/)
           word = +""
@@ -261,25 +233,23 @@ ruby -ryaml - "$workflow" <<'RUBY'
           flush_word.call
         end
         op =
-          if script[i, 3] == "<<-" || script[i, 3] == "<<<" || script[i, 3] == "&>>"
+          if script[i, 3] == "&>>"
             script[i, 3]
-          elsif %w[<< <& <> >> >& >| &>].include?(script[i, 2])
+          elsif %w[<& <> >> >& >| &>].include?(script[i, 2])
             script[i, 2]
           else
             ch
           end
         current << [:redir, op]
-        expect_heredoc = op if op == "<<" || op == "<<-"
         i += op.length
-      elsif ch == "\n"
-        flush_cmd.call
-        i += 1
-        i = consume_heredocs(script, i, pending_heredocs, out) unless pending_heredocs.empty?
       elsif ch == " " || ch == "\t" || ch == "\r"
         flush_word.call
         i += 1
-      elsif ";&|()".include?(ch)
-        flush_cmd.call
+      elsif ch == "|" && script[i + 1] != "|"
+        flush_cmd.call(true)
+        i += 1
+      elsif "\n;&|()".include?(ch)
+        flush_cmd.call(false)
         i += 1
       else
         in_word = true
@@ -287,40 +257,18 @@ ruby -ryaml - "$workflow" <<'RUBY'
         i += 1
       end
     end
-    flush_cmd.call
-    out
+    flush_cmd.call(false)
+    [out, unsupported]
+  rescue ArgumentError
+    [out, true]
   end
 
-  def split_command(tokens)
+  def split_env(tokens)
     env = []
     i = 0
-    while i < tokens.length
-      tok = tokens[i]
-      if tok.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
-        env << tok
-        i += 1
-      elsif SHELL_KEYWORDS.include?(tok)
-        i += 1
-      elsif (spec = PREFIX_FLAGS[File.basename(tok)])
-        i += 1
-        while i < tokens.length
-          if tokens[i] == "--"
-            i += 1
-            break
-          elsif spec[:value].include?(tokens[i])
-            i += 2
-          elsif tokens[i].start_with?("-")
-            i += 1
-          elsif spec[:env] && tokens[i].match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
-            env << tokens[i]
-            i += 1
-          else
-            break
-          end
-        end
-      else
-        break
-      end
+    while i < tokens.length && tokens[i].match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
+      env << tokens[i]
+      i += 1
     end
     [env, tokens.drop(i)]
   end
@@ -373,9 +321,17 @@ ruby -ryaml - "$workflow" <<'RUBY'
   workflow.fetch("jobs").each do |name, job|
     check_tokens(executable_strings(job), name, bad)
     job.fetch("steps", []).each do |step|
-      next unless step["run"].is_a?(String)
-      commands(step["run"]).each do |tokens|
-        env, cmd = split_command(tokens)
+      script = step["run"]
+      next unless script.is_a?(String)
+      probe = script.gsub(/\\\r?\n/, "").gsub(/[\\'"]/, "")
+      next unless probe.match?(INTERESTING)
+
+      cmds, unsupported = commands(script)
+      if unsupported
+        bad << "#{name}: release Cargo build must select only ironflowx-bin without dev targets"
+      end
+      cmds.each do |entry|
+        env, cmd = split_env(entry[:words])
         check_tokens(env, name, bad)
         next if cmd.empty?
         exe = File.basename(cmd.first)
@@ -385,7 +341,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
           check_tokens(cargo_args, name, bad)
           sub, sub_idx = find_subcommand(cargo_args)
           next unless sub
-          if %w[test t bench].include?(sub)
+          if %w[test t bench nextest].include?(sub)
             bad << "#{name}: release Cargo build must select only ironflowx-bin without dev targets"
             next
           end
@@ -405,6 +361,11 @@ ruby -ryaml - "$workflow" <<'RUBY'
           end
         else
           check_tokens(cmd, name, bad)
+          standalone_output =
+            %w[echo printf].include?(exe) && !entry[:piped] && !entry[:nested] && !entry[:redirected]
+          if !standalone_output && cmd.any? { |tok| tok.match?(CARGO_WORD) }
+            bad << "#{name}: release Cargo build must select only ironflowx-bin without dev targets"
+          end
         end
       end
     end

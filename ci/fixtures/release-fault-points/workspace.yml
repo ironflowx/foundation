@@ -58,3 +58,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: command -- cargo build --release --workspace
+  time_o_flag:
+    runs-on: ubuntu-latest
+    steps:
+      - run: /usr/bin/time -o build.time cargo build --release --workspace
+  heredoc_bash:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          bash <<'BUILD'
+          cargo build --release --workspace
+          BUILD
+  arith_shift:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          (( bytes = 1 << 20 ))
+          cargo build --release --workspace
+  proc_subst:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo build --release -p ironflowx-bin > >(tee build.log) --all-targets
+  brace_fd:
+    runs-on: ubuntu-latest
+    steps:
+      - run: '{log_fd}>build.log cargo build --release --workspace'
+  exec_combined:
+    runs-on: ubuntu-latest
+    steps:
+      - run: exec -ca release-cargo cargo build --release --workspace
+  dollar_heredoc:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cat <<$'NOTES'
+          notes
+          NOTES
+          cargo build --release --workspace
