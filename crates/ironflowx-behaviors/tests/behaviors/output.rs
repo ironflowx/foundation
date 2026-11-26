@@ -111,6 +111,9 @@ impl Audit {
     }
 
     pub fn connect_error(&self, error: &ConnectError) {
+        if let Some(message) = &error.message {
+            self.check(message.as_bytes(), "door refusal message");
+        }
         let wire = serde_json::to_vec(error).expect("serialize the Connect refusal");
         self.diagnostics(&wire, "door refusal");
         if let Some(error) = op_error(error) {
