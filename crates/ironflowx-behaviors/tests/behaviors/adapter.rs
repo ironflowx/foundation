@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use cucumber::gherkin::Scenario;
-use ironflowx_operations::{Engine, key_id};
+use ironflowx_operations::Engine;
 use ironflowx_proto::{
     Call, Client, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
     EmitResponse, Environment, Event, EventPage, GetEventRequest, KeyPage, ListEnvironmentsRequest,
@@ -38,10 +38,8 @@ pub struct Remote {
 
 impl Remote {
     fn presented(&self, call: &Call) {
-        if let Some(key) = call.key()
-            && key_id(key).is_some()
-        {
-            self.audit.lock().unwrap().remember(key.expose());
+        if let Some(key) = call.key() {
+            self.audit.lock().unwrap().presented(key);
         }
     }
 

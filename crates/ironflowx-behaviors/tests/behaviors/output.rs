@@ -32,6 +32,7 @@ impl Delivery {
 #[derive(Default)]
 pub struct Audit {
     keys: Vec<String>,
+    malformed: Vec<String>,
     file_key: Option<String>,
     published: Vec<String>,
 }
@@ -47,6 +48,17 @@ impl Audit {
         }
     }
 
+    pub fn presented(&mut self, key: &Secret) {
+        if key_id(key).is_some() {
+            self.remember(key.expose());
+        } else if !key.expose().is_empty() {
+            let literal = leak::latin1(key.expose().as_bytes());
+            if !self.malformed.contains(&literal) {
+                self.malformed.push(literal);
+            }
+        }
+    }
+
     pub fn file_key(&mut self, key: &str) {
         self.remember(key);
         self.file_key = Some(key.to_owned());
@@ -58,7 +70,18 @@ impl Audit {
     }
 
     fn leaked(&self, bytes: &[u8]) -> Option<&'static str> {
-        leak::leak(&leak::latin1(bytes), self.keys.iter().map(String::as_str))
+        self.leaked_text(&leak::latin1(bytes))
+    }
+
+    fn malformed_in(&self, text: &str) -> bool {
+        self.malformed.iter().any(|literal| text.contains(literal))
+    }
+
+    fn leaked_text(&self, text: &str) -> Option<&'static str> {
+        if self.malformed_in(text) {
+            return Some("a malformed credential");
+        }
+        leak::leak(text, self.keys.iter().map(String::as_str))
     }
 
     pub fn check(&self, bytes: &[u8], where_: &str) {
@@ -88,9 +111,8 @@ impl Audit {
     }
 
     pub fn connect_error(&self, error: &ConnectError) {
-        if let Some(message) = &error.message {
-            self.check(message.as_bytes(), "door refusal");
-        }
+        let wire = serde_json::to_vec(error).expect("serialize the Connect refusal");
+        self.diagnostics(&wire, "door refusal");
         if let Some(error) = op_error(error) {
             self.op_error(&error);
         }
@@ -164,6 +186,7 @@ impl Audit {
             self.keys.iter().map(String::as_str),
         )
         .is_some()
+            || self.malformed_in(&leak::latin1(path.as_os_str().as_encoded_bytes()))
         {
             return Some("credential in path");
         }
@@ -180,7 +203,7 @@ impl Audit {
         {
             return None;
         }
-        leak::leak(bytes, self.keys.iter().map(String::as_str)).map(|_| "credential in file")
+        self.leaked_text(bytes).map(|_| "credential in file")
     }
 }
 
@@ -258,4 +281,22 @@ pub fn fixtures() {
         audit.entry_leak(Path::new(&displayed), ""),
         Some("credential in path")
     );
+
+    let malformed = "fixture-malformed-credential";
+    audit.presented(&Secret::new(malformed.to_owned()));
+    let log = serde_json::json!({"fields": {"message": malformed}});
+    assert_eq!(
+        audit.leaked(log.to_string().as_bytes()),
+        Some("a malformed credential")
+    );
+    assert_eq!(
+        audit.entry_leak(Path::new("control.db"), malformed),
+        Some("credential in file")
+    );
+    assert_eq!(
+        audit.entry_leak(Path::new(malformed), ""),
+        Some("credential in path")
+    );
+    audit.presented(&Secret::new(String::new()));
+    assert_eq!(audit.leaked(b"clean diagnostic"), None);
 }
