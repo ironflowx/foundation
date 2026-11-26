@@ -304,7 +304,16 @@ impl Ledger {
         let mut gate = self.progress.subscribe();
         let head = gate.borrow().committed;
         let ready = gate
-            .wait_for(|p| p.failed || p.applied >= head)
+            .wait_for(|p| {
+                let ready = p.failed || p.applied >= head;
+                #[cfg(feature = "__fault-points")]
+                if !ready {
+                    ironflowx_core::reach_fault_point(
+                        ironflowx_core::FaultPoint::ReadWaitingForFold,
+                    );
+                }
+                ready
+            })
             .await
             .is_ok_and(|p| !p.failed);
         if !ready {

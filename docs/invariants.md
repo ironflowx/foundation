@@ -125,11 +125,13 @@ A kill keeps the operating system's page cache, so this test proves crash durabi
 | Killed | After restart |
 |---|---|
 | SIGKILL at a seeded crossing under keyed and unkeyed emits and mixed batches from four clients | Every acknowledged ID reads back. A write of unknown outcome is all present or all absent. Live reads see acknowledged writes, and before head publication the parked write remains invisible (LED-11, LED-14) |
-| SIGTERM under the same load, then SIGKILL after `stopping` while a durable submission still holds the drain | The same checks hold, including every acknowledgment observed through the end of the drain window |
+| SIGTERM under the same load, then SIGKILL after an in-flight write is acknowledged during drain, while another HTTP request still holds its body | The same checks hold, including the acknowledgment observed between `stopping` and SIGKILL |
 | No seed, before the bootstrap commits | The restart mints and publishes a working admin key and reports no lost secret |
 | No seed, after the bootstrap commits and before its mark | The finishing open revokes the lost minted key, logs that loss and publishes a working replacement |
 | No seed, after the mark and before the link | The later open leaves `admin.key` absent and reports no lost mint. A recovered admin key can list the original as `Minted` and revoke it |
 | No seed, after the link | `admin.key` holds the exact minted key, which authenticates |
 | File-mode recovery before its commit, after its commit or after the link | Before commit, no new key. After commit and before the link, the new key is listed as `Recovered` with no `admin.key`. Revoke it and recover again. After the link, `admin.key` holds the whole working key |
+
+A separate read checks LED-14 at the exact ordering boundary. The writer parks after acknowledgment and before fold. A second client reads that ID and reaches the wait on the committed head. Releasing the writer then lets the read return that ID.
 
 The random case prints `SERVER_CRASH_SEED=<seed> ci/server-crash.sh seeded_random_kill`. This replays the workload length, fault point and crossing. The host clock and the order in which concurrent clients reach the writer are chosen by the host and OS. The matrix runs in CI's existing Linux and macOS `test` jobs and in `ci/check.sh`. It exercises process death, with the OS page cache still in place, and leaves commit error injection to the engine tests. The `purity` job rejects a release workflow that explicitly names `__fault-points`, uses `--all-features`, builds with other packages or dev targets, or has the feature in the binary's ordinary build graph.

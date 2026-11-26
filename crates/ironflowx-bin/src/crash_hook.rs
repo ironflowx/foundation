@@ -4,13 +4,16 @@ use std::io::{self, Read as _, Write as _};
 use std::os::fd::AsFd as _;
 use std::os::unix::net::UnixStream;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread::{self, Thread};
 
 use ironflowx_core::{EnvRef, FaultPoint, KeyId, Secret, set_fault_hook, set_key_hook};
 
 static STOP: OnceLock<(String, u64)> = OnceLock::new();
 static CROSSINGS: AtomicU64 = AtomicU64::new(0);
 static SOCKET: OnceLock<UnixStream> = OnceLock::new();
+static PARKED: OnceLock<Thread> = OnceLock::new();
+static RELEASED: AtomicBool = AtomicBool::new(false);
 
 pub fn install() {
     let Ok(config) = std::env::var("IFX_SERVER_CRASH") else {
@@ -34,9 +37,15 @@ pub fn install() {
     SOCKET.set(socket).expect("install only once");
     set_key_hook(tell);
     set_fault_hook(at_point);
-    std::thread::spawn(move || {
-        // The parent sends no commands. If it disappears, even a parked child can exit.
-        let _ = watch.read_exact(&mut [0]);
+    thread::spawn(move || {
+        // The parent may release a parked barrier. EOF exits an orphaned child.
+        let mut command = [0];
+        if watch.read_exact(&mut command).is_ok() && command == [1] {
+            let parked = PARKED.get().expect("barrier reached before release");
+            RELEASED.store(true, Ordering::Release);
+            parked.unpark();
+            let _ = watch.read_exact(&mut command);
+        }
         std::process::exit(1);
     });
 }
@@ -49,13 +58,25 @@ fn tell(env: EnvRef, id: KeyId, secret: Option<&Secret>) {
 
 fn at_point(point: FaultPoint) {
     let (name, crossing) = STOP.get().expect("installed point");
+    if point == FaultPoint::ReadWaitingForFold {
+        if name == FaultPoint::AfterAck.name() && PARKED.get().is_some() {
+            announce(point);
+        }
+        return;
+    }
     if point.name() == name && CROSSINGS.fetch_add(1, Ordering::Relaxed) + 1 == *crossing {
-        let mut stdout = io::stdout().lock();
-        writeln!(stdout, "at {}", point.name()).expect("write the barrier");
-        stdout.flush().expect("flush the barrier");
-        drop(stdout);
-        loop {
-            std::thread::park();
+        PARKED
+            .set(thread::current())
+            .expect("only one parked crossing");
+        announce(point);
+        while !RELEASED.load(Ordering::Acquire) {
+            thread::park();
         }
     }
+}
+
+fn announce(point: FaultPoint) {
+    let mut stdout = io::stdout().lock();
+    writeln!(stdout, "at {}", point.name()).expect("write the barrier");
+    stdout.flush().expect("flush the barrier");
 }

@@ -1031,7 +1031,8 @@ const _: fn(FaultPoint) = |p| match p {
     FaultPoint::BeforeRecoveredCommit
     | FaultPoint::AfterRecoveredCommit
     | FaultPoint::BeforeAdminKeyLink
-    | FaultPoint::AfterAdminKeyLink => {}
+    | FaultPoint::AfterAdminKeyLink
+    | FaultPoint::ReadWaitingForFold => {}
 };
 
 /// splitmix64: the seed is all a run depends on, so a run replays.

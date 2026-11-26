@@ -19,6 +19,14 @@ use ironflowx_proto::{
 };
 use process::{Process, Told};
 
+fn key_file_present(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => panic!("cannot inspect admin.key: {:?}", error.kind()),
+    }
+}
+
 fn file_key(path: &Path) -> Secret {
     let mut text = fs::read_to_string(path).expect("the whole admin.key is readable");
     assert!(text.pop() == Some('\n'), "admin.key ends in a newline");
@@ -92,7 +100,7 @@ async fn bootstrap_publication() {
             panic!("exactly one minted key was told at {}", point.name());
         };
         assert_eq!(
-            path.exists(),
+            key_file_present(&path),
             point == FaultPoint::AfterAdminKeyLink,
             "admin.key presence when killed at {}",
             point.name()
@@ -124,7 +132,10 @@ async fn bootstrap_publication() {
                 logs.check_secrets([&original.key, &key]);
             }
             FaultPoint::BeforeAdminKeyLink => {
-                assert!(!path.exists(), "later open still has no admin.key");
+                assert!(
+                    !key_file_present(&path),
+                    "later open still has no admin.key"
+                );
                 let recovered = Process::recover(&root, None).success();
                 let key = file_key(&path);
                 let [replacement] = recovered.keys.as_slice() else {
@@ -216,7 +227,10 @@ async fn recovery_publication() {
         let client = host.ready().await;
         admin(&client, &seed, seed_id).await;
         host.stop().check_secrets([&seed]);
-        assert!(!path.exists(), "seeded startup creates no admin.key");
+        assert!(
+            !key_file_present(&path),
+            "seeded startup creates no admin.key"
+        );
 
         let recovery = Process::recover(&root, Some(point));
         recovery.at(point);
@@ -226,7 +240,7 @@ async fn recovery_publication() {
             panic!("exactly one recovered key was told at {}", point.name());
         };
         assert_eq!(
-            path.exists(),
+            key_file_present(&path),
             point == FaultPoint::AfterAdminKeyLink,
             "recovered admin.key presence at {}",
             point.name()
@@ -243,7 +257,10 @@ async fn recovery_publication() {
         match point {
             FaultPoint::BeforeRecoveredCommit => refused(&client, &original.key).await,
             FaultPoint::AfterRecoveredCommit => {
-                assert!(!path.exists(), "committed recovery still has no admin.key");
+                assert!(
+                    !key_file_present(&path),
+                    "committed recovery still has no admin.key"
+                );
                 admin(&client, &original.key, original.id).await;
                 revoke(&client, &seed, original).await;
                 let retry = Process::recover(&root, None).success();

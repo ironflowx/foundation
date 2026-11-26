@@ -15,6 +15,8 @@ pub enum FaultPoint {
     AfterFsync,
     /// The submitter is answered and the record not yet folded into the read store.
     AfterAck,
+    /// A read observed a committed head beyond its applied position. An observation only.
+    ReadWaitingForFold,
     /// Inside the writer's read store transaction for one record: its rows written, the
     /// applied position not yet moved, nothing committed.
     MidFold,
@@ -78,6 +80,7 @@ impl FaultPoint {
             Self::BeforeAppend => "before-append",
             Self::AfterFsync => "after-fsync",
             Self::AfterAck => "after-ack",
+            Self::ReadWaitingForFold => "read-waiting-for-fold",
             Self::MidFold => "mid-fold",
             Self::DuringOpen => "during-open",
             Self::BeforeSchemaCommit => "before-schema-commit",

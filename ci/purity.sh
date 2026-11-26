@@ -30,7 +30,14 @@ ci/no-release-fault-points.sh ci/fixtures/release-fault-points/allowed.yml
 ci/must-reject.sh "release workflow names __fault-points" \
   "release workflow enables --all-features" -- \
   ci/no-release-fault-points.sh ci/fixtures/release-fault-points/release.yml
-ci/must-reject.sh "release Cargo build must select only ironflowx-bin without dev targets" -- \
+ci/must-reject.sh "release workflow names __fault-points" -- \
+  ci/no-release-fault-points.sh ci/fixtures/release-fault-points/escaped-feature.yml
+ci/must-reject.sh "cargo_global: release Cargo build must select only ironflowx-bin" \
+  "comment_scope: release Cargo build must select only ironflowx-bin" \
+  "cross_build: release Cargo build must select only ironflowx-bin" \
+  "zigbuild: release Cargo build must select only ironflowx-bin" \
+  "locked_global: release Cargo build must select only ironflowx-bin" \
+  "implicit_run: release Cargo build must select only ironflowx-bin" -- \
   ci/no-release-fault-points.sh ci/fixtures/release-fault-points/workspace.yml
 ci/must-reject.sh "ironflowx-bin: ordinary release graph enables __fault-points" -- \
   ci/no-release-fault-points.sh .github/workflows/release.yml \

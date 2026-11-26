@@ -1,7 +1,28 @@
 name: release
 on: workflow_dispatch
 jobs:
-  archive:
+  cargo_global:
     runs-on: ubuntu-latest
     steps:
-      - run: cargo build --release --workspace
+      - run: cargo --color always build --release --workspace
+  comment_scope:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cargo build --release # -p ironflowx-bin
+  cross_build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cross build --release --workspace
+  zigbuild:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo zigbuild --release --workspace
+  locked_global:
+    runs-on: ubuntu-latest
+    steps:
+      - run: /usr/bin/cargo --locked build --release --workspace
+  implicit_run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: '"cargo" run --release --bin ironflowx -- version'

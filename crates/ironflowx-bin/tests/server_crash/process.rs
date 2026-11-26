@@ -62,37 +62,59 @@ impl Output {
 pub struct Process {
     child: Child,
     socket: UnixStream,
-    lines: Receiver<(Stream, Vec<u8>)>,
-    stdout: Option<JoinHandle<Vec<u8>>>,
-    stderr: Option<JoinHandle<Vec<u8>>>,
+    stdout: Capture,
+    stderr: Capture,
     addr: Option<SocketAddr>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Stream {
-    Out,
-    Err,
+struct Capture {
+    lines: Receiver<Vec<u8>>,
+    reader: Option<JoinHandle<Vec<u8>>>,
 }
 
-fn read_lines(
-    pipe: impl Read + Send + 'static,
-    stream: Stream,
-    send: std::sync::mpsc::Sender<(Stream, Vec<u8>)>,
-) -> JoinHandle<Vec<u8>> {
-    thread::spawn(move || {
-        let mut pipe = BufReader::new(pipe);
-        let mut all = Vec::new();
-        let mut line = Vec::new();
-        while pipe
-            .read_until(b'\n', &mut line)
-            .expect("read process output")
-            != 0
-        {
-            all.extend_from_slice(&line);
-            let _ = send.send((stream, std::mem::take(&mut line)));
+impl Capture {
+    fn new(pipe: impl Read + Send + 'static) -> Self {
+        let (send, lines) = channel();
+        let reader = thread::spawn(move || {
+            let mut pipe = BufReader::new(pipe);
+            let mut all = Vec::new();
+            let mut line = Vec::new();
+            while pipe
+                .read_until(b'\n', &mut line)
+                .expect("read process output")
+                != 0
+            {
+                all.extend_from_slice(&line);
+                let _ = send.send(std::mem::take(&mut line));
+            }
+            all
+        });
+        Self {
+            lines,
+            reader: Some(reader),
         }
-        all
-    })
+    }
+
+    fn until<T>(&self, description: &str, mut pick: impl FnMut(&[u8]) -> Option<T>) -> T {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let line = self
+                .lines
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(|e| panic!("waiting for {description}: {e}"));
+            if let Some(value) = pick(&line) {
+                return value;
+            }
+        }
+    }
+
+    fn finish(&mut self) -> Vec<u8> {
+        self.reader
+            .take()
+            .unwrap()
+            .join()
+            .expect("collect child output")
+    }
 }
 
 impl Drop for Process {
@@ -139,48 +161,34 @@ impl Process {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn the real ironflowx");
-        let (send, lines) = channel();
-        let stdout = read_lines(child.stdout.take().unwrap(), Stream::Out, send.clone());
-        let stderr = read_lines(child.stderr.take().unwrap(), Stream::Err, send);
+        let stdout = Capture::new(child.stdout.take().unwrap());
+        let stderr = Capture::new(child.stderr.take().unwrap());
         Self {
             child,
             socket,
-            lines,
-            stdout: Some(stdout),
-            stderr: Some(stderr),
+            stdout,
+            stderr,
             addr: None,
-        }
-    }
-
-    fn until<T>(&self, description: &str, mut pick: impl FnMut(Stream, &[u8]) -> Option<T>) -> T {
-        let deadline = Instant::now() + WAIT;
-        loop {
-            let (stream, line) = self
-                .lines
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .unwrap_or_else(|e| panic!("waiting for {description}: {e}"));
-            if let Some(value) = pick(stream, &line) {
-                return value;
-            }
         }
     }
 
     pub fn at(&self, point: FaultPoint) {
         let expected = format!("at {}\n", point.name());
-        self.until(point.name(), |stream, line| {
-            (stream == Stream::Out && line == expected.as_bytes()).then_some(())
+        self.stdout.until(point.name(), |line| {
+            (line == expected.as_bytes()).then_some(())
         });
     }
 
+    pub fn release(&self) {
+        (&self.socket)
+            .write_all(&[1])
+            .expect("release the parked writer");
+    }
+
     pub fn log(&self, message: &str) -> Value {
-        self.until(message, |stream, line| {
-            if stream == Stream::Err {
-                let row = serde_json::from_slice::<Value>(line).ok()?;
-                if row["fields"]["message"] == message {
-                    return Some(row["fields"].clone());
-                }
-            }
-            None
+        self.stderr.until(message, |line| {
+            let row = serde_json::from_slice::<Value>(line).ok()?;
+            (row["fields"]["message"] == message).then(|| row["fields"].clone())
         })
     }
 
@@ -227,6 +235,33 @@ impl Process {
         .await
         .expect("the restarted server becomes ready");
         Client::new(&url).unwrap().with_timeout(WAIT)
+    }
+
+    /// Hyper's interim reply proves this connection reached the door. Keep its body unsent so
+    /// the drain cannot finish as soon as the writer's other connection answers.
+    pub async fn hold_request_body(&self) -> tokio::net::TcpStream {
+        tokio::time::timeout(WAIT, async {
+            let mut stream = tokio::net::TcpStream::connect(self.addr.unwrap())
+                .await
+                .unwrap();
+            stream
+                .write_all(
+                    b"POST /ironflowx.v1.EventService/Emit HTTP/1.1\r\nHost: fixture\r\n\
+                  Content-Type: application/json\r\nContent-Length: 2\r\n\
+                  Expect: 100-continue\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            let mut response = [0; 25];
+            stream.read_exact(&mut response).await.unwrap();
+            assert!(
+                &response == b"HTTP/1.1 100 Continue\r\n\r\n",
+                "the door is reading a body"
+            );
+            stream
+        })
+        .await
+        .expect("the held request reached the door")
     }
 
     pub fn signal(&self, signal: Signal) {
@@ -281,8 +316,8 @@ impl Process {
             .collect();
         let output = Output {
             keys,
-            stdout: self.stdout.take().unwrap().join().expect("collect stdout"),
-            stderr: self.stderr.take().unwrap().join().expect("collect stderr"),
+            stdout: self.stdout.finish(),
+            stderr: self.stderr.finish(),
         };
         output.check_secrets([]);
         (status, output)

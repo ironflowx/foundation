@@ -13,3 +13,5 @@ jobs:
       - run: |
           cargo +stable build --release --locked \
             --package=ironflowx-bin
+      - run: |
+          cargo --color always build -p 'ironflowx-bin' --release # no --all-features

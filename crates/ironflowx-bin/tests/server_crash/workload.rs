@@ -13,6 +13,7 @@ use ironflowx_proto::{
 };
 use rustix::process::Signal;
 use serde_json::Value;
+use tokio::io::AsyncReadExt as _;
 use tokio::sync::Barrier;
 use tokio::task::JoinSet;
 
@@ -164,8 +165,10 @@ async fn start_round(url: &str, auth: &Arc<Call>, round: usize) -> JoinSet<(Writ
     tasks
 }
 
-async fn join(mut tasks: JoinSet<(Write, Reply)>) -> Vec<(Write, Reply)> {
-    let mut answers = Vec::new();
+async fn join(
+    mut tasks: JoinSet<(Write, Reply)>,
+    mut answers: Vec<(Write, Reply)>,
+) -> Vec<(Write, Reply)> {
     while let Some(answer) = tasks.join_next().await {
         answers.push(answer.expect("the client task completed"));
     }
@@ -215,7 +218,7 @@ async fn crash(point: FaultPoint, warmup: usize, crossing: u64, drain: bool) {
     let url = host.url();
     let mut answered = Vec::new();
     for round in 0..warmup {
-        answered.extend(join(start_round(&url, &auth, round).await).await);
+        answered.extend(join(start_round(&url, &auth, round).await, Vec::new()).await);
     }
     // A different client's read arrives after the acknowledged writes, while the host is live.
     let mut visible = list(&observer, &auth).await;
@@ -230,7 +233,7 @@ async fn crash(point: FaultPoint, warmup: usize, crossing: u64, drain: bool) {
     }
     assert!(visible.is_empty(), "live reads have no extra events");
 
-    let interrupted = start_round(&url, &auth, warmup).await;
+    let mut interrupted = start_round(&url, &auth, warmup).await;
     host.at(point);
     // Before publication of the committed head, the observer still sees just the earlier writes.
     if matches!(point, FaultPoint::BeforeAppend | FaultPoint::AfterFsync) {
@@ -255,21 +258,35 @@ async fn crash(point: FaultPoint, warmup: usize, crossing: u64, drain: bool) {
         );
         assert!(visible.is_empty(), "live reads have no extra events");
     }
-    if drain {
+    let mut during_drain = Vec::new();
+    let held = if drain {
+        let mut held = host.hold_request_body().await;
         host.signal(Signal::TERM);
-        // The writer cannot finish, and stopping means admissions and the listener are closed.
         host.log("stopping");
-    }
+        host.release();
+        let mut byte = [0];
+        loop {
+            tokio::select! {
+                biased;
+                _ = held.read(&mut byte) => panic!("drain closed before acknowledging a write"),
+                next = interrupted.join_next() => {
+                    let answer = next.expect("drain ended without acknowledging a write")
+                        .expect("the client task completed");
+                    let acknowledged = matches!(answer.1, Reply::Acknowledged(_));
+                    during_drain.push(answer);
+                    if acknowledged {
+                        break;
+                    }
+                }
+            }
+        }
+        Some(held)
+    } else {
+        None
+    };
     host.kill().check_secrets([&seed]);
-    let interrupted = join(interrupted).await;
-    if drain {
-        assert!(
-            interrupted
-                .iter()
-                .any(|(_, reply)| matches!(reply, Reply::Unknown)),
-            "the in-flight drain write loses its reply"
-        );
-    }
+    drop(held);
+    let interrupted = join(interrupted, during_drain).await;
 
     let mut restart = Process::serve(&root, Some(&seed_file), None);
     let observer = restart.ready().await;
@@ -288,13 +305,16 @@ async fn crash(point: FaultPoint, warmup: usize, crossing: u64, drain: bool) {
                 .await,
         );
     }
-    let expected = crossing as usize - usize::from(point == FaultPoint::BeforeAppend);
-    assert_eq!(
-        landed,
-        expected,
-        "the exact prefix made durable at {}",
-        point.name()
-    );
+    if !drain {
+        let expected = crossing as usize - usize::from(point == FaultPoint::BeforeAppend);
+        assert_eq!(
+            landed,
+            expected,
+            "the exact prefix made durable at {}",
+            point.name()
+        );
+    }
+
     assert!(listed.is_empty(), "restart has no extra events");
 
     let (_, Reply::Acknowledged(answers)) = &answered[0] else {
@@ -349,4 +369,44 @@ async fn seeded_random_kill() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kill_during_drain() {
     crash(FaultPoint::AfterFsync, 1, 1, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn acknowledged_read_waits_for_fold() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("data");
+    let seed_file = dir.path().join("seed");
+    let (_, seed) = generate_seed();
+    process::write_seed(&seed_file, &seed);
+    let mut host = Process::serve(&root, Some(&seed_file), Some((FaultPoint::AfterAck, 1)));
+    let observer = host.ready().await;
+    let writer = Client::new(&host.url())
+        .unwrap()
+        .with_timeout(Duration::from_secs(15));
+    let auth = call(&seed);
+    let write = Write::new(0, 0);
+    let Reply::Acknowledged(answers) = write.send(&writer, &auth).await else {
+        panic!("writer acknowledges before it folds");
+    };
+    host.at(FaultPoint::AfterAck);
+    let id = answers[0].event_id;
+    let read = tokio::spawn(async move {
+        observer
+            .get_event(
+                &auth,
+                GetEventRequest {
+                    event_id: id.to_string(),
+                },
+            )
+            .await
+    });
+    // Only the observer's read can cross this point, and only with the correct committed head.
+    host.at(FaultPoint::ReadWaitingForFold);
+    host.release();
+    let got = expect_answer(
+        read.await.expect("observer task"),
+        "observer reads the acknowledged ID",
+    );
+    assert_eq!(got.event_id, id);
+    host.stop().check_secrets([&seed]);
 }
