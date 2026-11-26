@@ -16,6 +16,7 @@ pub fn ironflowx_doors::service() -> axum::routing::MethodRouter
 pub fn ironflowx_doors::router<O>(ironflowx_doors::Slot<O>, tower::util::BoxService) -> axum::routing::Router
 pub fn ironflowx_proto::Client::handle(&self) -> ironflowx_vendor::Handle
 pub use ironflowx_proto::ProbeError
+pub use ironflowx::store
 pub use ironflowx_proto::probe_http
 pub use ironflowx_proto::<<connectrpc::client::*>>
 pub extern crate ironflowx_proto::zz_http

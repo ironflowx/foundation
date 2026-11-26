@@ -18,6 +18,8 @@ pub use clock::{HostClock, ManualClock};
 #[cfg(feature = "__fault-points")]
 #[doc(hidden)]
 pub use ironflowx_core::{FaultPoint, set_fault_hook};
+/// The event types this crate's API names, so a caller needs no `ironflowx-events`.
+pub use ironflowx_events::{Emit, Event, EventPage, ItemOutcome, Refusal, Submission};
 pub use ledger::{
     Committed, Fault, Ledger, LedgerState, OpenError, ReadError, SubmitError, new_env_ref,
 };

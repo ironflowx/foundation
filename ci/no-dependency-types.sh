@@ -13,7 +13,8 @@ crates=$(cd "$(dirname "$0")/../crates" && printf '%s|' * | tr - _)
 found=$(CRATES=${crates%|} perl -ne '
   my $line = $_;
   if (/^pub (use|extern crate) /
-      && !/^pub use ironflowx::(authz|cell|core|events|operations|proto|store)$/
+      && !/^pub use ironflowx::(cell|core|operations|proto)$/
+      && !/^pub use ironflowx_cell::(Emit|Event|EventPage|ItemOutcome|Refusal|Submission)$/
       && !/^pub use ironflowx_operations::(Fault|HostClock|LedgerState|OpenError|RecoverError|SeedState|StoreError)$/) {
     print "$ARGV:$.: $_";
     next;

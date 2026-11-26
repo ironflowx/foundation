@@ -32,3 +32,17 @@ fn facade_client_supports_https_only_with_tls() {
         features == "client-tls",
     );
 }
+
+/// A direct ledger user reaches every event type the ledger's API names through `cell`, with no
+/// `events` module in the facade.
+#[test]
+fn facade_cell_names_the_ledgers_event_types() {
+    use ironflowx::cell::{Emit, Event, EventPage, ItemOutcome, Refusal, Submission};
+    fn named(_: Option<(Event, EventPage, ItemOutcome, Refusal)>) {}
+    named(None);
+    let emit = Emit {
+        name: "a".into(),
+        ..Emit::default()
+    };
+    assert!(matches!(Submission::Emit(emit), Submission::Emit(e) if e.name == "a"));
+}

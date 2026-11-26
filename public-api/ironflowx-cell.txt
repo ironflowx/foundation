@@ -1,4 +1,10 @@
 pub mod ironflowx_cell
+pub use ironflowx_cell::Emit
+pub use ironflowx_cell::Event
+pub use ironflowx_cell::EventPage
+pub use ironflowx_cell::ItemOutcome
+pub use ironflowx_cell::Refusal
+pub use ironflowx_cell::Submission
 pub enum ironflowx_cell::LedgerState
 pub ironflowx_cell::LedgerState::Open
 pub ironflowx_cell::LedgerState::Unavailable
