@@ -12,7 +12,7 @@ use crate::record::FORMAT;
 
 /// The read store failed.
 #[derive(Debug)]
-pub struct StoreError(rusqlite::Error);
+pub(crate) struct StoreError(rusqlite::Error);
 
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -28,7 +28,7 @@ fn store_err<T>(r: rusqlite::Result<T>) -> Result<T, StoreError> {
 }
 
 /// The read store as event rules' queries see it.
-pub struct ReadStore<'a>(pub(crate) &'a Connection);
+pub(crate) struct ReadStore<'a>(pub(crate) &'a Connection);
 
 /// D18: the SQLite conversions over `Timestamp`'s one `i64` encoding.
 struct Millis(Timestamp);

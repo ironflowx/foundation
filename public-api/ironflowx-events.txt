@@ -140,7 +140,10 @@ impl core::cmp::Eq for ironflowx_events::Refusal
 pub fn ironflowx_events::Refusal::assert_fields_are_eq(&self)
 impl core::cmp::PartialEq for ironflowx_events::Refusal
 pub fn ironflowx_events::Refusal::eq(&self, &Self) -> bool
+impl core::error::Error for ironflowx_events::Refusal
 impl core::fmt::Debug for ironflowx_events::Refusal
+pub fn ironflowx_events::Refusal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_events::Refusal
 pub fn ironflowx_events::Refusal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_events::Refusal
 pub trait ironflowx_events::EventTables

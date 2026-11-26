@@ -259,7 +259,7 @@ impl Operations for Engine {
     async fn get_event(&self, cx: &Call, req: GetEventRequest) -> Result<Event, OpError> {
         let a = self.admit(cx, Operation::GetEvent).await?;
         self.ledger(&a)
-            .read(move |v| ironflowx_events::get_event(v, &req.event_id))
+            .get_event(&req.event_id)
             .await
             .map(events::event)
             .map_err(events::read_error)
@@ -273,12 +273,9 @@ impl Operations for Engine {
     /// `Unavailable` if the ledger failed.
     async fn list_events(&self, cx: &Call, req: ListEventsRequest) -> Result<EventPage, OpError> {
         let a = self.admit(cx, Operation::ListEvents).await?;
-        let token = self.env.token();
         let page = self
             .ledger(&a)
-            .read(move |v| {
-                ironflowx_events::list_events(v, token, req.limit, req.cursor.as_deref())
-            })
+            .list_events(req.limit, req.cursor.as_deref())
             .await
             .map_err(events::read_error)?;
         Ok(EventPage {

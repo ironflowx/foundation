@@ -3,13 +3,14 @@
 
 use std::fmt;
 use std::fs::File;
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 use ironflowx_core::{Clock, Emitter, EnvRef, EventId, SequencedTime, SubmitAs, Timestamp};
-use ironflowx_events::{Error, ItemOutcome, Record, Refusal, Submission};
+use ironflowx_events::{Error, Event, EventPage, ItemOutcome, Record, Refusal, Submission};
 use rusqlite::Connection;
 use segment_log_core::{
     AppendError, CommitError, ExpectedRevision, NewRecord, Options, SegmentLog, Submit,
@@ -59,8 +60,38 @@ pub enum SubmitError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadError {
     Refused(Refusal),
+    /// The ledger failed and refuses every call until it is reopened.
     Unavailable,
 }
+
+const UNAVAILABLE: &str = "the ledger is unavailable until it is reopened";
+
+/// Shows a refusal's message. No `source()`, so a reporter that walks the chain shows it once.
+impl fmt::Display for SubmitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused(r) => r.fmt(f),
+            Self::Unknown => f.write_str(
+                "the submission's outcome is unknown, and the ledger is unavailable until it is reopened",
+            ),
+            Self::Unavailable => f.write_str(UNAVAILABLE),
+        }
+    }
+}
+
+impl std::error::Error for SubmitError {}
+
+/// Shows a refusal's message. No `source()`, so a reporter that walks the chain shows it once.
+impl fmt::Display for ReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused(r) => r.fmt(f),
+            Self::Unavailable => f.write_str(UNAVAILABLE),
+        }
+    }
+}
+
+impl std::error::Error for ReadError {}
 
 /// Whether an open ledger has failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +122,7 @@ pub enum OpenError {
     Io(std::io::Error),
 }
 
+/// Shows the inner I/O error. No `source()`, so a reporter that walks the chain shows it once.
 impl fmt::Display for OpenError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -291,13 +323,52 @@ impl Ledger {
         answer.await.unwrap_or(Err(SubmitError::Unavailable))
     }
 
+    /// The event with this ID, once the read store holds every write acknowledged before this
+    /// call.
+    ///
+    /// # Errors
+    ///
+    /// `Refused` with `NotFound` for an unknown or malformed ID; `Unavailable` if the ledger
+    /// failed.
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime.
+    pub async fn get_event(&self, id: &str) -> Result<Event, ReadError> {
+        let id = id.to_owned();
+        self.read(move |v| ironflowx_events::get_event(v, &id))
+            .await
+    }
+
+    /// A page of events, newest first, once the read store holds every write acknowledged
+    /// before this call. `limit` is 20 when `None` and at most 200; `cursor` is a page's `next`
+    /// from this ledger.
+    ///
+    /// # Errors
+    ///
+    /// `Refused` with `Invalid` for a cursor this incarnation did not give; `Unavailable` if
+    /// the ledger failed.
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime.
+    pub async fn list_events(
+        &self,
+        limit: Option<NonZeroU32>,
+        cursor: Option<&str>,
+    ) -> Result<EventPage, ReadError> {
+        let (token, cursor) = (self.env.token(), cursor.map(str::to_owned));
+        self.read(move |v| ironflowx_events::list_events(v, token, limit, cursor.as_deref()))
+            .await
+    }
+
     /// Runs a query from event rules once the read store holds every write acknowledged
     /// before this call.
     ///
     /// # Panics
     ///
     /// Outside a tokio runtime. A query that panics fails the ledger instead.
-    pub async fn read<R: Send + 'static>(
+    pub(crate) async fn read<R: Send + 'static>(
         &self,
         q: impl FnOnce(&ReadStore<'_>) -> Result<R, Error<StoreError>> + Send + 'static,
     ) -> Result<R, ReadError> {

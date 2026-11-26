@@ -67,7 +67,7 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 
 | Module | Does | Interface | Crate |
 |---|---|---|---|
-| Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time; reports whether it has failed, and signals a ledger fault | `open`, `open_blocking`, `open_existing_blocking`, `submit`, `read`, `state`, `faulted`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
+| Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time; reports whether it has failed, and signals a ledger fault | `open`, `open_blocking`, `open_existing_blocking`, `submit`, `get_event`, `list_events`, `state`, `faulted`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
 | Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types, which the wire maps onto (D53) | `Operations` trait and messages | `ironflowx-proto` |
 | Proto | Defines an operation once, on the wire (D49) | `proto/ironflowx/v1/*.proto`: services, messages, the method options `cli`, `summary` and `example`, the field option `json_text` | `ironflowx-proto` (the `.proto` files; compiled, `wire::FILE_DESCRIPTOR_SET`) |
@@ -83,7 +83,7 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 | Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Scope`, `KeyOrigin`, `Address`, `Secret`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
 | Facade | Gives embedders one dependency on foundation | Crate re-exports. `proto::Client` with `client`, also accepting `https` with `client-tls` | `ironflowx` |
 
-`Engine` is the one in-process `Operations`, so `Operations` always means credentialed (D36). For an event operation it maps the request to a submission or a query and the outcome to an answer, and holds no event rule: every check, default and limit is in event rules. It submits as its verified grant's `submit_as()`, so an event emitted with a key records `key:<key-id>`. An embedder that needs no keys calls `Ledger::submit` and `read` directly, as `SubmitAs::embedder(name)`; the ledger trusts it.
+`Engine` is the one in-process `Operations`, so `Operations` always means credentialed (D36). For an event operation it maps the request to a submission or a query and the outcome to an answer, and holds no event rule: every check, default and limit is in event rules. It submits as its verified grant's `submit_as()`, so an event emitted with a key records `key:<key-id>`. An embedder that needs no keys calls `Ledger::submit`, `get_event` and `list_events` directly, as `SubmitAs::embedder(name)`; the ledger trusts it.
 
 | Type | Is |
 |---|---|
@@ -285,16 +285,16 @@ impl ControlPlane {
 
 // ironflowx-cell (tokio)
 impl Ledger {
-    // open, read and close panic outside a tokio runtime; open and close also on one that has shut down, and close drops the ledger then
+    // open, get_event, list_events and close panic outside a tokio runtime; open and close also on one that has shut down, and close drops the ledger then
     async fn open(dir: &Path, env: EnvRef, clock: impl Clock + Send + 'static) -> Result<Ledger, OpenError>;
     // As open, on the calling thread, outside a runtime too
     fn open_blocking(dir: &Path, env: EnvRef, clock: impl Clock + Send + 'static) -> Result<Ledger, OpenError>;
     // As open_blocking, but Missing for a directory that is missing, or whose log is missing, empty or begins with a record of events; creates neither
     fn open_existing_blocking(dir: &Path, env: EnvRef, clock: impl Clock + Send + 'static) -> Result<Ledger, OpenError>;
     async fn submit(&self, sub: Submission, by: SubmitAs) -> Result<Committed, SubmitError>;   // trusts `by` (D36)
-    // q is a query from event rules (get_event, list_events) over the read store; a q that panics fails the ledger
-    async fn read<R: Send + 'static>(&self, q: impl FnOnce(&ReadStore) -> Result<R, Error<StoreError>> + Send + 'static)
-        -> Result<R, ReadError>;
+    // Each runs event rules' query of the same name once the read store holds every acknowledged write; a query that panics fails the ledger
+    async fn get_event(&self, id: &str) -> Result<Event, ReadError>;   // Refused(NotFound) for an unknown or malformed ID
+    async fn list_events(&self, limit: Option<NonZeroU32>, cursor: Option<&str>) -> Result<EventPage, ReadError>;   // this ledger's token checks the cursor
     fn env(&self) -> EnvRef;
     fn state(&self) -> LedgerState;   // Open | Unavailable
     fn faulted(&self) -> impl Future<Output = Fault> + Send + 'static;   // resolves once, when the ledger fails; a close is no fault
@@ -306,6 +306,7 @@ fn new_env_ref() -> EnvRef;   // a fresh UUIDv7 ID and a 128-bit token from the 
 // ItemOutcome New(EventId) | Duplicate(EventId) | Refused(Refusal)   // Refused only inside a batch
 // SubmitError Refused(Refusal) | Unknown | Unavailable              // Refused: a single emit, or a whole batch
 // ReadError   Refused(Refusal) | Unavailable                        // a read-store failure fails the ledger
+// SubmitError, ReadError and Refusal are std errors; Display shows a refusal's message. No error has a source(): Display shows the inner error
 
 // ironflowx-events: pure. `fresh` yields one event ID per new event, minted by the writer.
 fn decide<V: EventsView>(view: &V, sub: &Submission, now: SequencedTime,
@@ -389,7 +390,7 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 | `NotFound` | No event has that ID, or the ID does not parse | No |
 | `NotFound` | `revoke_key` with an ID that does not parse or names no key in the environment: `key not found` | No |
 | `Unknown` | The append's outcome is unknown; the ledger is now `Unavailable` | After reopen, only if it has an idempotency key, or every item of its batch has one. On the retry, a valid item whose key is already stored returns its original event, a new key stores one event, and a refused item is refused again. An item without a key may store a second event, so check first. The hint says which: of an `emit` by whether it has a key, of an `emit_batch` both |
-| `Unavailable` | The ledger failed (append, fold, read store, a panic of its writer or of a `read` query, or a `read` that finds its runtime shut down before its query ran) and refuses every call until it is reopened. Reads waiting at the gate end with it | After reopen |
+| `Unavailable` | The ledger failed (append, fold, read store, a panic of its writer or of a read's query, or a read that finds its runtime shut down before its query ran) and refuses every call until it is reopened. Reads waiting at the gate end with it | After reopen |
 | `Unavailable` | A control-plane read or write failed during admission or a handler: `lookup_key`, `environment`, `list_keys` or a key change. The call fails closed and changes nothing, but for an [unsettled commit](#after-a-failed-open-or-change) (D48), so the hint of a `create_key` whose transaction failed says to list the keys before the retry, and to list them again after a reopen; the engine stays open (D44). A failure to record an expiry is not this: the call keeps its uniform refusal. A `create_key` whose answer was lost may have committed. Once a call has panicked under the control plane's lock (a host `Clock` that panics), every later call that reaches the control plane answers so until the engine is reopened, though its hint still says at once | Yes, at once; a `create_key` whose transaction failed, once the keys are listed, which show an unsettled one only after a reopen; after such a panic, after reopen |
 | `Unavailable` | Through a door, the engine is not open yet: every call the wire can carry, with the hint `the engine is starting` or, while stopping, `the engine is stopping` | Yes |
 | `Unavailable` | From the proto client, any call whose connection never opened, a server whose certificate is not trusted included: nothing ran | Yes |

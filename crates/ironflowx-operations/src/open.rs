@@ -37,6 +37,7 @@ pub enum EngineError {
     Io(std::io::Error),
 }
 
+/// Shows the inner error. No `source()`, so a reporter that walks the chain shows it once.
 impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
