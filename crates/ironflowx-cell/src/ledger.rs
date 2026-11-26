@@ -35,7 +35,7 @@ pub struct Ledger {
     #[cfg(any(test, feature = "__fault-points"))]
     faults: Arc<faults::Faults>,
     // Keep the lock until the writer has joined and the read store has closed.
-    _directory_lock: File,
+    _directory_lock: DirectoryLock,
 }
 
 /// What a submission committed: one outcome per item, in input order.
@@ -599,12 +599,21 @@ fn append(
 }
 
 struct Recovered {
-    directory_lock: File,
     log: SegmentLog,
     conn: Connection,
     watermark: u64,
     last_time: Option<Timestamp>,
     revision: u64,
+    directory_lock: DirectoryLock,
+}
+
+struct DirectoryLock(File);
+
+impl Drop for DirectoryLock {
+    fn drop(&mut self) {
+        // A child forked before exec can still hold a descriptor for this lock.
+        let _ = self.0.unlock();
+    }
 }
 
 /// Create missing components from the top down, syncing each parent before
@@ -662,6 +671,7 @@ fn recover(dir: &Path, env: EnvRef, existing: bool) -> Result<Recovered, OpenErr
         std::fs::TryLockError::WouldBlock => OpenError::Locked,
         std::fs::TryLockError::Error(e) => OpenError::Io(e),
     })?;
+    let directory_lock = DirectoryLock(directory_lock);
     let options = Options {
         linger: std::time::Duration::ZERO,
         group_byte_cap: 8 * 1024 * 1024,
@@ -888,5 +898,30 @@ impl Ledger {
     /// The next fold fails, after its submission is acknowledged.
     pub fn fail_next_fold(&self) {
         self.faults.fail_fold();
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn dropping_the_ledger_unlocks_even_with_an_inherited_descriptor() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = crate::new_env_ref();
+        let open = || {
+            Ledger::open_blocking(
+                dir.path(),
+                env,
+                crate::ManualClock::new(Timestamp::from_millis(0)),
+            )
+        };
+        let ledger = open().unwrap();
+        // A fork before exec shares the file description, just as a duplicate does.
+        let inherited = ledger._directory_lock.0.try_clone().unwrap();
+        assert!(matches!(open(), Err(OpenError::Locked)));
+        drop(ledger);
+        open().unwrap();
+        drop(inherited);
     }
 }
