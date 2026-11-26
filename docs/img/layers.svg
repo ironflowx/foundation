@@ -151,5 +151,5 @@
   <text x="107" y="719" font-size="11.5" class="sub">owns what is on disk</text>
   <rect class="eng" x="244" y="708" width="13" height="13" rx="3" stroke-width="1.4"/>
   <text x="263" y="719" font-size="11.5" class="sub">admits every call</text>
-  <text x="840" y="719" font-size="11.5" class="sub" text-anchor="end">One crate to depend on: ironflowx re-exports all seven.</text>
+  <text x="840" y="719" font-size="11.5" class="sub" text-anchor="end">One crate to depend on: ironflowx re-exports what apps use.</text>
 </svg>

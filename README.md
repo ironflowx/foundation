@@ -48,7 +48,7 @@ More diagrams (crates, modules and seams, crash recovery) and the details are in
 | ironflowx-authz | credentials: the key format, and whether a key is valid and may make a call |
 | ironflowx-store | the control plane: which tenants, projects, environments and keys exist |
 | ironflowx-operations | the engine: admits every call, then runs it on the ledger or the keys |
-| ironflowx | every foundation crate, re-exported |
+| ironflowx | the crates an app uses, re-exported: `core`, `proto`, `cell` and `operations` |
 | ironflowx-doors | the HTTP door, unpublished |
 | ironflowx-cli | the CLI, unpublished |
 | ironflowx-codegen | the generator: the CLI's commands, from the proto, unpublished |
