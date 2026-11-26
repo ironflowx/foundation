@@ -1,4 +1,24 @@
 #!/usr/bin/env bash
 # Runs every CI check before a push. Enable once per clone: git config core.hooksPath .githooks
+# The checks take minutes while git holds the push's connection open. Over SSH, GitHub closes an
+# idle connection, and git then dies of SIGPIPE (exit 141) after the checks pass, with nothing
+# pushed. So an SSH push without keepalives is refused before the checks start.
 set -euo pipefail
+url=${2:-} host=
+# git's two SSH forms: ssh://[user@]host[:port]/path, and [user@]host:path with no slash before
+# the colon.
+if [[ $url =~ ^ssh://([^@/]+@)?([^:/]+) ]]; then
+  host=${BASH_REMATCH[2]}
+elif [[ $url != *://* && $url =~ ^([^@/:]+@)?([^/:]+): ]]; then
+  host=${BASH_REMATCH[2]}
+fi
+if [ -n "$host" ]; then
+  ssh_command=${GIT_SSH_COMMAND:-$(git config core.sshCommand || true)}
+  if [[ $ssh_command != *ServerAliveInterval* ]] &&
+    ssh -G "$host" 2>/dev/null | grep -qx 'serveraliveinterval 0'; then
+    echo "pre-push: an SSH push needs keepalives to outlast ci/check.sh. Once per clone:" >&2
+    echo "  git config core.sshCommand 'ssh -o ServerAliveInterval=30'" >&2
+    exit 1
+  fi
+fi
 exec "$(git rev-parse --show-toplevel)/ci/check.sh"

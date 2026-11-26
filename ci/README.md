@@ -6,7 +6,10 @@ reject. Fixtures can be dedicated files under `fixtures/` or builds configured t
 check. `must-reject.sh` checks that each fixture fails for the expected reason.
 
 `ci/check.sh` runs every job below but `soak` locally, in order, and stops at the first failure: run it
-before you push. `git config core.hooksPath .githooks` makes `git push` run it. The root
+before you push. `git config core.hooksPath .githooks` makes `git push` run it. Over SSH, also
+`git config core.sshCommand 'ssh -o ServerAliveInterval=30'`: GitHub closes the push's connection
+while the checks run, and git then dies of SIGPIPE with nothing pushed, so the hook refuses an SSH
+push without keepalives. The root
 `Makefile` names these commands; `make` lists them.
 
 A release is `make release VERSION=X.Y.Z` (`ci/release.sh`): from a clean `main` that matches
