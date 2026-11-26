@@ -303,19 +303,28 @@ impl Ledger {
     ) -> Result<R, ReadError> {
         let mut gate = self.progress.subscribe();
         let head = gate.borrow().committed;
-        let ready = gate
-            .wait_for(|p| {
-                let ready = p.failed || p.applied >= head;
-                #[cfg(feature = "__fault-points")]
-                if !ready {
-                    ironflowx_core::reach_fault_point(
-                        ironflowx_core::FaultPoint::ReadWaitingForFold,
-                    );
-                }
-                ready
-            })
-            .await
-            .is_ok_and(|p| !p.failed);
+        let ready = {
+            let wait = gate.wait_for(|p| p.failed || p.applied >= head);
+            #[cfg(feature = "__fault-points")]
+            let wait = {
+                let mut wait = std::pin::pin!(wait);
+                let mut announced = false;
+                std::future::poll_fn(move |cx| {
+                    let polled = std::future::Future::poll(wait.as_mut(), cx);
+                    if polled.is_pending() && !announced {
+                        announced = true;
+                        ironflowx_core::reach_fault_point(
+                            ironflowx_core::FaultPoint::ReadWaitingForFold,
+                        );
+                    }
+                    polled
+                })
+                .await
+            };
+            #[cfg(not(feature = "__fault-points"))]
+            let wait = wait.await;
+            wait.is_ok_and(|p| !p.failed)
+        };
         if !ready {
             return Err(ReadError::Unavailable);
         }
@@ -412,7 +421,13 @@ struct AppendReply(Option<oneshot::Sender<Result<Committed, SubmitError>>>);
 
 impl AppendReply {
     fn send(mut self, result: Result<Committed, SubmitError>) {
+        #[cfg(feature = "__fault-points")]
+        let ok = result.is_ok();
         let _ = self.0.take().expect("reply is pending").send(result);
+        #[cfg(feature = "__fault-points")]
+        if ok {
+            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterAck);
+        }
     }
 }
 
@@ -491,8 +506,6 @@ impl Writer {
             ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterFsync);
             self.progress.send_modify(|p| p.committed = offset + 1);
             reply.send(answer);
-            #[cfg(feature = "__fault-points")]
-            ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterAck);
             self.fold(offset, &record, &emitted_by);
         }
     }

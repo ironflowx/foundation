@@ -15,3 +15,6 @@ jobs:
             --package=ironflowx-bin
       - run: |
           cargo --color always build -p 'ironflowx-bin' --release # no --all-features
+      - name: Compile without --all-features
+        run: echo cargo build --release
+      - run: cargo run --release -p ironflowx-bin -- version --all-features

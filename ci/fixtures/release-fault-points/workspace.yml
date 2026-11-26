@@ -26,3 +26,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: '"cargo" run --release --bin ironflowx -- version'
+  subshell_group:
+    runs-on: ubuntu-latest
+    steps:
+      - run: (cargo build --release --workspace)
+  command_subst:
+    runs-on: ubuntu-latest
+    steps:
+      - run: artifact=$(cargo build --workspace --release --message-format=json | jq -r .executable)
+  test_no_run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo test --release --no-run -p ironflowx-bin
+  test_integration:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo test --release --locked --no-run -p ironflowx-bin --test recovery
