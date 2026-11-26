@@ -9,20 +9,19 @@ use ironflowx_proto::{Call, OpError, Operation, required_scope};
 
 use crate::{Engine, blocking};
 
-/// Proof that a call's key was verified. Its field is private to this module, so no handler,
-/// and no crate, can build one without admission:
+/// Proof that a call's key was verified. Its field is private to this module, so no handler can
+/// build one without admission, and the type is private to the crate, so no other crate can
+/// name one:
 ///
-/// ```compile_fail,E0451
-/// # fn forge(grant: ironflowx_authz::Grant) -> ironflowx_operations::Authorized {
-/// ironflowx_operations::Authorized { grant }
-/// # }
+/// ```compile_fail,E0603
+/// fn hold(_: &ironflowx_operations::Authorized) {}
 /// ```
-pub struct Authorized {
+pub(crate) struct Authorized {
     grant: Grant,
 }
 
 impl Authorized {
-    pub const fn grant(&self) -> &Grant {
+    pub(crate) const fn grant(&self) -> &Grant {
         &self.grant
     }
 }

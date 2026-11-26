@@ -36,7 +36,7 @@ const MAX_KEY_PAGE: u32 = 1_000;
 /// The most created keys of an environment that hold a slot at once (TEN-15).
 const KEY_CAP: u32 = 1_000;
 
-pub use admission::Authorized;
+use admission::Authorized;
 pub use ironflowx_authz::SeedState;
 pub use ironflowx_cell::{Fault, HostClock, LedgerState, OpenError};
 pub use ironflowx_store::{RecoverError, StoreError};
@@ -394,7 +394,7 @@ fn key_info(row: KeyRow, now: Timestamp) -> KeyInfo {
     let r = row.record;
     let status = if r.revoked_at.is_some() {
         KeyStatus::Revoked
-    } else if r.expiry_recorded || r.expires_at.is_some_and(|t| now >= t) {
+    } else if r.expired(now) {
         KeyStatus::Expired
     } else {
         KeyStatus::Active

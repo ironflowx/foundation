@@ -43,9 +43,6 @@ impl core::fmt::Debug for ironflowx_operations::EngineError
 pub fn ironflowx_operations::EngineError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for ironflowx_operations::EngineError
 pub fn ironflowx_operations::EngineError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct ironflowx_operations::Authorized
-impl ironflowx_operations::Authorized
-pub const fn ironflowx_operations::Authorized::grant(&self) -> &ironflowx_authz::Grant
 pub struct ironflowx_operations::Engine
 impl ironflowx_operations::Engine
 pub async fn ironflowx_operations::Engine::close(self)
