@@ -95,3 +95,19 @@ jobs:
           notes
           NOTES
           cargo build --release --workspace
+  subshell_printf:
+    runs-on: ubuntu-latest
+    steps:
+      - run: "(printf '%s\\n' 'cargo build --release --workspace') | bash"
+  brace_script:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {
+            echo 'cargo build --release --workspace'
+          } > build.sh
+          bash build.sh
+  cargo_alias:
+    runs-on: ubuntu-latest
+    steps:
+      - run: CARGO_ALIAS_RELEASE_BUILD='build --release --workspace' cargo release-build

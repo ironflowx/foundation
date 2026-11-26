@@ -10,6 +10,12 @@ set -euo pipefail
 workflow=${1:-.github/workflows/release.yml}
 ruby -ryaml - "$workflow" <<'RUBY'
   CARGO_GLOBAL_VALUE_FLAGS = %w[-C --color --config -Z --explain].freeze
+  CARGO_BUILD_SUBCOMMANDS = %w[build b rustc zigbuild run r].freeze
+  CARGO_READONLY_SUBCOMMANDS = %w[
+    metadata version help fetch tree pkgid locate-project verify-project
+  ].freeze
+  GROUP_OPEN_WORDS = %w[{ if for while until case].freeze
+  GROUP_CLOSE_WORDS = %w[} fi done esac].freeze
   DESCRIPTIVE_KEYS = %w[name description].freeze
   CARGO_WORD = /(?<![A-Za-z0-9_])(?:cargo|cross)(?![A-Za-z0-9_])/.freeze
   INTERESTING = /(?<![A-Za-z0-9_])(?:cargo|cross)(?![A-Za-z0-9_])|__fault-points|--all-features/.freeze
@@ -113,7 +119,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
   end
 
   # Tokenize a step that mentions cargo/cross or private feature flags. Returns
-  # [commands, unsupported_syntax], where each command records words, piped, nested, redirected.
+  # [commands, unsupported_syntax], recording words, piped, nested, redirected, and grouped.
   # Heredocs (<<), process substitutions (<( or >()), and arithmetic (( fail closed.
   def commands(script, nested: false)
     out = []
@@ -122,6 +128,7 @@ ruby -ryaml - "$workflow" <<'RUBY'
     in_word = false
     word_quoted = false
     piped_prev = false
+    group_depth = 0
     unsupported = false
 
     flush_word = lambda do
@@ -136,9 +143,28 @@ ruby -ryaml - "$workflow" <<'RUBY'
       flush_word.call
       redirected = current.any? { |kind, _| kind == :redir }
       words = strip_redirs(current)
-      unless words.empty?
-        out << { words: words, piped: piped_prev || piped_next, nested: nested, redirected: redirected }
+      while !words.empty? && GROUP_OPEN_WORDS.include?(words.first)
+        group_depth += 1
+        words.shift
       end
+      while !words.empty? && %w[then do else elif].include?(words.first)
+        words.shift
+      end
+      closing = 0
+      while !words.empty? && GROUP_CLOSE_WORDS.include?(words.first)
+        closing += 1
+        words.shift
+      end
+      unless words.empty?
+        out << {
+          words: words,
+          piped: piped_prev || piped_next,
+          nested: nested,
+          redirected: redirected,
+          grouped: group_depth > 0
+        }
+      end
+      group_depth = [group_depth - closing, 0].max
       current = []
       piped_prev = piped_next
     end
@@ -245,10 +271,21 @@ ruby -ryaml - "$workflow" <<'RUBY'
       elsif ch == " " || ch == "\t" || ch == "\r"
         flush_word.call
         i += 1
-      elsif ch == "|" && script[i + 1] != "|"
+      elsif script[i, 2] == "||" || script[i, 2] == "&&"
+        flush_cmd.call(false)
+        i += 2
+      elsif ch == "|"
         flush_cmd.call(true)
         i += 1
-      elsif "\n;&|()".include?(ch)
+      elsif ch == "("
+        flush_cmd.call(false)
+        group_depth += 1
+        i += 1
+      elsif ch == ")"
+        flush_cmd.call(false)
+        group_depth = [group_depth - 1, 0].max
+        i += 1
+      elsif "\n;&".include?(ch)
         flush_cmd.call(false)
         i += 1
       else
@@ -341,11 +378,11 @@ ruby -ryaml - "$workflow" <<'RUBY'
           check_tokens(cargo_args, name, bad)
           sub, sub_idx = find_subcommand(cargo_args)
           next unless sub
-          if %w[test t bench nextest].include?(sub)
+          next if CARGO_READONLY_SUBCOMMANDS.include?(sub)
+          unless CARGO_BUILD_SUBCOMMANDS.include?(sub)
             bad << "#{name}: release Cargo build must select only ironflowx-bin without dev targets"
             next
           end
-          next unless %w[build b rustc zigbuild run r].include?(sub)
           sub_args = cargo_args.drop(sub_idx + 1)
           packages = sub_args.each_index.map do |i|
             case sub_args[i]
@@ -362,7 +399,8 @@ ruby -ryaml - "$workflow" <<'RUBY'
         else
           check_tokens(cmd, name, bad)
           standalone_output =
-            %w[echo printf].include?(exe) && !entry[:piped] && !entry[:nested] && !entry[:redirected]
+            %w[echo printf].include?(exe) &&
+            !entry[:piped] && !entry[:nested] && !entry[:redirected] && !entry[:grouped]
           if !standalone_output && cmd.any? { |tok| tok.match?(CARGO_WORD) }
             bad << "#{name}: release Cargo build must select only ironflowx-bin without dev targets"
           end

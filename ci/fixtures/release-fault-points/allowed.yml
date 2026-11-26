@@ -33,3 +33,12 @@ jobs:
           printf '%s' ok
           )
           echo "$artifact $summary $continued"
+      - run: |
+          tag=$( \
+          # unmatched (
+          printf '%s' ok
+          )
+          test -f build.log || echo 'cargo build skipped'
+          false || printf '%s\n' 'cargo build finished'
+          cargo build --release --locked -p ironflowx-bin
+          echo "$tag"
