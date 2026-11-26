@@ -36,7 +36,7 @@ const MAX_KEY_PAGE: u32 = 1_000;
 /// The most created keys of an environment that hold a slot at once (TEN-15).
 const KEY_CAP: u32 = 1_000;
 
-pub use admission::Authorized;
+use admission::Authorized;
 pub use ironflowx_authz::SeedState;
 pub use ironflowx_cell::{Fault, HostClock, LedgerState, OpenError};
 pub use ironflowx_store::{RecoverError, StoreError};
@@ -259,7 +259,7 @@ impl Operations for Engine {
     async fn get_event(&self, cx: &Call, req: GetEventRequest) -> Result<Event, OpError> {
         let a = self.admit(cx, Operation::GetEvent).await?;
         self.ledger(&a)
-            .read(move |v| ironflowx_events::get_event(v, &req.event_id))
+            .get_event(&req.event_id)
             .await
             .map(events::event)
             .map_err(events::read_error)
@@ -273,12 +273,9 @@ impl Operations for Engine {
     /// `Unavailable` if the ledger failed.
     async fn list_events(&self, cx: &Call, req: ListEventsRequest) -> Result<EventPage, OpError> {
         let a = self.admit(cx, Operation::ListEvents).await?;
-        let token = self.env.token();
         let page = self
             .ledger(&a)
-            .read(move |v| {
-                ironflowx_events::list_events(v, token, req.limit, req.cursor.as_deref())
-            })
+            .list_events(req.limit, req.cursor.as_deref())
             .await
             .map_err(events::read_error)?;
         Ok(EventPage {
@@ -397,7 +394,7 @@ fn key_info(row: KeyRow, now: Timestamp) -> KeyInfo {
     let r = row.record;
     let status = if r.revoked_at.is_some() {
         KeyStatus::Revoked
-    } else if r.expiry_recorded || r.expires_at.is_some_and(|t| now >= t) {
+    } else if r.expired(now) {
         KeyStatus::Expired
     } else {
         KeyStatus::Active

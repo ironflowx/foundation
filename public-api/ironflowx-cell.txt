@@ -1,4 +1,10 @@
 pub mod ironflowx_cell
+pub use ironflowx_cell::Emit
+pub use ironflowx_cell::Event
+pub use ironflowx_cell::EventPage
+pub use ironflowx_cell::ItemOutcome
+pub use ironflowx_cell::Refusal
+pub use ironflowx_cell::Submission
 pub enum ironflowx_cell::LedgerState
 pub ironflowx_cell::LedgerState::Open
 pub ironflowx_cell::LedgerState::Unavailable
@@ -35,7 +41,10 @@ impl core::cmp::Eq for ironflowx_cell::ReadError
 pub fn ironflowx_cell::ReadError::assert_fields_are_eq(&self)
 impl core::cmp::PartialEq for ironflowx_cell::ReadError
 pub fn ironflowx_cell::ReadError::eq(&self, &Self) -> bool
+impl core::error::Error for ironflowx_cell::ReadError
 impl core::fmt::Debug for ironflowx_cell::ReadError
+pub fn ironflowx_cell::ReadError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_cell::ReadError
 pub fn ironflowx_cell::ReadError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_cell::ReadError
 pub enum ironflowx_cell::SubmitError
@@ -48,7 +57,10 @@ impl core::cmp::Eq for ironflowx_cell::SubmitError
 pub fn ironflowx_cell::SubmitError::assert_fields_are_eq(&self)
 impl core::cmp::PartialEq for ironflowx_cell::SubmitError
 pub fn ironflowx_cell::SubmitError::eq(&self, &Self) -> bool
+impl core::error::Error for ironflowx_cell::SubmitError
 impl core::fmt::Debug for ironflowx_cell::SubmitError
+pub fn ironflowx_cell::SubmitError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_cell::SubmitError
 pub fn ironflowx_cell::SubmitError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_cell::SubmitError
 pub struct ironflowx_cell::Committed
@@ -90,10 +102,11 @@ pub async fn ironflowx_cell::Ledger::close(self)
 pub async fn ironflowx_cell::Ledger::close_with_state(self) -> ironflowx_cell::LedgerState
 pub const fn ironflowx_cell::Ledger::env(&self) -> ironflowx_core::id::EnvRef
 pub fn ironflowx_cell::Ledger::faulted(&self) -> impl core::future::future::Future<Output = ironflowx_cell::Fault> + core::marker::Send + 'static + use<>
+pub async fn ironflowx_cell::Ledger::get_event(&self, &str) -> core::result::Result<ironflowx_events::Event, ironflowx_cell::ReadError>
+pub async fn ironflowx_cell::Ledger::list_events(&self, core::option::Option<core::num::nonzero::NonZeroU32>, core::option::Option<&str>) -> core::result::Result<ironflowx_events::EventPage, ironflowx_cell::ReadError>
 pub async fn ironflowx_cell::Ledger::open(&std::path::Path, ironflowx_core::id::EnvRef, impl ironflowx_core::time::Clock + core::marker::Send + 'static) -> core::result::Result<Self, ironflowx_cell::OpenError>
 pub fn ironflowx_cell::Ledger::open_blocking(&std::path::Path, ironflowx_core::id::EnvRef, impl ironflowx_core::time::Clock + core::marker::Send + 'static) -> core::result::Result<Self, ironflowx_cell::OpenError>
 pub fn ironflowx_cell::Ledger::open_existing_blocking(&std::path::Path, ironflowx_core::id::EnvRef, impl ironflowx_core::time::Clock + core::marker::Send + 'static) -> core::result::Result<Self, ironflowx_cell::OpenError>
-pub async fn ironflowx_cell::Ledger::read<R: core::marker::Send + 'static>(&self, impl core::ops::function::FnOnce(&ironflowx_cell::ReadStore<'_>) -> core::result::Result<R, ironflowx_events::Error<ironflowx_cell::StoreError>> + core::marker::Send + 'static) -> core::result::Result<R, ironflowx_cell::ReadError>
 pub fn ironflowx_cell::Ledger::state(&self) -> ironflowx_cell::LedgerState
 pub async fn ironflowx_cell::Ledger::submit(&self, ironflowx_events::Submission, ironflowx_core::who::SubmitAs) -> core::result::Result<ironflowx_cell::Committed, ironflowx_cell::SubmitError>
 impl core::ops::drop::Drop for ironflowx_cell::Ledger
@@ -109,17 +122,4 @@ impl core::fmt::Debug for ironflowx_cell::ManualClock
 pub fn ironflowx_cell::ManualClock::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl ironflowx_core::time::Clock for ironflowx_cell::ManualClock
 pub fn ironflowx_cell::ManualClock::now(&self) -> ironflowx_core::time::Timestamp
-pub struct ironflowx_cell::ReadStore<'a>(_)
-impl ironflowx_events::EventsView for ironflowx_cell::ReadStore<'_>
-pub type ironflowx_cell::ReadStore<'_>::Error = ironflowx_cell::StoreError
-pub fn ironflowx_cell::ReadStore<'_>::event(&self, ironflowx_core::id::EventId) -> core::result::Result<core::option::Option<ironflowx_events::Event>, ironflowx_cell::StoreError>
-pub fn ironflowx_cell::ReadStore<'_>::event_by_key(&self, &str) -> core::result::Result<core::option::Option<ironflowx_core::id::EventId>, ironflowx_cell::StoreError>
-pub fn ironflowx_cell::ReadStore<'_>::events_before(&self, core::option::Option<u64>, &mut ironflowx_events::PageBudget) -> core::result::Result<alloc::vec::Vec<ironflowx_events::Event>, ironflowx_cell::StoreError>
-pub fn ironflowx_cell::ReadStore<'_>::last_sequence(&self) -> core::result::Result<u64, ironflowx_cell::StoreError>
-pub struct ironflowx_cell::StoreError(_)
-impl core::error::Error for ironflowx_cell::StoreError
-impl core::fmt::Debug for ironflowx_cell::StoreError
-pub fn ironflowx_cell::StoreError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for ironflowx_cell::StoreError
-pub fn ironflowx_cell::StoreError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn ironflowx_cell::new_env_ref() -> ironflowx_core::id::EnvRef

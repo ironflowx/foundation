@@ -5,7 +5,9 @@
 # nor the wire's libraries may leak through a signature or a trait impl, where a version bump
 # becomes a breaking change. The exceptions, in unpublished crates, are the router a door returns
 # and the command line the CLI shares with the host. A re-export's line does not say whose type it
-# is, so each is named here: ours. Not caught: one of those names pointed at a dependency's type.
+# is, so each is named here: ours. Not caught: one of those names pointed at a dependency's type;
+# a public alias of one (`pub type ironflowx::Store = ironflowx_store::ControlPlane`); and a module
+# of ours whose function returns one, since every path of this workspace is allowed.
 set -euo pipefail
 crates=$(cd "$(dirname "$0")/../crates" && printf '%s|' * | tr - _)
 # perl: the path's root is what no path and no name precedes. Its $ARGV is perl's.
@@ -13,7 +15,8 @@ crates=$(cd "$(dirname "$0")/../crates" && printf '%s|' * | tr - _)
 found=$(CRATES=${crates%|} perl -ne '
   my $line = $_;
   if (/^pub (use|extern crate) /
-      && !/^pub use ironflowx::(authz|cell|core|events|operations|proto|store)$/
+      && !/^pub use ironflowx::(cell|core|operations|proto)$/
+      && !/^pub use ironflowx_cell::(Emit|Event|EventPage|ItemOutcome|Refusal|Submission)$/
       && !/^pub use ironflowx_operations::(Fault|HostClock|LedgerState|OpenError|RecoverError|SeedState|StoreError)$/) {
     print "$ARGV:$.: $_";
     next;

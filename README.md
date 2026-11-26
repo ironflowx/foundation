@@ -48,7 +48,7 @@ More diagrams (crates, modules and seams, crash recovery) and the details are in
 | ironflowx-authz | credentials: the key format, and whether a key is valid and may make a call |
 | ironflowx-store | the control plane: which tenants, projects, environments and keys exist |
 | ironflowx-operations | the engine: admits every call, then runs it on the ledger or the keys |
-| ironflowx | every foundation crate, re-exported |
+| ironflowx | the crates an app uses, re-exported: `core`, `proto`, `cell` and `operations` |
 | ironflowx-doors | the HTTP door, unpublished |
 | ironflowx-cli | the CLI, unpublished |
 | ironflowx-codegen | the generator: the CLI's commands, from the proto, unpublished |
@@ -82,6 +82,8 @@ Depend on the facade, with `tokio` for the runtime the engine and the ledger run
 ironflowx = "0.3"
 tokio = { version = "1", default-features = false, features = ["rt"] }
 ```
+
+From 0.4 (unreleased; 0.3 re-exports every crate), the facade re-exports `core`, `proto`, `cell` and `operations`. The engine's own crates, `ironflowx-store`, `ironflowx-authz` and `ironflowx-events`, are published for it, not for apps.
 
 [`examples/embed`](https://github.com/ironflowx/foundation/tree/main/examples/embed) bootstraps an engine, emits an event, reads it back with a read-only key and sees that key's emit refused. The engine refuses 0.1 ledger directories (D39, [changelog](https://github.com/ironflowx/foundation/blob/main/CHANGELOG.md)).
 

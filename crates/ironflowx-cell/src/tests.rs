@@ -8,9 +8,9 @@ use ironflowx_core::{Emitter, EnvRef, ErrorKind, EventId, SubmitAs, Timestamp};
 use ironflowx_events::{Emit, Event, ItemOutcome, Submission};
 use segment_log_core::{ExpectedRevision, NewRecord, Options, SegmentLog, Submit};
 
+use crate::store::ReadStore;
 use crate::{
-    Ledger, LedgerState, ManualClock, OpenError, ReadError, ReadStore, SubmitError, new_env_ref,
-    record,
+    Ledger, LedgerState, ManualClock, OpenError, ReadError, SubmitError, new_env_ref, record,
 };
 
 const T: i64 = 1_800_000_000_000;
@@ -62,15 +62,12 @@ async fn emit(ledger: &Ledger, emit: Emit) -> Result<EventId, SubmitError> {
 }
 
 async fn get(ledger: &Ledger, id: EventId) -> Result<Event, ReadError> {
-    ledger
-        .read(move |v| ironflowx_events::get_event(v, &id.to_string()))
-        .await
+    ledger.get_event(&id.to_string()).await
 }
 
 async fn all(ledger: &Ledger) -> Result<Vec<Event>, ReadError> {
-    let token = ledger.env().token();
     ledger
-        .read(move |v| ironflowx_events::list_events(v, token, 200.try_into().ok(), None))
+        .list_events(200.try_into().ok(), None)
         .await
         .map(|p| p.events)
 }
@@ -336,7 +333,9 @@ async fn a_panicking_query_fails_the_ledger_and_reopen_recovers() {
     emit(&ledger, named("a")).await.unwrap();
     let answer = ledger
         .read(
-            |_| -> Result<(), ironflowx_events::Error<crate::StoreError>> { panic!("a query bug") },
+            |_| -> Result<(), ironflowx_events::Error<crate::store::StoreError>> {
+                panic!("a query bug")
+            },
         )
         .await;
     assert_eq!(answer, Err(ReadError::Unavailable));
@@ -364,7 +363,7 @@ async fn a_cursor_past_every_sequence_lists_from_the_newest() {
     assert_eq!(page.events.len(), 1);
 }
 
-fn store_message(e: ironflowx_events::Error<crate::StoreError>) -> String {
+fn store_message(e: ironflowx_events::Error<crate::store::StoreError>) -> String {
     match e {
         ironflowx_events::Error::Store(e) => e.to_string(),
         ironflowx_events::Error::Refused(r) => panic!("refused: {r:?}"),
@@ -1560,4 +1559,92 @@ fn a_close_ends_the_queue_without_a_blocking_thread() {
     });
     rt.shutdown_background();
     closed.expect("the close ended the queue");
+}
+
+#[tokio::test]
+async fn the_ledger_gets_an_event_and_lists_pages_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = open(dir.path(), new_env_ref()).await;
+    let a = emit(&ledger, named("a")).await.unwrap();
+    emit(&ledger, named("b")).await.unwrap();
+    let got = ledger.get_event(&a.to_string()).await.unwrap();
+    assert_eq!((got.id, &*got.name), (a, "a"));
+    let Err(ReadError::Refused(r)) = ledger.get_event("evt_unknown").await else {
+        panic!("an unknown ID was found");
+    };
+    assert_eq!(
+        (r.kind(), r.message()),
+        (ErrorKind::NotFound, "event not found")
+    );
+    let first = ledger.list_events(1.try_into().ok(), None).await.unwrap();
+    assert_eq!(
+        first.events.iter().map(|e| &*e.name).collect::<Vec<_>>(),
+        ["b"]
+    );
+    let rest = ledger
+        .list_events(None, first.next.as_deref())
+        .await
+        .unwrap();
+    assert_eq!(
+        rest.events.iter().map(|e| &*e.name).collect::<Vec<_>>(),
+        ["a"]
+    );
+    assert_eq!(rest.next, None);
+}
+
+#[tokio::test]
+async fn a_cursor_from_another_incarnation_is_refused() {
+    let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let other = open(one.path(), new_env_ref()).await;
+    emit(&other, named("a")).await.unwrap();
+    emit(&other, named("b")).await.unwrap();
+    let cursor = other
+        .list_events(1.try_into().ok(), None)
+        .await
+        .unwrap()
+        .next;
+    let ledger = open(two.path(), new_env_ref()).await;
+    emit(&ledger, named("a")).await.unwrap();
+    let Err(ReadError::Refused(r)) = ledger.list_events(None, cursor.as_deref()).await else {
+        panic!("another incarnation's cursor was accepted");
+    };
+    assert_eq!(
+        (r.kind(), r.message()),
+        (ErrorKind::Invalid, "invalid cursor")
+    );
+}
+
+#[tokio::test]
+async fn the_ledger_errors_are_rust_errors_that_say_what_failed() {
+    // D84: `Display` carries the inner text, so no error has a `source()`.
+    fn shown(e: &impl std::error::Error) -> String {
+        assert!(e.source().is_none(), "{e} has a source()");
+        e.to_string()
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = open(dir.path(), new_env_ref()).await;
+    let Err(SubmitError::Refused(r)) = emit(&ledger, named("a..b")).await else {
+        panic!("a bad name was accepted");
+    };
+    assert_eq!(shown(&r), "event name has an empty segment");
+    assert_eq!(
+        shown(&SubmitError::Refused(r.clone())),
+        "event name has an empty segment"
+    );
+    assert_eq!(
+        shown(&ReadError::Refused(r)),
+        "event name has an empty segment"
+    );
+    assert_eq!(
+        shown(&SubmitError::Unknown),
+        "the submission's outcome is unknown, and the ledger is unavailable until it is reopened"
+    );
+    assert_eq!(
+        shown(&SubmitError::Unavailable),
+        "the ledger is unavailable until it is reopened"
+    );
+    assert_eq!(
+        shown(&ReadError::Unavailable),
+        "the ledger is unavailable until it is reopened"
+    );
 }

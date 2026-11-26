@@ -3,13 +3,14 @@
 
 use std::fmt;
 use std::fs::File;
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 use ironflowx_core::{Clock, Emitter, EnvRef, EventId, SequencedTime, SubmitAs, Timestamp};
-use ironflowx_events::{Error, ItemOutcome, Record, Refusal, Submission};
+use ironflowx_events::{Error, Event, EventPage, ItemOutcome, Record, Refusal, Submission};
 use rusqlite::Connection;
 use segment_log_core::{
     AppendError, CommitError, ExpectedRevision, NewRecord, Options, SegmentLog, Submit,
@@ -45,6 +46,8 @@ pub struct Committed {
 }
 
 /// A submission failed.
+/// Its `Display` shows a refusal's message, and it has no `source()`, so a reporter that walks the
+/// chain shows the cause once (D84).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmitError {
     /// A single emit, or a whole batch, was refused by a rule.
@@ -56,11 +59,40 @@ pub enum SubmitError {
 }
 
 /// A read failed.
+/// Its `Display` shows a refusal's message, and it has no `source()`, so a reporter that walks the
+/// chain shows the cause once (D84).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadError {
+    /// A query refused the request: an unknown event, or a bad cursor.
     Refused(Refusal),
+    /// The ledger failed and refuses every call until it is reopened.
     Unavailable,
 }
+
+const UNAVAILABLE: &str = "the ledger is unavailable until it is reopened";
+
+impl fmt::Display for SubmitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused(r) => r.fmt(f),
+            Self::Unknown => write!(f, "the submission's outcome is unknown, and {UNAVAILABLE}"),
+            Self::Unavailable => f.write_str(UNAVAILABLE),
+        }
+    }
+}
+
+impl std::error::Error for SubmitError {}
+
+impl fmt::Display for ReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused(r) => r.fmt(f),
+            Self::Unavailable => f.write_str(UNAVAILABLE),
+        }
+    }
+}
+
+impl std::error::Error for ReadError {}
 
 /// Whether an open ledger has failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +107,8 @@ pub enum LedgerState {
 pub struct Fault;
 
 /// Why a directory did not open.
+/// Its `Display` shows the inner error, and it has no `source()`, so a reporter that walks the
+/// chain shows the cause once (D84).
 #[derive(Debug)]
 pub enum OpenError {
     /// Another process or `Ledger` holds the directory.
@@ -291,13 +325,53 @@ impl Ledger {
         answer.await.unwrap_or(Err(SubmitError::Unavailable))
     }
 
+    /// The event with this ID, once the read store holds every write acknowledged before this
+    /// call.
+    ///
+    /// # Errors
+    ///
+    /// `Refused` with `NotFound` for an unknown or malformed ID; `Unavailable` if the ledger
+    /// failed.
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime.
+    pub async fn get_event(&self, id: &str) -> Result<Event, ReadError> {
+        let id = id.to_owned();
+        self.read(move |v| ironflowx_events::get_event(v, &id))
+            .await
+    }
+
+    /// A page of events, newest first, once the read store holds every write acknowledged
+    /// before this call. `limit` is 20 when `None` and at most 200; `cursor` is a page's `next`
+    /// from this ledger.
+    ///
+    /// # Errors
+    ///
+    /// `Refused` with `Invalid` for a cursor that does not decode or names another incarnation;
+    /// a well-formed cursor of this incarnation is not checked further. `Unavailable` if the
+    /// ledger failed.
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime.
+    pub async fn list_events(
+        &self,
+        limit: Option<NonZeroU32>,
+        cursor: Option<&str>,
+    ) -> Result<EventPage, ReadError> {
+        let (token, cursor) = (self.env.token(), cursor.map(str::to_owned));
+        self.read(move |v| ironflowx_events::list_events(v, token, limit, cursor.as_deref()))
+            .await
+    }
+
     /// Runs a query from event rules once the read store holds every write acknowledged
     /// before this call.
     ///
     /// # Panics
     ///
     /// Outside a tokio runtime. A query that panics fails the ledger instead.
-    pub async fn read<R: Send + 'static>(
+    pub(crate) async fn read<R: Send + 'static>(
         &self,
         q: impl FnOnce(&ReadStore<'_>) -> Result<R, Error<StoreError>> + Send + 'static,
     ) -> Result<R, ReadError> {

@@ -280,3 +280,21 @@ fn no_created_key_exceeds_its_creator() {
     // 7 creator scope sets × 19 creator and request expiry pairs × 8 requested sets × 8 labels.
     assert_eq!(checked, 7 * 19 * 8 * 8);
 }
+
+#[test]
+fn a_key_has_expired_from_its_expiry_on_or_once_one_is_recorded() {
+    let never = record(&BTreeSet::from([Scope::Read]), None);
+    assert!(!never.expired(at(i64::MAX)));
+    let ends = record(&BTreeSet::from([Scope::Read]), Some(at(T)));
+    assert!(!ends.expired(at(T - 1)));
+    assert!(ends.expired(at(T)));
+    assert!(ends.expired(at(T + 1)));
+    // D42: a recorded expiry holds whatever the clock does, a key that never expires included.
+    for expires_at in [None, Some(at(T))] {
+        let recorded = KeyRecord {
+            expiry_recorded: true,
+            ..record(&BTreeSet::from([Scope::Read]), expires_at)
+        };
+        assert!(recorded.expired(at(T - HOUR)), "{expires_at:?}");
+    }
+}

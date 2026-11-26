@@ -15,6 +15,8 @@ use ironflowx_store::{Bootstrap, BootstrapState, ControlPlane, SeedError, StoreE
 use crate::{Engine, Opened};
 
 /// Why an engine did not open.
+/// Its `Display` shows the inner error, and it has no `source()`, so a reporter that walks the
+/// chain shows the cause once (D84).
 #[derive(Debug)]
 pub enum EngineError {
     /// The seed is not in the key format. Its message names the format, never the seed.

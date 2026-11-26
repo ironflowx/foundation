@@ -62,6 +62,8 @@ pub ironflowx_authz::KeyRecord::expiry_recorded: bool
 pub ironflowx_authz::KeyRecord::id: ironflowx_core::id::KeyId
 pub ironflowx_authz::KeyRecord::revoked_at: core::option::Option<ironflowx_core::time::Timestamp>
 pub ironflowx_authz::KeyRecord::scopes: alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>
+impl ironflowx_authz::KeyRecord
+pub fn ironflowx_authz::KeyRecord::expired(&self, ironflowx_core::time::Timestamp) -> bool
 impl core::clone::Clone for ironflowx_authz::KeyRecord
 pub fn ironflowx_authz::KeyRecord::clone(&self) -> Self
 impl core::fmt::Debug for ironflowx_authz::KeyRecord
