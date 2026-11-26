@@ -36,6 +36,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools
           rustup target add "$TARGET"
+      - name: Check the ELF rejection fixtures
+        if: runner.os == 'Linux'
+        run: ci/release-static-fixtures.sh
       - run: cargo build --release --locked -p ironflowx-bin --target "$TARGET"
       - name: Package and verify the archive
         run: ci/release-archive.sh "$TARGET"
@@ -78,7 +81,7 @@ jobs:
           assets=()
           for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin; do
             archive="ironflowx-${GITHUB_REF_NAME#v}-$target.tar.gz"
-            sha256sum -- "$archive" | cmp - "$archive.sha256"
+            ../ci/release-checksum.sh "$archive"
             assets+=("$archive" "$archive.sha256")
           done
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \

@@ -10,30 +10,15 @@ binary=${CARGO_TARGET_DIR:-target}/$target/release/ironflowx
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-mkdir -p dist "$work/stage" "$work/extracted"
-install -m 755 "$binary" "$work/stage/ironflowx"
-install -m 644 LICENSE "$work/stage/LICENSE"
-COPYFILE_DISABLE=1 tar -czf "dist/$archive" -C "$work/stage" ironflowx LICENSE
+mkdir -p dist
+install -m 755 "$binary" "$work/ironflowx"
+install -m 644 LICENSE "$work/LICENSE"
+COPYFILE_DISABLE=1 tar -czf "dist/$archive" -C "$work" ironflowx LICENSE
 (
   cd dist
   shasum -a 256 "$archive" >"$archive.sha256"
-  shasum -a 256 -c "$archive.sha256"
 )
-
-members=$(tar -tzf "dist/$archive")
-if [ "$members" != "$(printf '%s\n' ironflowx LICENSE)" ]; then
-  echo "unexpected archive members: $members" >&2
-  exit 1
+ci/verify-release-archive.sh "$target" "$version" "dist/$archive"
+if [[ "$target" == aarch64-apple-darwin ]]; then
+  ci/release-archive-fixtures.sh "$target" "$version" "dist/$archive"
 fi
-tar -xzf "dist/$archive" -C "$work/extracted"
-cmp LICENSE "$work/extracted/LICENSE"
-file "$work/extracted/ironflowx"
-if [[ "$target" == *-linux-musl ]]; then
-  elf=$(readelf -lW -dW "$work/extracted/ironflowx")
-  if grep -Eq '^[[:space:]]*INTERP[[:space:]]|\(NEEDED\)' <<<"$elf"; then
-    echo "archive's Linux binary needs a dynamic loader or library" >&2
-    exit 1
-  fi
-fi
-"$work/extracted/ironflowx" version | jq -e --arg version "$version" '.version == $version'
-python3 ci/release-https.py "$work/extracted/ironflowx" "$work"

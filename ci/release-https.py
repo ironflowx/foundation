@@ -82,7 +82,7 @@ def main():
                         env={**env, "SSL_CERT_FILE": str(cert)}, timeout=10,
                     )
                     if sorted(json.loads(answer)["scopes"]) != ["admin", "read", "write"]:
-                        raise RuntimeError("archive's HTTPS whoami did not authenticate as admin")
+                        sys.exit("archive's HTTPS whoami did not authenticate as admin")
                     print("archive's HTTPS whoami authenticated as admin")
                 finally:
                     server.shutdown()

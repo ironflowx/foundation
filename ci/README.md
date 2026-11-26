@@ -27,6 +27,10 @@ The archive matrix builds on native Linux x86-64 and AArch64 runners with `musl-
 native Apple silicon runner. Each job checks the archive files and checksum, runs the extracted
 binary, and calls a fresh engine over loopback HTTPS with a test trust root. Linux jobs
 also check the extracted binary for an ELF interpreter or dynamic library dependencies (D81).
+Each Linux job builds two rejecting ELF fixtures, one for each violation, and accepts a static
+ELF as a control. The Apple silicon job exercises rejecting fixtures for the shared checks:
+checksum corruption or the wrong digest algorithm, archive members, licence, version and HTTPS.
+The rehearsal and publishing jobs use the same SHA-256 verifier.
 
 | Job | Enforces | Run locally | When it fails |
 |---|---|---|---|
