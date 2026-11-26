@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "ironflowx-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "uuid",
  "zeroize",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "ironflowx-proto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ironflowx-core",
 ]

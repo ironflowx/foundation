@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "ironflowx"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ironflowx-authz",
  "ironflowx-cell",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "ironflowx-authz"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "ironflowx-core",
@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "ironflowx-cell"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "getrandom 0.4.3",
  "ironflowx-core",
@@ -389,7 +389,7 @@ dependencies = [
 
 [[package]]
 name = "ironflowx-codegen"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jsonschema",
  "prost-reflect",
@@ -398,7 +398,7 @@ dependencies = [
 
 [[package]]
 name = "ironflowx-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "uuid",
  "zeroize",
@@ -406,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "ironflowx-events"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ironflowx-core",
  "serde_core",
@@ -415,7 +415,7 @@ dependencies = [
 
 [[package]]
 name = "ironflowx-operations"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "getrandom 0.4.3",
  "ironflowx-authz",
@@ -430,14 +430,14 @@ dependencies = [
 
 [[package]]
 name = "ironflowx-proto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ironflowx-core",
 ]
 
 [[package]]
 name = "ironflowx-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ironflowx-authz",
  "ironflowx-core",

@@ -6,5 +6,5 @@ publish = false
 edition = "2024"
 
 [dependencies]
-ironflowx = "0.2.0"
+ironflowx = "0.3.0"
 tokio = { version = "1", default-features = false, features = ["rt"] }
