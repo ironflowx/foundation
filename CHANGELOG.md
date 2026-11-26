@@ -6,7 +6,6 @@ Each release lists what it adds and changes. All published crates share one vers
 
 - **One key-expiry rule** ([#189](https://github.com/ironflowx/foundation/issues/189)): `KeyRecord::expired(now)` in `ironflowx-authz` decides expiry for both admission's `recheck` and `list_keys`' status, so the two cannot disagree.
 - **`Authorized` is private** ([#189](https://github.com/ironflowx/foundation/issues/189)), breaking: `ironflowx_operations::Authorized` and its `grant()` are no longer exported. Nothing public took or returned one. TEN-1's compile-fail proof now shows that no other crate can name the type.
-
 - **The ledger answers its own reads** ([#188](https://github.com/ironflowx/foundation/issues/188)), breaking: `Ledger::get_event` and `Ledger::list_events` replace `Ledger::read`, which is now private, with `ReadStore` and `ironflowx_cell::StoreError`. A caller's query no longer holds the read store's lock beside the writer, and `list_events` checks a cursor with the ledger's own incarnation token. A direct caller loses `event_by_key` and `last_sequence`.
 - **Ledger errors are Rust errors** ([#188](https://github.com/ironflowx/foundation/issues/188)): `SubmitError`, `ReadError` and `Refusal` implement `Display` and `std::error::Error`, so `?` into `Box<dyn Error>` works. A refusal shows its message. No error implements `source()`: the inner error is in `Display`.
 
