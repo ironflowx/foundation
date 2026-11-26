@@ -32,7 +32,7 @@ use rustix::process::{Pid, Signal, kill_process};
 use serde_json::Value;
 use tempfile::TempDir;
 
-use super::output::{Audit, Delivery, leak};
+use super::output::{Audit, Delivery};
 
 /// How many scenarios run, an outline once per example, so no example goes unnoticed.
 pub const RUNS: usize = 47;
@@ -90,17 +90,10 @@ impl Drop for Served {
 }
 
 impl Served {
-    pub fn scan(&self, data_dir: &Path, audit: &mut Audit) {
-        if let Ok(key) = std::fs::read_to_string(data_dir.join("admin.key")) {
-            audit.bootstrap_file(key.strip_suffix('\n').expect("admin.key ends in a newline"));
-        }
-        audit.directory(data_dir);
-    }
-
     /// Scans the live engine, then stops it with SIGTERM and checks the entire output and disk.
-    pub fn stop(mut self, data_dir: &Path, audit: &mut Audit) -> String {
+    pub fn stop(mut self, data_dir: &Path, audit: &Audit) -> String {
         self.ready();
-        self.scan(data_dir, audit);
+        audit.directory(data_dir);
         kill_process(Pid::from_child(&self.child), Signal::TERM).unwrap();
         let status = until("stopped", || self.child.try_wait().unwrap());
         assert_eq!(status.code(), Some(0));
@@ -319,7 +312,16 @@ impl Serve {
     }
 
     fn serve(&mut self, listen: &str) {
-        self.served = Some(Served::start(&self.data_dir(), listen));
+        self.start_unseeded(&mut serve_command(&self.data_dir(), listen));
+    }
+
+    fn start_unseeded(&mut self, cmd: &mut Command) {
+        let publishes = !self.data_dir().join("control.db").exists();
+        self.served = Some(Served::start_command(cmd));
+        if publishes {
+            self.served().ready();
+            self.read_published_key();
+        }
     }
 
     fn refused(&mut self, cmd: &mut Command) {
@@ -356,13 +358,17 @@ impl Serve {
         let text = std::fs::read_to_string(self.data_dir().join("admin.key")).unwrap();
         let key = text.strip_suffix('\n').expect("a newline").to_owned();
         assert_eq!(key.len(), 84, "one whole key");
-        self.audit.file_key(&key);
         self.key = Some(key);
+    }
+
+    fn read_published_key(&mut self) {
+        self.read_key();
+        self.audit.file_key(self.key.as_deref().unwrap());
     }
 
     fn stop(&mut self) -> String {
         let data_dir = self.data_dir();
-        self.served.take().unwrap().stop(&data_dir, &mut self.audit)
+        self.served.take().unwrap().stop(&data_dir, &self.audit)
     }
 
     fn config(&self) -> ClientConfig {
@@ -903,6 +909,7 @@ fn was_served(w: &mut Serve) {
 fn deleted_key(w: &mut Serve) {
     assert_eq!(w.key().len(), 84);
     std::fs::remove_file(w.data_dir().join("admin.key")).unwrap();
+    w.audit.remove_file_key();
 }
 
 #[when("the engine is served again")]
@@ -960,6 +967,9 @@ fn recover(w: &mut Serve, stdout: bool) {
         cmd.arg("--stdout");
     }
     let out = cmd.output().unwrap();
+    if out.status.success() && !stdout {
+        w.read_published_key();
+    }
     w.audit
         .output(&out, stdout.then_some(Delivery::SeedOrRecovery));
     w.recovery = Some(out);
@@ -978,7 +988,6 @@ async fn recovered_stdout(w: &mut Serve) {
 async fn check_recovery(w: &mut Serve, stdout: bool) {
     let out = w.recovery.take().unwrap();
     assert_eq!(out.status.code(), Some(0));
-    let bootstrap = w.key.take().unwrap();
     if stdout {
         assert!(!w.data_dir().join("admin.key").exists());
         let json: Value = serde_json::from_slice(&out.stdout).expect("a JSON key object");
@@ -989,15 +998,7 @@ async fn check_recovery(w: &mut Serve, stdout: bool) {
     } else {
         assert!(out.stdout.is_empty());
         file_mode(w, "admin.key".into(), "0400".into());
-        w.read_key();
     }
-    assert_eq!(
-        leak::leak(
-            std::str::from_utf8(&out.stderr).unwrap(),
-            [w.key(), &bootstrap]
-        ),
-        None
-    );
     authenticates(w).await;
 }
 
@@ -1029,10 +1030,6 @@ fn existing_recovery_file(w: &mut Serve) {
     assert_eq!(json["code"], "invalid");
     assert_eq!(json["retryable"], false);
     assert!(json["hint"].as_str().unwrap().contains("--stdout"));
-    assert_eq!(
-        leak::leak(std::str::from_utf8(&out.stderr).unwrap(), [w.key()]),
-        None
-    );
 }
 
 #[then(r#""admin.key" is unchanged"#)]
@@ -1090,7 +1087,8 @@ fn start_with_inputs(w: &mut Serve) {
         let listen = w.taken.as_ref().unwrap().local_addr().unwrap().to_string();
         w.refused(&mut serve_command(&w.data_dir(), &listen));
     } else {
-        w.served = Some(Served::start_command(cmd.envs(&w.start_environment)));
+        cmd.envs(&w.start_environment);
+        w.start_unseeded(&mut cmd);
     }
 }
 
@@ -1232,7 +1230,8 @@ fn directory_a(w: &mut Serve) {
 #[when("the engine is served with --data-dir naming directory B")]
 fn directory_b(w: &mut Serve) {
     let mut cmd = serve_command(&w.data_dir(), "127.0.0.1:0");
-    w.served = Some(Served::start_command(cmd.envs(&w.start_environment)));
+    cmd.envs(&w.start_environment);
+    w.start_unseeded(&mut cmd);
 }
 
 #[then("directory B holds the engine and directory A does not exist")]
@@ -1379,7 +1378,7 @@ async fn acknowledged_events(w: &mut Serve) {
 
 #[when("serve receives SIGTERM")]
 fn signal(w: &mut Serve) {
-    w.served.as_ref().unwrap().scan(&w.data_dir(), &mut w.audit);
+    w.audit.directory(&w.data_dir());
     w.signalled = Some(Instant::now());
     kill_process(Pid::from_child(&w.served().child), Signal::TERM).unwrap();
 }

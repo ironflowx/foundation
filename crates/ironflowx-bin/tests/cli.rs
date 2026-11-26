@@ -1518,54 +1518,80 @@ fn an_answer_that_cannot_be_printed_is_a_failure() {
 }
 
 #[test]
-fn a_short_seed_write_leaves_only_the_response_prefix() {
+fn a_short_write_leaves_only_the_response_prefix() {
     use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
     use std::os::unix::process::CommandExt as _;
 
-    const CHILD: &str = "IRONFLOWX_TEST_SHORT_SEED_WRITE";
-    const PREFIX: &[u8] = b"{\"key\":\"";
+    const CHILD: &str = "IRONFLOWX_TEST_SHORT_WRITE";
+    const URL: &str = "IRONFLOWX_TEST_SHORT_WRITE_URL";
+    const SEED_PREFIX: &[u8] = b"{\"key\":\"";
     if let Some(path) = std::env::var_os(CHILD) {
         let stdout = File::options().write(true).open(path).unwrap();
         setrlimit(
             Resource::Fsize,
             Rlimit {
-                current: Some(PREFIX.len() as u64),
+                current: Some(SEED_PREFIX.len() as u64),
                 maximum: getrlimit(Resource::Fsize).maximum,
             },
         )
         .unwrap();
-        let err = command(&["seed", "generate"]).stdout(stdout).exec();
-        panic!("cannot launch seed command: {err}");
+        let mut cmd = if let Some(url) = std::env::var_os(URL) {
+            let mut cmd = command(&["keys", "create"]);
+            cmd.env("IRONFLOWX_URL", url);
+            cmd
+        } else {
+            command(&["seed", "generate"])
+        };
+        let err = cmd.stdout(stdout).exec();
+        panic!("cannot launch command under file limit: {err}");
     }
 
-    let file = tempfile::NamedTempFile::new().unwrap();
-    let out = Command::new("/bin/sh")
-        .args(["-c", "trap '' XFSZ && exec \"$@\"", "short-seed"])
-        .arg(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "a_short_seed_write_leaves_only_the_response_prefix",
-        ])
-        .env(CHILD, file.path())
+    let served = Served::answering(Ok(whoami()));
+    let created = command(&["keys", "create"])
+        .env("IRONFLOWX_URL", &served.url)
         .output()
         .unwrap();
-    let bytes = std::fs::read(file.path()).unwrap();
-    assert!(
-        bytes == PREFIX,
-        "stdout must contain only the start of the seed response"
-    );
-    let error = std::io::Error::from(rustix::io::Errno::FBIG);
-    let expected = json!({
-        "code": "internal",
-        "message": format!("cannot write to stdout: {error}"),
-        "retryable": false,
-    });
-    let actual: Value = serde_json::from_slice(&out.stderr).expect("stderr is an envelope");
-    assert!(
-        actual == expected,
-        "stderr must contain only the write refusal"
-    );
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(created.status.code(), Some(0));
+    assert!(created.stderr.is_empty());
+
+    for (url, prefix) in [
+        (None, SEED_PREFIX),
+        (Some(&served.url), &created.stdout[..SEED_PREFIX.len()]),
+    ] {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut child = Command::new("/bin/sh");
+        child
+            .args(["-c", "trap '' XFSZ && exec \"$@\"", "short-write"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", "a_short_write_leaves_only_the_response_prefix"])
+            .env(CHILD, file.path())
+            .env_remove(URL);
+        if let Some(url) = url {
+            child.env(URL, url);
+        }
+        let out = child.output().unwrap();
+        let bytes = std::fs::read(file.path()).unwrap();
+        assert!(
+            bytes == prefix,
+            "stdout must contain only the start of the response"
+        );
+        let error = std::io::Error::from(rustix::io::Errno::FBIG);
+        let mut expected = json!({
+            "code": "internal",
+            "message": format!("cannot write to stdout: {error}"),
+            "retryable": false,
+        });
+        if url.is_some() {
+            expected["hint"] =
+                json!("the key is stored and its secret lost: list the keys, revoke it");
+        }
+        let actual: Value = serde_json::from_slice(&out.stderr).expect("stderr is an envelope");
+        assert!(
+            actual == expected,
+            "stderr must contain only the write refusal"
+        );
+        assert_eq!(out.status.code(), Some(1));
+    }
 }
 
 #[test]

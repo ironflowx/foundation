@@ -146,7 +146,7 @@ impl Cli {
 
     fn finish(&mut self) {
         if let Some(server) = self.served.take() {
-            server.stop(&self.dir.path().join(DATA_DIR), &mut self.audit);
+            server.stop(&self.dir.path().join(DATA_DIR), &self.audit);
         }
     }
 }
@@ -681,7 +681,7 @@ async fn use_seed(w: &mut Cli) {
     let me = client.whoami(&cx, WhoamiRequest {}).await.unwrap();
     assert_eq!(me.key_id.to_string(), seed["key_id"]);
     assert!(me.scopes.contains(&Scope::Admin));
-    served.stop(&dir, &mut w.audit);
+    served.stop(&dir, &w.audit);
 }
 
 pub async fn run(parser: super::Unescaped) -> (bool, usize) {

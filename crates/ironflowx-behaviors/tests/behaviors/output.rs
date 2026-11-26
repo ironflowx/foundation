@@ -10,8 +10,8 @@ use std::process::Output;
 use connectrpc::ConnectError;
 use ironflowx_core::Secret;
 use ironflowx_operations::key_id;
-use ironflowx_proto::OpError;
 use ironflowx_proto::wire::op_error;
+use ironflowx_proto::{EmitBatchResponse, OpError};
 use serde_json::Value;
 
 #[derive(Clone, Copy)]
@@ -33,6 +33,7 @@ impl Delivery {
 pub struct Audit {
     keys: Vec<String>,
     file_key: Option<String>,
+    published: Vec<String>,
 }
 
 impl Audit {
@@ -49,12 +50,11 @@ impl Audit {
     pub fn file_key(&mut self, key: &str) {
         self.remember(key);
         self.file_key = Some(key.to_owned());
+        self.published.push(key.to_owned());
     }
 
-    pub fn bootstrap_file(&mut self, key: &str) {
-        if self.file_key.is_none() && !self.keys.iter().any(|known| known == key) {
-            self.file_key(key);
-        }
+    pub fn remove_file_key(&mut self) {
+        self.file_key = None;
     }
 
     fn leaked(&self, bytes: &[u8]) -> Option<&'static str> {
@@ -78,6 +78,12 @@ impl Audit {
         self.check(error.message.as_bytes(), "remote error message");
         if let Some(hint) = &error.hint {
             self.check(hint.as_bytes(), "remote error hint");
+        }
+    }
+
+    pub fn batch(&self, batch: &EmitBatchResponse) {
+        for error in batch.items.iter().filter_map(|item| item.as_ref().err()) {
+            self.op_error(error);
         }
     }
 
@@ -143,17 +149,16 @@ impl Audit {
         if !root.exists() {
             return;
         }
-        let expected = self.file_key.as_ref().map(|key| format!("{key}\n"));
         for (path, bytes) in leak::files(root) {
             assert_eq!(
-                self.entry_leak(&path, &bytes, expected.as_deref()),
+                self.entry_leak(&path, &bytes),
                 None,
                 "TEN-3: data directory"
             );
         }
     }
 
-    fn entry_leak(&self, path: &Path, bytes: &str, expected: Option<&str>) -> Option<&'static str> {
+    fn entry_leak(&self, path: &Path, bytes: &str) -> Option<&'static str> {
         if leak::leak_in(
             &(path.to_owned(), String::new()),
             self.keys.iter().map(String::as_str),
@@ -169,7 +174,10 @@ impl Audit {
             .is_some_and(|name| {
                 !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric())
             });
-        if (name == "admin.key" || temporary) && expected == Some(bytes) {
+        let content = bytes.strip_suffix('\n');
+        if name == "admin.key" && self.file_key.is_some() && content == self.file_key.as_deref()
+            || temporary && self.published.iter().any(|key| content == Some(key))
+        {
             return None;
         }
         leak::leak(bytes, self.keys.iter().map(String::as_str)).map(|_| "credential in file")
@@ -212,7 +220,7 @@ pub fn fixtures() {
     audit.file_key(key);
     audit.remember(other);
     let expected = format!("{key}\n");
-    let file = |path: &str, bytes: &str| audit.entry_leak(Path::new(path), bytes, Some(&expected));
+    let file = |path: &str, bytes: &str| audit.entry_leak(Path::new(path), bytes);
     assert_eq!(file("admin.key", &expected), None);
     assert_eq!(file("admin.key.leftover.tmp", &expected), None);
     assert_eq!(file("control.db", &expected), Some("credential in file"));
@@ -224,13 +232,30 @@ pub fn fixtures() {
         file(&format!("admin.key.{}.tmp", &key[41..]), &expected),
         Some("credential in path")
     );
+    assert_eq!(
+        file("admin.key.leftover.tmp", &format!("{other}\n")),
+        Some("credential in file")
+    );
+    audit.file_key(other);
+    assert_eq!(
+        audit.entry_leak(Path::new("admin.key.leftover.tmp"), &expected),
+        None
+    );
+    assert_eq!(
+        audit.entry_leak(Path::new("admin.key"), &expected),
+        Some("credential in file")
+    );
+    assert_eq!(
+        Audit::default().entry_leak(Path::new("admin.key"), &expected),
+        Some("credential in file")
+    );
 
     // The secret is 32 copies of 0xe1. The path holds the first half as characters.
     let encoded = format!("{}4eE", "4eHh".repeat(10));
     audit.remember(&format!("ixk_{id}_{encoded}"));
     let displayed = "\u{e1}".repeat(16);
     assert_eq!(
-        audit.entry_leak(Path::new(&displayed), "", None),
+        audit.entry_leak(Path::new(&displayed), ""),
         Some("credential in path")
     );
 }

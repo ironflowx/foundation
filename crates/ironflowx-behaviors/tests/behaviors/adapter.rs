@@ -89,7 +89,7 @@ impl Adapter {
                         audit,
                         ..
                     } = *remote;
-                    served.stop(&data_dir, &mut audit.into_inner().unwrap());
+                    served.stop(&data_dir, &audit.into_inner().unwrap());
                 })
                 .await
                 .unwrap();
@@ -111,6 +111,22 @@ macro_rules! either {
                 }
             })*
 
+            async fn emit_batch(&self, cx: &Call, req: EmitBatchRequest) -> Result<EmitBatchResponse, OpError> {
+                match self {
+                    Self::Engine(engine) => engine.emit_batch(cx, req).await,
+                    Self::Binary(remote) => {
+                        remote.presented(cx);
+                        let answer = remote.client.emit_batch(cx, req).await;
+                        let audit = remote.audit.lock().unwrap();
+                        match &answer {
+                            Ok(batch) => audit.batch(batch),
+                            Err(error) => audit.op_error(error),
+                        }
+                        answer
+                    }
+                }
+            }
+
             async fn create_key(&self, cx: &Call, req: CreateKeyRequest) -> Result<CreatedKey, OpError> {
                 match self {
                     Self::Engine(engine) => engine.create_key(cx, req).await,
@@ -131,7 +147,6 @@ macro_rules! either {
 
 either! {
     emit(EmitRequest) -> EmitResponse;
-    emit_batch(EmitBatchRequest) -> EmitBatchResponse;
     get_event(GetEventRequest) -> Event;
     list_events(ListEventsRequest) -> EventPage;
     whoami(WhoamiRequest) -> Whoami;
