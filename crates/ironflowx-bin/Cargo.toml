@@ -14,6 +14,13 @@ path = "src/main.rs"
 doc = false
 test = false
 
+[features]
+__fault-points = []
+
+[[example]]
+name = "serve_lifecycle"
+required-features = ["__fault-points"]
+
 # The race test runs the recovery handler in child processes and captures their raw output.
 [[test]]
 name = "recovery_race"
@@ -31,7 +38,8 @@ clap = { version = "=4.6.9", default-features = false, features = ["error-contex
 hyper = { version = "1.13.0", default-features = false, features = ["server"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["http1", "http2", "server-auto", "service", "tokio"] }
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7.20", default-features = false, features = ["rt"] }
 tracing = { version = "0.1.44", default-features = false }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "json"] }
 
@@ -45,6 +53,7 @@ ironflowx-store = { workspace = true, features = ["__fault-points"] }
 ironflowx-proto = { workspace = true, features = ["client", "wire"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "http2", "tokio"] }
 connectrpc = { version = "0.9.1", default-features = false, features = ["client"] }
+hyper = { version = "1.13.0", default-features = false, features = ["client", "http1"] }
 rusqlite = { version = "0.43.0", default-features = false, features = ["bundled"] }
 rustix = { version = "1.1.6", default-features = false, features = ["process", "pty", "std"] }
 serde_json.workspace = true

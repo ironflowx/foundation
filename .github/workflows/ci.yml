@@ -73,6 +73,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: cargo test --workspace --locked
+      - run: ci/serve-lifecycle.sh
       # Isolate the facade, without the workspace CLI's effect on the proto client's features.
       - run: cargo test -p ironflowx --locked --test features
         env:

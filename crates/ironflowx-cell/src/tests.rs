@@ -938,21 +938,14 @@ async fn a_submission_queued_at_drop_is_not_stored() {
 async fn close_finishes_queued_submissions() {
     let dir = tempfile::tempdir().unwrap();
     let env = new_env_ref();
-    let ledger = std::sync::Arc::new(open(dir.path(), env).await);
+    let ledger = open(dir.path(), env).await;
     ledger.hold_fold();
     emit(&ledger, named("a")).await.unwrap();
-    let queued = tokio::spawn({
-        let ledger = ledger.clone();
-        async move { emit(&ledger, named("queued")).await }
-    });
-    // Let it reach the writer's queue.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(!queued.is_finished());
-    ledger.release_fold();
-    let id = queued.await.unwrap().unwrap();
-    std::sync::Arc::into_inner(ledger).unwrap().close().await;
+    // The submission enters the queue in its first poll and cannot complete while fold is held.
+    abandon(emit(&ledger, named("queued"))).await;
+    assert_eq!(ledger.close_with_state().await, LedgerState::Open);
     let ledger = open(dir.path(), env).await;
-    assert_eq!(get(&ledger, id).await.unwrap().name, "queued");
+    assert_eq!(names(&ledger).await, ["queued", "a"]);
 }
 
 #[tokio::test]
@@ -1384,12 +1377,28 @@ async fn a_fault_during_a_close_or_drop_is_signalled() {
         let mut faulted = std::pin::pin!(ledger.faulted());
         assert!(!ready(faulted.as_mut()));
         if close {
-            ledger.close().await;
+            assert_eq!(ledger.close_with_state().await, LedgerState::Open);
         } else {
             drop(ledger);
         }
         assert!(ready(faulted), "close: {close}");
     }
+}
+
+#[tokio::test]
+async fn close_reports_a_fault_published_after_the_hosts_last_observation() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = open(dir.path(), new_env_ref()).await;
+    ledger.hold_fold();
+    ledger.fail_next_fold();
+    emit(&ledger, named("a")).await.unwrap();
+    let mut faulted = std::pin::pin!(ledger.faulted());
+    assert!(!ready(faulted.as_mut()));
+    ledger.release_fold();
+    tokio::time::timeout(Duration::from_secs(10), faulted)
+        .await
+        .unwrap();
+    assert_eq!(ledger.close_with_state().await, LedgerState::Unavailable);
 }
 
 /// Panics when it is dropped, as the writer ends.

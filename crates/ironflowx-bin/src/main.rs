@@ -77,14 +77,18 @@ fn run_serve(args: &ArgMatches) -> Result<(), OpError> {
         .enable_all()
         .build()
         .map_err(|e| internal(format!("cannot start the host runtime: {e}")))?;
-    let Err(refused) = runtime.block_on(ironflowx_bin::serve_with_seed(
+    let result = runtime.block_on(ironflowx_bin::serve_with_seed(
         &settings.data_dir,
         settings.listen,
         settings.seed,
     ));
-    let error = refused.envelope();
-    tracing::error!(target: "ironflowx_bin", "{}", error.message);
-    Err(error)
+    // Engine::close has joined the writer. A dropped call can still have a blocking query.
+    runtime.shutdown_background();
+    result.map_err(|refused| {
+        let error = refused.envelope();
+        tracing::error!(target: "ironflowx_bin", "{}", error.message);
+        error
+    })
 }
 
 fn internal(message: String) -> OpError {

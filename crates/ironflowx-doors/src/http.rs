@@ -25,7 +25,7 @@ use ironflowx_proto::wire::{
 };
 use ironflowx_proto::{Call, OpError, Operation, Operations};
 
-use crate::{Readiness, Slot, WaitingOn};
+use crate::{Readiness, Slot, State, WaitingOn};
 
 /// The HTTP door of the engine in `slot`: its RPCs, `/health` and `/ready`.
 pub fn router<O: Operations + 'static, R: Readiness + 'static>(slot: Arc<Slot<O, R>>) -> Router {
@@ -58,6 +58,31 @@ enum DispatchOutcome {
     Refused(ErrorKind),
 }
 
+/// Logs once unless admission handed the record to the Operations adapter.
+struct RefusalLog {
+    dispatch: Dispatch,
+    operation: &'static str,
+    started: Instant,
+    finished: bool,
+}
+
+impl Drop for RefusalLog {
+    fn drop(&mut self) {
+        let outcome = match self.dispatch.0.get() {
+            Some(DispatchOutcome::Admitted) => return,
+            Some(DispatchOutcome::Refused(kind)) => kind.as_str(),
+            None if self.finished => "refused",
+            None => "cancelled",
+        };
+        tracing::info!(
+            operation = self.operation,
+            outcome,
+            duration_ms = self.started.elapsed().as_secs_f64() * 1000.0,
+            "call"
+        );
+    }
+}
+
 async fn log_refusal(mut req: Request, next: Next) -> HttpResponse {
     let path = req.uri().path().strip_prefix('/').unwrap_or_default();
     if !path.starts_with("ironflowx.v1.") {
@@ -69,19 +94,14 @@ async fn log_refusal(mut req: Request, next: Next) -> HttpResponse {
         .map_or("unknown", |op| op.rpc());
     let dispatch = Dispatch::default();
     req.extensions_mut().insert(dispatch.clone());
-    let started = Instant::now();
-    let response = next.run(req).await;
-    let outcome = match dispatch.0.get() {
-        Some(DispatchOutcome::Admitted) => return response,
-        Some(DispatchOutcome::Refused(kind)) => kind.as_str(),
-        None => "refused",
-    };
-    tracing::info!(
+    let mut log = RefusalLog {
+        dispatch,
         operation,
-        outcome,
-        duration_ms = started.elapsed().as_secs_f64() * 1000.0,
-        "call"
-    );
+        started: Instant::now(),
+        finished: false,
+    };
+    let response = next.run(req).await;
+    log.finished = true;
     response
 }
 
@@ -103,21 +123,31 @@ async fn ready<O: Operations, R: Readiness>(slot: &Slot<O, R>) -> Json {
 }
 
 impl<O: Operations, R: Readiness> Slot<O, R> {
-    fn operations(&self) -> Result<&O, OpError> {
-        match self.0.get() {
-            Some((operations, _)) => Ok(operations),
-            None => Err(OpError {
-                kind: ErrorKind::Unavailable,
-                message: "the engine is unavailable".into(),
-                hint: Some("the engine is starting".into()),
-            }),
-        }
+    fn operations(&self) -> Result<Arc<O>, OpError> {
+        let state = self.0.lock().expect("slot lock");
+        let hint = match &*state {
+            State::Open(operations, _) => return Ok(operations.clone()),
+            State::Starting => "the engine is starting",
+            State::Draining | State::Closed => "the engine is stopping",
+        };
+        Err(OpError {
+            kind: ErrorKind::Unavailable,
+            message: "the engine is unavailable".into(),
+            hint: Some(hint.into()),
+        })
     }
 
     async fn ready(&self) -> Result<(), WaitingOn> {
-        match self.0.get() {
-            Some((_, readiness)) => readiness.ready().await,
-            None => Err(WaitingOn::Open),
+        let readiness = match &*self.0.lock().expect("slot lock") {
+            State::Open(_, readiness) => readiness.clone(),
+            _ => return Err(WaitingOn::Open),
+        };
+        let health = readiness.ready().await;
+        // The health read may have waited while the host stopped admitting calls.
+        if matches!(*self.0.lock().expect("slot lock"), State::Open(..)) {
+            health
+        } else {
+            Err(WaitingOn::Open)
         }
     }
 }
@@ -130,7 +160,7 @@ struct Door<O: Operations, R: Readiness>(Arc<Slot<O, R>>);
 
 impl<O: Operations, R: Readiness> Door<O, R> {
     /// Finishes validation before letting the operation take over the call.
-    fn admit<T, U>(&self, ctx: &RequestContext, request: T) -> Result<(&O, U), ConnectError>
+    fn admit<T, U>(&self, ctx: &RequestContext, request: T) -> Result<(Arc<O>, U), ConnectError>
     where
         T: TryInto<U, Error = OpError>,
     {

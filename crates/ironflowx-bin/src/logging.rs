@@ -84,7 +84,14 @@ impl Operations for Logged {
     logged!(emit_batch, EmitBatch, EmitBatchRequest, EmitBatchResponse);
     logged!(get_event, GetEvent, GetEventRequest, Event);
     logged!(list_events, ListEvents, ListEventsRequest, EventPage);
-    logged!(whoami, Whoami, WhoamiRequest, Whoami);
+    async fn whoami(&self, cx: &Call, req: WhoamiRequest) -> Result<Whoami, OpError> {
+        #[cfg(feature = "__fault-points")]
+        assert!(
+            !PANIC_IN_HANDLER.load(std::sync::atomic::Ordering::Relaxed),
+            "fixture panic in whoami handler"
+        );
+        record(Operation::Whoami, cx, self.0.whoami(cx, req)).await
+    }
     logged!(
         list_environments,
         ListEnvironments,
@@ -94,4 +101,13 @@ impl Operations for Logged {
     logged!(create_key, CreateKey, CreateKeyRequest, CreatedKey);
     logged!(list_keys, ListKeys, ListKeysRequest, KeyPage);
     logged!(revoke_key, RevokeKey, RevokeKeyRequest, ());
+}
+
+#[cfg(feature = "__fault-points")]
+static PANIC_IN_HANDLER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Arms the fixture's panic point in the host's Whoami handler.
+#[cfg(feature = "__fault-points")]
+pub fn panic_in_handler() {
+    PANIC_IN_HANDLER.store(true, std::sync::atomic::Ordering::Relaxed);
 }

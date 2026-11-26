@@ -971,3 +971,71 @@ fn a_slot_opens_once() {
         slot.open(Recording::answering(Ok(whoami())), Ready(state));
     }
 }
+
+#[tokio::test]
+async fn draining_and_closed_slots_refuse_on_every_protocol() {
+    let stopping = OpError {
+        kind: ErrorKind::Unavailable,
+        message: "the engine is unavailable".into(),
+        hint: Some("the engine is stopping".into()),
+    };
+    for transition in [Slot::drain, Slot::close] {
+        let slot = Arc::new(Slot::starting());
+        let operations = Recording::answering(Ok(whoami()));
+        slot.open(operations.clone(), Ready(Arc::new(Mutex::new(Ok(())))));
+        let addr = serve(slot.clone()).await;
+        transition(&slot);
+        for protocol in PROTOCOLS {
+            let response = client_of(protocol, addr)
+                .whoami_with_options(WhoamiRequest::default(), bearer())
+                .await;
+            let error = response.unwrap_err();
+            assert_eq!(wire::op_error(&error), Some(stopping.clone()), "{protocol}");
+        }
+        assert!(operations.take_requests().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_held_readiness_probe_refuses_after_drain() {
+    use ironflowx_doors::Readiness;
+    use tokio::sync::Notify;
+
+    struct Held {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl Readiness for Held {
+        async fn ready(&self) -> Result<(), WaitingOn> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(())
+        }
+    }
+
+    let (entered, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let slot = Arc::new(Slot::starting());
+    slot.open(
+        Recording::answering(Ok(whoami())),
+        Held {
+            entered: entered.clone(),
+            release: release.clone(),
+        },
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(axum::serve(listener, ironflowx_doors::router(slot.clone())).into_future());
+    let probe = tokio::spawn(send(addr, "GET /ready", &[], b""));
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .unwrap();
+    slot.drain();
+    release.notify_one();
+    let (head, body) = tokio::time::timeout(Duration::from_secs(5), probe)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(head.starts_with("HTTP/1.0 503 "), "{head}");
+    assert_eq!(body, r#"{"ready":false,"waiting_on":"open"}"#);
+}

@@ -10,6 +10,9 @@ mod recovery;
 
 pub use recovery::{generate_seed, recover_key};
 
+#[cfg(feature = "__fault-points")]
+pub use logging::panic_in_handler;
+
 use std::convert::Infallible;
 use std::fmt;
 use std::io;
@@ -18,6 +21,7 @@ use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use ironflowx_core::{ErrorKind, KeyId, Secret};
 use ironflowx_doors::{Readiness, Slot, WaitingOn, router};
@@ -26,6 +30,15 @@ use ironflowx_operations::{
     StoreError, is_bootstrapped, key_id,
 };
 use ironflowx_proto::OpError;
+use tokio::signal::unix::{Signal, SignalKind, signal};
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
+
+const DRAIN_LIMIT: Duration = Duration::from_secs(10);
+
+fn drain_deadline(start: Instant) -> Instant {
+    start + DRAIN_LIMIT
+}
 
 /// Why a host did not serve.
 #[derive(Debug)]
@@ -33,6 +46,8 @@ pub enum ServeError {
     /// The data directory holds an `admin.key` that no finished bootstrap of it wrote.
     StaleKeyFile(PathBuf),
     Listen(io::Error),
+    Signals(io::Error),
+    LedgerFault,
     DataDir(PathBuf, io::Error),
     KeyLookup(PathBuf, io::Error),
     Engine(EngineError),
@@ -64,10 +79,12 @@ impl ServeError {
     fn kind(&self) -> ErrorKind {
         match self {
             Self::StaleKeyFile(_) => ErrorKind::Invalid,
-            Self::KeyLookup(..) => ErrorKind::Unavailable,
+            Self::KeyLookup(..) | Self::LedgerFault => ErrorKind::Unavailable,
             Self::Listen(e) if e.kind() == io::ErrorKind::AddrInUse => ErrorKind::Unavailable,
             Self::Listen(_) => ErrorKind::Invalid,
-            Self::DataDir(..) | Self::Probe(..) | Self::KeyFile(..) => ErrorKind::Internal,
+            Self::DataDir(..) | Self::Probe(..) | Self::KeyFile(..) | Self::Signals(_) => {
+                ErrorKind::Internal
+            }
             Self::Engine(e) => engine_kind(e),
         }
     }
@@ -108,6 +125,8 @@ impl fmt::Display for ServeError {
                 path.display()
             ),
             Self::Listen(e) => format!("cannot listen: {e}"),
+            Self::Signals(e) => format!("cannot watch for shutdown signals: {e}"),
+            Self::LedgerFault => "the ledger is unavailable".into(),
             Self::DataDir(path, e) => format!("cannot create {}: {e}", path.display()),
             Self::KeyLookup(path, e) => format!("cannot inspect {}: {e}", path.display()),
             Self::Engine(e @ EngineError::MalformedSeed) => return e.fmt(f),
@@ -132,7 +151,7 @@ impl std::error::Error for ServeError {}
 ///
 /// [`ServeError`], before anything is served or the data directory changed for a stale
 /// `admin.key` without a `control.db` and for an address it cannot listen on.
-pub async fn serve(data_dir: &Path, listen: SocketAddr) -> Result<Infallible, ServeError> {
+pub async fn serve(data_dir: &Path, listen: SocketAddr) -> Result<(), ServeError> {
     serve_with_seed(data_dir, listen, None).await
 }
 
@@ -145,12 +164,47 @@ pub async fn serve_with_seed(
     data_dir: &Path,
     listen: SocketAddr,
     seed: Option<Secret>,
-) -> Result<Infallible, ServeError> {
+) -> Result<(), ServeError> {
     if seed.as_ref().is_some_and(|key| key_id(key).is_none()) {
         return Err(ServeError::Engine(EngineError::MalformedSeed));
     }
+    let mut signals = StopSignals::listen().map_err(ServeError::Signals)?;
     let listener = bind(data_dir, listen)?;
-    run_with_seed(listener, data_dir, seed).await
+    let stop = CancellationToken::new();
+    tokio::select! {
+        biased;
+        never = signals.watch(&stop) => match never {},
+        result = run_with_seed(listener, data_dir, seed, &stop) => result,
+    }
+}
+
+/// Watches both signals from before the listening address is published until close completes.
+struct StopSignals {
+    interrupt: Signal,
+    terminate: Signal,
+}
+
+impl StopSignals {
+    fn listen() -> io::Result<Self> {
+        Ok(Self {
+            interrupt: signal(SignalKind::interrupt())?,
+            terminate: signal(SignalKind::terminate())?,
+        })
+    }
+
+    async fn next(&mut self) {
+        tokio::select! {
+            _ = self.interrupt.recv() => {}
+            _ = self.terminate.recv() => {}
+        }
+    }
+
+    async fn watch(&mut self, stop: &CancellationToken) -> Infallible {
+        self.next().await;
+        stop.cancel();
+        self.next().await;
+        std::process::exit(i32::from(ErrorKind::Internal.exit_code()));
+    }
 }
 
 /// The steps before the data directory is touched (D62).
@@ -168,36 +222,82 @@ fn bind(data_dir: &Path, listen: SocketAddr) -> Result<TcpListener, ServeError> 
     Ok(listener)
 }
 
+/// Serves from a bound listener, with signal handling left to the caller.
 /// Serves `/health` and the door at once, and the engine in `data_dir` when it has opened.
 ///
 /// # Errors
 ///
 /// As [`serve`].
-pub async fn run(listener: TcpListener, data_dir: &Path) -> Result<Infallible, ServeError> {
-    run_with_seed(listener, data_dir, None).await
+pub async fn run(listener: TcpListener, data_dir: &Path) -> Result<(), ServeError> {
+    run_with_seed(listener, data_dir, None, &CancellationToken::new()).await
 }
 
 async fn run_with_seed(
     listener: TcpListener,
     data_dir: &Path,
     seed: Option<Secret>,
-) -> Result<Infallible, ServeError> {
+    stop: &CancellationToken,
+) -> Result<(), ServeError> {
     let listener = listener
         .set_nonblocking(true)
         .and_then(|()| tokio::net::TcpListener::from_std(listener))
         .map_err(ServeError::Listen)?;
     let slot = Arc::new(Slot::starting());
-    // Not a task: a refusal drops the listener and every connection.
-    let mut accepting = pin!(accept::connections(listener, router(slot.clone())));
-    let engine = tokio::select! {
-        never = &mut accepting => match never {},
-        opened = open(data_dir, seed) => Arc::new(opened?),
+    let door = router(slot.clone());
+    let mut connections = accept::Connections::default();
+    let mut opening = pin!(open(data_dir, seed));
+
+    let opened = tokio::select! {
+        biased;
+        () = stop.cancelled() => None,
+        opened = &mut opening => Some(Arc::new(opened?)),
+        never = connections.accept(&listener, &door) => match never {},
     };
-    slot.open(
-        Arc::new(logging::Logged(engine.clone())),
-        EngineReadiness(engine),
-    );
-    match accepting.await {}
+    if let Some(engine) = &opened {
+        slot.open(
+            Arc::new(logging::Logged(engine.clone())),
+            EngineReadiness(engine.clone()),
+        );
+        tokio::select! {
+            biased;
+            _ = engine.faulted() => {}
+            () = stop.cancelled() => {}
+            never = connections.accept(&listener, &door) => match never {},
+        }
+    }
+
+    let deadline = drain_deadline(Instant::now());
+    slot.drain();
+    drop(listener);
+    tracing::info!("stopping");
+
+    let engine = match opened {
+        Some(engine) => {
+            let mut draining = pin!(connections.drain(deadline));
+            tokio::select! {
+                biased;
+                _ = engine.faulted() => {
+                    tracing::warn!("ledger fault during drain");
+                    draining.await;
+                }
+                () = &mut draining => {}
+            }
+            engine
+        }
+        None => {
+            // Open owns bootstrap and key publication. Keep it running while the transport
+            // drains on its own deadline.
+            let (engine, ()) = tokio::join!(opening, connections.drain(deadline));
+            Arc::new(engine?)
+        }
+    };
+    slot.close();
+    let engine = Arc::into_inner(engine).expect("drain dropped every engine reference");
+    if engine.close_with_state().await == LedgerState::Unavailable {
+        Err(ServeError::LedgerFault)
+    } else {
+        Ok(())
+    }
 }
 
 /// Opens the engine in `data_dir`, creating it if it is missing, and writes a key it minted.
@@ -331,6 +431,13 @@ mod tests {
             assert_eq!(error.exit_code(), expected, "{error}");
             assert_eq!(error.envelope().kind.exit_code(), expected, "{error}");
         }
+    }
+
+    #[test]
+    fn signal_registration_failure_is_internal() {
+        let error = ServeError::Signals(io::Error::other("fixture"));
+        assert_eq!(error.envelope().kind, ErrorKind::Internal);
+        assert_eq!(error.exit_code(), 1);
     }
 
     #[test]

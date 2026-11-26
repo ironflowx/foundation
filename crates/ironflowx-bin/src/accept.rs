@@ -21,33 +21,79 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Accepts and serves until dropped, which ends every connection.
-pub async fn connections(listener: TcpListener, router: Router) -> Infallible {
-    let mut open = JoinSet::new();
-    loop {
-        let accepted = tokio::select! {
-            accepted = listener.accept() => accepted,
-            Some(_) = open.join_next() => continue,
+/// Keeps connections serving while admitted requests drain, then closes their transports.
+#[derive(Default)]
+pub struct Connections {
+    open: JoinSet<()>,
+    requests: TaskTracker,
+    graceful: CancellationToken,
+    abort: CancellationToken,
+}
+
+impl Drop for Connections {
+    fn drop(&mut self) {
+        // Hyper also spawns HTTP/2 request tasks outside the connection's task.
+        self.abort.cancel();
+    }
+}
+
+impl Connections {
+    /// Accepts until its caller drops this future and the listener.
+    pub async fn accept(&mut self, listener: &TcpListener, router: &Router) -> Infallible {
+        loop {
+            let accepted = tokio::select! {
+                accepted = listener.accept() => accepted,
+                Some(_) = self.open.join_next() => continue,
+            };
+            match accepted {
+                Ok((stream, _)) => {
+                    let _ = stream.set_nodelay(true);
+                    self.open.spawn(connection(
+                        stream,
+                        router.clone(),
+                        self.requests.clone(),
+                        self.graceful.clone(),
+                        self.abort.clone(),
+                    ));
+                }
+                // The peer's fault, or too many open files: neither ends the loop.
+                Err(e) => {
+                    tracing::warn!("accept: {e}");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+
+    /// The slot must already refuse new calls. Those calls can still use existing connections
+    /// until the admitted requests finish. Then let Hyper flush and close the connections.
+    pub async fn drain(&mut self, deadline: tokio::time::Instant) {
+        self.requests.close();
+        let graceful = async {
+            self.requests.wait().await;
+            self.graceful.cancel();
+            while self.open.join_next().await.is_some() {}
         };
-        match accepted {
-            Ok((stream, _)) => {
-                let _ = stream.set_nodelay(true);
-                open.spawn(connection(stream, router.clone()));
-            }
-            // The peer's fault, or too many open files: neither ends the loop.
-            Err(e) => {
-                tracing::warn!("accept: {e}");
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
+        if tokio::time::timeout_at(deadline, graceful).await.is_err() {
+            self.abort.cancel();
+            self.open.shutdown().await;
+            // In HTTP/2 the connection can be gone before its handler future is dropped.
+            self.requests.wait().await;
         }
     }
 }
 
-async fn connection<S>(stream: S, router: Router)
-where
+async fn connection<S>(
+    stream: S,
+    router: Router,
+    requests: TaskTracker,
+    graceful: CancellationToken,
+    abort: CancellationToken,
+) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let read = Arc::new(AtomicBool::new(false));
@@ -60,7 +106,19 @@ where
     let (router, request) = (TowerToHyperService::new(router), arrived.clone());
     let service = service_fn(move |head| {
         request.notify_one();
-        router.call(head)
+        // Take the token before polling the door. After the tracker closes the slot has
+        // already stopped admitting, so later requests can only refuse.
+        let active = (!requests.is_closed()).then(|| requests.token());
+        let abort = abort.clone();
+        let answer = router.call(head);
+        async move {
+            let _active = active;
+            tokio::select! {
+                biased;
+                () = abort.cancelled() => Err(io::Error::other("the host stopped")),
+                response = answer => response.map_err(|never| match never {}),
+            }
+        }
     });
     let io = TokioIo::new(Noted { stream, read });
     let mut serving = pin!(server.serve_connection(io, service));
@@ -69,7 +127,13 @@ where
         biased;
         _ = &mut serving => return,
         () = arrived.notified() => {}
+        () = graceful.cancelled() => return,
         () = tokio::time::sleep(HEAD_TIMEOUT) => return,
+    }
+    tokio::select! {
+        biased;
+        _ = &mut serving => return,
+        () = graceful.cancelled() => serving.as_mut().graceful_shutdown(),
     }
     let _ = serving.await;
 }
@@ -189,7 +253,13 @@ mod tests {
         let router = Router::new()
             .route("/health", get(|| async {}))
             .route("/slow", get(slow));
-        tokio::spawn(connection(theirs, router));
+        tokio::spawn(connection(
+            theirs,
+            router,
+            TaskTracker::new(),
+            CancellationToken::new(),
+            CancellationToken::new(),
+        ));
         ours
     }
 
@@ -212,6 +282,35 @@ mod tests {
     fn assert_10_s(after: Option<Duration>, name: &str) {
         let after = after.map(|t| t.as_millis());
         assert!(matches!(after, Some(10_000 | 10_001)), "{name}: {after:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drain_ends_at_ten_seconds() {
+        let (mut client, stream) = duplex(1024);
+        let mut connections = Connections::default();
+        let entered = Arc::new(Notify::new());
+        let router = Router::new().route(
+            "/health",
+            get({
+                let entered = entered.clone();
+                move || async move {
+                    entered.notify_one();
+                    std::future::pending::<()>().await;
+                }
+            }),
+        );
+        connections.open.spawn(connection(
+            stream,
+            router,
+            connections.requests.clone(),
+            connections.graceful.clone(),
+            connections.abort.clone(),
+        ));
+        client.write_all(WHOLE).await.unwrap();
+        entered.notified().await;
+        let deadline = crate::drain_deadline(Instant::now());
+        let ((), after) = tokio::join!(connections.drain(deadline), closed_after(&mut client));
+        assert_10_s(after, "drain");
     }
 
     #[tokio::test(start_paused = true)]

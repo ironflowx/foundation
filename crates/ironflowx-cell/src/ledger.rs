@@ -341,12 +341,26 @@ impl Ledger {
     ///
     /// Outside a tokio runtime, or on one that has shut down: the ledger is dropped then, its queue
     /// already ended.
-    pub async fn close(mut self) {
+    pub async fn close(self) {
+        self.close_with_state().await;
+    }
+
+    /// Closes as [`Self::close`] does and returns the state at the start of close.
+    ///
+    /// The first read of the progress gate orders the start of close and fault publication.
+    /// A fault published later still resolves [`Self::faulted`] while the ledger is closing.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::close`].
+    pub async fn close_with_state(mut self) -> LedgerState {
+        let at_start = self.state();
         self.end_queue();
         // The closure owns the writer: one that never runs drops the ledger, which joins it.
         tokio::task::spawn_blocking(move || self.join())
             .await
             .expect("the runtime has not shut down");
+        at_start
     }
 
     /// Ends the queue, so that the writer ends.

@@ -87,6 +87,7 @@ pub fn ironflowx_cell::HostClock::now(&self) -> ironflowx_core::time::Timestamp
 pub struct ironflowx_cell::Ledger
 impl ironflowx_cell::Ledger
 pub async fn ironflowx_cell::Ledger::close(self)
+pub async fn ironflowx_cell::Ledger::close_with_state(self) -> ironflowx_cell::LedgerState
 pub const fn ironflowx_cell::Ledger::env(&self) -> ironflowx_core::id::EnvRef
 pub fn ironflowx_cell::Ledger::faulted(&self) -> impl core::future::future::Future<Output = ironflowx_cell::Fault> + core::marker::Send + 'static + use<>
 pub async fn ironflowx_cell::Ledger::open(&std::path::Path, ironflowx_core::id::EnvRef, impl ironflowx_core::time::Clock + core::marker::Send + 'static) -> core::result::Result<Self, ironflowx_cell::OpenError>
