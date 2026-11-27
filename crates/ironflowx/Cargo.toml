@@ -1,6 +1,6 @@
 [package]
 name = "ironflowx"
-description = "Ironflow foundation crates in one dependency."
+description = "Ironflow X foundation crates in one dependency."
 readme = "../../README.md"
 documentation = "https://docs.rs/ironflowx"
 version.workspace = true

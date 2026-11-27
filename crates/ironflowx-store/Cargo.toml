@@ -1,7 +1,7 @@
 [package]
 name = "ironflowx-store"
 description = "The Ironflow X control plane: which tenants, projects, environments and keys exist."
-keywords = ["ironflow", "workflow", "event-driven"]
+keywords = ["ironflowx", "workflow", "event-driven"]
 readme = "../../README.md"
 documentation = "https://docs.rs/ironflowx-store"
 version.workspace = true

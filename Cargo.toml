@@ -11,7 +11,7 @@ rust-version = "1.100"
 license = "MIT"
 repository = "https://github.com/ironflowx/foundation"
 homepage = "https://github.com/ironflowx"
-authors = ["Ironflow contributors"]
+authors = ["Ironflow X contributors"]
 
 [workspace.dependencies]
 ironflowx-core = { path = "crates/ironflowx-core", version = "0.3.0" }

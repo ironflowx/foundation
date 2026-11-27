@@ -1,7 +1,7 @@
 [package]
 name = "ironflowx-proto"
 description = "The Ironflow X Operations interface and its request and answer types."
-keywords = ["ironflow", "workflow", "event-driven"]
+keywords = ["ironflowx", "workflow", "event-driven"]
 readme = "../../README.md"
 documentation = "https://docs.rs/ironflowx-proto"
 version.workspace = true
