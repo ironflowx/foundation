@@ -1,7 +1,7 @@
 [package]
 name = "ironflowx-core"
 description = "Ironflow X core types: validated opaque IDs, the environment reference, attribution, scopes, addresses, secrets, stored and event-clock time, the clock trait and the error kinds."
-keywords = ["ironflow", "workflow", "event-driven"]
+keywords = ["ironflowx", "workflow", "event-driven"]
 categories = ["data-structures"]
 readme = "../../README.md"
 documentation = "https://docs.rs/ironflowx-core"

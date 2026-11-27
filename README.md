@@ -6,7 +6,7 @@
 [![MSRV](https://img.shields.io/crates/msrv/ironflowx)](https://github.com/ironflowx/foundation/blob/main/Cargo.toml)
 [![License: MIT](https://img.shields.io/crates/l/ironflowx)](https://github.com/ironflowx/foundation/blob/main/LICENSE)
 
-An experimental MIT-licensed rewrite of the Ironflow engine. Not the shipping product; Ironflow 1.x is under the Ironflow License.
+The experimental, MIT-licensed library crates that Ironflow X is built on.
 
 Foundation crates are 0.x with no semver-stability promise.
 

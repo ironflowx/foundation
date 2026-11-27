@@ -1,4 +1,4 @@
-//! Ironflow foundation crates in one dependency: what an app uses. The engine's own crates
+//! Ironflow X foundation crates in one dependency: what an app uses. The engine's own crates
 //! (`ironflowx-store`, `ironflowx-authz`, `ironflowx-events`) stay published, outside it.
 //!
 //! Opt in to `client` for the proto client over HTTP, or `client-tls` for HTTPS as well.

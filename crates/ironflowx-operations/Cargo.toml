@@ -1,7 +1,7 @@
 [package]
 name = "ironflowx-operations"
 description = "The Ironflow X engine: admits every call against the control plane, then runs it on the environment's ledger or its keys."
-keywords = ["ironflow", "workflow", "event-driven"]
+keywords = ["ironflowx", "workflow", "event-driven"]
 readme = "../../README.md"
 documentation = "https://docs.rs/ironflowx-operations"
 version.workspace = true
