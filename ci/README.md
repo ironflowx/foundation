@@ -14,51 +14,33 @@ push without keepalives. The root
 
 A release is `make release VERSION=X.Y.Z` (`ci/release.sh`): from a clean `main` that matches
 `origin/main` with green CI, it publishes every crate without `publish = false`, then tags and
-pushes `vX.Y.Z`. The tag starts `.github/workflows/release.yml`, which builds the three archives
-and creates the GitHub release with their checksums and that version's `CHANGELOG.md` section.
-A rerun of `make release` skips crates that are already published. For a failed archive build,
-rerun the failed jobs in the tag's workflow run.
+pushes `vX.Y.Z`. The tag starts `.github/workflows/release.yml`, which creates the GitHub release
+from that version's `CHANGELOG.md` section, with no assets. A rerun of `make release` skips crates
+that are already published. Nothing here builds a binary: the `ironflowx` binary and its release
+archives are [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow)'s (D85).
 
 Run `make check` before rehearsing the release. On a clean checkout,
 `make release-dry-run VERSION=X.Y.Z` verifies the unpublished packages via
 `cargo publish --dry-run`. The proto package is verified with `wire` enabled and with no
-`protoc` or `buf` on PATH. For the archives, run `gh workflow run release.yml --ref <branch>`.
-Manual runs upload workflow artifacts with the archives and their SHA-256 files. Only tag pushes
-can create a GitHub release.
-
-The archive matrix builds on native Linux x86-64 and AArch64 runners with `musl-tools` and on a
-native Apple silicon runner. Each job checks the archive files and checksum, runs the extracted
-binary to verify its version, checkout commit and protocol, and calls a fresh engine over
-loopback HTTPS with a test trust root. Linux jobs
-also check the extracted binary for an ELF interpreter or dynamic library dependencies (D81).
-Each Linux job builds two rejecting ELF fixtures, one for each violation, and accepts a static
-ELF as a control. The Apple silicon job exercises rejecting fixtures for the shared checks:
-checksum corruption or the wrong digest algorithm, archive members, licence, version and HTTPS.
-The rehearsal and publishing jobs use the same SHA-256 verifier.
+`protoc` or `buf` on PATH.
 
 | Job | Enforces | Run locally | When it fails |
 |---|---|---|---|
-| `fmt`, `clippy`, `clippy-macos`, `test` | Formatting, and comment lines of at most 100 columns in Rust and `ci/*.sh`, URLs exempt (`ci/comment-width.sh`: rustfmt does not wrap comments); lints with warnings denied, tests; `clippy` builds the workspace with neither `protoc` nor `buf` on `PATH` (SRV-14; `ci/no-protoc.sh`); `test` runs the event rules and the CLI's own tests again with `arbitrary_precision`, the client's URL test again without `client-tls`, which the workspace's CLI switches on, and with both of `rustls`'s providers, and the crash test on Linux and macOS with `CRASH_KILLS=100`. `ci/serve-lifecycle.sh` runs the serve lifecycle fixture in dev and release (SRV-9, SRV-10, SRV-15) | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `env -u CRASH_SEED CRASH_KILLS=100 cargo test --workspace`; event rules, and the CLI's own tests, again with `serde_json`'s `arbitrary_precision` (D12): `cargo test -p ironflowx-events -p ironflowx-cli --features serde_json/arbitrary_precision`; the client's URL test without `client-tls`: `NO_CLIENT_TLS=1 cargo test -p ironflowx-proto --test client`; with both providers: `cargo test -p ironflowx-proto --test client --features client-tls,rustls/ring` | Fix the code |
+| `fmt`, `clippy`, `clippy-macos`, `test` | Formatting, and comment lines of at most 100 columns in Rust and `ci/*.sh`, URLs exempt (`ci/comment-width.sh`: rustfmt does not wrap comments); lints with warnings denied, tests; `clippy` builds the workspace with neither `protoc` nor `buf` on `PATH` (SRV-14; `ci/no-protoc.sh`); `test` runs the event rules again with `arbitrary_precision`, the client's URL test again without `client-tls` and with both of `rustls`'s providers, and the crash test on Linux and macOS with `CRASH_KILLS=100` | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `env -u CRASH_SEED CRASH_KILLS=100 cargo test --workspace`; event rules again with `serde_json`'s `arbitrary_precision` (D12): `cargo test -p ironflowx-events --features serde_json/arbitrary_precision`; the client's URL test without `client-tls`: `NO_CLIENT_TLS=1 cargo test -p ironflowx-proto --test client`; with both providers: `cargo test -p ironflowx-proto --test client --features client-tls,rustls/ring` | Fix the code |
 | `deny` | Licences and advisories, Linux and macOS graphs (`deny.toml`) | `cargo deny check` | Replace the dependency, or extend `deny.toml` with a reason |
-| `purity` | LED-15: pure crates' dependencies and calls; D17: only `ironflowx-cell` calls `SequencedTime::from_event_clock` (and one helper in `ironflowx-events`' `tests/rules.rs`, which stands in for the ledger); D36: no crate but the credentials crate calls `SubmitAs::key` (`ci/no-key-attribution.sh` inside core), and no crate but the engine calls `Grant::submit_as`; TEN-4: no crate but the control plane calls the key digest's storage codec (`ci/no-digest-codec.sh` backs clippy up by name); every crate-wide ban in every `clippy.toml` (`ci/clippy-bans.sh`); SRV-1: `ironflowx-doors` and `ironflowx-cli` depend on no engine crate (`ci/no-engine-deps.sh`); SRV-2 and SRV-12: a proto the generator refuses fails its build, one package of `ci/fixtures/codegen` per refusal; TEN-3: the binary built with clap's `debug` feature, which prints arguments, refuses to start (`ci/clap-trace.sh`); `ci/red.sh`, which records a test check landing red, and `ci/must-reject.sh`; crash test: no published crate (Cargo's `publish` is not `false`, set or inherited) can build with `__fault-points`: by default, through a dependency or a feature of its own, on any target; the one route allowed is a crate's own `__fault-points` forwarding to a dependency's; a dev-dependency, which does not ship, does not count (D23; `ci/no-fault-points.sh`, which needs `jq`) | `ci/purity.sh` | See [Pure crates](#pure-crates); for an engine crate, call it through `Operations`; for the generator, say what the proto leaves out; for `__fault-points`, drop it from the published crate's defaults or dependency |
+| `purity` | LED-15: pure crates' dependencies and calls; D17: only `ironflowx-cell` calls `SequencedTime::from_event_clock` (and one helper in `ironflowx-events`' `tests/rules.rs`, which stands in for the ledger); D36: no crate but the credentials crate calls `SubmitAs::key` (`ci/no-key-attribution.sh` inside core), and no crate but the engine calls `Grant::submit_as`; TEN-4: no crate but the control plane calls the key digest's storage codec (`ci/no-digest-codec.sh` backs clippy up by name); every crate-wide ban in every `clippy.toml` (`ci/clippy-bans.sh`); SRV-1: `ironflowx-doors` depends on no engine crate (`ci/no-engine-deps.sh`); SRV-2 and SRV-12: a proto the generator refuses fails its build, one package of `ci/fixtures/codegen` per refusal; `ci/red.sh`, which records a test check landing red, and `ci/must-reject.sh`; crash test: no published crate (Cargo's `publish` is not `false`, set or inherited) can build with `__fault-points`: by default, through a dependency or a feature of its own, on any target; the one route allowed is a crate's own `__fault-points` forwarding to a dependency's; a dev-dependency, which does not ship, does not count (D23; `ci/no-fault-points.sh`, which needs `jq`) | `ci/purity.sh` | See [Pure crates](#pure-crates); for an engine crate, call it through `Operations`; for the generator, say what the proto leaves out; for `__fault-points`, drop it from the published crate's defaults or dependency |
+| `wasm` | A pure crate builds for WASM: `cargo check --target wasm32-unknown-unknown` of `ironflowx-core`, `ironflowx-events` and `ironflowx-authz`, one crate a run, so no other crate's features build it. A dependency or a cfg without wasm support fails it; threads, the clock and the filesystem still compile there, so `purity`'s bans keep them out | `rustup target add wasm32-unknown-unknown`, then `cargo check --locked --target wasm32-unknown-unknown -p <crate>` for each | Replace the dependency or the code that has no wasm support |
+| `conformance` | [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow)'s suite, its binary, CLI, behaviors and server crash test included, against this checkout, on Linux and macOS: the job checks out its `main` and runs its `ci/conformance.sh`, which points every foundation crate it uses at this checkout through a `[patch]`. A change here that breaks the app fails before it merges | `ci/check.sh` clones its `main` and runs `ci/conformance.sh .`; by hand, `<ironflow>/ci/conformance.sh <this checkout>` | Fix the change, or, for a deliberate break, land it with the matching change in [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow), whose `main` this job runs |
 | `embed` | The PRD's last "Done when": `examples/embed`, outside the workspace and on `ironflowx` and `tokio` only, bootstraps an engine, emits, reads the event back with a `read` key and sees that key's emit refused as `PermissionDenied`, on Linux and macOS. Its `.cargo/config.toml` patches `ironflowx` to this checkout; to build the published release instead, delete that file and `Cargo.lock` there, then `cargo run` | `cd examples/embed && cargo fmt --check && cargo clippy --locked -- -D warnings && cargo run --locked` | Fix the facade or the crate it names; a new dependency of the example also needs `cargo update` there |
-| `public-api` | D21: each crate's public API matches `public-api/<crate>.txt`, `ironflowx-proto`'s with `client` and without `wire` and `server`; LED-9: nothing public takes a bare `EnvironmentId`; no public API names a dependency's type, but the `axum::Router` the door returns and the command line the CLI shares with the host; `ci/api-rules.sh`: nothing turns an `Address` into an ID (TEN-8), `KeyDigest` exposes nothing but `ct_eq` and its codec (TEN-4); `ci/no-secret-in-errors.sh`, over rustdoc's JSON, private and hidden items included: no error type holds a `Secret`, or is used with one (TEN-3); each `compile_fail` doctest names an error code (`ci/compile-fail-codes.sh`) and fails with it, which only nightly rustdoc checks | `ci/public-api.sh` | Review the printed diff, then `ci/public-api.sh --bless` and commit the snapshot; a new `pub use` line of ours in a snapshot also needs its name in `ci/no-dependency-types.sh` |
+| `public-api` | D21: each crate's public API matches `public-api/<crate>.txt`, `ironflowx-proto`'s with `client` and without `wire` and `server`; LED-9: nothing public takes a bare `EnvironmentId`; no public API names a dependency's type, but the `axum::Router` the door returns; `ci/api-rules.sh`: nothing turns an `Address` into an ID (TEN-8), `KeyDigest` exposes nothing but `ct_eq` and its codec (TEN-4); `ci/no-secret-in-errors.sh`, over rustdoc's JSON, private and hidden items included: no error type holds a `Secret`, or is used with one (TEN-3); each `compile_fail` doctest names an error code (`ci/compile-fail-codes.sh`) and fails with it, which only nightly rustdoc checks | `ci/public-api.sh` | Review the printed diff, then `ci/public-api.sh --bless` and commit the snapshot; a new `pub use` line of ours in a snapshot also needs its name in `ci/no-dependency-types.sh` |
 | `doc-pins` | D16: docs name only the `segment-log-core` version `crates/ironflowx-cell/Cargo.toml` pins (tag-pinned links) | `ci/doc-pins.sh` | Re-pin the printed links to the new tag, or drop the version from the line |
-| `soak` | The crash test's longer soak before publishing: `inputs.kills` seeded kills (10000 by default) on Linux and macOS. Runs only when started by hand, with every other job, and is not required | `gh workflow run ci --ref <branch> -f kills=10000`; on your machine, `env -u CRASH_SEED CRASH_KILLS=10000 cargo test -p ironflowx-crash-test --locked --test crash seeded_random_kills` | Replay the printed `CRASH_SEED=<seed> CRASH_KILLS=1` and fix the ledger, the open or the key change it fails in |
+| `soak` | The crash test's longer soak before publishing: `inputs.kills` seeded kills (10000 by default) on Linux and macOS. Runs only when started by hand, with every other job, and is not required | `gh workflow run ci --ref <branch> -f kills=10000`; on your machine, `env -u CRASH_SEED CRASH_KILLS=10000 cargo test -p ironflowx-crash-test --locked --test crash seeded_random_kills`. The server crash soak, of the binary, is [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow)'s | Replay the printed `CRASH_SEED=<seed> CRASH_KILLS=1` and fix the ledger, the open or the key change it fails in |
 | `lint-ci` | actionlint and shellcheck over the workflow, `ci/*.sh` and `.githooks/*`; the `main` ruleset requires exactly the jobs of `ci.yml` but `soak` (`ci/required-checks.sh`, which reads the live ruleset) | `actionlint && shellcheck -x ci/*.sh .githooks/* && ci/required-checks.sh` | Fix the script; for a job, add it to the ruleset's required checks, or remove it there |
-
-The Linux and macOS `test` jobs also run `ci/server-crash.sh`. The binary is built with
-`__fault-points` in `target/server-crash` (under `CARGO_TARGET_DIR` if set), then used for
-the [server crash matrix](../docs/invariants.md#server-crash-test). Replay the printed
-`SERVER_CRASH_SEED=<seed> ci/server-crash.sh seeded_random_kill`. The `purity` job uses
-`ci/no-release-fault-points.sh` to check `release.yml` and the build graph of
-`ironflowx-bin` with its ordinary features on all targets, with fixtures for the explicit feature, all features,
-a workspace build and an enabled default or opt-in feature. Select only `ironflowx-bin` for an archive build.
 
 The `test` job also builds and tests the facade in three separate Cargo invocations, with its
 default features, with `client`, and with `client-tls`. Each asserts exactly which facade features
 are on. Both client builds compile the `whoami` example and check the schemes the client accepts.
-Separate invocations keep the workspace's CLI from switching on the proto client's TLS support.
+Separate invocations keep the rest of the workspace from switching the proto client's features on.
 `ci/no-facade-http.sh` also checks the default facade dependency graph for the HTTP and TLS
 packages used by the proto client. The facade with `client-tls` enabled supplies its rejecting
 fixture.
@@ -74,16 +56,9 @@ fixture.
   (`ci/clippy-bans.sh` checks the copy). A pure crate uses `BTreeMap`.
 - The `#![forbid(...)]` header at the top of `src/lib.rs`, so an inner `#[allow]` cannot lift a ban.
 
-A new pure crate needs all three, plus a `ci/check-deps.sh` line in `ci/purity.sh`. A new crate of
+A new pure crate needs all three, plus a `ci/check-deps.sh` line in `ci/purity.sh` and its name in the `wasm` job's list, in `ci.yml` and `ci/check.sh`. A new crate of
 any kind needs its name in `ci/public-api.sh`, in `published` or else in the loop after it, and a
 blessed snapshot.
-
-## Host dependencies
-
-The `purity` job runs `ci/no-host-engine-deps.sh crates/ironflowx-bin/Cargo.toml`. The binary
-reaches the ledger, control plane, event rules and credentials through the engine. The check
-reads the binary's direct normal dependencies from Cargo metadata, including renamed, optional
-and target-specific entries. Build, dev and transitive dependencies are outside the check.
 
 ## Fixtures
 

@@ -38,8 +38,6 @@ step with_protoc ci/must-reject.sh "protoc did not run" "buf did not run" -- \
   ci/no-protoc.sh cargo build --locked --manifest-path "$needs/Cargo.toml"
 # CI's crash-test budget, whatever a replay left in the shell.
 step env -u CRASH_SEED CRASH_KILLS=100 cargo test --workspace --locked
-step ci/serve-lifecycle.sh
-step env -u SERVER_CRASH_SEED ci/server-crash.sh
 step env IRONFLOWX_FACADE_FEATURES=none cargo test -p ironflowx --locked --test features
 step ci/no-facade-http.sh
 step ci/must-reject.sh "dependency 'connectrpc'" "dependency 'http'" "dependency 'hyper'" \
@@ -51,10 +49,19 @@ step env IRONFLOWX_FACADE_FEATURES=client-tls cargo test -p ironflowx --locked -
   --test features --example whoami
 step env NO_CLIENT_TLS=1 cargo test -p ironflowx-proto --locked --test client
 step cargo test -p ironflowx-proto --locked --test client --features client-tls,rustls/ring
-step cargo test -p ironflowx-events -p ironflowx-cli --locked --features serde_json/arbitrary_precision
+step cargo test -p ironflowx-events --locked --features serde_json/arbitrary_precision
 step cargo deny check
 step ci/purity.sh
-step ci/no-host-engine-deps.sh crates/ironflowx-bin/Cargo.toml
+step rustup target add wasm32-unknown-unknown
+for crate in ironflowx-core ironflowx-events ironflowx-authz; do
+  step cargo check --locked --target wasm32-unknown-unknown -p "$crate"
+done
+# ironflowx/ironflow's suite against this checkout, from a temporary clone of its main; the build
+# stays in target/conformance for the next run.
+ironflow=$(mktemp -d)
+trap 'rm -rf "$ironflow"' EXIT
+step git clone -q --depth 1 https://github.com/ironflowx/ironflow "$ironflow"
+step env CARGO_TARGET_DIR="$PWD/target/conformance" "$ironflow/ci/conformance.sh" .
 step sh -c 'cd examples/embed && cargo fmt --check && cargo clippy --locked -- -D warnings && cargo run --locked'
 step ci/public-api.sh
 step ci/doc-pins.sh

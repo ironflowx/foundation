@@ -30,10 +30,10 @@ clean: ## Remove build output, the embed example's too
 	cargo clean
 	cd examples/embed && cargo clean
 
-release: ## Cut a release: make release VERSION=0.1.0
+release: ## Publish the crates to crates.io and push the tag (no archives): make release VERSION=0.1.0
 	ci/release.sh $(VERSION)
 
-release-dry-run: ## Rehearse a release without publishing: make release-dry-run VERSION=0.1.0
+release-dry-run: ## Verify the crates a release would publish, publishing nothing: make release-dry-run VERSION=0.1.0
 	ci/release.sh $(VERSION) --dry-run
 
 embed: ## Run examples/embed against this checkout

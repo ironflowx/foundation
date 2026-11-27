@@ -1,6 +1,6 @@
 [package]
 name = "ironflowx-behaviors"
-description = "Runs the behavior scenarios in docs/behaviors/ against the engine (D20). Unpublished."
+description = "Runs the behavior scenarios in docs/behaviors/ against the engine and its door (D20). Unpublished."
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -12,18 +12,14 @@ ironflowx-core.workspace = true
 ironflowx-cell.workspace = true
 ironflowx-events.workspace = true
 ironflowx-operations.workspace = true
-ironflowx-proto = { workspace = true, features = ["client", "wire"] }
+ironflowx-doors = { workspace = true, features = ["http"] }
+ironflowx-proto = { workspace = true, features = ["client"] }
 serde_json.workspace = true
-jsonschema = { version = "0.63.1", default-features = false }
-prost-reflect = "0.16.5"
-rustix = { version = "1.1.6", default-features = false, features = ["process", "std"] }
-rusqlite = { version = "0.43.0", default-features = false, features = ["bundled"] }
-connectrpc = { version = "0.9.1", default-features = false, features = ["client", "json"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 cucumber = "0.23.0"
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "macros", "net"] }
 futures = { version = "0.3.34", default-features = false }
-http = { version = "1.5.0", default-features = false }
 
 [[test]]
 name = "behaviors"

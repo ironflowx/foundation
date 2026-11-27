@@ -50,7 +50,7 @@ Who made a change, as stored on every event: `key:<key-id>`, or `embedder:<name>
 What a verified key may do: its ID, scopes, environment and expiry. Never stored.
 
 **Data directory**:
-The directory a host opens an engine on: the engine's root, with its control plane and ledgers. `ironflowx serve` opens `./.ironflowx` unless told another.
+The directory a host opens an engine on: the engine's root, with its control plane and ledgers.
 
 **Engine**:
 What a host opens on a data directory: it owns the control plane and the environment's ledger, and admits every call.
@@ -144,14 +144,11 @@ A transport adapter for calls from outside the engine's process.
 **HTTP door**:
 The first door: turns Connect, gRPC and gRPC-Web calls into `Operations` calls and back.
 
-**Envelope**:
-The one JSON shape of every CLI error: `code`, `message`, `retryable` and, when there is one, `hint`.
-
 **Embedder**:
 An app that links foundation. One that calls the ledger directly, without keys, is trusted by it, the attribution it supplies included.
 
 **Host**:
-An embedder that opens an engine on a data directory. The built-in host, `ironflowx serve`, reads settings, opens the engine, serves it through the HTTP door, and stops it.
+An embedder that opens an engine on a data directory and serves it through a door. The first is the `ironflowx` binary, built in `ironflowx/ironflow`, not here (D85).
 
 ### Testing
 

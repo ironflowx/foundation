@@ -23,6 +23,3 @@ pub use ironflowx_cell::Record
 pub use ironflowx_proto::probe_http
 pub use ironflowx_proto::<<connectrpc::client::*>>
 pub extern crate ironflowx_proto::zz_http
-pub fn ironflowx_cli::parse(clap_builder::builder::command::Command) -> core::result::Result<(), clap_builder::error::Error>
-pub fn ironflowx_cli::run(&clap_builder::builder::arg::Arg) -> std::process::ExitCode
-pub fn ironflowx_cli::matches() -> clap_builder::parser::matches::arg_matches::ArgMatches

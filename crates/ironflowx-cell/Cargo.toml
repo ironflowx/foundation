@@ -25,7 +25,7 @@ ironflowx-events.workspace = true
 getrandom = { version = "0.4.3", default-features = false }
 rusqlite = { version = "0.43.0", default-features = false, features = ["bundled", "fallible_uint"] }
 # D16: an exact version, from crates.io.
-segment-log-core = "=0.2.0"
+segment-log-core = "=0.2.1"
 tokio = { version = "1.54.1", default-features = false, features = ["rt", "sync"] }
 uuid = { workspace = true, features = ["v7"] }
 

@@ -13,9 +13,8 @@ source ci/tools.env
 rustup toolchain install "$NIGHTLY" --profile minimal --no-self-update >/dev/null
 mkdir -p public-api
 published=(ironflowx-core ironflowx-events ironflowx-proto ironflowx-cell ironflowx-authz
-  ironflowx-store ironflowx-operations ironflowx)
-for crate in "${published[@]}" ironflowx-behaviors ironflowx-bin ironflowx-cli \
-  ironflowx-codegen ironflowx-crash-test ironflowx-doors; do
+  ironflowx-store ironflowx-operations ironflowx ironflowx-doors ironflowx-codegen)
+for crate in "${published[@]}" ironflowx-behaviors ironflowx-crash-test; do
   # The proto client with the interface; not `wire` or `server`, which name buffa's and connectrpc's
   # types and follow their 0.x versions.
   features=()
@@ -82,8 +81,7 @@ ci/must-reject.sh Ledger::open find_after ffi_open EnvironmentId::lookup \
 ci/must-reject.sh rusqlite::error::Error segment_log_core::engine tokio::runtime uuid::Uuid \
   connectrpc::error::ConnectError buffa::error::DecodeError buffa_types::google http::uri::Uri \
   hyper::error::Error hyper_util::client serde_core::ser::Serialize bytes::bytes::Bytes \
-  axum::routing::MethodRouter tower::util::BoxService clap_builder::error::Error \
-  ironflowx_cli::matches clap_builder::builder::arg::Arg ironflowx_vendor::Handle \
+  axum::routing::MethodRouter tower::util::BoxService ironflowx_vendor::Handle \
   ironflowx_proto::ProbeError ironflowx_proto::probe_http connectrpc::client:: \
   ironflowx_proto::zz_http ironflowx::store ironflowx::authz ironflowx::events \
   ironflowx_cell::Record -- \

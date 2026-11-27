@@ -3,11 +3,11 @@
 # Fails if a public API names a type from outside std and this workspace: the log's types stay
 # private to ironflowx-cell (architecture.md, "Depends on"), and neither the read store, the runtime
 # nor the wire's libraries may leak through a signature or a trait impl, where a version bump
-# becomes a breaking change. The exceptions, in unpublished crates, are the router a door returns
-# and the command line the CLI shares with the host. A re-export's line does not say whose type it
-# is, so each is named here: ours. Not caught: one of those names pointed at a dependency's type;
-# a public alias of one (`pub type ironflowx::Store = ironflowx_store::ControlPlane`); and a module
-# of ours whose function returns one, since every path of this workspace is allowed.
+# becomes a breaking change. The exception is the router the HTTP door returns, which a host serves.
+# A re-export's line does not say whose type it is, so each is named here: ours. Not caught: one of
+# those names pointed at a dependency's type; a public alias of one
+# (`pub type ironflowx::Store = ironflowx_store::ControlPlane`); and a module of ours whose function
+# returns one, since every path of this workspace is allowed.
 set -euo pipefail
 crates=$(cd "$(dirname "$0")/../crates" && printf '%s|' * | tr - _)
 # perl: the path's root is what no path and no name precedes. Its $ARGV is perl's.
@@ -22,8 +22,6 @@ found=$(CRATES=${crates%|} perl -ne '
     next;
   }
   $line =~ s/-> axum::routing::Router$// if /^pub fn ironflowx_doors::router</;
-  $line =~ s/\bclap_builder::(builder::command::Command|parser::matches::arg_matches::ArgMatches)\b//g
-    if /^pub fn ironflowx_cli::(parse|run)\(/;
   while ($line =~ /(?<![\w:])([a-z_]\w*)::/g) {
     next if $1 =~ /^(core|alloc|std|$ENV{CRATES})$/;
     print "$ARGV:$.: $_";

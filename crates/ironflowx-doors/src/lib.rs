@@ -33,6 +33,8 @@ pub trait Readiness: Send + Sync {
 /// Where a host puts the engine once it is open. The door admits calls only while open.
 pub struct Slot<O: Operations, R: Readiness>(Mutex<State<O, R>>);
 
+// Only the HTTP door reads what an open slot holds.
+#[cfg_attr(not(feature = "http"), allow(dead_code))]
 enum State<O, R> {
     Starting,
     Open(Arc<O>, Arc<R>),

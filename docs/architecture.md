@@ -1,6 +1,6 @@
 # Architecture
 
-One environment's commit path and the engine in front of it, as foundation crates linked into a host's or an embedder's process; and the first host, `ironflowx serve`, which serves the engine over HTTP, with a CLI that calls one.
+One environment's commit path and the engine in front of it, as foundation crates linked into a host's or an embedder's process, with the HTTP door a host serves the engine through and the proto client that calls it. The first host, the `ironflowx` binary, and its CLI are built in [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow) from these crates, not here (D85).
 
 ## C1: Context
 
@@ -8,11 +8,11 @@ One environment's commit path and the engine in front of it, as foundation crate
 
 The engine is a library: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead.
 
-`ironflowx serve` is a host as a process. Outside it:
+A host that serves the engine through the HTTP door, as `ironflowx serve` does, is a process. Outside it:
 
-- a client calls the engine over HTTP, by Connect, gRPC or gRPC-Web, with a key, and reaches it no other way; the CLI, in the same binary, is one, run by an agent in a shell;
+- a client calls the engine over HTTP, by Connect, gRPC or gRPC-Web, with a key, and reaches it no other way;
 - an orchestrator watches `/health` and `/ready`, with no key;
-- the operator takes the admin key from `admin.key` in the data directory.
+- the operator takes the admin key from the host.
 
 ## C2: Crates
 
@@ -23,10 +23,8 @@ Event rules, credentials and core are pure. Only the ledger, the control plane, 
 Around the engine, not in the diagram, each depending on what its line names:
 
 - `ironflowx-proto`, with a wire feature on: the proto, its generated messages and their mapping, and the proto client. It links `connectrpc` and `buffa`, and at build time `connectrpc-build` and `protox`. With none on, it links only `ironflowx-core`.
-- `ironflowx-doors`: the HTTP door, on `ironflowx-proto` and `ironflowx-core`, and no engine crate (SRV-1). Unpublished.
-- `ironflowx-cli`: the CLI, on `ironflowx-proto` and `ironflowx-core`, and no engine crate (SRV-1); at build time, on `ironflowx-codegen`. Unpublished.
-- `ironflowx-codegen`: the generator, which `ironflowx-cli`'s `build.rs` calls; on no crate of ours. Unpublished.
-- `ironflowx-bin`: the `ironflowx` binary and its host, on `ironflowx-cli`, `ironflowx-doors`, `ironflowx-operations` and `ironflowx-core`. The host reaches the ledger, control plane, event rules and credentials through the engine. Unpublished.
+- `ironflowx-doors`: the HTTP door, on `ironflowx-proto` and `ironflowx-core`, and no engine crate (SRV-1). Published from 0.4 (D85).
+- `ironflowx-codegen`: the generator, which a CLI's `build.rs` calls; on no crate of ours. Published from 0.4 (D85).
 
 The `ironflowx` facade lets an embedder opt in to the proto client. The facade's `client` feature enables `ironflowx-proto/client`. Its `client-tls` feature enables `client` and `ironflowx-proto/client-tls`. Both are off by default, so a standalone in-process embedder builds no HTTP stack.
 
@@ -36,18 +34,12 @@ The `ironflowx` facade lets an embedder opt in to the proto client. The facade's
 
 Inside the ledger: its interface is the only way in, and everything behind it is implementation. The engine in front of it, with its credentials and control plane, is in [Modules](#modules), a call's way through them in [Keys](#keys) ("Admission").
 
-In front of the engine, in `ironflowx serve`, a call goes through:
+In front of the engine, in a host, a call goes through:
 
-1. the host's accept loop, which reads the request ([Wire](#wire), "Timeouts");
+1. the host's accept loop, which reads the request;
 2. the HTTP door, which decodes it, takes its key from `Authorization`, and converts it to an `Operations` request;
 3. the slot, which answers for the engine until it is open;
 4. the engine, through `Operations`; the answer, or the error, goes back the same way.
-
-A CLI command is a client's side of that:
-
-1. the CLI reads the command line, the key it was given and the engine's URL;
-2. the generated call of the command asks the proto client, through `Operations`, which sends it with the key and the deadline;
-3. the answer, as wire JSON with its defaults and its JSON text as values, goes to stdout; a failure, as the envelope, to stderr, with its kind's exit code ([CLI](#cli)).
 
 `Operations` is a real seam: the engine in process and the proto client over Connect are its two adapters.
 
@@ -74,9 +66,7 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 | Wire mapping | Converts `Operations` requests and answers to and from wire messages, validating what arrives | `TryFrom` for requests, both ways; `From` for answers sent and `TryFrom` for answers received; `OpError` ↔ `ErrorInfo` ↔ the Connect error | `ironflowx-proto` (`wire`, `server`) |
 | Proto client | Calls `Operations` over Connect, sending each `Call`'s key | `Client::new(url)`, `with_timeout`, `Operations` | `ironflowx-proto` (`client`; `client-tls` for `https`) |
 | HTTP door | Serves `Operations` over Connect, gRPC and gRPC-Web, with `/health` and `/ready`. Holds no rule | `router(slot)`, `Slot`, `Readiness` | `ironflowx-doors` (`http`) |
-| Host | Turns a data directory and an address into a served engine | `ironflowx serve`, `admin.key`, exit codes | `ironflowx-bin` |
-| CLI | Calls an operation from a shell | The generated commands, one per method of the proto; `version`; the envelope and exit codes | `ironflowx-cli` |
-| Generator | Derives the CLI's commands from the proto at build time, and refuses a proto that does not say enough | `generate(descriptor_set, out_dir)`, from `build.rs` | `ironflowx-codegen` |
+| Generator | Derives a CLI's commands from the proto at build time, and refuses a proto that does not say enough | `generate(descriptor_set, out_dir)`, from `build.rs` | `ironflowx-codegen` |
 | Engine | Reads whether the bootstrap is marked; opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records; reports its health and a ledger fault to the host | `is_bootstrapped`, `Engine::open`, `health`, `faulted`, `close`, `Operations`, `recover_admin_key` | `ironflowx-operations` |
 | Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create` | `ironflowx-authz` |
 | Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `undo_bootstrap`, `mark_ledger_created`, `finish_bootstrap`, `check_seed`, `apply_seed`, `lookup_key`, `record_expiry`, `insert_key`, `insert_recovered`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
@@ -108,7 +98,7 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 | `Operations` | The engine (`Engine`) · the proto client (`Client`) | Both. The behaviors drive each |
 | `Clock` | `HostClock` · `ManualClock`, which a test sets and steps, backwards too | Both in `ironflowx-cell`. The crash test and the behaviors on the engine use `ManualClock`. The host uses `HostClock` through `ironflowx-operations` |
 | Control plane | SQLite · a shared database for clusters | SQLite only: hypothetical, so no trait |
-| Ledger, event rules, credentials, door, host, CLI, generator | One adapter each | Module interfaces, not seams |
+| Ledger, event rules, credentials, door, generator | One adapter each | Module interfaces, not seams |
 
 The segment log has a storage seam of its own, private to `segment-log-core`; foundation does not reach it.
 
@@ -175,7 +165,7 @@ impl Operations for Client { .. }   // sends Call's key as the Bearer key; Call:
 // These four for each operation, as for `create_key`:
 impl TryFrom<wire::CreateKeyRequest> for CreateKeyRequest { type Error = OpError; }       // the door; Invalid on what the wire cannot carry
 impl TryFrom<CreateKeyRequest> for wire::CreateKeyRequest { type Error = OpError; }       // the client; Invalid on the same
-impl From<CreatedKey> for wire::CreateKeyResponse { }                                     // the door, and the CLI, to print it
+impl From<CreatedKey> for wire::CreateKeyResponse { }                                     // the door, and a CLI, to print it
 impl TryFrom<wire::CreateKeyResponse> for CreatedKey { type Error = wire::Undecodable; }  // the client
 impl From<&OpError> for wire::ErrorInfo { }
 impl TryFrom<wire::ErrorInfo> for OpError { type Error = wire::Undecodable; }       // an unknown kind is no ErrorInfo
@@ -196,19 +186,6 @@ fn router<O: Operations + 'static, R: Readiness + 'static>(slot: Arc<Slot<O, R>>
 
 // ironflowx-codegen: build time only
 fn generate(descriptor_set: &[u8], out_dir: &Path) -> Result<(), CodegenError>;   // writes out_dir/cli.rs; what it refuses: Proto
-
-// ironflowx-cli. The host adds its commands to `root`, and runs its own.
-fn parse(root: clap::Command) -> Result<ArgMatches, ExitCode>;   // Err: --help printed its text, or a usage error its envelope;
-                                                                 // or clap would print the arguments, so none was read
-fn run(matches: &ArgMatches) -> ExitCode;                        // a command of the CLI's own
-
-// ironflowx-bin (tokio)
-async fn serve(data_dir: &Path, listen: SocketAddr) -> Result<(), ServeError>;
-async fn run(listener: std::net::TcpListener, data_dir: &Path) -> Result<(), ServeError>;   // bound listener. The caller handles signals
-async fn serve_with_seed(data_dir: &Path, listen: SocketAddr, seed: Option<Secret>) -> Result<(), ServeError>;
-// ServeError StaleKeyFile(PathBuf) | Listen(io::Error) | Signals(io::Error) | LedgerFault
-// | DataDir(PathBuf, io::Error) | KeyLookup(PathBuf, io::Error) | Engine(EngineError)
-// | Probe(PathBuf, io::Error) | KeyFile(PathBuf, io::Error, KeyId)
 
 // ironflowx-operations also exports HostClock, OpenError and StoreError.
 fn is_bootstrapped(root: &Path) -> Result<bool, EngineError>;   // blocking; reads the bootstrap mark
@@ -404,8 +381,6 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 | `ResourceExhausted` | From the proto client: a request over 16 MiB, which it does not send; or `resource_exhausted` without the engine's own error ([Wire](#wire), rule 4). No hint | No: a request too large stays so |
 | `Invalid` | From the proto client: `invalid_argument`, `out_of_range` or `failed_precondition` without the engine's own error ([Wire](#wire), rule 4) | No |
 | `Internal` | From the proto client: `unimplemented` without the engine's own error ([Wire](#wire), rule 4), with the hint `the engine is older than this client` | No |
-| `Invalid` | From the CLI, before it sends anything: a usage error, or a `keys create` whose request repeats the key the CLI was given ([CLI](#cli)) | No |
-| `Internal` | From the CLI: an answer it cannot write to stdout (one that is closed, or not open for writing, takes it and drops it), the hint of a `keys create` saying that the key is stored and its secret lost; one that repeats the key the CLI was given; or one whose JSON text is no JSON, which no engine stores | No |
 
 | Kind | `retryable` | Exit | Connect code |
 |---|---|---|---|
@@ -478,11 +453,11 @@ Dropping a `Ledger` without `close` stops the writer after the submission in han
 Steps, with the embedder stopped:
 
 1. **Copy the whole directory** before changing anything.
-2. **Ask the log:** `segment-log-server repair verify` on `<dir>/log`. The `repair` subcommands, flags and exit codes are in the segment log's [Operator repair](https://github.com/ironflowx/segment-log/blob/v0.2.0/docs/architecture/api.md#operator-repair) section, the only source for them.
+2. **Ask the log:** `segment-log-server repair verify` on `<dir>/log`. The `repair` subcommands, flags and exit codes are in the segment log's [Operator repair](https://github.com/ironflowx/segment-log/blob/v0.2.1/docs/architecture/api.md#operator-repair) section, the only source for them.
 3. **If verify reports damage**, the log refused. Only damage in the newest segment is repairable: run `repair truncate`, a dry run that prints the plan, then apply it.
    - **Lossless plan:** reopen the ledger. It replays and opens.
    - **Lossy plan:** acknowledged records are dropped and the tool needs `--drop-acknowledged`, which leaves the log sealed. Go to step 4, then read the note on a sealed log.
-     The segment log's repair class F ([segment-log ADR 0068](https://github.com/ironflowx/segment-log/blob/v0.2.0/docs/decisions/0068-open-refuses-damage-with-acknowledged-groups-after-it.md)) is a bad frame in the newest unsealed segment with a later record or a close frame after it. Its plan is always lossy: apply it with `--drop-acknowledged`. The tool refuses it (exit code 3) when the damage is in the second-newest segment, when the second-newest segment lacks its closing run, or when the seal run would reach the last acknowledged record after the cut and that record is a group frame; then restore from a backup. When the proof after the cut is a close frame, which every clean `close` writes, the plan copies it past the seal run and can apply. The segment log's section above is the authority on these cases.
+     The segment log's repair class F ([segment-log ADR 0068](https://github.com/ironflowx/segment-log/blob/v0.2.1/docs/decisions/0068-open-refuses-damage-with-acknowledged-groups-after-it.md)) is a bad frame in the newest unsealed segment with a later record or a close frame after it. Its plan is always lossy: apply it with `--drop-acknowledged`. The tool refuses it (exit code 3) when the damage is in the second-newest segment, when the second-newest segment lacks its closing run, or when the seal run would reach the last acknowledged record after the cut and that record is a group frame; then restore from a backup. When the proof after the cut is a close frame, which every clean `close` writes, the plan copies it past the seal run and can apply. The segment log's section above is the authority on these cases.
    - **Other damage** (an older segment, the headers) is not repairable: restore the directory from a backup.
 4. **If verify is clean**, or after a lossy repair, the ledger refused. Prefer restoring the directory from a backup at least as new as the last acknowledged emit. To accept the loss instead (if the log was empty, the step 1 copy of `read.db` is the only copy of those events: keep it), delete `<dir>/read.db` and its `-wal` and `-shm` files and reopen: the ledger rebuilds the read store from the log as it now is. This deletion is the one step that accepts lost events.
 5. **If it still answers `Corrupt`** after the deletion, the ledger refused a record: rebuilding cannot get past it. Restore the directory from a backup taken before that record was written. The step 1 copy holds the same record and will not open; keep it for inspection.
@@ -567,7 +542,7 @@ Seen with a fault-injecting VFS that fails the WAL's sync (macOS, [#135](https:/
 
 ## What is stored
 
-The engine and the ledger set no file modes, so the process umask applies, and encrypt nothing: the host keeps the directory private. `ironflowx serve` creates it, and what is missing above it, asking for mode `0700`; a directory that is there keeps its mode. A umask that takes one of the owner's bits leaves a new one narrower, and a start whose permissions then keep it from opening the engine exits 1 (root's usually do not). On Linux a default ACL of the parent's stands in for the umask, and a setgid parent passes its bit on. On macOS an inherited ACL entry can grant access beyond the mode bits, to `admin.key` too if it propagates to files. Who can read it reads every event; who can write it has an admin's authority. A ledger has no delete and no retention.
+The engine and the ledger set no file modes, so the process umask applies, and encrypt nothing: the host keeps the directory private. On Linux a default ACL of the parent's stands in for the umask, and a setgid parent passes its bit on. On macOS an inherited ACL entry can grant access beyond the mode bits. Who can read it reads every event; who can write it has an admin's authority. A ledger has no delete and no retention.
 
 An engine's data directory, `<root>`:
 
@@ -578,15 +553,9 @@ An engine's data directory, `<root>`:
 | `<root>/ledgers/<environment-id>/` | The environment's ledger, laid out as below |
 | `<root>/ledgers/.staging/` | A ledger being built; deleted by any open that locks the root and reads its control plane |
 
-What `ironflowx serve` adds to it:
+What a host adds to it, such as `ironflowx serve`'s `admin.key`, is in [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow).
 
-| Where | Holds |
-|---|---|
-| `<root>/admin.key` | The minted admin key and a newline, mode `0400`. Never overwritten. Deleting it is the operator's call |
-| `<root>/admin.key.<random>.tmp` | The temporary file used to publish the key, mode `0400`. A leftover may hold the only copy. The host warns once and keeps it. A warning identifies its path when safe |
-| `<root>/.admin-key-probe.<random>` and its `.link` | Dummy zero bytes only, mode `0400`. A live probe removes its own entries unless the OS refuses cleanup, in which case the error names the paths |
-
-**Where a secret may appear.** A served engine's key text reaches only these places: `admin.key` and the temporary file it is linked from, the `Authorization` header of a call, the `CreateKey` answer on the wire, stdout of `keys create`, `recover-key --stdout` and `seed generate`, and the variable or file given to the CLI or host. A key's text sent where no key goes is data, as any: a label is stored and listed (the CLI refuses to create a key whose label holds its own), and a text that does not decode can be repeated to its sender.
+**Where a secret may appear.** An engine's key text reaches only these places: what the host delivers on purpose, the `Authorization` header of a call, and the `CreateKey` answer on the wire. A key's text sent where no key goes is data, as any: a label is stored and listed, and a text that does not decode can be repeated to its sender.
 
 A ledger's directory, `<dir>`:
 
@@ -619,7 +588,7 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 | `(ironflowx.v1.json_text)` | Field | A `string` that holds JSON text |
 | `idempotency_level = NO_SIDE_EFFECTS` | Method | A read: Connect may call it with GET |
 
-**Generator.** `ironflowx-cli`'s `build.rs` gives `generate` the descriptor set, so a proto it refuses is a build that fails (D52). It refuses:
+**Generator.** A CLI's `build.rs` gives `generate` the descriptor set, so a proto it refuses is a build that fails (D52). It refuses:
 
 - a method without a `cli`, a `summary` or an `example` (a blank one is none), a `cli` that is not kebab-case words, a `summary` of more than one line, and a command that is another's, or the group another is in;
 - an example that is not JSON, that its request's schema does not allow, or that does not decode as the request (SRV-12). The decoder also checks the cardinality of a `oneof`. The schema is JSON Schema 2020-12, with `additionalProperties: false`: no field the request does not have, at any depth. It requires none, a time is in whole milliseconds, and of a `json_text` field it asks only a string, whose text it does not read;
@@ -628,7 +597,7 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 
 It does not know the hand-written commands: one that takes a name of theirs, or starts with it, panics each start of a debug build, the tests' included.
 
-Nor does it know the CLI's own flags: a scalar field of a request named `help`, `json`, `key_file` or `url` panics each run of its command, likewise.
+Nor does it know a CLI's own flags, those of the `ironflowx` CLI: a scalar field of a request named `help`, `json`, `key_file` or `url` panics each run of its command, likewise.
 
 It writes `cli.rs`: each command with its RPC name, summary, input and output schemas, example, the fields of its request and answer (name, kind, whether a list, default), and its call through `Operations`, which decodes the request from wire JSON.
 
@@ -636,7 +605,7 @@ It writes `cli.rs`: each command with its RPC name, summary, input and output sc
 |---|---|
 | Names | `Operation::rpc()` is `<package>.<Service>/<Method>`, and the methods of the proto are those (D49) |
 | Field names in JSON | The proto's snake_case names: every multiword field sets `json_name` to its own name (D78). A camelCase name is an unknown field. The generator refuses a field without it |
-| Unknown JSON fields | The door ignores them, as protobuf does; the CLI refuses them in `--json` (D79) |
+| Unknown JSON fields | The door ignores them, as protobuf does (D79) |
 | A JSON array for a message | Read as the message's fields in the proto's order (`[["read"]]` is `{"scopes":["read"]}`), by the library; then checked as any |
 | Event data and metadata | `optional string` fields with `json_text`: the JSON text itself, so bytes, key order and large integers survive every codec (D54, SRV-5). A client sends `"data": "{\"id\": 1}"`; a JSON value that is neither a string nor `null` does not decode. An event's `data` is always there |
 | Presence | A field whose absence means something (`data`, `metadata`, `version`, `idempotency_key`, `expires_at`, `label`, `created_by`, `limit`, `cursor`, `next`, `hint`) is `optional`; absent, and in JSON `null`, is `None` |
@@ -660,7 +629,7 @@ It writes `cli.rs`: each command with its RPC name, summary, input and output sc
 | Key | `Authorization: Bearer <key>` and nothing else: no other header, cookie or query parameter is read (D55). The scheme is case-insensitive (RFC 9110). No header, or `Bearer` with no text, is a call with no key. Any other value (another scheme, a key with no scheme, two `Authorization` headers, bytes that are not text) is a malformed key, answered as such by `Operations`: the door passes on a text no engine accepts, never the value |
 | A key no header holds as it is | One with a byte outside visible ASCII is not well formed. The client sends a malformed key in its place, so the engine answers both alike |
 | Size | A request body and a message are at most 16 MiB each, so on gRPC and gRPC-Web, whose body holds a 5-byte envelope too, a message is at most 16 MiB less 5 bytes; over either, the library answers `resource_exhausted` and nothing of it is stored. HTTP/1.1 then closes the connection, so a client still sending can lose that answer (`connectrpc`'s own did, of a body of 17 MiB and of 40, not each time): `Client` sends no message over 16 MiB, and answers `ResourceExhausted` itself. `Client` accepts an answer of 16 MiB. A page of events at each limit of the event rules (200 events, 3 MiB, the longest names and keys) is under 3.2 MiB in binary, and in JSON, where escaping can double data and metadata, under 6.5 MiB: a gRPC client with the common 4 MiB receive limit, in its usual binary encoding, needs no setting, and **a Connect JSON client with a 4 MiB limit raises it**, to 16 MiB, as does one of gRPC in JSON (D73) |
-| Timeouts | A connection sends its first request's head within 10 s, and on HTTP/1.1 each later one within 10 s of its first byte. A later head that arrives with the request before it (as far as the host has read it when it answers that one), and later HTTP/2 heads, count as idle; no idle limit of its own (a proxy sets one); `Connect-Timeout-Ms` is honored; no deadline of its own, on `/ready` either |
+| Timeouts | `Connect-Timeout-Ms` is honored; the door sets no deadline of its own, on `/ready` either. How long a connection may take to send a request's head is the host's accept loop's |
 | Door | Holds no rule: decode, convert (`TryFrom`), call `Operations` once, convert back (SRV-1). A request that does not decode is `invalid_argument` before its key is read |
 | Errors | The kind's [Connect code](#errors), the message, and `ErrorInfo` as a detail, on every protocol. gRPC carries all of it in trailers, the message three times and once percent-encoded, so an error whose trailers pass its client's limit on them loses its `ErrorInfo`, then fails: `connectrpc`'s own client reads a message of 4,096 ASCII letters whole, loses the `ErrorInfo` of 4,096 `%` or 8,192 ASCII letters, and fails at 16,384. No error of the engine is that long. Any other answer without `ErrorInfo` is the library's or a proxy's |
 | While opening or draining | Every call the wire can carry ([Proto](#proto)) answers `Unavailable`, hint `the engine is starting` or `the engine is stopping`. Wire decoding and conversion still precede the slot check |
@@ -683,164 +652,9 @@ A success that is not Connect's (a 2xx other than 200, or of a type other than `
 
 With `client-tls`, `Client` calls an `https` URL as it does an `http` one. It trusts the roots of the system's store, so a private authority's works, and reads them once, in `Client::new`; `SSL_CERT_FILE` or `SSL_CERT_DIR`, where set, replaces the store, on macOS too. With no roots, no server is trusted. Without `client-tls`, an `https` URL is `InvalidUrl`.
 
-## Host
+## Host and CLI
 
-`ironflowx serve` binds, opens the engine, and serves it. SIGINT, SIGTERM or a ledger fault
-starts a drain. Every acknowledgment already followed `fsync`.
-
-| Setting | Flag | Variable | Default |
-|---|---|---|---|
-| Data directory | `--data-dir` | `IRONFLOWX_DATA_DIR` | `./.ironflowx` |
-| Listen IP address and port | `--listen` | `IRONFLOWX_LISTEN` | `127.0.0.1:9310` |
-| Seed | `--seed-file` | `IRONFLOWX_SEED_FILE` or `IRONFLOWX_SEED` | None |
-| Log level | `--log-level` | `IRONFLOWX_LOG_LEVEL` | `info` |
-| Log format | `--log-format` | `IRONFLOWX_LOG_FORMAT` | `json` |
-
-A flag beats its variable. A seed file and an inline seed are two sources and are refused together.
-The host trims surrounding whitespace off a seed and validates it before binding. An empty variable
-is a value and is refused. The host warns once for each unread `IRONFLOWX_*` variable, naming the
-variable without its value. It hides names that could carry credentials or arbitrary bytes.
-`IRONFLOWX_URL` and `IRONFLOWX_KEY` are known CLI variables. There is no
-settings file.
-
-**Start.** In order:
-
-1. Read and validate settings and any seed. Bad settings, a malformed seed or an unreadable seed file exit 2.
-2. If the data directory holds `admin.key` and `control.db` is confirmed absent, exit 2: a stale key file, from another install.
-3. Bind the listen address. In use exits 8, any other bind error exits 2. No file has been written (D62).
-4. Log `listening` with the bound URL, also when port 0 picked the address. An address that is not loopback also logs a warning that keys travel in clear without a TLS proxy (D59).
-5. Serve `/health` and the door, the slot `Starting`.
-6. Create the data directory, and what is missing above it, asking for mode `0700`. Warn once about each leftover `admin.key.*.tmp` and keep it. Only a confirmed unmarked bootstrap with an occupied `admin.key` is stale (exit 2). For a seedless start, confirm the unmarked state after seeing the name is occupied, since another host can mark and publish concurrently. A seeded start leaves a bootstrap read error for the open. A seedless start on an unmarked or unreadable bootstrap checks the destination with `symlink_metadata`: an occupied name, including a dangling link, yields the stale refusal or the original read error, respectively. A lookup error other than not found is a refusal. When the destination is absent, probe before opening. If a healthy marked root has an occupied key path and the first read fails transiently, retry the start after the failure clears.
-7. Open with `Engine::open(data_dir, HostClock, seed)`. Warn if it revoked an earlier minted key whose secret was lost, or if the supplied seed is revoked. Write a minted key to `admin.key` and log its path. On failure log the minted key ID and the instruction to run `ironflowx recover-key` and revoke that ID, close the engine and exit 1. Set the slot `Open` on success.
-
-**Pre-mint probe.** Write and sync dummy data in the data directory, hard-link it, then remove
-both probe-created names and sync the directory. Attempt cleanup of each created name even after
-an earlier failure, and keep any existing entry that the probe hit in a collision. If the OS refuses
-removal, name each failed removal by an exact safe absolute path or an exact filename relative to
-the configured data directory. Any probe failure exits 1 before opening the engine or recovering a key.
-
-The host uses an absolute locator in these warnings and errors only when the configured directory
-is absolute and the locator is unambiguous and safe to print. Otherwise it names the file relative
-to the configured data directory. When an old temporary's name itself cannot be shown safely,
-the warning says the name was withheld and directs the operator to inspect `admin.key.*.tmp`
-in the configured data directory locally.
-
-`is_bootstrapped` reads the control plane without creating a directory or database. It answers
-`true` for a marked bootstrap and `false` for a missing control plane, a control plane that
-has never been bootstrapped, or an unmarked bootstrap. The read takes no engine lock and does
-not check the ledger. SQLite can rebuild `control.db-shm` from a WAL left by a crash.
-
-**Writing a key file.** Write the key and a newline to a new file in the data directory, `admin.key.<random>.tmp`, mode `0400`, and sync it; hard-link it to `admin.key`, which fails if the name is taken, by a symbolic link to nothing too; remove the temporary name; sync the directory. A crash leaves either no `admin.key` or the whole key, and at most the temporary file. A crash after the open marked the bootstrap and before the link leaves no `admin.key` and no sign to the next open: recover an admin key and revoke the minted one.
-
-**Health.** Plain HTTP `GET`, no key:
-
-| Path | 200 when | Else |
-|---|---|---|
-| `/health` | The process serves | No answer |
-| `/ready` | The slot is `Open` and `Engine::health()` reports both parts ok: `{"ready":true}` | 503 with `{"ready":false,"waiting_on":"open" \| "control_plane" \| "ledger"}`, the control plane first |
-
-`/ready` asks the engine on each request and has no deadline of its own, so it can answer as late as `Engine::health` does ([Commit and read](#commit-and-read)): a prober sets its own.
-
-**Stop.** SIGINT, SIGTERM or `Engine::faulted()` starts a drain (D63, D72).
-The slot stops admitting and the listener closes. Existing connections can still receive
-the stopping refusal while requests in flight drain. The host allows up to 10 seconds, including
-time to flush responses and close connections, then drops outstanding request futures, including
-HTTP/2 handlers. It marks the slot closed and awaits `Engine::close_with_state` before shutting
-down the runtime. Closing joins the ledger writer, which finishes queued submissions and the fold; event
-acknowledgments already followed `fsync`. A dropped read can still hold `read.db` after engine
-close until its blocking query ends or the process exits. A detached control-plane write still
-uses a single SQLite transaction (D48, TEN-11).
-
-A signal during open drains the transport on the same deadline while open finishes. The host
-publishes any minted key before it closes the engine.
-A second signal received during shutdown exits 1 immediately. The operating system can coalesce
-identical pending signals. A signal alone exits 0. A ledger fault present when close starts exits 8,
-even when a signal started the drain. The ledger reads its state at entry to close using the
-same progress gate that publishes faults. A control-plane failure makes `/ready` answer
-503 `control_plane` and serving continues. Restart runs the ledger's usual open and replay.
-A sealed ledger opens again and faults on any emit that appends (D19). Serve it read-only.
-
-**Logs.** JSON lines on stderr by default, or text with `--log-format text`.
-`--log-level` takes `off`, `error`, `warn`, `info`, `debug` or `trace`.
-At `info`, the host logs one line per call, with the operation, duration, outcome kind and the
-presented key's ID, if the key is well formed. The ID is recorded even for a key the engine refuses.
-Before `Operations`, the door logs without a key ID. A dropped request awaiting admission has
-outcome `cancelled`. A transport refusal before the door can determine a domain kind has outcome
-`refused`. It labels an unknown RPC in
-`ironflowx.v1` as `unknown` without recording its path. Logs carry no key, seed, event data or
-metadata. In a diagnostic path or message, the host hides words that could be credentials and
-escapes control characters. The refusal's envelope is the last stderr line, regardless of the log format or level.
-
-### Exit codes
-
-Host errors use the same table as the CLI, from `ErrorKind::exit_code()`.
-
-| Exit | Kind | Host outcome |
-|---|---|---|
-| 0 | Success | Stopped by a signal |
-| 1 | `internal` | Engine or ledger format, orphaned engine, missing ledger, wrong incarnation, corrupt ledger, data directory creation failure, failed pre-mint probe, key-file publication or recovery output failure, signal registration failure. A second signal also exits 1 immediately |
-| 2 | `invalid` | Bad settings, malformed or unreadable seed, a directory belonging to a ledger, a seed conflict, stale `admin.key`, bind error other than address in use, recovery with a missing data directory, unfinished bootstrap or occupied file destination |
-| 3–7 | [Call errors](#errors) | Calls only |
-| 8 | `unavailable` | Address in use, engine or ledger lock or I/O error, control-plane fault during serve startup or recovery, destination lookup error, a ledger fault before close |
-
-**Recovering an admin key.** Run `ironflowx recover-key` with access to the data directory. It uses
-`--data-dir`, then `IRONFLOWX_DATA_DIR`, then `./.ironflowx`. It works with or without a running
-engine, uses no URL or existing key, and never creates the data directory. File delivery refuses
-an existing `admin.key`, including a dangling symlink, then runs the pre-mint probe before
-calling `recover_admin_key(data_dir, HostClock)`. On success it writes the whole key and a newline
-to `admin.key` using the same no-clobber writer as startup.
-
-An explicit `--stdout` skips file preflight and prints a JSON object with `key` and `key_id`,
-indented on a terminal. It never touches `admin.key`. If file publication or printing fails
-after the engine recovered a key, the refusal reports the key ID and says to use a working admin
-key, or recover one to stdout, then revoke that ID. If two recoveries pass preflight for the same
-file, the first successful link wins. The loser exits 1 and leaves the winner's file intact.
-
-**Seed generation.** `ironflowx seed generate` prints one JSON object with `key` and `key_id`.
-It indents the object on a terminal. It opens no engine and writes no file.
-
-## CLI
-
-`ironflowx <command>` calls an engine and prints what it answers. An agent in a shell branches on the exit code and reads JSON (D64, D65).
-
-| Part | Rule |
-|---|---|
-| Commands | One per method of the proto, generated (D52): `environments list`, `events emit`, `events emit-batch`, `events get`, `events list`, `keys create`, `keys list`, `keys revoke` and `whoami`. Hand-written: `describe` and `version` here, `serve`, `recover-key` and `seed generate` in the host |
-| Engine | `--url`, else `IRONFLOWX_URL`, else `http://127.0.0.1:9310`. `https://` too, for an engine behind a TLS proxy ([Wire](#wire)) |
-| Key | `--key-file <path>`, else `IRONFLOWX_KEY`, else none, with surrounding whitespace trimmed. Nothing else: the CLI never reads `admin.key` unasked (D61). No key, and an empty one, is a call with no key, which the engine refuses; a file or a variable that is there and empty is still the one that was given. Text that is not UTF-8 is a malformed key |
-| Arguments | A flag for each scalar field of the request, its name in kebab case (`--event-id`); the flag of a repeated field may be repeated (`--scopes read --scopes write`), and a field that holds messages has none. Its value is what wire JSON reads from a string (text, a number, an RFC 3339 time) or, for a `bool`, `true` or `false`; one its field does not take is a usage error that names the flag, but for what the wire mapping or the engine refuses (a limit of 0, an unknown scope). A `json_text` field takes JSON text, also text that begins with `-`, or `@<file>`, the file's text, and sends it byte for byte. Any other value that begins with `-` is given after `=`: `--label=-x`. A field without its flag is absent |
-| `--json` | The whole request, as wire JSON, in place of its flags, with one of which it is a usage error: the text itself, `@<file>`, or `-`, stdin. It is `Invalid`, and nothing is sent, if a message in it, at any depth, has a field that its type does not have, which the message names (`the request has no field 'items[1].idempotncy_key'`), where the door ignores it (D79); if a `json_text` field is anything but a string, `null` included, with the hint `data is JSON text: pass a string`; if a message is an array, which the door reads as its fields in order; or if it does not decode, as a field given twice does not. Any other field that is `null` is absent |
-| Output | The answer as wire JSON on stdout: one line, or indented if stdout is a terminal. A `json_text` field is printed as the JSON value it holds, on one line, with no whitespace between its tokens: its values, the order of its keys and the text of its numbers and strings are as sent (D65). Every field that is not `optional` is printed, defaults included; an absent `optional` field stays absent. (A message field has no default: one that is not `optional` is always set, since the answer printed is mapped from the domain type, D53.) The wire is unchanged. `--help` prints text and exits 0: the one exception |
-| Errors | One line on stderr, the envelope; its kind's [exit code](#errors); nothing on stdout, unless a write to it failed midway. What answered may be no engine, so a message or a hint that repeats 43 characters in a row of the key the CLI was given, as many as a secret has, is not printed, and the envelope says so in its place; nor is an answer that does: `Internal`, also one that holds the caller's own key with reason, as stored event data can. So `events get` of an event that holds the key, in any field, and `events list` of a page with one, print nothing, whole; the event stays stored, and a caller with another key reads it. A `keys create` whose request repeats the key is `Invalid` and not sent, since its answer holds the label and the new key's only copy. A repeat that was changed (its case, split, encoded or cut shorter) is not found. A message can repeat the URL's path, where no key goes (D55) |
-| Usage errors | An argument that is missing, unknown or of the wrong form, a URL that is not `http[s]://host[:port][/path]`, a `--key-file`, or a file of `--json` or a `json_text` flag, that cannot be read, and what `--json` refuses, are `Invalid`, exit 2, and nothing is sent. The message is one line and names a bad argument, or a value in `--json`, its whitespace as single spaces, or an unknown field in `--json`, as it is, but `<hidden>` for a word or a field that holds a key's `ixk_` or is as long as a key's secret; it never holds what `--key-file`, `--url` or `IRONFLOWX_URL` was set to, nor the file `--json` names, which may be or hold a secret. A build with clap's `debug` feature, which prints each argument as it parses it, reads none: every start is `Invalid`, `clap is built with its debug feature` (TEN-3) |
-| Deadline | 30 s a call, sent as `Connect-Timeout-Ms` and held to by the client too: after it, `Unavailable` for a read and `Unknown` for a state change |
-
-**The envelope** of a failure: `{"code": …, "message": …, "retryable": …, "hint": …}`. `code` is the kind's name in snake_case, as in `ErrorInfo`; `retryable` is `ErrorKind::retryable()`; `hint` is absent when there is none.
-
-**`describe`** works offline, without a key (D67). Its catalog contains operations only.
-Their scope and whether they change state come from the same rules as the engine and the client.
-
-| Call | Answers |
-|---|---|
-| `ironflowx describe` | `{version, protocol, operations: [{command, rpc, scope, summary, changes_state}], exit_codes: [{code, kind, retryable}]}` |
-| `ironflowx describe events emit` | The named operation's entry plus `input`, `output` and `example` |
-
-The schemas use JSON Schema 2020-12 and close each declared message object with
-`additionalProperties: false`. `input` describes the canonical wire JSON for `--json`,
-with `json_text` as strings and 64-bit integers as bounded decimal strings. Timestamp schemas
-check the local year and whole-millisecond precision. Enable the validator's `format`
-assertions to check calendar dates. The wire decoder also checks that
-applying the UTC offset leaves the instant in years 0001 through 9999. Run the example with `--json @file` or pipe it to
-`--json -`. The wire and engine also validate the request. `output` describes the CLI's
-printed answer, requiring the fields it always prints and allowing arbitrary JSON values
-inside `json_text` fields.
-
-After `unknown`, follow the operation's summary and the [error's hint](#errors). In particular,
-retry an emit only with the same idempotency key on every item, or check what landed first.
-After `unknown` or `unavailable` from `keys create`, use `keys list` before retrying, and
-again after an engine reopen. Revoke any key that landed whose secret was lost.
-
-**`version`** prints `{"version": …, "commit": …, "protocol": "ironflowx.v1"}`, and asks no engine. `commit` is the one the binary was built from, or `unknown` if it was not built in a git checkout.
+The `ironflowx` binary, `ironflowx serve` with its settings, data directory, `admin.key`, exit codes and server crash test, and the CLI it carries, are built and documented in [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow) (D85). It depends on these crates at one commit until they are on crates.io at 0.4.0.
 
 ## Depends on
 
@@ -849,23 +663,22 @@ again after an engine reopen. Revoke any key that landed whose secret was lost.
 | `segment-log-core` | Pinned exactly (D16), from crates.io (MIT) | `SegmentLog::open`, `append` → `Pending::wait`, `read(from, max)`, `watermark`, `stream_head` | See below |
 | `rusqlite` | A caret range (0.43.x), `bundled` (D26), which compiles SQLite with a C compiler; its `libsqlite3-sys` links `sqlite3`, so an embedder's graph can hold no other version of it | Read store; the control plane | One transaction per folded record; one per control-plane change. `length()` of a blob reads none of its overflow pages (D73) |
 | `serde_json` | Pinned exactly (D26); the 127 depth limit is checked against it | Event rules | D12 |
-| `serde_core` | A caret range | Event rules' JSON visitor; the CLI's, of `--json` | D12 |
+| `serde_core` | A caret range | Event rules' JSON visitor | D12 |
 | `uuid` | A caret range; `v7` in `ironflowx-cell` and `ironflowx-operations` only | Event, environment, tenant, project and key IDs | |
 | `getrandom` | A caret range (D26) | `new_env_ref`; a key's secret | OS random source |
 | `sha2`, `subtle`, `base64` | Caret ranges | Credentials: the key digest, its constant-time comparison, the key text | Pure: `ci/purity/ironflowx-authz.allow` names everything they pull in, `libc` included (only `cpufeatures`' CPU detection on AArch64 uses it) |
 | `zeroize` | A caret range | `Secret` is zeroed on drop | In `ironflowx-core.allow` |
-| `tokio` | A caret range (D26) | `spawn_blocking` for open, reads, close, admission and control-plane calls; the submission queue; the read gate; the answer to a submission; the host's runtime and listener; the CLI's runtime | |
+| `tokio` | A caret range (D26) | `spawn_blocking` for open, reads, close, admission and control-plane calls; the submission queue; the read gate; the answer to a submission | |
 | `connectrpc`, `connectrpc-build` | Caret ranges (0.9.x), without default features: no gzip, no zstd | `ironflowx-proto`'s wire features and `ironflowx-doors`: the server and the client; code from a precompiled descriptor set | Connect, gRPC and gRPC-Web on the same handlers (D50) |
 | `buffa`, `buffa-types` | Caret ranges (0.9.x) | `ironflowx-proto`'s wire features: generated messages, `Timestamp` | |
 | `protox` | A caret range (0.10.x) | `ironflowx-proto`'s build, with a wire feature on | Compiles the proto in Rust; `encode_file_descriptor_set()` keeps custom options (D51) |
 | `prost-reflect` | A caret range (0.16.x) | `ironflowx-codegen`: reads the descriptor set and its custom options, at build time | Keeps options it does not know (D52) |
 | `jsonschema` | A caret range, without default features: it fetches nothing | `ironflowx-codegen`: checks each example, at build time | 2020-12, `format` checked (SRV-12) |
 | `base64`, `http`, `serde` | Caret ranges | `ironflowx-proto`'s wire features: an error detail's value, the client's URL and header, the generated JSON | |
-| `axum` | A caret range | `ironflowx-doors`: `/health` and `/ready` beside the RPCs | |
-| `hyper`, `hyper-util` | Caret ranges | `ironflowx-bin`: the accept loop. `hyper-util` also `ironflowx-proto`'s `client` | hyper times an HTTP/1.1 head with the `Timer` it is given. The error of a connection that never opened `is_connect`, and no other is; `connectrpc` keeps it as its error's source. With another `hyper-util` than `connectrpc`'s, rule 3 ([Wire](#wire)) would end as rule 2 |
+| `axum` | A caret range | `ironflowx-doors`: `/health` and `/ready` beside the RPCs | `router` returns its `Router`, the one dependency type in a published API, so a major version of axum is one of `ironflowx-doors` (D85) |
+| `hyper-util` | A caret range | `ironflowx-proto`'s `client` | The error of a connection that never opened `is_connect`, and no other is; `connectrpc` keeps it as its error's source. With another `hyper-util` than `connectrpc`'s, rule 3 ([Wire](#wire)) would end as rule 2 |
 | `rustls`, `rustls-native-certs` | Caret ranges (0.23.x, 0.8.x) | `ironflowx-proto`'s `client-tls`, with `aws-lc-rs`, which compiles C | The roots of the system's store, or what `SSL_CERT_FILE` and `SSL_CERT_DIR` name; none, if there are none |
-| `clap` | Pinned exactly, in two unpublished crates: a later one could keep its tracing and drop the backtrace that shows it, silently | `ironflowx-cli`, `ironflowx-bin`: the command line | A usage error's message is its text before the usage, if its context has one, and the footer, each by its last `\n\nUsage: ` and `\n\nFor more information`. With its `debug` feature, and only then, an error made from no text prints more than `error: `: a backtrace, by which `parse` knows that clap would print the arguments (TEN-3) |
-| `tracing`, `tracing-subscriber`, `tempfile` | Caret ranges | `ironflowx-bin`: the log, the temporary key file | |
+| `tracing` | A caret range | `ironflowx-doors`: one event per call refused or cancelled before the engine admits it, which the host logs | |
 
 How the ledger uses the log:
 
@@ -875,6 +688,6 @@ How the ledger uses the log:
 - **A sealed log:** the ledger never seals one; only the log's operator repair tool does. The library opens it without an error and cannot say it is sealed until an append, so `open` succeeds, reads work, and the first append is the fault above, after which reads answer `Unavailable` too (D19).
 - **Names:** the log's `Record`, `Position` and `Committed` types stay private to `ironflowx-cell`. This repo calls them the log record and the log offset; the ledger's own terms are in [`GLOSSARY.md`](../GLOSSARY.md).
 - **Durability:** `wait` returns after the record's `sync_data`, which is a full flush on Linux and macOS. Crash durability is claimed on both, the two platforms CI tests. Power-loss durability is unclaimed until the simulator proves it.
-- **Close:** `close`, and dropping a `Ledger`, drop the log cleanly, so it writes a close frame after the last record (segment-log format version 4, [ADR 0071](https://github.com/ironflowx/segment-log/blob/v0.2.0/docs/decisions/0071-a-clean-drop-writes-a-close-frame.md)). The upgrade is one-way: once a build on `segment-log-core` 0.2 has opened a directory, a build on 0.1 answers `Format` for it.
+- **Close:** `close`, and dropping a `Ledger`, drop the log cleanly, so it writes a close frame after the last record (segment-log format version 4, [ADR 0071](https://github.com/ironflowx/segment-log/blob/v0.2.1/docs/decisions/0071-a-clean-drop-writes-a-close-frame.md)). The upgrade is one-way: once a build on `segment-log-core` 0.2 has opened a directory, a build on 0.1 answers `Format` for it.
 
 The decisions behind this design: [`decisions.md`](decisions.md).
