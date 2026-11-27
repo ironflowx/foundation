@@ -1248,50 +1248,18 @@ dependencies = [
 name = "ironflowx-behaviors"
 version = "0.3.0"
 dependencies = [
- "connectrpc",
+ "axum",
  "cucumber",
  "futures",
- "http",
  "ironflowx-cell",
  "ironflowx-core",
+ "ironflowx-doors",
  "ironflowx-events",
  "ironflowx-operations",
  "ironflowx-proto",
- "jsonschema",
- "prost-reflect",
- "rusqlite",
- "rustix",
  "serde_json",
  "tempfile",
  "tokio",
-]
-
-[[package]]
-name = "ironflowx-bin"
-version = "0.3.0"
-dependencies = [
- "axum",
- "clap",
- "connectrpc",
- "hyper",
- "hyper-util",
- "ironflowx-authz",
- "ironflowx-cell",
- "ironflowx-cli",
- "ironflowx-core",
- "ironflowx-doors",
- "ironflowx-operations",
- "ironflowx-proto",
- "ironflowx-store",
- "rusqlite",
- "rustix",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1306,19 +1274,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "uuid",
-]
-
-[[package]]
-name = "ironflowx-cli"
-version = "0.3.0"
-dependencies = [
- "clap",
- "ironflowx-codegen",
- "ironflowx-core",
- "ironflowx-proto",
- "serde_core",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -1558,12 +1513,6 @@ dependencies = [
  "serde_json",
  "zmij",
 ]
-
-[[package]]
-name = "lazy_static"
-version = "1.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
 name = "libc"
@@ -2301,9 +2250,9 @@ dependencies = [
 
 [[package]]
 name = "segment-log-core"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d8a51a368c7d9cb56baea242733cb15fd8f0be2ca8223c882b9d22c78b3618c"
+checksum = "e2fb95a43f63b09dc0456045577d076c12c60ea54594b8a2d05ac5f5d67f7527"
 
 [[package]]
 name = "semver"
@@ -2376,29 +2325,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "sharded-slab"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
-dependencies = [
- "lazy_static",
-]
-
-[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
-
-[[package]]
-name = "signal-hook-registry"
-version = "1.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
-dependencies = [
- "errno",
- "libc",
-]
 
 [[package]]
 name = "simdutf8"
@@ -2620,15 +2550,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "thread_local"
-version = "1.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
-dependencies = [
- "cfg-if",
-]
-
-[[package]]
 name = "tinystr"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2649,7 +2570,6 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
- "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
@@ -2685,7 +2605,6 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
- "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",
@@ -2749,31 +2668,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
- "valuable",
-]
-
-[[package]]
-name = "tracing-serde"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
-dependencies = [
- "serde",
- "tracing-core",
-]
-
-[[package]]
-name = "tracing-subscriber"
-version = "0.3.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
-dependencies = [
- "serde",
- "serde_json",
- "sharded-slab",
- "thread_local",
- "tracing-core",
- "tracing-serde",
 ]
 
 [[package]]
@@ -2891,12 +2785,6 @@ dependencies = [
  "outref",
  "vsimd",
 ]
-
-[[package]]
-name = "valuable"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vcpkg"

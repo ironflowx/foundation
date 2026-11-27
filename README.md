@@ -16,11 +16,11 @@ Every part of the engine writes through one commit path. Foundation is that path
 
 ![Foundation's layers: a host calls the engine with a key; the engine checks the key against the control plane, then runs event calls on the ledger, which commits events durably and reads them back; an embedder without keys calls the ledger directly; beneath them are the pure credentials, event rules and core types](https://raw.githubusercontent.com/ironflowx/foundation/main/docs/img/layers.svg)
 
-## What 0.3 is
+## What it is
 
-Run `ironflowx serve` to open an engine in a data directory and serve it over Connect, gRPC and gRPC-Web. Use the same binary to call the engine. The CLI prints JSON and can describe each operation's inputs, outputs and a runnable example.
+Library crates: an engine that opens on a data directory and admits every call with a key, the HTTP door that serves it, and the proto client that calls it. The `ironflowx` binary, which serves an engine over Connect, gRPC and gRPC-Web, and its CLI are built in [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow) from these crates (D85).
 
-- The first open bootstraps the engine. `serve` writes the admin key to `admin.key`, or takes the key you supply.
+- The first open bootstraps the engine: it mints the admin key, or takes the key you supply.
 - Create keys scoped `read`, `write` or `admin`, read-only unless asked otherwise, with an optional expiry; list them, and revoke one.
 - Emit an event, or a batch of up to 100, with data, metadata, a version and an idempotency key; each records the key that emitted it.
 - Repeat an emit with its idempotency key and get the original event's ID back, with nothing new stored.
@@ -31,7 +31,7 @@ An app that needs no keys opens a ledger directly.
 
 ## Architecture
 
-The engine is a library: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead. `ironflowx serve` is the first host we ship. Event rules, credentials and core are pure; only the ledger, the control plane, the engine and the host touch disk, the clock and randomness.
+The engine is a library: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead. The `ironflowx` binary in [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow) is the first host. Event rules, credentials and core are pure; only the ledger, the control plane, the engine and a host touch disk, the clock and randomness.
 
 A write is acknowledged once its record is fsynced, and a read sees every write acknowledged before it arrived, whoever made it:
 
@@ -49,29 +49,14 @@ More diagrams (crates, modules and seams, crash recovery) and the details are in
 | ironflowx-store | the control plane: which tenants, projects, environments and keys exist |
 | ironflowx-operations | the engine: admits every call, then runs it on the ledger or the keys |
 | ironflowx | the crates an app uses, re-exported: `core`, `proto`, `cell` and `operations` |
-| ironflowx-doors | the HTTP door, unpublished |
-| ironflowx-cli | the CLI, unpublished |
-| ironflowx-codegen | the generator: the CLI's commands, from the proto, unpublished |
-| ironflowx-bin | the `ironflowx` binary and its host, unpublished |
+| ironflowx-doors | the HTTP door a host serves an engine through; published from 0.4 |
+| ironflowx-codegen | the generator: a CLI's commands, from the proto, at build time; published from 0.4 |
 
 ## Use it
 
 ### Run the binary
 
-Choose the archive and its `.sha256` file for your platform from the [GitHub releases](https://github.com/ironflowx/foundation/releases). The Linux archives use static musl for x86-64 and AArch64. The macOS archive is for Apple silicon. Run `shasum -a 256 -c <archive>.sha256` beside the archive, then extract it with `tar -xzf <archive>`.
-
-Start the host in one terminal.
-
-```sh
-./ironflowx serve
-```
-
-Once it is ready, use the bootstrap key in another terminal.
-
-```sh
-./ironflowx whoami --url http://127.0.0.1:9310 --key-file .ironflowx/admin.key
-./ironflowx describe events emit
-```
+The `ironflowx` binary, its CLI and their release archives are in [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow).
 
 ### Embed the engine
 
@@ -91,13 +76,13 @@ From 0.4 (unreleased; 0.3 re-exports every crate), the facade re-exports `core`,
 
 Add the `client` feature to your `ironflowx` dependency to use `ironflowx::proto::Client` over HTTP. Use `client-tls` for HTTPS, with roots from the system's trust store. Both features are off by default, so an embedder can build without the HTTP stack. `Engine` and `Client` both implement `Operations`.
 
-From this checkout, start the host on loopback with a fresh data directory.
+Start the `ironflowx` binary from [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow) on loopback with a fresh data directory.
 
 ```sh
-cargo run --locked -p ironflowx-bin -- serve --listen 127.0.0.1:8080 --data-dir ./whoami-demo
+ironflowx serve --listen 127.0.0.1:8080 --data-dir ./whoami-demo
 ```
 
-Once the host is ready, run the example in another terminal.
+Once it is ready, run the example from this checkout in another terminal.
 
 ```sh
 cargo run --locked -p ironflowx --features client --example whoami -- http://127.0.0.1:8080 ./whoami-demo/admin.key

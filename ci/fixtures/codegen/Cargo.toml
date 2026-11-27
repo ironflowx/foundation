@@ -1,5 +1,5 @@
 # SRV-2 and SRV-12 fixture: packages whose proto the generator refuses, each for one reason, and one
-# it accepts. Each builds as ironflowx-cli does, from its own service.proto.
+# it accepts. Each builds as a CLI's build.rs does, from its own service.proto.
 [workspace]
 resolver = "3"
 members = ["no-cli", "no-summary", "no-example", "bad-example", "no-json-name", "accepted"]

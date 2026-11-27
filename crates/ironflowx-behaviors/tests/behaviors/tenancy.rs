@@ -1,4 +1,4 @@
-//! `tenancy.feature`, on the engine and, but for what is `@local`, against the binary.
+//! `tenancy.feature`, on the engine and, but for what is `@local`, through the door.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -19,9 +19,9 @@ use ironflowx_proto::{
 };
 use tempfile::TempDir;
 
-use super::adapter::{Adapter, BINARIES, runs_remotely};
+use super::adapter::{Adapter, SERVED, runs_remotely};
 
-/// How many scenarios run on the engine, and against the binary, an outline once per example, so no
+/// How many scenarios run on the engine, and through the door, an outline once per example, so no
 /// example goes unnoticed.
 pub const RUNS: usize = 70;
 pub const REMOTE_RUNS: usize = 41;
@@ -31,7 +31,7 @@ const HOUR: i64 = 3_600_000;
 #[derive(World)]
 #[world(init = Self::new)]
 pub struct Tenancy {
-    /// Whether the engine is the binary's.
+    /// Whether the engine is served through the door.
     remote: bool,
     // Before `dir`: the engine must close before its directory goes.
     engine: Option<Adapter>,
@@ -1452,7 +1452,7 @@ fn still_empty(w: &mut Tenancy) {
     assert_eq!(w.read_directory(), BTreeMap::new());
 }
 
-/// Runs every tenancy scenario, through the binary or on the engine: whether any failed, and how
+/// Runs every tenancy scenario, through the door or on the engine: whether any failed, and how
 /// many passed.
 pub async fn run(parser: super::Unescaped, remote: bool) -> (bool, usize) {
     let writer = Tenancy::cucumber::<&str>()
@@ -1469,7 +1469,7 @@ pub async fn run(parser: super::Unescaped, remote: bool) -> (bool, usize) {
             Box::pin(async move {
                 if let Some(w) = world {
                     if let Some(engine) = w.engine.take() {
-                        assert_eq!(matches!(engine, Adapter::Binary(..)), remote, "the adapter");
+                        assert_eq!(matches!(engine, Adapter::Door(..)), remote, "the adapter");
                         engine.close().await;
                     }
                     if let Some((engine, _dir)) = w.other.take() {
@@ -1478,7 +1478,7 @@ pub async fn run(parser: super::Unescaped, remote: bool) -> (bool, usize) {
                 }
             })
         })
-        .max_concurrent_scenarios(if remote { BINARIES } else { 64 })
+        .max_concurrent_scenarios(if remote { SERVED } else { 64 })
         .fail_on_skipped()
         .filter_run(
             concat!(

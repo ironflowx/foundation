@@ -76,4 +76,4 @@ for tag in "${tags[@]}"; do
 	git rev-parse -q --verify "refs/tags/$tag" >/dev/null || run git tag -a "$tag" -m "$tag" "$head"
 done
 run git push origin "${tags[@]}"
-[ -n "$dry_run" ] || echo "release.yml is building the GitHub release: gh run list --workflow release -L 1"
+[ -n "$dry_run" ] || echo "release.yml is creating the GitHub release: gh run list --workflow release -L 1"

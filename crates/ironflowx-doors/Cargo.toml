@@ -1,11 +1,16 @@
 [package]
 name = "ironflowx-doors"
-description = "The doors an Ironflow X engine is called through, HTTP first. Unpublished."
-publish = false
+description = "The doors an Ironflow X engine is called through, HTTP first."
+keywords = ["ironflow", "workflow", "event-driven"]
+readme = "../../README.md"
+documentation = "https://docs.rs/ironflowx-doors"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
 
 [features]
 # The HTTP door.

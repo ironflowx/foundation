@@ -73,9 +73,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: cargo test --workspace --locked
-      - run: ci/serve-lifecycle.sh
-      - run: ci/server-crash.sh
-      # Isolate the facade, without the workspace CLI's effect on the proto client's features.
+      # Isolate the facade from the features the rest of the workspace switches on.
       - run: cargo test -p ironflowx --locked --test features
         env:
           IRONFLOWX_FACADE_FEATURES: none
@@ -91,14 +89,14 @@ jobs:
       - run: cargo test -p ironflowx --locked --features client-tls --test features --example whoami
         env:
           IRONFLOWX_FACADE_FEATURES: client-tls
-      # The workspace's CLI switches `client-tls` on; without it an `https` URL is no client's.
+      # Without `client-tls`, an `https` URL is no client's.
       - run: cargo test -p ironflowx-proto --locked --test client
         env:
           NO_CLIENT_TLS: 1
       # Feature unification can switch rustls's other provider on in any embedder's build; it then has no default.
       - run: cargo test -p ironflowx-proto --locked --test client --features client-tls,rustls/ring
       # Feature unification can switch arbitrary_precision on in any embedder's build; numbers then reach the event rules' visitor as text, and a Value takes an object for a number.
-      - run: cargo test -p ironflowx-events -p ironflowx-cli --locked --features serde_json/arbitrary_precision
+      - run: cargo test -p ironflowx-events --locked --features serde_json/arbitrary_precision
 
   # deny.toml lists the Linux and macOS targets, so one run covers both.
   deny:
@@ -120,7 +118,39 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: ci/purity.sh
-      - run: ci/no-host-engine-deps.sh crates/ironflowx-bin/Cargo.toml
+
+  # A pure crate builds for WASM: a dependency or a cfg without wasm support fails it. The bans
+  # on threads, the clock and the filesystem are purity's clippy.toml.
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup target add wasm32-unknown-unknown
+      # One crate a run, so no other crate's features build it.
+      - run: |
+          for crate in ironflowx-core ironflowx-events ironflowx-authz; do
+            cargo check --locked --target wasm32-unknown-unknown -p "$crate"
+          done
+
+  # ironflowx/ironflow's suite (its binary and CLI) against this checkout, through the [patch] its
+  # ci/conformance.sh writes: a change here that breaks the app fails before it merges.
+  conformance:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      # Its code runs here: no token left in either checkout.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ironflowx/ironflow
+          ref: main
+          path: ironflow
+          persist-credentials: false
+      - run: ironflow/ci/conformance.sh "$GITHUB_WORKSPACE"
 
   # The PRD's last "Done when": a crate outside the workspace, on `ironflowx` and `tokio` only,
   # bootstraps an engine, emits, reads with a `read` key and sees its emit refused. Its
@@ -175,6 +205,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
   # The longer crash-test soak run by hand before publishing (docs/invariants.md); not a required check.
+  # The server crash soak is ironflowx/ironflow's, with the binary.
   soak:
     if: github.event_name == 'workflow_dispatch'
     strategy:

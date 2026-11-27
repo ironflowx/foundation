@@ -763,7 +763,7 @@ async fn a_slot_answers_for_its_engine_until_it_is_open() {
 }
 
 /// D73: no page the event rules admit is as large as this one, which fits a message on each
-/// protocol, and, but in JSON, the 4 MiB a client commonly takes. `ironflowx-bin`'s `remote.rs`
+/// protocol, and, but in JSON, the 4 MiB a client commonly takes. ironflowx/ironflow's `remote.rs`
 /// lists the largest an engine answers.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_page_larger_than_any_fits() {

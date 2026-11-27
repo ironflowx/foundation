@@ -224,9 +224,9 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "segment-log-core"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d8a51a368c7d9cb56baea242733cb15fd8f0be2ca8223c882b9d22c78b3618c"
+checksum = "e2fb95a43f63b09dc0456045577d076c12c60ea54594b8a2d05ac5f5d67f7527"
 
 [[package]]
 name = "serde"

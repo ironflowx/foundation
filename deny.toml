@@ -1,6 +1,8 @@
 [graph]
 # CI runs cargo-deny once, on Linux; check the dependency graph of both supported platforms.
 targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin"]
+# No workspace crate turns on the facade's `client-tls`, which ships; check its graph too.
+features = ["ironflowx/client-tls"]
 
 [licenses]
 allow = [
@@ -17,6 +19,6 @@ allow = [
   "ISC",
   # foldhash: buffa's hash tables.
   "Zlib",
-  # borrow-or-share: under jsonschema, which checks the proto's examples as ironflowx-cli builds.
+  # borrow-or-share: under jsonschema, which checks the proto's examples as ironflowx-codegen runs.
   "MIT-0",
 ]

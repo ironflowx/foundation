@@ -1,11 +1,16 @@
 [package]
 name = "ironflowx-codegen"
-description = "Generates the CLI from the proto, at build time. Unpublished."
-publish = false
+description = "Generates a command line from the Ironflow X proto, at build time."
+keywords = ["ironflow", "workflow", "event-driven"]
+readme = "../../README.md"
+documentation = "https://docs.rs/ironflowx-codegen"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
 
 [dependencies]
 # No default features: no HTTP client and no TLS, since a schema here refers to no other.
