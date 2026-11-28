@@ -9,12 +9,15 @@ use std::task::{Context, Poll, Waker};
 
 use std::collections::BTreeSet;
 
-use ironflowx_core::{Address, ErrorKind, KeyOrigin, Scope, Secret, Timestamp};
+use ironflowx_core::{Address, ErrorKind, KeyOrigin, Lease, Scope, Secret, Timestamp};
 use ironflowx_proto::{
-    Call, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
-    EmitResponse, Environment, Event, EventPage, GetEventRequest, KeyInfo, KeyPage, KeyStatus,
+    BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, CompleteRunRequest,
+    CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
+    EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
+    GetEventRequest, GetFunctionRequest, GetRunRequest, KeyInfo, KeyPage, KeyStatus,
     ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation, Operations,
-    RevokeKeyRequest, Whoami, WhoamiRequest, required_scope,
+    PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd, RunStatus,
+    StartRunRequest, StartRunResponse, Whoami, WhoamiRequest, required_scope,
 };
 
 const KEY: &str =
@@ -98,6 +101,104 @@ impl Operations for Fixed {
     async fn revoke_key(&self, _cx: &Call, _req: RevokeKeyRequest) -> Result<(), OpError> {
         Ok(())
     }
+
+    async fn put_function(
+        &self,
+        _cx: &Call,
+        req: PutFunctionRequest,
+    ) -> Result<PutFunctionResponse, OpError> {
+        Ok(PutFunctionResponse {
+            function: function(&req.name),
+            changed: true,
+        })
+    }
+
+    async fn get_function(&self, _cx: &Call, req: GetFunctionRequest) -> Result<Function, OpError> {
+        Ok(function(&req.name))
+    }
+
+    async fn start_run(
+        &self,
+        _cx: &Call,
+        _req: StartRunRequest,
+    ) -> Result<StartRunResponse, OpError> {
+        Ok(StartRunResponse {
+            run_id: ID.parse().unwrap(),
+            duplicate: false,
+        })
+    }
+
+    async fn get_run(&self, _cx: &Call, req: GetRunRequest) -> Result<Run, OpError> {
+        Ok(Run {
+            run_id: req.run_id.parse().unwrap(),
+            function: "charge".into(),
+            code: "v1".into(),
+            status: RunStatus::Queued,
+            input: Some(b"null".to_vec()),
+            created_at: Timestamp::from_millis(0),
+            created_by: "embedder:test".parse().unwrap(),
+            due_at: Some(Timestamp::from_millis(0)),
+            execution: 0,
+            lease_until: None,
+            steps: 0,
+            step: None,
+            output: None,
+            ended_at: None,
+        })
+    }
+
+    async fn claim_run(&self, _cx: &Call, _req: ClaimRunRequest) -> Result<Option<Claim>, OpError> {
+        Ok(Some(Claim {
+            lease: Lease {
+                run: ID.parse().unwrap(),
+                execution: 1,
+            },
+            function: "charge".into(),
+            code: "v1".into(),
+            input: Some(b"null".to_vec()),
+            lease_until: Timestamp::from_millis(60_000),
+            renew_after_seconds: 20,
+        }))
+    }
+
+    async fn begin_step(
+        &self,
+        _cx: &Call,
+        _req: BeginStepRequest,
+    ) -> Result<BeginStepResponse, OpError> {
+        Ok(BeginStepResponse::Run { attempt: 1 })
+    }
+
+    async fn complete_step(
+        &self,
+        _cx: &Call,
+        req: CompleteStepRequest,
+    ) -> Result<CompleteStepResponse, OpError> {
+        Ok(CompleteStepResponse::Completed {
+            output: req.output.unwrap_or_default(),
+        })
+    }
+
+    async fn complete_run(&self, _cx: &Call, req: CompleteRunRequest) -> Result<RunEnd, OpError> {
+        let lease: Lease = req.lease.parse().unwrap();
+        Ok(RunEnd {
+            run_id: lease.run,
+            status: RunStatus::Completed,
+        })
+    }
+}
+
+fn function(name: &str) -> Function {
+    Function {
+        name: name.to_owned(),
+        code: "v1".into(),
+        triggers: Vec::new(),
+        max_attempts: None,
+        first_delay_seconds: None,
+        max_delay_seconds: None,
+        put_at: Timestamp::from_millis(0),
+        put_by: "embedder:test".parse().unwrap(),
+    }
 }
 
 fn created(req: CreateKeyRequest) -> CreatedKey {
@@ -178,6 +279,62 @@ impl Operations for Recording {
     async fn revoke_key(&self, cx: &Call, req: RevokeKeyRequest) -> Result<(), OpError> {
         self.record(Operation::RevokeKey);
         Fixed.revoke_key(cx, req).await
+    }
+
+    async fn put_function(
+        &self,
+        cx: &Call,
+        req: PutFunctionRequest,
+    ) -> Result<PutFunctionResponse, OpError> {
+        self.record(Operation::PutFunction);
+        Fixed.put_function(cx, req).await
+    }
+
+    async fn get_function(&self, cx: &Call, req: GetFunctionRequest) -> Result<Function, OpError> {
+        self.record(Operation::GetFunction);
+        Fixed.get_function(cx, req).await
+    }
+
+    async fn start_run(
+        &self,
+        cx: &Call,
+        req: StartRunRequest,
+    ) -> Result<StartRunResponse, OpError> {
+        self.record(Operation::StartRun);
+        Fixed.start_run(cx, req).await
+    }
+
+    async fn get_run(&self, cx: &Call, req: GetRunRequest) -> Result<Run, OpError> {
+        self.record(Operation::GetRun);
+        Fixed.get_run(cx, req).await
+    }
+
+    async fn claim_run(&self, cx: &Call, req: ClaimRunRequest) -> Result<Option<Claim>, OpError> {
+        self.record(Operation::ClaimRun);
+        Fixed.claim_run(cx, req).await
+    }
+
+    async fn begin_step(
+        &self,
+        cx: &Call,
+        req: BeginStepRequest,
+    ) -> Result<BeginStepResponse, OpError> {
+        self.record(Operation::BeginStep);
+        Fixed.begin_step(cx, req).await
+    }
+
+    async fn complete_step(
+        &self,
+        cx: &Call,
+        req: CompleteStepRequest,
+    ) -> Result<CompleteStepResponse, OpError> {
+        self.record(Operation::CompleteStep);
+        Fixed.complete_step(cx, req).await
+    }
+
+    async fn complete_run(&self, cx: &Call, req: CompleteRunRequest) -> Result<RunEnd, OpError> {
+        self.record(Operation::CompleteRun);
+        Fixed.complete_run(cx, req).await
     }
 }
 
@@ -269,6 +426,68 @@ fn drive<O: Operations>(ops: &O) {
         },
     );
     ready(assert_send(revoked)).unwrap();
+
+    let put = PutFunctionRequest {
+        name: "charge".into(),
+        code: "v1".into(),
+        ..PutFunctionRequest::default()
+    };
+    let put = ready(assert_send(ops.put_function(&cx, put))).unwrap();
+    assert_eq!(put.function.name, "charge");
+    let got = ops.get_function(
+        &cx,
+        GetFunctionRequest {
+            name: "charge".into(),
+        },
+    );
+    assert_eq!(ready(assert_send(got)).unwrap().name, "charge");
+    let started = ops.start_run(
+        &cx,
+        StartRunRequest {
+            function: "charge".into(),
+        },
+    );
+    let started = ready(assert_send(started)).unwrap();
+    let run = ops.get_run(
+        &cx,
+        GetRunRequest {
+            run_id: started.run_id.to_string(),
+        },
+    );
+    assert_eq!(ready(assert_send(run)).unwrap().run_id, started.run_id);
+    let claim = ClaimRunRequest {
+        functions: vec!["charge@v1".into()],
+        ..ClaimRunRequest::default()
+    };
+    let claim = ready(assert_send(ops.claim_run(&cx, claim))).unwrap();
+    let lease = claim.expect("a claim").lease.to_string();
+    let begin = BeginStepRequest {
+        lease: lease.clone(),
+        position: 1,
+        name: "reserve".into(),
+        ..BeginStepRequest::default()
+    };
+    let begun = ready(assert_send(ops.begin_step(&cx, begin))).unwrap();
+    assert_eq!(begun, BeginStepResponse::Run { attempt: 1 });
+    let complete = CompleteStepRequest {
+        lease: lease.clone(),
+        position: 1,
+        output: Some(b"1".to_vec()),
+    };
+    let completed = ready(assert_send(ops.complete_step(&cx, complete))).unwrap();
+    assert_eq!(
+        completed,
+        CompleteStepResponse::Completed {
+            output: b"1".to_vec()
+        }
+    );
+    let end = CompleteRunRequest {
+        lease,
+        steps: 1,
+        output: None,
+    };
+    let end = ready(assert_send(ops.complete_run(&cx, end))).unwrap();
+    assert_eq!(end.run_id, started.run_id);
 }
 
 /// The scope table (architecture.md, "Keys"): `whoami` needs only a valid key.
@@ -284,6 +503,14 @@ fn each_operation_requires_its_scope() {
         (Operation::CreateKey, Some(Scope::Admin)),
         (Operation::ListKeys, Some(Scope::Admin)),
         (Operation::RevokeKey, Some(Scope::Admin)),
+        (Operation::PutFunction, Some(Scope::Write)),
+        (Operation::GetFunction, Some(Scope::Read)),
+        (Operation::StartRun, Some(Scope::Write)),
+        (Operation::GetRun, Some(Scope::Read)),
+        (Operation::ClaimRun, Some(Scope::Execute)),
+        (Operation::BeginStep, Some(Scope::Execute)),
+        (Operation::CompleteStep, Some(Scope::Execute)),
+        (Operation::CompleteRun, Some(Scope::Execute)),
     ] {
         assert_eq!(required_scope(op), scope, "{op:?}");
     }
@@ -319,12 +546,38 @@ fn each_operation_has_its_rpc() {
             (Operation::CreateKey, "ironflowx.v1.KeyService/CreateKey"),
             (Operation::ListKeys, "ironflowx.v1.KeyService/ListKeys"),
             (Operation::RevokeKey, "ironflowx.v1.KeyService/RevokeKey"),
+            (
+                Operation::PutFunction,
+                "ironflowx.v1.FunctionService/PutFunction"
+            ),
+            (
+                Operation::GetFunction,
+                "ironflowx.v1.FunctionService/GetFunction"
+            ),
+            (Operation::StartRun, "ironflowx.v1.RunService/StartRun"),
+            (Operation::GetRun, "ironflowx.v1.RunService/GetRun"),
+            (
+                Operation::ClaimRun,
+                "ironflowx.v1.ExecutionService/ClaimRun"
+            ),
+            (
+                Operation::BeginStep,
+                "ironflowx.v1.ExecutionService/BeginStep"
+            ),
+            (
+                Operation::CompleteStep,
+                "ironflowx.v1.ExecutionService/CompleteStep"
+            ),
+            (
+                Operation::CompleteRun,
+                "ironflowx.v1.ExecutionService/CompleteRun"
+            ),
         ]
     );
 }
 
 #[test]
-fn only_emits_and_key_changes_change_state() {
+fn every_operation_but_the_reads_changes_state() {
     let changing: Vec<_> = Operation::ALL
         .iter()
         .copied()
@@ -337,6 +590,12 @@ fn only_emits_and_key_changes_change_state() {
             Operation::EmitBatch,
             Operation::CreateKey,
             Operation::RevokeKey,
+            Operation::PutFunction,
+            Operation::StartRun,
+            Operation::ClaimRun,
+            Operation::BeginStep,
+            Operation::CompleteStep,
+            Operation::CompleteRun,
         ]
     );
 }

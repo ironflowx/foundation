@@ -75,7 +75,7 @@ One environment's commit log, read store and the single writer between them.
 One fenceable volume, written by one node, holding many ledgers: the unit of ownership. Not built yet: the `ironflowx-cell` crate is named for it and implements the ledger.
 
 **Submission**:
-One call to the ledger's `submit`: a single emit or a batch. It commits at most one record, and none when every item is a duplicate or refused.
+One call to the ledger's `submit`: of events, a single emit or a batch; of execution rules, one command. It commits at most one record, and none when nothing changes: every item a duplicate or refused, or a command that only answers.
 
 **Writer**:
 The one thread that takes each submission in turn: decides it, appends its record, acknowledges, then folds.
@@ -100,7 +100,7 @@ _Avoid_: Log record (that is the segment log's own type)
 The head of every record after the genesis record: format version, incarnation token, record ID, attribution and event-clock time.
 
 **Entry**:
-One change inside a record, of one kind: so far, always an event. A record's entries are ordered.
+One change inside a record, of one kind: an event, or one of execution rules' (a function put, a run created, a claim, a step begun or completed, a run completed). A record's entries are ordered.
 
 **Record ID**:
 A record's own UUIDv7, drawn by the writer at the append and copied by replay. A copy of a directory keeps the IDs of the records it copied, and what each copy appends next has its own. `read.db` keeps the last applied record's, and open compares it with the log's record at that position.
@@ -133,7 +133,7 @@ What a ledger's writer stamps records with: the clock the ledger was opened with
 An optional client value on an emit. A second emit with a key already used in the environment returns the original event's ID, marked a duplicate, instead of storing another.
 
 **Run ID** (`RunId`):
-A run's identity: an opaque UUIDv7, as an event ID is. No run exists yet; an engine event names one.
+A run's identity: an opaque UUIDv7, as an event ID is, drawn by the writer.
 
 **Engine event**:
 An event the engine appends itself, under a name it owns: `ironflowx.run.completed` or `ironflowx.run.failed`. No client can emit one.
@@ -144,6 +144,38 @@ What a refusal says the caller can do about it, beside its kind and message (`Op
 
 **Size limit**:
 The most a caller may send: the bytes of an event's name, data, metadata and idempotency key, a batch's events and their data and metadata together, a key's label, an embedder's name; and a message on the wire. Each is a constant in `ironflowx_core::limits`. **Checking an emit** (`check_emit`) runs event rules' checks of one emit without submitting it, so a payload is sized before it is sent.
+
+### Runs
+
+**Function**:
+A named definition: a code label, the events that trigger it, and a retry policy. The engine never holds its code.
+
+**Code label**:
+Text the builder chooses to name one version of a function's code (`v1`, a commit hash). A run keeps the label it was created with.
+
+**Run**:
+One durable invocation of a function. Its status is `queued`, `running`, `completed` or `failed`, and changes only when a record commits.
+
+**Executor**:
+Any program that claims runs and performs their code, with a key that holds `execute`.
+
+**Execution**:
+One executor's turn at a run, from its claim; numbered from 1 per run.
+
+**Lease**:
+An execution's hold on its run, with a deadline; its text is `<run-id>.<execution>`, and every call about the run sends it.
+
+**Fence**:
+The checks every call that names a lease meets, in the decision that writes: the run exists, the execution is its current one, and the key is the one that claimed it.
+
+**Step**:
+A named unit of work inside a run whose outcome is recorded once. Its place in the run, from 1, with its name, is its identity; that place is not a record's position.
+
+**Recorded outcome**:
+A step's output, which never changes; asking about the step again returns it, byte for byte.
+
+**Replay**:
+Running a function's code again from the top, where each step with a recorded outcome returns it instead of doing the work.
 
 ### Packaging
 

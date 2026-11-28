@@ -5,12 +5,14 @@ use std::path::Path;
 use std::time::Duration;
 
 use ironflowx_core::{Emitter, EnvRef, ErrorKind, EventId, SubmitAs, Timestamp};
-use ironflowx_events::{Emit, Event, ItemOutcome, Submission};
+use ironflowx_events::{Emit, Event, ItemOutcome, Submission as Events};
 use segment_log_core::{ExpectedRevision, NewRecord, Options, SegmentLog, Submit};
 
+use crate::record::Entries;
 use crate::store::ReadStore;
 use crate::{
-    Ledger, LedgerState, ManualClock, OpenError, ReadError, SubmitError, new_env_ref, record,
+    Ledger, LedgerState, ManualClock, OpenError, Outcome, ReadError, Submission, SubmitError,
+    new_env_ref, record,
 };
 
 const T: i64 = 1_800_000_000_000;
@@ -48,9 +50,33 @@ fn keyed(name: &str, key: &str) -> Emit {
     }
 }
 
+/// The outcomes of a submission of events.
+fn items(outcome: Outcome) -> Vec<ItemOutcome> {
+    match outcome {
+        Outcome::Events(items) => items,
+        Outcome::Execution(o) => panic!("events answered {o:?}"),
+    }
+}
+
+/// A record of events and no execution entry, encoded.
+fn events(
+    token: ironflowx_core::IncarnationToken,
+    id: uuid::Uuid,
+    emitted_by: &Emitter,
+    record: &ironflowx_events::Record,
+) -> Vec<u8> {
+    let entries = Entries {
+        record: record.clone(),
+        execution: Vec::new(),
+    };
+    record::entries(token, id, emitted_by, &entries)
+}
+
 async fn outcome(ledger: &Ledger, emit: Emit) -> Result<ItemOutcome, SubmitError> {
-    let committed = ledger.submit(Submission::Emit(emit), embedder()).await?;
-    let [outcome] = <[_; 1]>::try_from(committed.outcome).expect("one outcome per emit");
+    let committed = ledger
+        .submit(Submission::Events(Events::Emit(emit)), embedder())
+        .await?;
+    let [outcome] = <[_; 1]>::try_from(items(committed.outcome)).expect("one outcome per emit");
     Ok(outcome)
 }
 
@@ -129,7 +155,7 @@ async fn event_time_follows_the_clock_and_never_goes_back() {
 async fn every_event_of_one_batch_carries_the_record_time() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = open(dir.path(), new_env_ref()).await;
-    let batch = Submission::Batch(vec![named("a"), named("b")]);
+    let batch = Submission::Events(Events::Batch(vec![named("a"), named("b")]));
     ledger.submit(batch, embedder()).await.unwrap();
     let times: Vec<_> = all(&ledger).await.unwrap().iter().map(|e| e.time).collect();
     assert_eq!(times, [Timestamp::from_millis(T); 2]);
@@ -164,7 +190,12 @@ async fn replaying_folds_each_record_exactly_once() {
                 idempotency_key: None,
             }];
             let id = uuid::Uuid::now_v7();
-            crate::store::apply(&mut conn, offset, Some((id, &record, &emitter())), false).unwrap();
+            let entries = Entries {
+                record: record.clone(),
+                execution: Vec::new(),
+            };
+            let again = Some((id, &entries, &emitter()));
+            crate::store::apply(&mut conn, offset, again, false).unwrap();
             assert_eq!(crate::store::applied(&conn).unwrap(), applied);
         }
     }
@@ -228,7 +259,7 @@ async fn a_later_record_with_another_token_is_refused() {
             time: Timestamp::from_millis(T),
             events: vec![],
         };
-        let foreign = record::events(
+        let foreign = events(
             new_env_ref().token(),
             uuid::Uuid::now_v7(),
             &emitter(),
@@ -269,7 +300,7 @@ async fn a_log_without_a_genesis_record_is_refused() {
         append(
             &log,
             ExpectedRevision::Empty,
-            record::events(env.token(), uuid::Uuid::now_v7(), &emitter(), &record),
+            events(env.token(), uuid::Uuid::now_v7(), &emitter(), &record),
         );
     }
     let err = Ledger::open(dir.path(), env, clock()).await.err();
@@ -328,6 +359,62 @@ async fn a_read_store_with_damaged_tables_is_rebuilt() {
         assert_eq!(names(&ledger).await, ["a"], "{damage}");
         let retry = outcome(&ledger, keyed("b", "k")).await.unwrap();
         assert_eq!(retry, ItemOutcome::Duplicate(id), "{damage}");
+    }
+}
+
+/// The same of each execution table: a store that lacks one, or a column one is read by, is
+/// rebuilt, and answers as before.
+#[tokio::test]
+async fn a_read_store_without_an_execution_table_is_rebuilt() {
+    use ironflowx_execution::{Begun, Command, Outcome as Answer};
+    for damage in [
+        "DROP TABLE functions",
+        "DROP TABLE triggers",
+        "DROP TABLE runs",
+        "DROP TABLE steps",
+        // A column a lookup reads but does not return.
+        "ALTER TABLE steps RENAME COLUMN run_id TO lost",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let env = new_env_ref();
+        let ledger = open(dir.path(), env).await;
+        execute(&ledger, put("charge", "v1", &["order.placed"]))
+            .await
+            .unwrap();
+        let run = started(&ledger, "charge").await;
+        claim_of(&ledger, &["charge@v1"]).await.unwrap();
+        let begin = Command::BeginStep {
+            lease: format!("{run}.1"),
+            position: 1,
+            name: "reserve".into(),
+            once: false,
+            input: None,
+        };
+        execute(&ledger, begin.clone()).await.unwrap();
+        let function = ledger.get_function("charge").await.unwrap();
+        let read = ledger.get_run(&run.to_string()).await.unwrap();
+        ledger.close().await;
+        let conn = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
+        conn.execute_batch(damage).unwrap();
+        drop(conn);
+        let ledger = open(dir.path(), env).await;
+        assert_eq!(
+            ledger.get_function("charge").await.unwrap(),
+            function,
+            "{damage}"
+        );
+        assert_eq!(
+            ledger.get_run(&run.to_string()).await.unwrap(),
+            read,
+            "{damage}"
+        );
+        let open_step = Answer::StepBegun(Begun::Run { attempt: 1 });
+        assert_eq!(
+            execute(&ledger, begin).await.unwrap(),
+            open_step,
+            "{damage}"
+        );
+        ledger.close().await;
     }
 }
 
@@ -619,6 +706,64 @@ fn minted_tokens_are_distinct() {
     assert_eq!(tokens.len(), 10_000);
 }
 
+/// One execution entry of each kind, about `run`, as a record holds them. Only execution rules
+/// make a `RunCompleted` entry, so that one is read back from its bytes.
+fn execution_entries(run: ironflowx_core::RunId) -> Vec<ironflowx_execution::Stored> {
+    use ironflowx_execution::{Definition, Entry};
+    let mut completed = vec![6];
+    completed.extend_from_slice(&36u32.to_le_bytes());
+    completed.extend_from_slice(run.to_string().as_bytes());
+    completed.extend_from_slice(&1u32.to_le_bytes());
+    completed.push(b'7');
+    let completed = ironflowx_execution::decode(&mut completed.as_slice()).expect("an entry");
+    let entries = vec![
+        Entry::FunctionPut(Definition {
+            name: "charge".into(),
+            code: "v1".into(),
+            triggers: vec!["order.paid".into(), "订单.placed".into()],
+            max_attempts: Some(5),
+            first_delay_seconds: None,
+            max_delay_seconds: Some(u32::MAX),
+        }),
+        Entry::RunCreated {
+            run,
+            sequence: u64::MAX,
+            function: "charge".into(),
+            code: "v1".into(),
+            input: b"null".to_vec(),
+        },
+        Entry::Claimed {
+            run,
+            execution: 3,
+            lease_until: Timestamp::from_millis(-1),
+        },
+        Entry::StepBegan {
+            run,
+            position: 1,
+            name: "réserve".into(),
+            once: true,
+            input: Some(b"{}".to_vec()),
+            execution: 3,
+        },
+        Entry::StepBegan {
+            run,
+            position: 2,
+            name: "pay".into(),
+            once: false,
+            input: None,
+            execution: 3,
+        },
+        Entry::StepCompleted {
+            run,
+            position: 1,
+            output: b"{\"id\":  9007199254740993}".to_vec(),
+        },
+    ];
+    let mut stored: Vec<_> = entries.into_iter().map(Into::into).collect();
+    stored.push(completed);
+    stored
+}
+
 #[test]
 fn records_round_trip() {
     let env = new_env_ref();
@@ -638,13 +783,16 @@ fn records_round_trip() {
     let id = uuid::Uuid::now_v7();
     for emitted_by in [emitter(), key] {
         assert_eq!(
-            record::decode(&record::events(env.token(), id, &emitted_by, &record)),
-            Some(record::Decoded::Events {
+            record::decode(&events(env.token(), id, &emitted_by, &record)),
+            Some(record::Decoded::Entries {
                 format: record::FORMAT,
                 token: env.token(),
                 id,
                 emitted_by,
-                record: record.clone(),
+                entries: Entries {
+                    record: record.clone(),
+                    execution: Vec::new(),
+                },
             })
         );
     }
@@ -658,19 +806,32 @@ fn records_round_trip() {
     let mut trailing = record::genesis(env);
     trailing.push(0);
     assert_eq!(record::decode(&trailing), None);
+    // Execution entries of every kind, after the events, in their order.
+    let run: ironflowx_core::RunId = "019a8f3c-7e21-7b4a-9c3d-5e6f7a8b9c0e".parse().unwrap();
+    let execution = execution_entries(run);
+    let entries = Entries {
+        record: record.clone(),
+        execution: execution.clone(),
+    };
+    let decoded = record::decode(&record::entries(env.token(), id, &emitter(), &entries));
+    let Some(record::Decoded::Entries { entries: back, .. }) = decoded else {
+        panic!("a record of entries decodes: {decoded:?}");
+    };
+    assert_eq!(back, entries);
     // An entry of a kind this format does not write: its kind follows the envelope and count.
-    let mut unknown = record::events(env.token(), id, &emitter(), &record);
+    // Kinds 1 to 6 are execution entries; 7 is the first that is none.
+    let mut unknown = events(env.token(), id, &emitter(), &record);
     let empty = ironflowx_events::Record {
         events: vec![],
         ..record
     };
-    let kind = record::events(env.token(), id, &emitter(), &empty).len();
-    for byte in [1, 0xFF] {
+    let kind = events(env.token(), id, &emitter(), &empty).len();
+    for byte in [7, 0xFF] {
         unknown[kind] = byte;
         assert_eq!(record::decode(&unknown), None, "kind {byte}");
     }
     // A record ID that is not a UUIDv7 in its canonical text form, put in place of a good one.
-    let good = record::events(env.token(), id, &emitter(), &empty);
+    let good = events(env.token(), id, &emitter(), &empty);
     let at = good
         .windows(36)
         .position(|w| w == id.to_string().as_bytes());
@@ -1022,7 +1183,7 @@ fn log_records(dir: &Path) -> (Vec<record::Decoded>, u64) {
 fn record_ids(dir: &Path) -> Vec<uuid::Uuid> {
     let (records, _) = log_records(dir);
     let id = |r| match r {
-        record::Decoded::Events { id, .. } => Some(id),
+        record::Decoded::Entries { id, .. } => Some(id),
         record::Decoded::Genesis { .. } => None,
     };
     records.into_iter().filter_map(id).collect()
@@ -1048,7 +1209,7 @@ fn append_eventless(dir: &Path, env: EnvRef) {
         time: Timestamp::from_millis(T),
         events: vec![],
     };
-    let payload = record::events(env.token(), uuid::Uuid::now_v7(), &emitter(), &record);
+    let payload = events(env.token(), uuid::Uuid::now_v7(), &emitter(), &record);
     append(&log, ExpectedRevision::At(revision), payload);
 }
 
@@ -1059,7 +1220,7 @@ async fn a_fresh_ledger_writes_format_3() {
     emit(&ledger, named("a")).await.unwrap();
     ledger.close().await;
     let format = |r: &record::Decoded| match *r {
-        record::Decoded::Genesis { format, .. } | record::Decoded::Events { format, .. } => format,
+        record::Decoded::Genesis { format, .. } | record::Decoded::Entries { format, .. } => format,
     };
     let (records, _) = log_records(dir.path());
     assert_eq!(records.iter().map(format).collect::<Vec<_>>(), [3, 3]);
@@ -1273,7 +1434,7 @@ async fn every_event_records_who_emitted_it_across_reopen_and_rebuild() {
     let dir = tempfile::tempdir().unwrap();
     let env = new_env_ref();
     let ledger = open(dir.path(), env).await;
-    let batch = Submission::Batch(["a", "b", "c"].map(named).into());
+    let batch = Submission::Events(Events::Batch(["a", "b", "c"].map(named).into()));
     let app = SubmitAs::embedder("billing app").unwrap();
     let committed = ledger.submit(batch, app.clone()).await.unwrap();
     let solo = emit(&ledger, named("d")).await.unwrap();
@@ -1292,7 +1453,7 @@ async fn every_event_records_who_emitted_it_across_reopen_and_rebuild() {
             .collect()
     };
     assert_eq!(emitters(&ledger).await, expected);
-    let ItemOutcome::New(first) = committed.outcome[0] else {
+    let ItemOutcome::New(first) = items(committed.outcome)[0] else {
         panic!("a new event");
     };
     let read = get(&ledger, first).await.unwrap();
@@ -1891,4 +2052,388 @@ async fn the_ledger_errors_are_rust_errors_that_say_what_failed() {
         shown(&ReadError::Unavailable),
         "the ledger is unavailable until it is reopened"
     );
+}
+
+/// Submits an execution command as the tests' embedder: execution rules' outcome.
+async fn execute(
+    ledger: &Ledger,
+    cmd: ironflowx_execution::Command,
+) -> Result<ironflowx_execution::Outcome, SubmitError> {
+    match ledger
+        .submit(Submission::Execution(cmd), embedder())
+        .await?
+        .outcome
+    {
+        Outcome::Execution(o) => Ok(o),
+        Outcome::Events(items) => panic!("a command answered {items:?}"),
+    }
+}
+
+/// RUN-2: a run's completion and its end event are one record, the event sequenced after every
+/// stored event; RUN-11: a read store rebuilt from the log answers the same.
+#[tokio::test]
+async fn a_runs_end_and_its_event_are_one_record() {
+    use ironflowx_execution::{Command, Definition, Outcome as Answer};
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    emit(&ledger, named("before")).await.unwrap();
+    let put = Command::PutFunction(Definition {
+        name: "charge".into(),
+        code: "v1".into(),
+        triggers: vec![],
+        max_attempts: None,
+        first_delay_seconds: None,
+        max_delay_seconds: None,
+    });
+    execute(&ledger, put).await.unwrap();
+    let start = Command::StartRun {
+        function: "charge".into(),
+    };
+    let Answer::RunStarted { run, .. } = execute(&ledger, start).await.unwrap() else {
+        panic!("a run");
+    };
+    let claim = Command::Claim {
+        functions: vec!["charge@v1".into()],
+        lease_seconds: None,
+        wait_seconds: None,
+    };
+    let Answer::Claimed(Some(claim)) = execute(&ledger, claim).await.unwrap() else {
+        panic!("a claim");
+    };
+    let complete = Command::Complete {
+        lease: claim.lease.to_string(),
+        steps: 0,
+        output: Some(b"[1]".to_vec()),
+    };
+    let ended = execute(&ledger, complete.clone()).await.unwrap();
+    assert!(matches!(ended, Answer::RunEnded(_)));
+    // Sent again: answered, and nothing appended.
+    let (_, watermark) = {
+        ledger.close().await;
+        log_records(dir.path())
+    };
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(execute(&ledger, complete).await.unwrap(), ended);
+    let read = ledger.get_run(&run.to_string()).await.unwrap();
+    ledger.close().await;
+    let (records, after) = log_records(dir.path());
+    assert_eq!(after, watermark, "a repeated completion appends nothing");
+    let Some(record::Decoded::Entries { entries, .. }) = records.last() else {
+        panic!("a record of entries");
+    };
+    // The one execution entry is the run's completion with its output: kind 6, the run's ID, `[1]`.
+    let [completion] = entries.execution.as_slice() else {
+        panic!("one execution entry: {entries:?}");
+    };
+    let mut written = Vec::new();
+    ironflowx_execution::encode(completion, &mut written);
+    let mut expected = vec![6, 36, 0, 0, 0];
+    expected.extend_from_slice(run.to_string().as_bytes());
+    expected.extend_from_slice(&[3, 0, 0, 0]);
+    expected.extend_from_slice(b"[1]");
+    assert_eq!(written, expected);
+    let [event] = entries.record.events.as_slice() else {
+        panic!("one event: {entries:?}");
+    };
+    assert_eq!(
+        (event.name.as_str(), event.sequence),
+        ("ironflowx.run.completed", 2)
+    );
+    std::fs::remove_file(dir.path().join("read.db")).unwrap();
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(ledger.get_run(&run.to_string()).await.unwrap(), read);
+    assert_eq!(names(&ledger).await, ["ironflowx.run.completed", "before"]);
+    ledger.close().await;
+}
+
+/// A recorded step asked about again is answered its output and appends nothing; so is its
+/// completion sent again.
+#[tokio::test]
+async fn a_replayed_step_appends_nothing() {
+    use ironflowx_execution::{Begun, Command, Definition, Outcome as Answer};
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    let put = Command::PutFunction(Definition {
+        name: "charge".into(),
+        code: "v1".into(),
+        triggers: vec![],
+        max_attempts: None,
+        first_delay_seconds: None,
+        max_delay_seconds: None,
+    });
+    execute(&ledger, put).await.unwrap();
+    let start = Command::StartRun {
+        function: "charge".into(),
+    };
+    execute(&ledger, start).await.unwrap();
+    let claim = Command::Claim {
+        functions: vec!["charge@v1".into()],
+        lease_seconds: None,
+        wait_seconds: None,
+    };
+    let Answer::Claimed(Some(claim)) = execute(&ledger, claim).await.unwrap() else {
+        panic!("a claim");
+    };
+    let lease = claim.lease.to_string();
+    let begin = Command::BeginStep {
+        lease: lease.clone(),
+        position: 1,
+        name: "reserve".into(),
+        once: false,
+        input: None,
+    };
+    let output = br#"{"id":  9007199254740993}"#.to_vec();
+    let complete = Command::CompleteStep {
+        lease,
+        position: 1,
+        output: Some(output.clone()),
+    };
+    execute(&ledger, begin.clone()).await.unwrap();
+    execute(&ledger, complete.clone()).await.unwrap();
+    ledger.close().await;
+    let (_, before) = log_records(dir.path());
+    let ledger = open(dir.path(), env).await;
+    let replayed = execute(&ledger, begin).await.unwrap();
+    assert_eq!(
+        replayed,
+        Answer::StepBegun(Begun::Completed {
+            output: output.clone()
+        })
+    );
+    assert_eq!(
+        execute(&ledger, complete).await.unwrap(),
+        Answer::StepCompleted { output }
+    );
+    ledger.close().await;
+    assert_eq!(log_records(dir.path()).1, before);
+}
+
+fn put(name: &str, code: &str, triggers: &[&str]) -> ironflowx_execution::Command {
+    ironflowx_execution::Command::PutFunction(ironflowx_execution::Definition {
+        name: name.into(),
+        code: code.into(),
+        triggers: triggers.iter().map(|t| (*t).to_owned()).collect(),
+        max_attempts: None,
+        first_delay_seconds: None,
+        max_delay_seconds: None,
+    })
+}
+
+fn start(function: &str) -> ironflowx_execution::Command {
+    ironflowx_execution::Command::StartRun {
+        function: function.into(),
+    }
+}
+
+/// A claim of `pairs`: the run it took, if any.
+async fn claim_of(ledger: &Ledger, pairs: &[&str]) -> Option<ironflowx_core::RunId> {
+    let cmd = ironflowx_execution::Command::Claim {
+        functions: pairs.iter().map(|p| (*p).to_owned()).collect(),
+        lease_seconds: None,
+        wait_seconds: None,
+    };
+    match execute(ledger, cmd).await.unwrap() {
+        ironflowx_execution::Outcome::Claimed(claim) => claim.map(|c| c.lease.run),
+        other => panic!("a claim answered {other:?}"),
+    }
+}
+
+async fn started(ledger: &Ledger, function: &str) -> ironflowx_core::RunId {
+    match execute(ledger, start(function)).await.unwrap() {
+        ironflowx_execution::Outcome::RunStarted { run, .. } => run,
+        other => panic!("a start answered {other:?}"),
+    }
+}
+
+/// RUN-7 on the read store: a claim takes a run only of a pair it names, name and label together,
+/// and of the runs it may take, the first created when they are due alike.
+#[tokio::test]
+async fn a_claim_takes_a_run_of_a_pair_it_names_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = open(dir.path(), new_env_ref()).await;
+    execute(&ledger, put("charge", "v1", &[])).await.unwrap();
+    execute(&ledger, put("refund", "v2", &[])).await.unwrap();
+    // Created against name order, so neither the names nor the pairs give creation order.
+    let refund = started(&ledger, "refund").await;
+    let charge = started(&ledger, "charge").await;
+    // Each name with the other's label: neither run is of such a pair.
+    assert_eq!(claim_of(&ledger, &["charge@v2", "refund@v1"]).await, None);
+    // Both due at the same time: creation order.
+    let both = ["charge@v1", "refund@v2"];
+    assert_eq!(claim_of(&ledger, &both).await, Some(refund));
+    assert_eq!(claim_of(&ledger, &both).await, Some(charge));
+    assert_eq!(claim_of(&ledger, &both).await, None);
+    ledger.close().await;
+}
+
+/// A put that changes a function replaces its triggers whole, on the read store and after a
+/// rebuild.
+#[tokio::test]
+async fn a_changed_put_replaces_the_definition_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    execute(&ledger, put("charge", "v1", &["b", "a"]))
+        .await
+        .unwrap();
+    execute(&ledger, put("charge", "v2", &["a"])).await.unwrap();
+    let f = ledger.get_function("charge").await.unwrap();
+    assert_eq!(
+        (f.definition.code.as_str(), f.definition.triggers.as_slice()),
+        ("v2", ["a".to_owned()].as_slice())
+    );
+    ledger.close().await;
+    std::fs::remove_file(dir.path().join("read.db")).unwrap();
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(ledger.get_function("charge").await.unwrap(), f);
+    ledger.close().await;
+}
+
+/// A step the run counts that the read store lost fails the ledger, as any store failure does;
+/// a rebuilt read store has it again.
+#[tokio::test]
+async fn a_lost_step_fails_the_ledger() {
+    use ironflowx_execution::Command;
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    execute(&ledger, put("charge", "v1", &[])).await.unwrap();
+    let run = started(&ledger, "charge").await;
+    claim_of(&ledger, &["charge@v1"]).await.unwrap();
+    let begin = Command::BeginStep {
+        lease: format!("{run}.1"),
+        position: 1,
+        name: "reserve".into(),
+        once: false,
+        input: None,
+    };
+    execute(&ledger, begin.clone()).await.unwrap();
+    // A read waits for the fold of every acknowledged record, so the step is there to delete.
+    assert_eq!(ledger.get_run(&run.to_string()).await.unwrap().steps, 1);
+    let deleted = ledger
+        .store
+        .lock()
+        .unwrap()
+        .execute("DELETE FROM steps", [])
+        .unwrap();
+    assert_eq!(deleted, 1);
+    assert_eq!(
+        execute(&ledger, begin.clone()).await,
+        Err(SubmitError::Unavailable)
+    );
+    assert_eq!(ledger.state(), LedgerState::Unavailable);
+    ledger.close().await;
+    // Its rows deleted, its tables whole: open keeps it, and only a rebuild finds the step again.
+    std::fs::remove_file(dir.path().join("read.db")).unwrap();
+    let ledger = open(dir.path(), env).await;
+    let again = execute(&ledger, begin).await.unwrap();
+    let run_again = ironflowx_execution::Begun::Run { attempt: 1 };
+    assert_eq!(again, ironflowx_execution::Outcome::StepBegun(run_again));
+    ledger.close().await;
+}
+
+/// The fold writes only what follows from the store: an entry about a run it lacks, or a second
+/// output for a step, fails its transaction and changes nothing (RUN-3's fold half).
+#[test]
+fn the_fold_refuses_an_entry_the_store_does_not_follow() {
+    use ironflowx_execution::Entry;
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = Ledger::open_blocking(dir.path(), env, clock()).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let run = rt.block_on(async {
+        execute(&ledger, put("charge", "v1", &[])).await.unwrap();
+        let run = started(&ledger, "charge").await;
+        claim_of(&ledger, &["charge@v1"]).await.unwrap();
+        let begin = ironflowx_execution::Command::BeginStep {
+            lease: format!("{run}.1"),
+            position: 1,
+            name: "reserve".into(),
+            once: false,
+            input: None,
+        };
+        execute(&ledger, begin).await.unwrap();
+        let complete = ironflowx_execution::Command::CompleteStep {
+            lease: format!("{run}.1"),
+            position: 1,
+            output: Some(b"1".to_vec()),
+        };
+        execute(&ledger, complete).await.unwrap();
+        run
+    });
+    let unknown = "0190b5f0-0000-7000-8000-000000000999".parse().unwrap();
+    let mut conn = ledger.store.lock().unwrap();
+    let applied = crate::store::applied(&conn).unwrap();
+    for entry in [
+        Entry::Claimed {
+            run: unknown,
+            execution: 1,
+            lease_until: Timestamp::from_millis(T),
+        },
+        Entry::StepCompleted {
+            run,
+            position: 1,
+            output: b"2".to_vec(),
+        },
+    ] {
+        let entries = Entries {
+            record: ironflowx_events::Record {
+                time: Timestamp::from_millis(T),
+                events: vec![],
+            },
+            execution: vec![entry.clone().into()],
+        };
+        let record = Some((uuid::Uuid::now_v7(), &entries, &emitter()));
+        let folded = crate::store::apply(&mut conn, applied, record, false);
+        assert!(folded.is_err(), "{entry:?}");
+        assert_eq!(crate::store::applied(&conn).unwrap(), applied, "{entry:?}");
+    }
+    let output: Vec<u8> = conn
+        .query_row("SELECT output FROM steps", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(output, b"1");
+    drop(conn);
+    drop(ledger);
+}
+
+/// RUN-10 at the read store: a queued run is claimable once its due time is reached, not a
+/// millisecond before.
+#[test]
+fn a_run_is_claimable_from_its_due_time() {
+    use ironflowx_execution::{Entry, ExecutionView};
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open_blocking(dir.path(), new_env_ref(), clock()).unwrap();
+    let run: ironflowx_core::RunId = "0190b5f0-0000-7000-8000-000000000123".parse().unwrap();
+    let mut conn = ledger.store.lock().unwrap();
+    let applied = crate::store::applied(&conn).unwrap();
+    let created = Entry::RunCreated {
+        run,
+        sequence: 1,
+        function: "charge".into(),
+        code: "v1".into(),
+        input: b"null".to_vec(),
+    };
+    // A run created at T + 1,000 is due then.
+    let entries = Entries {
+        record: ironflowx_events::Record {
+            time: Timestamp::from_millis(T + 1_000),
+            events: vec![],
+        },
+        execution: vec![created.into()],
+    };
+    let record = Some((uuid::Uuid::now_v7(), &entries, &emitter()));
+    crate::store::apply(&mut conn, applied, record, false).unwrap();
+    let pairs = [("charge".to_owned(), "v1".to_owned())];
+    let at = |millis| {
+        let taken = ReadStore(&conn).claimable(&pairs, Timestamp::from_millis(millis));
+        taken.unwrap().map(|r| r.id)
+    };
+    assert_eq!(at(T + 999), None);
+    assert_eq!(at(T + 1_000), Some(run));
+    drop(conn);
+    drop(ledger);
 }

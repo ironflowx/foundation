@@ -161,3 +161,108 @@ async fn an_unknown_emits_hint_fits_its_keys() {
         engine.close().await;
     }
 }
+
+/// Each execution call's lost answer has the hint of what is true of it: a put again replaces
+/// whatever is current, a start again starts a second run, a lost claim's run stays claimed, and a
+/// call on a lease repeats no work.
+#[tokio::test]
+async fn an_unknown_execution_calls_hint_says_what_a_retry_does() {
+    use ironflowx_proto::{
+        BeginStepRequest, ClaimRunRequest, CompleteRunRequest, CompleteStepRequest,
+        PutFunctionRequest, StartRunRequest,
+    };
+    let _alone = ALONE.lock().await;
+    set_fault_hook(lose_the_append);
+    LANDED.store(false, Ordering::SeqCst);
+    let put = || PutFunctionRequest {
+        name: "charge".into(),
+        code: "v1".into(),
+        ..PutFunctionRequest::default()
+    };
+    let lease = "reopen the engine, then send the same call again with the same lease: it \
+                 repeats no work";
+    for call in [
+        "put",
+        "start",
+        "claim",
+        "begin-step",
+        "complete-step",
+        "complete",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::new(Timestamp::from_millis(1_800_000_000_000));
+        let opened = Engine::open(dir.path(), clock, None).await.unwrap();
+        let (engine, key) = (opened.engine, opened.minted.unwrap());
+        let cx = Call::with_key(key);
+        engine.put_function(&cx, put()).await.unwrap();
+        let start = || StartRunRequest {
+            function: "charge".into(),
+        };
+        engine.start_run(&cx, start()).await.unwrap();
+        let claim = || ClaimRunRequest {
+            functions: vec!["charge@v1".into()],
+            ..ClaimRunRequest::default()
+        };
+        // Each step call needs what the one before it recorded.
+        let mut lease_text = String::new();
+        if call != "put" && call != "start" && call != "claim" {
+            let claimed = engine.claim_run(&cx, claim()).await.unwrap();
+            lease_text = claimed.unwrap().lease.to_string();
+        }
+        let begin = BeginStepRequest {
+            lease: lease_text.clone(),
+            position: 1,
+            name: "pay".into(),
+            ..BeginStepRequest::default()
+        };
+        if call == "complete-step" {
+            engine.begin_step(&cx, begin.clone()).await.unwrap();
+        }
+        // A changed definition, so the put appends.
+        let changed = PutFunctionRequest {
+            code: "v2".into(),
+            ..put()
+        };
+        ARMED.store(true, Ordering::SeqCst);
+        let (answer, hint) = match call {
+            "put" => (
+                engine.put_function(&cx, changed).await.map(drop),
+                "reopen the engine, then put again only if this definition should still replace \
+                 the current one: another put may have landed since",
+            ),
+            "start" => (
+                engine.start_run(&cx, start()).await.map(drop),
+                "reopen the engine, then check first what landed: a retry starts a second run",
+            ),
+            "claim" => (
+                engine.claim_run(&cx, claim()).await.map(drop),
+                "reopen the engine, then claim again: until leases expire (a later release), the \
+                 run of a lost claim is not claimed again",
+            ),
+            "begin-step" => (engine.begin_step(&cx, begin).await.map(drop), lease),
+            "complete-step" => {
+                let req = CompleteStepRequest {
+                    lease: lease_text,
+                    position: 1,
+                    output: None,
+                };
+                (engine.complete_step(&cx, req).await.map(drop), lease)
+            }
+            _ => {
+                let req = CompleteRunRequest {
+                    lease: lease_text,
+                    steps: 0,
+                    output: None,
+                };
+                (engine.complete_run(&cx, req).await.map(drop), lease)
+            }
+        };
+        let unknown = OpError {
+            kind: ErrorKind::Unknown,
+            message: "the outcome is unknown".into(),
+            hint: Some(hint.into()),
+        };
+        assert_eq!(answer, Err(unknown), "{call}");
+        engine.close().await;
+    }
+}

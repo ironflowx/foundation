@@ -142,7 +142,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # One crate a run, so no other crate's features build it.
       - run: |
-          for crate in ironflowx-core ironflowx-events ironflowx-authz; do
+          for crate in ironflowx-core ironflowx-events ironflowx-authz ironflowx-execution; do
             cargo check --locked --target wasm32-unknown-unknown -p "$crate"
           done
 

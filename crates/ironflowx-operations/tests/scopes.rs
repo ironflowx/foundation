@@ -8,13 +8,15 @@ use ironflowx_cell::ManualClock;
 use ironflowx_core::{ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
-    Call, CreateKeyRequest, EmitBatchRequest, EmitRequest, GetEventRequest,
-    ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation, Operations,
-    RevokeKeyRequest, WhoamiRequest, required_scope,
+    BeginStepRequest, Call, ClaimRunRequest, CompleteRunRequest, CompleteStepRequest,
+    CreateKeyRequest, EmitBatchRequest, EmitRequest, GetEventRequest, GetFunctionRequest,
+    GetRunRequest, ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation,
+    Operations, PutFunctionRequest, RevokeKeyRequest, StartRunRequest, WhoamiRequest,
+    required_scope,
 };
 
 /// Every operation. A new one fails to compile in `call` until it joins this list too.
-const ALL: [Operation; 9] = [
+const ALL: [Operation; 17] = [
     Operation::Emit,
     Operation::EmitBatch,
     Operation::GetEvent,
@@ -24,6 +26,14 @@ const ALL: [Operation; 9] = [
     Operation::CreateKey,
     Operation::ListKeys,
     Operation::RevokeKey,
+    Operation::PutFunction,
+    Operation::GetFunction,
+    Operation::StartRun,
+    Operation::GetRun,
+    Operation::ClaimRun,
+    Operation::BeginStep,
+    Operation::CompleteStep,
+    Operation::CompleteRun,
 ];
 
 fn emit() -> EmitRequest {
@@ -36,10 +46,22 @@ fn emit() -> EmitRequest {
     }
 }
 
-/// What the operations act on: an event to read and a key to revoke, again and again.
+/// What the operations act on: an event to read and a key to revoke, again and again; a function
+/// to put, read and start; a run to read; and the lease of a run the execute-only key claimed,
+/// whose step calls succeed in the order of `ALL`.
 struct Targets {
     event_id: String,
     key_id: String,
+    run_id: String,
+    lease: String,
+}
+
+fn charge() -> PutFunctionRequest {
+    PutFunctionRequest {
+        name: "charge".into(),
+        code: "v1".into(),
+        ..PutFunctionRequest::default()
+    }
 }
 
 /// Calls `op` with `cx`, keeping only whether it failed and how.
@@ -88,6 +110,58 @@ async fn call(engine: &Engine, op: Operation, cx: &Call, t: &Targets) -> Result<
             };
             engine.revoke_key(cx, req).await
         }
+        Operation::PutFunction => engine.put_function(cx, charge()).await.map(drop),
+        Operation::GetFunction => {
+            let req = GetFunctionRequest {
+                name: "charge".into(),
+            };
+            engine.get_function(cx, req).await.map(drop)
+        }
+        Operation::StartRun => {
+            let req = StartRunRequest {
+                function: "charge".into(),
+            };
+            engine.start_run(cx, req).await.map(drop)
+        }
+        Operation::GetRun => {
+            let req = GetRunRequest {
+                run_id: t.run_id.clone(),
+            };
+            engine.get_run(cx, req).await.map(drop)
+        }
+        Operation::ClaimRun => engine.claim_run(cx, claim()).await.map(drop),
+        Operation::BeginStep => {
+            let req = BeginStepRequest {
+                lease: t.lease.clone(),
+                position: 1,
+                name: "reserve".into(),
+                ..BeginStepRequest::default()
+            };
+            engine.begin_step(cx, req).await.map(drop)
+        }
+        Operation::CompleteStep => {
+            let req = CompleteStepRequest {
+                lease: t.lease.clone(),
+                position: 1,
+                output: None,
+            };
+            engine.complete_step(cx, req).await.map(drop)
+        }
+        Operation::CompleteRun => {
+            let req = CompleteRunRequest {
+                lease: t.lease.clone(),
+                steps: 1,
+                output: None,
+            };
+            engine.complete_run(cx, req).await.map(drop)
+        }
+    }
+}
+
+fn claim() -> ClaimRunRequest {
+    ClaimRunRequest {
+        functions: vec!["charge@v1".into()],
+        ..ClaimRunRequest::default()
     }
 }
 
@@ -113,10 +187,11 @@ async fn every_operation_admits_exactly_the_keys_holding_its_scope() {
     };
     // Revoked, again, by every revoke below: revoking a revoked key succeeds.
     let victim = make(BTreeSet::from([Scope::Read])).await;
-    let targets = Targets {
-        event_id,
-        key_id: victim.info.key_id.to_string(),
+    engine.put_function(&admin, charge()).await.unwrap();
+    let req = StartRunRequest {
+        function: "charge".into(),
     };
+    let run_id = engine.start_run(&admin, req).await.unwrap().run_id;
     let every = [Scope::Read, Scope::Write, Scope::Admin, Scope::Execute];
     let revoked = make(BTreeSet::from(every)).await;
     let revoked_key = revoked.key.expose().to_owned();
@@ -134,6 +209,16 @@ async fn every_operation_admits_exactly_the_keys_holding_its_scope() {
         let created = engine.create_key(&admin, req).await.unwrap();
         keys.push((scope, created.key.expose().to_owned()));
     }
+    let executor = Call::with_key(Secret::new(keys[3].1.clone()));
+    let claimed = engine.claim_run(&executor, claim()).await.unwrap();
+    let lease = claimed.expect("the run is due").lease;
+    assert_eq!(lease.run, run_id);
+    let targets = Targets {
+        event_id,
+        key_id: victim.info.key_id.to_string(),
+        run_id: run_id.to_string(),
+        lease: lease.to_string(),
+    };
 
     for op in ALL {
         let err = call(engine, op, &Call::anonymous(), &targets)

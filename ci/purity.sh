@@ -14,6 +14,7 @@ cd "$(dirname "$0")/.."
 ci/check-deps.sh crates/ironflowx-core/Cargo.toml ci/purity/ironflowx-core.allow
 ci/check-deps.sh crates/ironflowx-events/Cargo.toml ci/purity/ironflowx-events.allow
 ci/check-deps.sh crates/ironflowx-authz/Cargo.toml ci/purity/ironflowx-authz.allow
+ci/check-deps.sh crates/ironflowx-execution/Cargo.toml ci/purity/ironflowx-execution.allow
 ci/no-event-clock-outside-ledger.sh crates
 ci/no-key-attribution.sh crates
 ci/clippy-bans.sh .
@@ -40,6 +41,16 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     ci/check-deps.sh ci/fixtures/forbidden-dep/Cargo.toml ci/purity/ironflowx-core.allow
   ci/must-reject.sh "dependency not allowed: getrandom" -- \
     ci/check-deps.sh ci/fixtures/forbidden-dep/Cargo.toml ci/purity/ironflowx-authz.allow
+  ci/must-reject.sh "dependency not allowed: getrandom" -- \
+    ci/check-deps.sh ci/fixtures/forbidden-dep/Cargo.toml ci/purity/ironflowx-execution.allow
+  # A dependency behind a feature counts: a dependent can turn the feature on.
+  # And one of wasm32 only, which the wasm job builds.
+  for allow in ci/purity/ironflowx-{core,events,authz,execution}.allow; do
+    for fixture in forbidden-dep-optional forbidden-dep-wasm; do
+      ci/must-reject.sh "dependency not allowed: getrandom" -- \
+        ci/check-deps.sh "ci/fixtures/$fixture/Cargo.toml" "$allow"
+    done
+  done
   ci/must-reject.sh \
     'disallowed method `ironflowx_authz::KeyDigest::to_stored`' \
     'disallowed method `ironflowx_authz::KeyDigest::from_stored`' -- \
@@ -56,8 +67,33 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     'disallowed method `std::thread::spawn`' \
     'disallowed method `getrandom::u64`' \
     'disallowed type `std::collections::HashMap`' \
-    'use of `println!`' -- \
+    'use of `println!`' \
+    'disallowed method `std::env::vars_os`' \
+    'disallowed method `std::env::temp_dir`' \
+    'disallowed method `std::env::home_dir`' \
+    'disallowed method `std::env::current_exe`' \
+    'disallowed method `std::env::args`' \
+    'disallowed method `std::env::args_os`' \
+    'disallowed method `std::process::id`' -- \
     cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
+  # The same calls under execution rules' copy of the bans (LED-15, extended).
+  ci/must-reject.sh \
+    'disallowed method `std::time::SystemTime::now`' \
+    'disallowed method `std::fs::read`' \
+    'disallowed method `std::path::Path::exists`' \
+    'disallowed type `std::net::TcpStream`' \
+    'disallowed method `std::thread::spawn`' \
+    'disallowed method `getrandom::u64`' \
+    'disallowed type `std::collections::HashMap`' \
+    'use of `println!`' \
+    'disallowed method `std::env::vars_os`' \
+    'disallowed method `std::env::temp_dir`' \
+    'disallowed method `std::env::home_dir`' \
+    'disallowed method `std::env::current_exe`' \
+    'disallowed method `std::env::args`' \
+    'disallowed method `std::env::args_os`' \
+    'disallowed method `std::process::id`' -- \
+    cargo clippy --locked --manifest-path ci/fixtures/forbidden-call-execution/Cargo.toml -- -D warnings
   ci/must-reject.sh \
     "engine-dep/direct/Cargo.toml: engine crate: 'ironflowx-operations'" \
     "engine-dep/renamed/Cargo.toml: engine crate: 'ironflowx-cell'" \
@@ -86,6 +122,9 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "ci/fixtures/sequenced-time-outside-ledger/escaped/aliased.rs:6:" \
     "ci/fixtures/sequenced-time-outside-ledger/escaped/aliased.rs:11:" -- \
     ci/no-event-clock-outside-ledger.sh ci/fixtures/sequenced-time-outside-ledger
+  # An exempt file holds one use, its helper's: a second is reported.
+  ci/must-reject.sh "crates/ironflowx-execution/tests/rules.rs: 2 uses, beyond its one helper" -- \
+    sh -c 'cd ci/fixtures/sequenced-time-twice && ../../no-event-clock-outside-ledger.sh crates'
   # Short messages put each finding's place and lint in one line.
   ci/must-reject.sh \
     'src/lib.rs:9:5: error: use of a disallowed method `ironflowx_events::engine_event`' \
@@ -111,7 +150,8 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "crates/ironflowx-proto/clippy.toml: missing the ironflowx_events::engine_event ban" \
     "crates/ironflowx-cell/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
     "crates/ironflowx-events/clippy.toml: missing the ironflowx_core::SequencedTime::from_event_clock ban" \
-    "crates/ironflowx-authz/clippy.toml: its bans differ" -- \
+    "crates/ironflowx-authz/clippy.toml: its bans differ" \
+    "crates/ironflowx-execution/clippy.toml: its bans differ" -- \
     ci/clippy-bans.sh ci/fixtures/missing-ban
   ci/must-reject.sh 'disallowed method `ironflowx_core::SubmitAs::key`' -- \
     cargo clippy --locked --manifest-path ci/fixtures/key-attribution-outside-authz/Cargo.toml -- -D warnings
@@ -133,6 +173,12 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "weak-debug/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" \
     "target-only/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" -- \
     ci/no-fault-points.sh ci/fixtures/fault-points
+}
+
+# An exempt file with no use, or with its helper's one, passes.
+(cd ci/fixtures/sequenced-time-exempt-ok && ../../no-event-clock-outside-ledger.sh crates) || {
+  echo "purity: ci/no-event-clock-outside-ledger.sh refuses ci/fixtures/sequenced-time-exempt-ok"
+  exit 1
 }
 
 # ci/no-engine-event.sh matches the name alone: the fixture's longer one passes.

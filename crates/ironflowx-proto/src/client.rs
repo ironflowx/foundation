@@ -24,12 +24,16 @@ use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 use crate::wire::{
-    self, EnvironmentServiceClient, EventServiceClient, IdentityServiceClient, KeyServiceClient,
+    self, EnvironmentServiceClient, EventServiceClient, ExecutionServiceClient,
+    FunctionServiceClient, IdentityServiceClient, KeyServiceClient, RunServiceClient,
 };
 use crate::{
-    Call, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
-    EmitResponse, Environment, Event, EventPage, GetEventRequest, KeyPage, ListEnvironmentsRequest,
-    ListEventsRequest, ListKeysRequest, OpError, Operation, Operations, RevokeKeyRequest, Whoami,
+    BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, CompleteRunRequest,
+    CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
+    EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
+    GetEventRequest, GetFunctionRequest, GetRunRequest, KeyPage, ListEnvironmentsRequest,
+    ListEventsRequest, ListKeysRequest, OpError, Operation, Operations, PutFunctionRequest,
+    PutFunctionResponse, RevokeKeyRequest, Run, RunEnd, StartRunRequest, StartRunResponse, Whoami,
     WhoamiRequest,
 };
 
@@ -56,6 +60,9 @@ pub struct Client {
     identity: IdentityServiceClient<Transport>,
     environments: EnvironmentServiceClient<Transport>,
     keys: KeyServiceClient<Transport>,
+    functions: FunctionServiceClient<Transport>,
+    runs: RunServiceClient<Transport>,
+    executions: ExecutionServiceClient<Transport>,
     timeout: Option<Duration>,
 }
 
@@ -128,7 +135,10 @@ impl Client {
             events: EventServiceClient::new(http.clone(), config.clone()),
             identity: IdentityServiceClient::new(http.clone(), config.clone()),
             environments: EnvironmentServiceClient::new(http.clone(), config.clone()),
-            keys: KeyServiceClient::new(http, config),
+            keys: KeyServiceClient::new(http.clone(), config.clone()),
+            functions: FunctionServiceClient::new(http.clone(), config.clone()),
+            runs: RunServiceClient::new(http.clone(), config.clone()),
+            executions: ExecutionServiceClient::new(http, config),
             timeout: None,
         })
     }
@@ -382,6 +392,10 @@ const RETRY_CREATE: &str = "the key may be stored: list the keys before the retr
                             the engine reopens; revoke the one no holder has";
 const RETRY_REVOKE: &str =
     "retry: revoking a revoked key succeeds, and one that revoked itself is refused";
+const RETRY_PUT: &str = "retry only if this definition should still replace the current one: another put may have landed since";
+const RETRY_START: &str = "check first what landed: a retry starts a second run";
+const RETRY_CLAIM: &str = "claim again: until leases expire (a later release), the run of a lost claim is not claimed again";
+const RETRY_LEASE: &str = "send the same call again, with the same lease: it repeats no work";
 
 /// The answer of `op`, or why there is none (architecture.md, Wire): the engine's own error as it
 /// is; else `Unavailable` where the call cannot have reached it, a code of the server's library as
@@ -626,5 +640,130 @@ impl Operations for Client {
             Some(RETRY_REVOKE),
             answer.map(UnaryResponse::into_owned),
         )
+    }
+
+    /// Puts a function's definition, replacing the whole of one of its name.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client`].
+    async fn put_function(
+        &self,
+        cx: &Call,
+        req: PutFunctionRequest,
+    ) -> Result<PutFunctionResponse, OpError> {
+        let req = fits(req.try_into()?)?;
+        let answer = self
+            .functions
+            .put_function_with_options(req, self.options(cx));
+        let answer = answer.await.map(UnaryResponse::into_owned);
+        answered(Operation::PutFunction, Some(RETRY_PUT), answer)
+    }
+
+    /// Reads one function by name.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client`].
+    async fn get_function(&self, cx: &Call, req: GetFunctionRequest) -> Result<Function, OpError> {
+        let req = fits(req.try_into()?)?;
+        let answer = self
+            .functions
+            .get_function_with_options(req, self.options(cx));
+        let answer = answer.await.map(UnaryResponse::into_owned);
+        answered(Operation::GetFunction, None, answer)
+    }
+
+    /// Starts a run of a function, queued and due at once.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client`].
+    async fn start_run(
+        &self,
+        cx: &Call,
+        req: StartRunRequest,
+    ) -> Result<StartRunResponse, OpError> {
+        let req = fits(req.try_into()?)?;
+        let answer = self.runs.start_run_with_options(req, self.options(cx));
+        let answer = answer.await.map(UnaryResponse::into_owned);
+        answered(Operation::StartRun, Some(RETRY_START), answer)
+    }
+
+    /// Reads one run by ID.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client`].
+    async fn get_run(&self, cx: &Call, req: GetRunRequest) -> Result<Run, OpError> {
+        let req = fits(req.try_into()?)?;
+        let answer = self.runs.get_run_with_options(req, self.options(cx));
+        let answer = answer.await.map(UnaryResponse::into_owned);
+        answered(Operation::GetRun, None, answer)
+    }
+
+    /// Claims one due run of the functions named, under a lease; `None` when none is due.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client`].
+    async fn claim_run(&self, cx: &Call, req: ClaimRunRequest) -> Result<Option<Claim>, OpError> {
+        let req = fits(req.try_into()?)?;
+        let answer = self
+            .executions
+            .claim_run_with_options(req, self.options(cx));
+        let answer = answer.await.map(UnaryResponse::into_owned);
+        answered(Operation::ClaimRun, Some(RETRY_CLAIM), answer)
+    }
+
+    /// Asks the engine about a step of a claimed run.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client`]; `Invalid`, with nothing sent, for an input that is not UTF-8, which the wire
+    /// does not carry.
+    async fn begin_step(
+        &self,
+        cx: &Call,
+        req: BeginStepRequest,
+    ) -> Result<BeginStepResponse, OpError> {
+        let req = fits(req.try_into()?)?;
+        let answer = self
+            .executions
+            .begin_step_with_options(req, self.options(cx));
+        let answer = answer.await.map(UnaryResponse::into_owned);
+        answered(Operation::BeginStep, Some(RETRY_LEASE), answer)
+    }
+
+    /// Reports a step's output.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::begin_step`], of the output.
+    async fn complete_step(
+        &self,
+        cx: &Call,
+        req: CompleteStepRequest,
+    ) -> Result<CompleteStepResponse, OpError> {
+        let req = fits(req.try_into()?)?;
+        let answer = self
+            .executions
+            .complete_step_with_options(req, self.options(cx));
+        let answer = answer.await.map(UnaryResponse::into_owned);
+        answered(Operation::CompleteStep, Some(RETRY_LEASE), answer)
+    }
+
+    /// Completes a claimed run with its output.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::begin_step`], of the output.
+    async fn complete_run(&self, cx: &Call, req: CompleteRunRequest) -> Result<RunEnd, OpError> {
+        let req = fits(req.try_into()?)?;
+        let answer = self
+            .executions
+            .complete_run_with_options(req, self.options(cx));
+        let answer = answer.await.map(UnaryResponse::into_owned);
+        answered(Operation::CompleteRun, Some(RETRY_LEASE), answer)
     }
 }

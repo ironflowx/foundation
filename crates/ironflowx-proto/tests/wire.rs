@@ -136,9 +136,10 @@ fn the_protos_methods_are_the_operations() {
     assert_eq!(methods, rpcs);
 }
 
-/// D54: what the generator and a client read as JSON text.
+/// D54: what the generator and a client read as JSON text: event data and metadata, and the
+/// inputs and outputs of runs and steps.
 #[test]
-fn event_data_and_metadata_are_json_text() {
+fn every_json_value_is_json_text() {
     let pool = prost_reflect::DescriptorPool::decode(wire::FILE_DESCRIPTOR_SET).unwrap();
     let option = pool.get_extension_by_name("ironflowx.v1.json_text");
     let option = option.unwrap();
@@ -150,10 +151,17 @@ fn event_data_and_metadata_are_json_text() {
         .collect();
     fields.sort();
     let expected = [
+        "ironflowx.v1.BeginStepRequest.input",
+        "ironflowx.v1.Claim.input",
+        "ironflowx.v1.CompleteRunRequest.output",
+        "ironflowx.v1.CompleteStepRequest.output",
         "ironflowx.v1.EmitRequest.data",
         "ironflowx.v1.EmitRequest.metadata",
         "ironflowx.v1.Event.data",
         "ironflowx.v1.Event.metadata",
+        "ironflowx.v1.Run.input",
+        "ironflowx.v1.Run.output",
+        "ironflowx.v1.StepCompleted.output",
     ];
     assert_eq!(fields, expected.map(|name| (name.to_owned(), true)));
 }
@@ -772,4 +780,83 @@ fn a_keys_answers_are_the_bytes_they_were() {
     assert_eq!(KeyInfo::try_from(read), Ok(info()));
     let read = wire::KeyInfo::decode_from_slice(&unhex(INFO_BIN)).unwrap();
     assert_eq!(KeyInfo::try_from(read), Ok(info()));
+}
+
+/// A claim's lease names its run and execution, which the answer also sends: they must agree. A
+/// step's recorded output is always there, and a run an answer says has ended is completed or
+/// failed.
+#[test]
+fn a_run_answer_that_disagrees_with_itself_does_not_decode() {
+    use ironflowx_core::Lease;
+    use ironflowx_proto::{BeginStepResponse, Claim, CompleteStepResponse, RunEnd, RunStatus};
+    let run: ironflowx_core::RunId = ID.parse().unwrap();
+    let claim = Claim {
+        lease: Lease { run, execution: 2 },
+        function: "charge".into(),
+        code: "v1".into(),
+        input: Some(b"null".to_vec()),
+        lease_until: Timestamp::from_millis(0),
+        renew_after_seconds: 20,
+    };
+    let good = || wire::Claim::from(claim.clone());
+    assert_eq!(Claim::try_from(good()), Ok(claim.clone()));
+    for (why, wire) in [
+        (
+            "another run",
+            wire::Claim {
+                run_id: "0190b5f0-0000-7000-8000-000000000002".into(),
+                ..good()
+            },
+        ),
+        (
+            "another execution",
+            wire::Claim {
+                execution: 3,
+                ..good()
+            },
+        ),
+        (
+            "a lease that does not parse",
+            wire::Claim {
+                lease: "x".into(),
+                ..good()
+            },
+        ),
+    ] {
+        assert_eq!(Claim::try_from(wire), Err(Undecodable), "{why}");
+    }
+    let completed = BeginStepResponse::Completed {
+        output: b"1".to_vec(),
+    };
+    let mut wire = wire::BeginStepResponse::from(completed.clone());
+    assert_eq!(BeginStepResponse::try_from(wire.clone()), Ok(completed));
+    if let Some(wire::begin_step_response::Answer::Completed(c)) = wire.answer.as_mut() {
+        c.output = None;
+    }
+    assert_eq!(BeginStepResponse::try_from(wire), Err(Undecodable));
+    let step = CompleteStepResponse::Completed {
+        output: b"1".to_vec(),
+    };
+    let mut wire = wire::CompleteStepResponse::from(step.clone());
+    assert_eq!(CompleteStepResponse::try_from(wire.clone()), Ok(step));
+    let wire::complete_step_response::Answer::Completed(c) = wire.answer.as_mut().unwrap();
+    c.output = None;
+    assert_eq!(CompleteStepResponse::try_from(wire), Err(Undecodable));
+    for (status, ended) in [
+        (RunStatus::Completed, true),
+        (RunStatus::Failed, true),
+        (RunStatus::Queued, false),
+        (RunStatus::Running, false),
+    ] {
+        let end = RunEnd {
+            run_id: run,
+            status,
+        };
+        let decoded = RunEnd::try_from(wire::CompleteRunResponse::from(end.clone()));
+        assert_eq!(
+            decoded,
+            if ended { Ok(end) } else { Err(Undecodable) },
+            "{status:?}"
+        );
+    }
 }

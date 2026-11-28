@@ -1269,6 +1269,7 @@ dependencies = [
  "getrandom 0.4.3",
  "ironflowx-core",
  "ironflowx-events",
+ "ironflowx-execution",
  "rusqlite",
  "segment-log-core",
  "tempfile",
@@ -1336,6 +1337,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironflowx-execution"
+version = "0.3.0"
+dependencies = [
+ "ironflowx-core",
+ "ironflowx-events",
+]
+
+[[package]]
 name = "ironflowx-operations"
 version = "0.3.0"
 dependencies = [
@@ -1344,6 +1353,7 @@ dependencies = [
  "ironflowx-cell",
  "ironflowx-core",
  "ironflowx-events",
+ "ironflowx-execution",
  "ironflowx-operations",
  "ironflowx-proto",
  "ironflowx-store",

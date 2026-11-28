@@ -16,27 +16,34 @@ use ironflowx_core::{
     Address, Emitter, ErrorKind, KeyId, KeyOrigin, ParseError, Scope, Secret, Timestamp,
 };
 
-use crate::{KeyStatus, OpError};
+use crate::{KeyStatus, OpError, RunStatus};
 
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/wire.rs"));
 }
 
 pub use generated::ironflowx::v1::{
+    BeginStepRequest, BeginStepResponse, Claim, ClaimRunRequest, ClaimRunResponse,
+    CompleteRunRequest, CompleteRunResponse, CompleteStepRequest, CompleteStepResponse,
     CreateKeyRequest, CreateKeyResponse, EmitBatchItem, EmitBatchRequest, EmitBatchResponse,
-    EmitRequest, EmitResponse, Environment, ErrorInfo, Event, GetEventRequest, KeyInfo,
-    ListEnvironmentsRequest, ListEnvironmentsResponse, ListEventsRequest, ListEventsResponse,
-    ListKeysRequest, ListKeysResponse, RevokeKeyRequest, RevokeKeyResponse, WhoamiRequest,
-    WhoamiResponse, emit_batch_item,
+    EmitRequest, EmitResponse, Ended, Environment, ErrorInfo, Event, Function, GetEventRequest,
+    GetFunctionRequest, GetRunRequest, KeyInfo, ListEnvironmentsRequest, ListEnvironmentsResponse,
+    ListEventsRequest, ListEventsResponse, ListKeysRequest, ListKeysResponse, PutFunctionRequest,
+    PutFunctionResponse, RevokeKeyRequest, RevokeKeyResponse, Run, RunEnd, StartRunRequest,
+    StartRunResponse, StepCompleted, StepRun, WhoamiRequest, WhoamiResponse, begin_step_response,
+    complete_step_response, emit_batch_item,
 };
 #[cfg(feature = "server")]
 pub use generated::ironflowx::v1::{
     EnvironmentService, EnvironmentServiceServer, EventService, EventServiceServer,
-    IdentityService, IdentityServiceServer, KeyService, KeyServiceServer,
+    ExecutionService, ExecutionServiceServer, FunctionService, FunctionServiceServer,
+    IdentityService, IdentityServiceServer, KeyService, KeyServiceServer, RunService,
+    RunServiceServer,
 };
 #[cfg(feature = "client")]
 pub use generated::ironflowx::v1::{
-    EnvironmentServiceClient, EventServiceClient, IdentityServiceClient, KeyServiceClient,
+    EnvironmentServiceClient, EventServiceClient, ExecutionServiceClient, FunctionServiceClient,
+    IdentityServiceClient, KeyServiceClient, RunServiceClient,
 };
 
 /// The compiled proto, as an encoded `FileDescriptorSet`: every file, its imports and their custom
@@ -566,6 +573,519 @@ impl TryFrom<RevokeKeyResponse> for () {
     fn try_from(_: RevokeKeyResponse) -> Result<Self, Undecodable> {
         Ok(())
     }
+}
+
+impl TryFrom<PutFunctionRequest> for crate::PutFunctionRequest {
+    type Error = OpError;
+
+    fn try_from(r: PutFunctionRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            name: r.name,
+            code: r.code,
+            triggers: r.triggers,
+            max_attempts: r.max_attempts,
+            first_delay_seconds: r.first_delay_seconds,
+            max_delay_seconds: r.max_delay_seconds,
+        })
+    }
+}
+
+impl TryFrom<crate::PutFunctionRequest> for PutFunctionRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::PutFunctionRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            name: r.name,
+            code: r.code,
+            triggers: r.triggers,
+            max_attempts: r.max_attempts,
+            first_delay_seconds: r.first_delay_seconds,
+            max_delay_seconds: r.max_delay_seconds,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<crate::PutFunctionResponse> for PutFunctionResponse {
+    fn from(a: crate::PutFunctionResponse) -> Self {
+        Self {
+            function: Some(Function::from(a.function)).into(),
+            changed: a.changed,
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<PutFunctionResponse> for crate::PutFunctionResponse {
+    type Error = Undecodable;
+
+    fn try_from(a: PutFunctionResponse) -> Result<Self, Undecodable> {
+        Ok(Self {
+            function: a.function.into_option().ok_or(Undecodable)?.try_into()?,
+            changed: a.changed,
+        })
+    }
+}
+
+impl TryFrom<GetFunctionRequest> for crate::GetFunctionRequest {
+    type Error = OpError;
+
+    fn try_from(r: GetFunctionRequest) -> Result<Self, OpError> {
+        Ok(Self { name: r.name })
+    }
+}
+
+impl TryFrom<crate::GetFunctionRequest> for GetFunctionRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::GetFunctionRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            name: r.name,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<crate::Function> for Function {
+    fn from(f: crate::Function) -> Self {
+        Self {
+            name: f.name,
+            code: f.code,
+            triggers: f.triggers,
+            max_attempts: f.max_attempts,
+            first_delay_seconds: f.first_delay_seconds,
+            max_delay_seconds: f.max_delay_seconds,
+            put_at: Some(sent_time(f.put_at)).into(),
+            put_by: f.put_by.to_string(),
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<Function> for crate::Function {
+    type Error = Undecodable;
+
+    fn try_from(f: Function) -> Result<Self, Undecodable> {
+        Ok(Self {
+            name: f.name,
+            code: f.code,
+            triggers: f.triggers,
+            max_attempts: f.max_attempts,
+            first_delay_seconds: f.first_delay_seconds,
+            max_delay_seconds: f.max_delay_seconds,
+            put_at: read_time(f.put_at.into_option().ok_or(Undecodable)?)?,
+            put_by: f.put_by.parse().map_err(|_| Undecodable)?,
+        })
+    }
+}
+
+impl TryFrom<StartRunRequest> for crate::StartRunRequest {
+    type Error = OpError;
+
+    fn try_from(r: StartRunRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            function: r.function,
+        })
+    }
+}
+
+impl TryFrom<crate::StartRunRequest> for StartRunRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::StartRunRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            function: r.function,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<crate::StartRunResponse> for StartRunResponse {
+    fn from(a: crate::StartRunResponse) -> Self {
+        Self {
+            run_id: a.run_id.to_string(),
+            duplicate: a.duplicate,
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<StartRunResponse> for crate::StartRunResponse {
+    type Error = Undecodable;
+
+    fn try_from(a: StartRunResponse) -> Result<Self, Undecodable> {
+        Ok(Self {
+            run_id: a.run_id.parse().map_err(|_| Undecodable)?,
+            duplicate: a.duplicate,
+        })
+    }
+}
+
+impl TryFrom<GetRunRequest> for crate::GetRunRequest {
+    type Error = OpError;
+
+    fn try_from(r: GetRunRequest) -> Result<Self, OpError> {
+        Ok(Self { run_id: r.run_id })
+    }
+}
+
+impl TryFrom<crate::GetRunRequest> for GetRunRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::GetRunRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            run_id: r.run_id,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<crate::Run> for Run {
+    fn from(r: crate::Run) -> Self {
+        Self {
+            run_id: r.run_id.to_string(),
+            function: r.function,
+            code: r.code,
+            status: run_status(r.status).to_owned(),
+            input: r.input.map(stored_text),
+            created_at: Some(sent_time(r.created_at)).into(),
+            created_by: r.created_by.to_string(),
+            due_at: r.due_at.map(sent_time).into(),
+            execution: r.execution,
+            lease_until: r.lease_until.map(sent_time).into(),
+            steps: r.steps,
+            step: r.step,
+            output: r.output.map(stored_text),
+            ended_at: r.ended_at.map(sent_time).into(),
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<Run> for crate::Run {
+    type Error = Undecodable;
+
+    fn try_from(r: Run) -> Result<Self, Undecodable> {
+        let time = |t: Option<WireTime>| t.map(read_time).transpose();
+        Ok(Self {
+            run_id: r.run_id.parse().map_err(|_| Undecodable)?,
+            function: r.function,
+            code: r.code,
+            status: read_run_status(&r.status)?,
+            input: r.input.map(String::into_bytes),
+            created_at: read_time(r.created_at.into_option().ok_or(Undecodable)?)?,
+            created_by: r.created_by.parse().map_err(|_| Undecodable)?,
+            due_at: time(r.due_at.into_option())?,
+            execution: r.execution,
+            lease_until: time(r.lease_until.into_option())?,
+            steps: r.steps,
+            step: r.step,
+            output: r.output.map(String::into_bytes),
+            ended_at: time(r.ended_at.into_option())?,
+        })
+    }
+}
+
+impl TryFrom<ClaimRunRequest> for crate::ClaimRunRequest {
+    type Error = OpError;
+
+    fn try_from(r: ClaimRunRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            functions: r.functions,
+            lease_seconds: r.lease_seconds,
+            wait_seconds: r.wait_seconds,
+        })
+    }
+}
+
+impl TryFrom<crate::ClaimRunRequest> for ClaimRunRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::ClaimRunRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            functions: r.functions,
+            lease_seconds: r.lease_seconds,
+            wait_seconds: r.wait_seconds,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<Option<crate::Claim>> for ClaimRunResponse {
+    fn from(a: Option<crate::Claim>) -> Self {
+        Self {
+            claim: a.map(Claim::from).into(),
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<ClaimRunResponse> for Option<crate::Claim> {
+    type Error = Undecodable;
+
+    fn try_from(a: ClaimRunResponse) -> Result<Self, Undecodable> {
+        a.claim.into_option().map(TryInto::try_into).transpose()
+    }
+}
+
+impl From<crate::Claim> for Claim {
+    fn from(c: crate::Claim) -> Self {
+        Self {
+            lease: c.lease.to_string(),
+            run_id: c.lease.run.to_string(),
+            function: c.function,
+            code: c.code,
+            execution: c.lease.execution,
+            input: c.input.map(stored_text),
+            lease_until: Some(sent_time(c.lease_until)).into(),
+            renew_after_seconds: c.renew_after_seconds,
+            ..Self::default()
+        }
+    }
+}
+
+/// The lease, the run ID and the execution number agree.
+impl TryFrom<Claim> for crate::Claim {
+    type Error = Undecodable;
+
+    fn try_from(c: Claim) -> Result<Self, Undecodable> {
+        let lease: ironflowx_core::Lease = c.lease.parse().map_err(|_| Undecodable)?;
+        if lease.run.to_string() != c.run_id || lease.execution != c.execution {
+            return Err(Undecodable);
+        }
+        Ok(Self {
+            lease,
+            function: c.function,
+            code: c.code,
+            input: c.input.map(String::into_bytes),
+            lease_until: read_time(c.lease_until.into_option().ok_or(Undecodable)?)?,
+            renew_after_seconds: c.renew_after_seconds,
+        })
+    }
+}
+
+impl TryFrom<BeginStepRequest> for crate::BeginStepRequest {
+    type Error = OpError;
+
+    fn try_from(r: BeginStepRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            lease: r.lease,
+            position: r.position,
+            name: r.name,
+            once: r.once,
+            input: r.input.map(String::into_bytes),
+        })
+    }
+}
+
+impl TryFrom<crate::BeginStepRequest> for BeginStepRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::BeginStepRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            lease: r.lease,
+            position: r.position,
+            name: r.name,
+            once: r.once,
+            input: json_text(r.input, "a step input is not UTF-8")?,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<crate::BeginStepResponse> for BeginStepResponse {
+    fn from(a: crate::BeginStepResponse) -> Self {
+        use begin_step_response::Answer;
+        let answer = match a {
+            crate::BeginStepResponse::Run { attempt } => Answer::from(StepRun {
+                attempt,
+                ..StepRun::default()
+            }),
+            crate::BeginStepResponse::Completed { output } => Answer::from(completed(output)),
+            crate::BeginStepResponse::Ended(end) => Answer::from(ended(end)),
+        };
+        Self {
+            answer: Some(answer),
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<BeginStepResponse> for crate::BeginStepResponse {
+    type Error = Undecodable;
+
+    fn try_from(a: BeginStepResponse) -> Result<Self, Undecodable> {
+        use begin_step_response::Answer;
+        Ok(match a.answer.ok_or(Undecodable)? {
+            Answer::Run(run) => Self::Run {
+                attempt: run.attempt,
+            },
+            Answer::Completed(c) => Self::Completed {
+                output: read_completed(*c)?,
+            },
+            Answer::Ended(e) => Self::Ended(read_ended(*e)?),
+        })
+    }
+}
+
+impl TryFrom<CompleteStepRequest> for crate::CompleteStepRequest {
+    type Error = OpError;
+
+    fn try_from(r: CompleteStepRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            lease: r.lease,
+            position: r.position,
+            output: r.output.map(String::into_bytes),
+        })
+    }
+}
+
+impl TryFrom<crate::CompleteStepRequest> for CompleteStepRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::CompleteStepRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            lease: r.lease,
+            position: r.position,
+            output: json_text(r.output, "a step output is not UTF-8")?,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<crate::CompleteStepResponse> for CompleteStepResponse {
+    fn from(a: crate::CompleteStepResponse) -> Self {
+        let crate::CompleteStepResponse::Completed { output } = a;
+        Self {
+            answer: completed(output).into(),
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<CompleteStepResponse> for crate::CompleteStepResponse {
+    type Error = Undecodable;
+
+    fn try_from(a: CompleteStepResponse) -> Result<Self, Undecodable> {
+        let complete_step_response::Answer::Completed(c) = a.answer.ok_or(Undecodable)?;
+        Ok(Self::Completed {
+            output: read_completed(*c)?,
+        })
+    }
+}
+
+impl TryFrom<CompleteRunRequest> for crate::CompleteRunRequest {
+    type Error = OpError;
+
+    fn try_from(r: CompleteRunRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            lease: r.lease,
+            steps: r.steps,
+            output: r.output.map(String::into_bytes),
+        })
+    }
+}
+
+impl TryFrom<crate::CompleteRunRequest> for CompleteRunRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::CompleteRunRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            lease: r.lease,
+            steps: r.steps,
+            output: json_text(r.output, "a run output is not UTF-8")?,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<crate::RunEnd> for CompleteRunResponse {
+    fn from(a: crate::RunEnd) -> Self {
+        Self {
+            ended: Some(ended(a)).into(),
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<CompleteRunResponse> for crate::RunEnd {
+    type Error = Undecodable;
+
+    fn try_from(a: CompleteRunResponse) -> Result<Self, Undecodable> {
+        read_ended(a.ended.into_option().ok_or(Undecodable)?)
+    }
+}
+
+fn completed(output: Vec<u8>) -> StepCompleted {
+    StepCompleted {
+        output: Some(stored_text(output)),
+        ..StepCompleted::default()
+    }
+}
+
+fn read_completed(c: StepCompleted) -> Result<Vec<u8>, Undecodable> {
+    c.output.map(String::into_bytes).ok_or(Undecodable)
+}
+
+fn ended(end: crate::RunEnd) -> Ended {
+    Ended {
+        run: Some(RunEnd {
+            run_id: end.run_id.to_string(),
+            status: run_status(end.status).to_owned(),
+            ..RunEnd::default()
+        })
+        .into(),
+        ..Ended::default()
+    }
+}
+
+fn read_ended(e: Ended) -> Result<crate::RunEnd, Undecodable> {
+    let run = e.run.into_option().ok_or(Undecodable)?;
+    Ok(crate::RunEnd {
+        run_id: run.run_id.parse().map_err(|_| Undecodable)?,
+        status: match read_run_status(&run.status)? {
+            status @ (RunStatus::Completed | RunStatus::Failed) => status,
+            RunStatus::Queued | RunStatus::Running => return Err(Undecodable),
+        },
+    })
+}
+
+/// JSON text to send: bytes that are not UTF-8 are no JSON, and the wire does not carry them.
+fn json_text(bytes: Option<Vec<u8>>, refused: &str) -> Result<Option<String>, OpError> {
+    let text = bytes.map(String::from_utf8).transpose();
+    text.map_err(|_| invalid(refused))
+}
+
+/// JSON text the engine stored, which execution rules checked as event data is (LED-5).
+fn stored_text(bytes: Vec<u8>) -> String {
+    // Not `expect`, which prints the bytes.
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(_) => panic!("a stored JSON value is not UTF-8 (LED-5)"),
+    }
+}
+
+const RUN_STATUSES: [RunStatus; 4] = [
+    RunStatus::Queued,
+    RunStatus::Running,
+    RunStatus::Completed,
+    RunStatus::Failed,
+];
+
+const fn run_status(status: RunStatus) -> &'static str {
+    match status {
+        RunStatus::Queued => "queued",
+        RunStatus::Running => "running",
+        RunStatus::Completed => "completed",
+        RunStatus::Failed => "failed",
+    }
+}
+
+fn read_run_status(text: &str) -> Result<RunStatus, Undecodable> {
+    RUN_STATUSES
+        .into_iter()
+        .find(|s| run_status(*s) == text)
+        .ok_or(Undecodable)
 }
 
 /// What the wire cannot carry.

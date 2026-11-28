@@ -37,9 +37,15 @@ fn facade_client_supports_https_only_with_tls() {
 /// `events` module in the facade.
 #[test]
 fn facade_cell_names_the_ledgers_event_types() {
-    use ironflowx::cell::{Emit, Event, EventPage, ItemOutcome, Refusal, Submission};
+    use ironflowx::cell::{
+        Command, Emit, Event, EventPage, EventSubmission, ItemOutcome, Refusal, Submission,
+    };
     fn named(_: Option<(Event, EventPage, ItemOutcome, Refusal)>) {}
     named(None);
-    // The check is that this compiles: a ledger caller builds a submission from the facade alone.
-    let _ = Submission::Emit(Emit::default());
+    // The check is that this compiles: a ledger caller builds a submission of either rule module
+    // from the facade alone.
+    let _ = Submission::Events(EventSubmission::Emit(Emit::default()));
+    let _ = Submission::Execution(Command::StartRun {
+        function: "charge".into(),
+    });
 }

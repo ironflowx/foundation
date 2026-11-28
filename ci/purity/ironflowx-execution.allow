@@ -1,0 +1,10 @@
+# Every crate ironflowx-execution may depend on, directly or not (LED-15).
+ironflowx-core
+ironflowx-events
+uuid
+serde_core
+serde_json
+itoa
+memchr
+zmij
+zeroize

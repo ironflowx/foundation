@@ -6,13 +6,22 @@ use ironflowx_core::{Emitter, EnvRef, IncarnationToken, Timestamp};
 use ironflowx_events::{NewEvent, Record};
 use uuid::Uuid;
 
+/// What one record commits after its envelope: its time, its events and its execution entries.
+/// Events are encoded first; decoding takes the two kinds in any order (D112).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Entries {
+    /// The record's time and its events.
+    pub(crate) record: Record,
+    pub(crate) execution: Vec<ironflowx_execution::Stored>,
+}
+
 /// The directory format. A change refuses older directories at open (D8).
 pub(crate) const FORMAT: u16 = 3;
 
 const GENESIS: u8 = 0;
-const EVENTS: u8 = 1;
+const ENTRIES: u8 = 1;
 
-/// An entry's kind. Execution entries join this list (D112).
+/// An entry's kind: an event. Execution rules number their own kinds from 1 (D112).
 const EVENT: u8 = 0;
 
 /// A decoded record.
@@ -20,14 +29,14 @@ const EVENT: u8 = 0;
 pub(crate) enum Decoded {
     /// Position 0: the directory's identity (D14).
     Genesis { format: u16, env: EnvRef },
-    Events {
+    Entries {
         format: u16,
         token: IncarnationToken,
         /// Drawn by the writer at the append: a copy of a directory keeps the IDs of the records it
         /// copied, and what each copy appends next has its own (D117).
         id: Uuid,
         emitted_by: Emitter,
-        record: Record,
+        entries: Entries,
     },
 }
 
@@ -38,19 +47,21 @@ pub(crate) fn genesis(env: EnvRef) -> Vec<u8> {
     out
 }
 
-pub(crate) fn events(
+pub(crate) fn entries(
     token: IncarnationToken,
     id: Uuid,
     emitted_by: &Emitter,
-    record: &Record,
+    entries: &Entries,
 ) -> Vec<u8> {
-    let mut out = vec![EVENTS];
+    let record = &entries.record;
+    let mut out = vec![ENTRIES];
     out.extend_from_slice(&FORMAT.to_le_bytes());
     put(&mut out, token.to_string().as_bytes());
     put(&mut out, id.to_string().as_bytes());
     put(&mut out, emitted_by.to_string().as_bytes());
     out.extend_from_slice(&record.time.as_millis().to_le_bytes());
-    out.extend_from_slice(&len(record.events.len()).to_le_bytes());
+    let count = record.events.len() + entries.execution.len();
+    out.extend_from_slice(&len(count).to_le_bytes());
     for e in &record.events {
         out.push(EVENT);
         out.extend_from_slice(&e.sequence.to_le_bytes());
@@ -61,12 +72,15 @@ pub(crate) fn events(
         put_opt(&mut out, e.metadata.as_deref());
         put(&mut out, &e.data);
     }
+    for entry in &entries.execution {
+        ironflowx_execution::encode(entry, &mut out);
+    }
     out
 }
 
 /// Event rules bound a record to [`MAX_BATCH_EVENTS`](ironflowx_core::limits::MAX_BATCH_EVENTS)
 /// events and [`MAX_BATCH_BYTES`](ironflowx_core::limits::MAX_BATCH_BYTES) of data and metadata
-/// beside their names and keys, so every length fits.
+/// beside their names and keys, and execution rules bound their entries, so every length fits.
 fn len(n: usize) -> u32 {
     u32::try_from(n).expect("event rules bound a record's lengths")
 }
@@ -96,17 +110,19 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Decoded> {
             format,
             env: d.text()?.parse().ok()?,
         },
-        EVENTS => {
+        ENTRIES => {
             let token = d.text()?.parse().ok()?;
             let id = record_id(d.text()?)?;
             let emitted_by = d.text()?.parse().ok()?;
             let time = Timestamp::from_millis(i64::from_le_bytes(d.take()?));
             let count = u32::from_le_bytes(d.take()?);
-            let mut events = Vec::new();
+            let (mut events, mut execution) = (Vec::new(), Vec::new());
             for _ in 0..count {
-                if d.take::<1>()?[0] != EVENT {
-                    return None;
+                if d.0.first()? != &EVENT {
+                    execution.push(ironflowx_execution::decode(&mut d.0)?);
+                    continue;
                 }
+                d.take::<1>()?;
                 events.push(NewEvent {
                     sequence: u64::from_le_bytes(d.take()?),
                     id: d.text()?.parse().ok()?,
@@ -121,12 +137,15 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Decoded> {
                     data: d.bytes()?.to_vec(),
                 });
             }
-            Decoded::Events {
+            Decoded::Entries {
                 format,
                 token,
                 id,
                 emitted_by,
-                record: Record { time, events },
+                entries: Entries {
+                    record: Record { time, events },
+                    execution,
+                },
             }
         }
         _ => return None,

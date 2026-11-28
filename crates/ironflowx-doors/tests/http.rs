@@ -112,6 +112,15 @@ async fn an_operation_is_served_at_its_rpc() {
         "CreateKeyRequest { scopes: {}, expires_at: None, label: None }".to_owned(),
         "ListKeysRequest { limit: None, cursor: None }".to_owned(),
         r#"RevokeKeyRequest { key_id: "" }"#.to_owned(),
+        r#"PutFunctionRequest { name: "", code: "", triggers: [], max_attempts: None, first_delay_seconds: None, max_delay_seconds: None }"#.to_owned(),
+        r#"GetFunctionRequest { name: "" }"#.to_owned(),
+        r#"StartRunRequest { function: "" }"#.to_owned(),
+        r#"GetRunRequest { run_id: "" }"#.to_owned(),
+        "ClaimRunRequest { functions: [], lease_seconds: None, wait_seconds: None }".to_owned(),
+        r#"BeginStepRequest { lease: "", position: 0, name: "", once: false, input: None }"#
+            .to_owned(),
+        r#"CompleteStepRequest { lease: "", position: 0, output: None }"#.to_owned(),
+        r#"CompleteRunRequest { lease: "", steps: 0, output: None }"#.to_owned(),
     ];
     assert_eq!(requests.len(), Operation::ALL.len());
     for (op, request) in Operation::ALL.iter().zip(requests) {

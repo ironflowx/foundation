@@ -9,15 +9,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use ironflowx_core::{Clock, Emitter, EnvRef, EventId, SequencedTime, SubmitAs, Timestamp};
-use ironflowx_events::{Error, Event, EventPage, ItemOutcome, Record, Refusal, Submission};
+use ironflowx_core::{Clock, Emitter, EnvRef, EventId, RunId, SequencedTime, SubmitAs, Timestamp};
+use ironflowx_events::{Error, Event, EventPage, ItemOutcome, Record, Refusal};
+use ironflowx_execution::{Command, Draws, Function, Run};
 use rusqlite::Connection;
 use segment_log_core::{
     AppendError, CommitError, ExpectedRevision, NewRecord, Options, SegmentLog, Submit,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::record::{self, FORMAT};
+use crate::record::{self, Entries, FORMAT};
 use crate::store::{self, ReadStore, StoreError};
 
 const QUEUE_CAPACITY: usize = 16;
@@ -39,10 +40,27 @@ pub struct Ledger {
     _directory_lock: DirectoryLock,
 }
 
-/// What a submission committed: one outcome per item, in input order.
+/// What a caller asks the ledger to commit, of either rule module (D112).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Submission {
+    /// An emit or a batch, decided by event rules.
+    Events(ironflowx_events::Submission),
+    /// A command, decided by execution rules.
+    Execution(Command),
+}
+
+/// What a submission committed, or would have: the answer of the rule module that decided it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// One outcome per item, in input order.
+    Events(Vec<ItemOutcome>),
+    Execution(ironflowx_execution::Outcome),
+}
+
+/// What a submission committed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Committed {
-    pub outcome: Vec<ItemOutcome>,
+    pub outcome: Outcome,
 }
 
 /// A submission failed.
@@ -50,7 +68,7 @@ pub struct Committed {
 /// chain shows the cause once (D84).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmitError {
-    /// A single emit, or a whole batch, was refused by a rule.
+    /// A rule refused the submission: a single emit, a whole batch, or a command.
     Refused(Refusal),
     /// The append's outcome is unknown; the ledger is now unavailable until reopened.
     Unknown,
@@ -63,7 +81,7 @@ pub enum SubmitError {
 /// chain shows the cause once (D84).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadError {
-    /// A query refused the request: an unknown event, or a bad cursor.
+    /// A query refused the request: an unknown event, function or run, or a bad cursor.
     Refused(Refusal),
     /// The ledger failed and refuses every call until it is reopened.
     Unavailable,
@@ -183,6 +201,13 @@ pub fn new_env_ref() -> EnvRef {
 }
 
 fn new_event_id() -> EventId {
+    uuid::Uuid::now_v7()
+        .to_string()
+        .parse()
+        .expect("a UUIDv7 parses")
+}
+
+fn new_run_id() -> RunId {
     uuid::Uuid::now_v7()
         .to_string()
         .parse()
@@ -365,7 +390,39 @@ impl Ledger {
             .await
     }
 
-    /// Runs a query from event rules once the read store holds every write acknowledged
+    /// The function of this name, once the read store holds every write acknowledged before this
+    /// call.
+    ///
+    /// # Errors
+    ///
+    /// `Refused` with `NotFound` for an unknown name; `Unavailable` if the ledger failed.
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime.
+    pub async fn get_function(&self, name: &str) -> Result<Function, ReadError> {
+        let name = name.to_owned();
+        self.read(move |v| ironflowx_execution::get_function(v, &name))
+            .await
+    }
+
+    /// The run with this ID, once the read store holds every write acknowledged before this call.
+    ///
+    /// # Errors
+    ///
+    /// `Refused` with `NotFound` for an unknown or malformed ID; `Unavailable` if the ledger
+    /// failed.
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime.
+    pub async fn get_run(&self, id: &str) -> Result<Run, ReadError> {
+        let id = id.to_owned();
+        self.read(move |v| ironflowx_execution::get_run(v, &id))
+            .await
+    }
+
+    /// Runs a query of either rule module once the read store holds every write acknowledged
     /// before this call.
     ///
     /// # Panics
@@ -549,23 +606,21 @@ impl Writer {
                 let _ = job.reply.send(Err(SubmitError::Unavailable));
                 continue;
             }
-            let decision = match self.decide(&job.sub) {
-                Ok(decision) => decision,
+            let emitted_by = Emitter::from(job.by);
+            let (outcome, entries) = match self.decide(&job.sub, &emitted_by) {
+                Ok(decided) => decided,
                 Err(e) => {
                     let _ = job.reply.send(Err(e));
                     continue;
                 }
             };
-            let answer = Ok(Committed {
-                outcome: decision.outcome,
-            });
-            let Some(record) = decision.record else {
+            let answer = Ok(Committed { outcome });
+            let Some(entries) = entries else {
                 let _ = job.reply.send(answer);
                 continue;
             };
-            let emitted_by = Emitter::from(job.by);
             let id = uuid::Uuid::now_v7();
-            let payload = record::events(self.env.token(), id, &emitted_by, &record);
+            let payload = record::entries(self.env.token(), id, &emitted_by, &entries);
             let reply = AppendReply(Some(job.reply));
             let _on_panic = FailOnPanic(self.progress.clone());
             let offset = match self.append(payload) {
@@ -576,30 +631,59 @@ impl Writer {
                     continue;
                 }
             };
-            self.last_time = Some(record.time);
+            self.last_time = Some(entries.record.time);
             #[cfg(feature = "__fault-points")]
             ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterFsync);
             self.progress.send_modify(|p| p.committed = offset + 1);
             reply.send(answer);
-            self.fold(offset, id, &record, &emitted_by);
+            self.fold(offset, id, &entries, &emitted_by);
         }
     }
 
-    fn decide(&self, sub: &Submission) -> Result<ironflowx_events::Decision, SubmitError> {
+    /// Decides a submission: its answer, and what to append, if anything. One read-store lock
+    /// spans the decision, so nothing commits between its reads, the engine events' sequences
+    /// included.
+    fn decide(
+        &self,
+        sub: &Submission,
+        by: &Emitter,
+    ) -> Result<(Outcome, Option<Entries>), SubmitError> {
         // D7: the event clock never goes back.
         let now = self.clock.now();
         let now = self.last_time.map_or(now, |t| t.max(now));
-        let decision = match self.store.lock() {
-            Ok(conn) => ironflowx_events::decide(
-                &ReadStore(&conn),
-                sub,
-                SequencedTime::from_event_clock(now),
-                &mut std::iter::repeat_with(new_event_id),
-            ),
+        let Ok(conn) = self.store.lock() else {
             // Poisoned: a query panicked holding it.
-            Err(_) => {
-                fail(&self.progress);
-                return Err(SubmitError::Unavailable);
+            fail(&self.progress);
+            return Err(SubmitError::Unavailable);
+        };
+        let view = ReadStore(&conn);
+        let fresh = &mut std::iter::repeat_with(new_event_id);
+        let decision = match sub {
+            Submission::Events(sub) => {
+                ironflowx_events::decide(&view, sub, SequencedTime::from_event_clock(now), fresh)
+                    .map(|d| {
+                        let entries = d.record.map(|record| Entries {
+                            record,
+                            execution: Vec::new(),
+                        });
+                        (Outcome::Events(d.outcome), entries)
+                    })
+            }
+            Submission::Execution(cmd) => {
+                let draws = Draws {
+                    run_ids: &mut std::iter::repeat_with(new_run_id),
+                };
+                let at = SequencedTime::from_event_clock(now);
+                ironflowx_execution::decide(&view, cmd, by, at, draws).and_then(|d| {
+                    let (outcome, execution, emits) = d.into_parts();
+                    let events = ironflowx_events::sequence(&view, emits, fresh)?;
+                    let some = !execution.is_empty() || !events.is_empty();
+                    let entries = some.then_some(Entries {
+                        record: Record { time: now, events },
+                        execution: execution.into_iter().map(Into::into).collect(),
+                    });
+                    Ok((Outcome::Execution(outcome), entries))
+                })
             }
         };
         decision.map_err(|e| match e {
@@ -630,7 +714,7 @@ impl Writer {
         Ok(position.offset)
     }
 
-    fn fold(&self, offset: u64, id: uuid::Uuid, record: &Record, emitted_by: &Emitter) {
+    fn fold(&self, offset: u64, id: uuid::Uuid, entries: &Entries, emitted_by: &Emitter) {
         #[cfg(any(test, feature = "__fault-points"))]
         {
             self.faults.wait_while_held();
@@ -643,7 +727,7 @@ impl Writer {
             fail(&self.progress);
             return;
         };
-        match store::apply(&mut conn, offset, Some((id, record, emitted_by)), false) {
+        match store::apply(&mut conn, offset, Some((id, entries, emitted_by)), false) {
             Ok(()) => self.progress.send_modify(|p| p.applied = offset + 1),
             Err(_) => fail(&self.progress),
         }
@@ -793,8 +877,8 @@ fn recover(dir: &Path, env: EnvRef, existing: bool) -> Result<Recovered, OpenErr
             return Err(OpenError::WrongIncarnation);
         }
         record::Decoded::Genesis { .. } => {}
-        record::Decoded::Events { .. } if existing => return Err(OpenError::Missing),
-        record::Decoded::Events { .. } => return Err(OpenError::Corrupt),
+        record::Decoded::Entries { .. } if existing => return Err(OpenError::Missing),
+        record::Decoded::Entries { .. } => return Err(OpenError::Corrupt),
     }
     let watermark = log.watermark();
     let (conn, last_time) = match replay(&log, store::open(dir, env, watermark, false)?, env)? {
@@ -828,8 +912,8 @@ fn replay(
     // one identifies this prefix even across copies of the directory, whatever it holds (D117).
     let mut last_time = None;
     let expected = if from > 1 {
-        let (id, record, _) = read_events(log, from - 1, env)?;
-        last_time = Some(record.time);
+        let (id, entries, _) = read_entries(log, from - 1, env)?;
+        last_time = Some(entries.record.time);
         // The fold stores the canonical text, the only form the log decodes.
         Some(id.to_string())
     } else {
@@ -844,9 +928,9 @@ fn replay(
         let record = if from == 0 {
             None
         } else {
-            let (id, record, emitted_by) = read_events(log, from, env)?;
-            last_time = Some(record.time);
-            Some((id, record, emitted_by))
+            let (id, entries, emitted_by) = read_entries(log, from, env)?;
+            last_time = Some(entries.record.time);
+            Some((id, entries, emitted_by))
         };
         if let Err(e) = store::apply(
             &mut conn,
@@ -862,19 +946,19 @@ fn replay(
 }
 
 /// A later record: it must carry this incarnation's token and format (LED-8).
-fn read_events(
+fn read_entries(
     log: &SegmentLog,
     offset: u64,
     env: EnvRef,
-) -> Result<(uuid::Uuid, Record, Emitter), OpenError> {
+) -> Result<(uuid::Uuid, Entries, Emitter), OpenError> {
     match read_record(log, offset)? {
-        record::Decoded::Events {
+        record::Decoded::Entries {
             format,
             token,
             id,
             emitted_by,
-            record,
-        } if format == FORMAT && token == env.token() => Ok((id, record, emitted_by)),
+            entries,
+        } if format == FORMAT && token == env.token() => Ok((id, entries, emitted_by)),
         _ => Err(OpenError::Corrupt),
     }
 }

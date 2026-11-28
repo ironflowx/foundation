@@ -8,13 +8,15 @@
 # does not forbid the lint, and in any integration test; a by-name grep backs each ban up
 # (ci/no-event-clock-outside-ledger.sh, no-key-attribution.sh, no-digest-codec.sh,
 # no-engine-event.sh). This repo's only suppressions are the event-rules test helpers that stand
-# in for the ledger and for execution rules (crates/ironflowx-events/tests/rules.rs). Nor is a
+# in for the ledger and for execution rules (crates/ironflowx-events/tests/rules.rs), and the
+# execution-rules test helper that stands in for the ledger (its tests/rules.rs). Nor is a
 # ban under another key than disallowed-methods, which a line-by-line read cannot tell; every
 # file here lists it under disallowed-methods. Nor is a clippy.toml outside the root and crates/*
 # (examples/embed has none, and takes the root's), or a manifest's [lints.clippy] allowing the
 # lint (the one [lints] here, ironflowx-cell's, only warns of two casts; the by-name greps catch
-# what it lets through). Wrongly refused: a ban that does not open its line as an entry; every
-# ban here opens its line.
+# what it lets through). Wrongly refused: a ban that does not open its line as an entry, and, by
+# the copy check, a ban of a copy with a trailing comment its core line lacks; every ban here opens
+# its line, and no copy's line has a comment.
 set -euo pipefail
 root=$1
 # <path>|<crate exempt from it>
@@ -49,11 +51,17 @@ for config in "$root"/{,.}clippy.toml "$root"/crates/*/{,.}clippy.toml; do
     fi
   done
 done
-# authz copies core's file less the SubmitAs::key ban; every other line of the copy must match.
-bans_of() { grep -v '^ *#' "$1" | grep -vF 'ironflowx_core::SubmitAs::key'; }
-core=$root/crates/ironflowx-core/clippy.toml authz=$root/crates/ironflowx-authz/clippy.toml
-if [ -e "$core" ] && [ -e "$authz" ] && ! diff <(bans_of "$core") <(bans_of "$authz") >/dev/null; then
-  echo "$authz: its bans differ from $core's, beyond SubmitAs::key"
-  missing=1
-fi
+# authz copies core's file less the SubmitAs::key ban, and execution rules less the engine_event
+# ban; every other line of each copy must match.
+bans_of() { grep -v '^ *#' "$1" | grep -vF "$2"; }
+core=$root/crates/ironflowx-core/clippy.toml
+for copy in "ironflowx-authz|ironflowx_core::SubmitAs::key" \
+  "ironflowx-execution|ironflowx_events::engine_event"; do
+  file=$root/crates/${copy%|*}/clippy.toml less=${copy#*|}
+  if [ -e "$core" ] && [ -e "$file" ] &&
+    ! diff <(bans_of "$core" "$less") <(bans_of "$file" "$less") >/dev/null; then
+    echo "$file: its bans differ from $core's, beyond $less"
+    missing=1
+  fi
+done
 exit "$missing"

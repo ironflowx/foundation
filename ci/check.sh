@@ -53,7 +53,7 @@ step cargo test -p ironflowx-events --locked --features serde_json/arbitrary_pre
 step cargo deny check
 step ci/purity.sh
 step rustup target add wasm32-unknown-unknown
-for crate in ironflowx-core ironflowx-events ironflowx-authz; do
+for crate in ironflowx-core ironflowx-events ironflowx-authz ironflowx-execution; do
   step cargo check --locked --target wasm32-unknown-unknown -p "$crate"
 done
 # ironflowx/ironflow's suite against this checkout, from a temporary fetch of the branch ci/app-ref

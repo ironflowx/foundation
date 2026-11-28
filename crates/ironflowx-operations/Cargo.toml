@@ -27,6 +27,7 @@ ironflowx-authz.workspace = true
 ironflowx-cell.workspace = true
 ironflowx-core.workspace = true
 ironflowx-events.workspace = true
+ironflowx-execution.workspace = true
 ironflowx-proto.workspace = true
 ironflowx-store.workspace = true
 getrandom = { version = "0.4.3", default-features = false }

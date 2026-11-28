@@ -110,21 +110,31 @@ pub struct Refusal {
     hint: Option<String>,
 }
 
+/// A rule's refusal is of one of the kinds a rule answers. No constructor takes an
+/// [`ErrorKind`], so a rule cannot say a ledger's or an admission's kind (`Unknown`,
+/// `Unavailable`, ...): those mean something other than "refused, nothing changed".
 impl Refusal {
-    fn invalid(message: impl Into<String>) -> Self {
+    const fn of(kind: ErrorKind, message: String) -> Self {
         Self {
-            kind: ErrorKind::Invalid,
-            message: message.into(),
+            kind,
+            message,
             hint: None,
         }
     }
 
-    fn not_found(message: impl Into<String>) -> Self {
-        Self {
-            kind: ErrorKind::NotFound,
-            message: message.into(),
-            hint: None,
-        }
+    /// The request breaks a rule.
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Self::of(ErrorKind::Invalid, message.into())
+    }
+
+    /// What the request names does not exist, or does not parse.
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::of(ErrorKind::NotFound, message.into())
+    }
+
+    /// The state the request relies on no longer holds (D106).
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::of(ErrorKind::Conflict, message.into())
     }
 
     pub const fn kind(&self) -> ErrorKind {
@@ -365,6 +375,21 @@ pub fn check_emit(emit: &Emit) -> Result<(), Refusal> {
     Ok(())
 }
 
+/// Event data's rules for a value that is not an event's, as execution rules store one (a step's
+/// or a run's output): at most `max` bytes, then the JSON rules data meets (D12). `what` names the
+/// value in the refusal, which names `max` too.
+///
+/// # Errors
+///
+/// `Invalid`, saying which rule the value breaks.
+pub fn check_value(what: &str, value: &[u8], max: usize) -> Result<(), Refusal> {
+    if value.len() > max {
+        return Err(Refusal::invalid(format!("{what} exceeds {max} bytes")));
+    }
+    json::check(value, json::Checked::Data)
+        .map_err(|e| Refusal::invalid(format!("{what} is invalid: {e}")))
+}
+
 fn check_data(data: &[u8]) -> Result<(), Refusal> {
     if data.len() > MAX_DATA_BYTES {
         return Err(Refusal::invalid("event data exceeds maximum size"));
@@ -373,7 +398,14 @@ fn check_data(data: &[u8]) -> Result<(), Refusal> {
         .map_err(|e| Refusal::invalid(format!("event data is invalid: {e}")))
 }
 
-fn check_name(name: &str) -> Result<(), Refusal> {
+/// An event name's rules, as [`decide`] checks one, and execution rules a trigger: 1 to
+/// [`MAX_EVENT_NAME_BYTES`] bytes, no empty segment, whitespace or control character, and no name
+/// the engine owns (D104).
+///
+/// # Errors
+///
+/// `Invalid`, saying which rule the name breaks.
+pub fn check_name(name: &str) -> Result<(), Refusal> {
     if name.is_empty() {
         return Err(Refusal::invalid("event name is required"));
     }

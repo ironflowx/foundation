@@ -162,9 +162,12 @@ pub fn ironflowx_events::Record::fmt(&self, &mut core::fmt::Formatter<'_>) -> co
 impl core::marker::StructuralPartialEq for ironflowx_events::Record
 pub struct ironflowx_events::Refusal
 impl ironflowx_events::Refusal
+pub fn ironflowx_events::Refusal::conflict(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn ironflowx_events::Refusal::hint(&self) -> core::option::Option<&str>
+pub fn ironflowx_events::Refusal::invalid(impl core::convert::Into<alloc::string::String>) -> Self
 pub const fn ironflowx_events::Refusal::kind(&self) -> ironflowx_core::error::ErrorKind
 pub fn ironflowx_events::Refusal::message(&self) -> &str
+pub fn ironflowx_events::Refusal::not_found(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn ironflowx_events::Refusal::with_hint(self, impl core::convert::Into<alloc::string::String>) -> Self
 impl core::clone::Clone for ironflowx_events::Refusal
 pub fn ironflowx_events::Refusal::clone(&self) -> Self
@@ -188,6 +191,8 @@ pub fn ironflowx_events::EventsView::event_by_key(&self, &str) -> core::result::
 pub fn ironflowx_events::EventsView::events_before(&self, core::option::Option<u64>, &mut ironflowx_events::PageBudget) -> core::result::Result<alloc::vec::Vec<ironflowx_events::Event>, Self::Error>
 pub fn ironflowx_events::EventsView::last_sequence(&self) -> core::result::Result<u64, Self::Error>
 pub fn ironflowx_events::check_emit(&ironflowx_events::Emit) -> core::result::Result<(), ironflowx_events::Refusal>
+pub fn ironflowx_events::check_name(&str) -> core::result::Result<(), ironflowx_events::Refusal>
+pub fn ironflowx_events::check_value(&str, &[u8], usize) -> core::result::Result<(), ironflowx_events::Refusal>
 pub fn ironflowx_events::decide<V: ironflowx_events::EventsView>(&V, &ironflowx_events::Submission, ironflowx_core::time::SequencedTime, &mut impl core::iter::traits::iterator::Iterator<Item = ironflowx_core::id::EventId>) -> core::result::Result<ironflowx_events::Decision, ironflowx_events::Error<<V as ironflowx_events::EventsView>::Error>>
 pub fn ironflowx_events::engine_event(ironflowx_events::EngineEvent) -> ironflowx_events::EngineEmit
 pub fn ironflowx_events::fold<T: ironflowx_events::EventTables>(&mut T, &ironflowx_events::Record, &ironflowx_core::who::Emitter) -> core::result::Result<(), <T as ironflowx_events::EventTables>::Error>

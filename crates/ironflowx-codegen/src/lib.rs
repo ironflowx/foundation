@@ -281,9 +281,21 @@ fn domain_property(field: &FieldDescriptor, mut schema: Value) -> Value {
         | "ironflowx.v1.GetEventRequest.event_id"
         | "ironflowx.v1.Event.event_id"
         | "ironflowx.v1.EmitResponse.event_id"
-        | "ironflowx.v1.Environment.project_id" => {
+        | "ironflowx.v1.Environment.project_id"
+        | "ironflowx.v1.GetRunRequest.run_id"
+        | "ironflowx.v1.StartRunResponse.run_id"
+        | "ironflowx.v1.Run.run_id"
+        | "ironflowx.v1.RunEnd.run_id"
+        | "ironflowx.v1.Claim.run_id" => {
             schema["pattern"] =
                 json!("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
+        }
+        "ironflowx.v1.Run.status" => {
+            schema["enum"] = json!(["queued", "running", "completed", "failed"]);
+        }
+        // An answer names a run that has ended.
+        "ironflowx.v1.RunEnd.status" => {
+            schema["enum"] = json!(["completed", "failed"]);
         }
         // A creating key's bare ID, or an embedder (D121).
         "ironflowx.v1.KeyInfo.created_by" => {
@@ -314,8 +326,29 @@ fn object(message: &MessageDescriptor, shape: Shape) -> Result<Value, CodegenErr
     if !required.is_empty() {
         schema["required"] = json!(required);
     }
-    if shape == Shape::Output && message.full_name() == "ironflowx.v1.EmitBatchItem" {
-        schema["oneOf"] = json!([{"required": ["ok"]}, {"required": ["error"]}]);
+    // An answer of several shapes holds exactly one of them. `optional` makes a oneof of its own,
+    // a synthetic one, which says nothing of the kind.
+    if shape == Shape::Output {
+        let mut groups: Vec<_> = message
+            .oneofs()
+            .filter(|o| !o.is_synthetic())
+            .map(|oneof| {
+                let shapes: Vec<_> = oneof
+                    .fields()
+                    .map(|f| json!({"required": [f.json_name()]}))
+                    .collect();
+                json!(shapes)
+            })
+            .collect();
+        // One oneof is the schema's `oneOf`; several must each hold.
+        match groups.len() {
+            0 => {}
+            1 => schema["oneOf"] = groups.remove(0),
+            _ => {
+                let each: Vec<_> = groups.into_iter().map(|g| json!({"oneOf": g})).collect();
+                schema["allOf"] = json!(each);
+            }
+        }
     }
     Ok(schema)
 }
@@ -330,6 +363,13 @@ fn always_printed(field: &FieldDescriptor) -> bool {
                 | "ironflowx.v1.Event.data"
                 | "ironflowx.v1.Event.time"
                 | "ironflowx.v1.KeyInfo.created_at"
+                | "ironflowx.v1.PutFunctionResponse.function"
+                | "ironflowx.v1.Function.put_at"
+                | "ironflowx.v1.Run.created_at"
+                | "ironflowx.v1.Claim.lease_until"
+                | "ironflowx.v1.StepCompleted.output"
+                | "ironflowx.v1.Ended.run"
+                | "ironflowx.v1.CompleteRunResponse.ended"
                 // Absent only for an embedder's call, which no door carries (D121).
                 | "ironflowx.v1.WhoamiResponse.key_id"
         )

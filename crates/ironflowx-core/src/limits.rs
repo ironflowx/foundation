@@ -21,3 +21,9 @@ pub const MAX_KEY_LABEL_BYTES: usize = 128;
 pub const MAX_EMBEDDER_NAME_BYTES: usize = 128;
 /// A request body or a message on the wire, either way, in the door and the proto client.
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+/// A function's name, and a code label, each.
+pub const MAX_FUNCTION_NAME_BYTES: usize = 128;
+/// A step's name.
+pub const MAX_STEP_NAME_BYTES: usize = 256;
+/// A step's input, as sent. Its output, and a run's, take [`MAX_DATA_BYTES`].
+pub const MAX_STEP_INPUT_BYTES: usize = 65_536;

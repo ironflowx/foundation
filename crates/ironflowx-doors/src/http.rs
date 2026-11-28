@@ -16,12 +16,17 @@ use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use http::{HeaderMap, HeaderName, StatusCode};
 use ironflowx_core::{ErrorKind, Secret};
 use ironflowx_proto::wire::{
-    self, CreateKeyRequest, CreateKeyResponse, EmitBatchRequest, EmitBatchResponse, EmitRequest,
+    self, BeginStepRequest, BeginStepResponse, ClaimRunRequest, ClaimRunResponse,
+    CompleteRunRequest, CompleteRunResponse, CompleteStepRequest, CompleteStepResponse,
+    CreateKeyRequest, CreateKeyResponse, EmitBatchRequest, EmitBatchResponse, EmitRequest,
     EmitResponse, EnvironmentService, EnvironmentServiceServer, Event, EventService,
-    EventServiceServer, GetEventRequest, IdentityService, IdentityServiceServer, KeyService,
-    KeyServiceServer, ListEnvironmentsRequest, ListEnvironmentsResponse, ListEventsRequest,
-    ListEventsResponse, ListKeysRequest, ListKeysResponse, RevokeKeyRequest, RevokeKeyResponse,
-    WhoamiRequest, WhoamiResponse,
+    EventServiceServer, ExecutionService, ExecutionServiceServer, Function, FunctionService,
+    FunctionServiceServer, GetEventRequest, GetFunctionRequest, GetRunRequest, IdentityService,
+    IdentityServiceServer, KeyService, KeyServiceServer, ListEnvironmentsRequest,
+    ListEnvironmentsResponse, ListEventsRequest, ListEventsResponse, ListKeysRequest,
+    ListKeysResponse, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, RevokeKeyResponse,
+    Run, RunService, RunServiceServer, StartRunRequest, StartRunResponse, WhoamiRequest,
+    WhoamiResponse,
 };
 use ironflowx_proto::{Call, OpError, Operation, Operations};
 
@@ -36,7 +41,19 @@ pub fn router<O: Operations + 'static, R: Readiness + 'static>(slot: Arc<Slot<O,
     let identity = IdentityServiceServer::new(Door(slot.clone()));
     let environments = EnvironmentServiceServer::new(Door(slot.clone()));
     let keys = KeyServiceServer::new(Door(slot.clone()));
-    let services = Chain(events, Chain(identity, Chain(environments, keys)));
+    let functions = FunctionServiceServer::new(Door(slot.clone()));
+    let runs = RunServiceServer::new(Door(slot.clone()));
+    let executions = ExecutionServiceServer::new(Door(slot.clone()));
+    let services = Chain(
+        events,
+        Chain(
+            identity,
+            Chain(
+                environments,
+                Chain(keys, Chain(functions, Chain(runs, executions))),
+            ),
+        ),
+    );
     let rpcs = ConnectRpcService::new(services)
         .with_limits(limits)
         // Another crate of the build may switch gzip or zstd on in `connectrpc`.
@@ -277,6 +294,40 @@ impl<O: Operations + 'static, R: Readiness + 'static> KeyService for Door<O, R> 
         Response::ok(RevokeKeyResponse::from(answer.map_err(refused)?))
     }
 }
+
+/// A handler: admits the request, calls the operation once, answers what it answered.
+macro_rules! handlers {
+    ($service:ident { $($name:ident($request:ty) -> $answer:ty;)* }) => {
+        impl<O: Operations + 'static, R: Readiness + 'static> $service for Door<O, R> {
+            $(async fn $name<'a>(
+                &'a self,
+                ctx: RequestContext,
+                request: ServiceRequest<'_, $request>,
+            ) -> ServiceResult<impl Encodable<$answer> + Send + use<'a, O, R>> {
+                let (operations, request) = self.admit(&ctx, request.to_owned_message())?;
+                let answer = operations.$name(&call(ctx.headers()), request).await;
+                Response::ok(<$answer>::from(answer.map_err(refused)?))
+            })*
+        }
+    };
+}
+
+handlers!(FunctionService {
+    put_function(PutFunctionRequest) -> PutFunctionResponse;
+    get_function(GetFunctionRequest) -> Function;
+});
+
+handlers!(RunService {
+    start_run(StartRunRequest) -> StartRunResponse;
+    get_run(GetRunRequest) -> Run;
+});
+
+handlers!(ExecutionService {
+    claim_run(ClaimRunRequest) -> ClaimRunResponse;
+    begin_step(BeginStepRequest) -> BeginStepResponse;
+    complete_step(CompleteStepRequest) -> CompleteStepResponse;
+    complete_run(CompleteRunRequest) -> CompleteRunResponse;
+});
 
 /// The call a request makes: with the key of its one `Authorization` header, or with none. No
 /// value but a Bearer key is passed on (architecture.md, Wire).
