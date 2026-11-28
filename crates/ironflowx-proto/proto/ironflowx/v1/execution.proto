@@ -3,6 +3,7 @@ syntax = "proto3";
 package ironflowx.v1;
 
 import "google/protobuf/timestamp.proto";
+import "ironflowx/v1/error.proto";
 import "ironflowx/v1/options.proto";
 import "ironflowx/v1/run.proto";
 
@@ -14,7 +15,8 @@ service ExecutionService {
     option (ironflowx.v1.cli) = "executions claim";
     option (ironflowx.v1.summary) =
       "Claim one due run of the functions named as name@code, under a lease; no claim when none "
-      "is due. Sent again it is a new claim, and the run of a lost answer stays claimed";
+      "is due. Sent again it is a new claim, and the run of a lost answer waits for its lease's "
+      "deadline";
     option (ironflowx.v1.example) = "{\"functions\": [\"charge@v1\"], \"wait_seconds\": 0}";
   }
   // Asks about a step of a claimed run.
@@ -46,6 +48,22 @@ service ExecutionService {
     option (ironflowx.v1.example) =
       "{\"lease\": \"0190b5f0-0000-7000-8000-000000000001.1\", \"steps\": 1, "
       "\"output\": \"{\\\"ok\\\": true}\"}";
+  }
+  // Renews the leases named.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {
+    option (ironflowx.v1.cli) = "executions heartbeat";
+    option (ironflowx.v1.summary) =
+      "Renew the leases named, with a result for each, in their order: its new deadline or why it "
+      "was refused. Sent again it renews them again";
+    option (ironflowx.v1.example) = "{\"leases\": [\"0190b5f0-0000-7000-8000-000000000001.1\"]}";
+  }
+  // Gives a claimed run back, due now.
+  rpc ReleaseRun(ReleaseRunRequest) returns (ReleaseRunResponse) {
+    option (ironflowx.v1.cli) = "executions release";
+    option (ironflowx.v1.summary) =
+      "Give a claimed run back, due now, counting nothing against it: stop working on it. Sent "
+      "again with the same lease it answers the same";
+    option (ironflowx.v1.example) = "{\"lease\": \"0190b5f0-0000-7000-8000-000000000001.1\"}";
   }
 }
 
@@ -139,4 +157,35 @@ message CompleteRunRequest {
 
 message CompleteRunResponse {
   Ended ended = 1;
+}
+
+message HeartbeatRequest {
+  // 1 to 100 different leases.
+  repeated string leases = 1;
+}
+
+message HeartbeatResponse {
+  // One per lease of the request, in their order.
+  repeated HeartbeatResult results = 1;
+}
+
+// What became of one lease of a heartbeat.
+message HeartbeatResult {
+  oneof result {
+    Renewed renewed = 1;
+    ErrorInfo error = 2;
+  }
+}
+
+message Renewed {
+  google.protobuf.Timestamp lease_until = 1 [json_name = "lease_until"];
+}
+
+message ReleaseRunRequest {
+  string lease = 1;
+}
+
+message ReleaseRunResponse {
+  // The run is due from then: now, or when an earlier release made it due.
+  google.protobuf.Timestamp due_at = 1 [json_name = "due_at"];
 }

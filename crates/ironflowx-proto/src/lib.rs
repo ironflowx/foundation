@@ -166,6 +166,20 @@ pub trait Operations: Send + Sync {
         cx: &Call,
         req: CompleteRunRequest,
     ) -> impl Future<Output = Result<RunEnd, OpError>> + Send;
+
+    /// Renews the leases named; the answer holds one result per lease, in input order.
+    fn heartbeat(
+        &self,
+        cx: &Call,
+        req: HeartbeatRequest,
+    ) -> impl Future<Output = Result<HeartbeatResponse, OpError>> + Send;
+
+    /// Gives a claimed run back, due now: the time it is due.
+    fn release_run(
+        &self,
+        cx: &Call,
+        req: ReleaseRunRequest,
+    ) -> impl Future<Output = Result<Timestamp, OpError>> + Send;
 }
 
 /// Every operation, one per method of [`Operations`]. Each operation that lands joins it, and
@@ -190,6 +204,8 @@ pub enum Operation {
     BeginStep,
     CompleteStep,
     CompleteRun,
+    Heartbeat,
+    ReleaseRun,
 }
 
 impl Operation {
@@ -213,6 +229,8 @@ impl Operation {
         Self::BeginStep,
         Self::CompleteStep,
         Self::CompleteRun,
+        Self::Heartbeat,
+        Self::ReleaseRun,
     ];
 
     /// The RPC that carries it on the wire, `<package>.<Service>/<Method>`.
@@ -236,6 +254,8 @@ impl Operation {
             Self::BeginStep => "ironflowx.v1.ExecutionService/BeginStep",
             Self::CompleteStep => "ironflowx.v1.ExecutionService/CompleteStep",
             Self::CompleteRun => "ironflowx.v1.ExecutionService/CompleteRun",
+            Self::Heartbeat => "ironflowx.v1.ExecutionService/Heartbeat",
+            Self::ReleaseRun => "ironflowx.v1.ExecutionService/ReleaseRun",
         }
     }
 
@@ -252,7 +272,9 @@ impl Operation {
             | Self::ClaimRun
             | Self::BeginStep
             | Self::CompleteStep
-            | Self::CompleteRun => true,
+            | Self::CompleteRun
+            | Self::Heartbeat
+            | Self::ReleaseRun => true,
             Self::GetEvent
             | Self::ListEvents
             | Self::Whoami
@@ -283,7 +305,9 @@ pub const fn required_scope(op: Operation) -> Option<Scope> {
         Operation::ClaimRun
         | Operation::BeginStep
         | Operation::CompleteStep
-        | Operation::CompleteRun => Some(Scope::Execute),
+        | Operation::CompleteRun
+        | Operation::Heartbeat
+        | Operation::ReleaseRun => Some(Scope::Execute),
     }
 }
 
@@ -665,9 +689,20 @@ pub struct Run {
     pub steps: u32,
     /// The open step's name, if one is open.
     pub step: Option<String>,
+    /// Leases lost in a row without progress; the tenth fails the run.
+    pub lost_leases: u32,
     /// JSON text, once completed.
     pub output: Option<Vec<u8>>,
+    /// The last error, once one is recorded.
+    pub error: Option<RunError>,
     pub ended_at: Option<Timestamp>,
+}
+
+/// A run's error. A code that begins with `ironflowx.` is the engine's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunError {
+    pub code: String,
+    pub message: String,
 }
 
 /// A claim: the functions it takes a run of, as `name@code`, and the lease it asks for.
@@ -750,4 +785,24 @@ pub struct CompleteRunRequest {
     pub steps: u32,
     /// JSON text; `None` stores `null`.
     pub output: Option<Vec<u8>>,
+}
+
+/// Leases to renew.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeartbeatRequest {
+    /// 1 to 100 different leases, each `<run-id>.<execution>`.
+    pub leases: Vec<String>,
+}
+
+/// What a heartbeat answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeartbeatResponse {
+    /// One per lease, in input order: its new deadline, or why it was refused.
+    pub results: Vec<Result<Timestamp, OpError>>,
+}
+
+/// A claimed run to give back.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReleaseRunRequest {
+    pub lease: String,
 }

@@ -6,17 +6,18 @@ use std::sync::Arc;
 
 use cucumber::gherkin::Scenario;
 use ironflowx_cell::HostClock;
-use ironflowx_core::Clock;
+use ironflowx_core::{Clock, Timestamp};
 use ironflowx_doors::{Readiness, Slot, WaitingOn, router};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
     BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, Client, CompleteRunRequest,
     CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
     EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
-    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, KeyPage,
-    ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest, ListKeysRequest, OpError,
-    Operations, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd,
-    StartRunRequest, StartRunResponse, Whoami, WhoamiRequest,
+    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, HeartbeatRequest,
+    HeartbeatResponse, KeyPage, ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest,
+    ListKeysRequest, OpError, Operations, PutFunctionRequest, PutFunctionResponse,
+    ReleaseRunRequest, RevokeKeyRequest, Run, RunEnd, StartRunRequest, StartRunResponse, Whoami,
+    WhoamiRequest,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -136,4 +137,6 @@ either! {
     begin_step(BeginStepRequest) -> BeginStepResponse;
     complete_step(CompleteStepRequest) -> CompleteStepResponse;
     complete_run(CompleteRunRequest) -> RunEnd;
+    heartbeat(HeartbeatRequest) -> HeartbeatResponse;
+    release_run(ReleaseRunRequest) -> Timestamp;
 }

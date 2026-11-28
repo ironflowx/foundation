@@ -707,15 +707,21 @@ fn minted_tokens_are_distinct() {
 }
 
 /// One execution entry of each kind, about `run`, as a record holds them. Only execution rules
-/// make a `RunCompleted` entry, so that one is read back from its bytes.
+/// make a `RunCompleted` or a `RunFailed` entry, so those are read back from their bytes.
 fn execution_entries(run: ironflowx_core::RunId) -> Vec<ironflowx_execution::Stored> {
     use ironflowx_execution::{Definition, Entry};
-    let mut completed = vec![6];
-    completed.extend_from_slice(&36u32.to_le_bytes());
-    completed.extend_from_slice(run.to_string().as_bytes());
-    completed.extend_from_slice(&1u32.to_le_bytes());
-    completed.push(b'7');
-    let completed = ironflowx_execution::decode(&mut completed.as_slice()).expect("an entry");
+    let ended = |kind: u8, texts: &[&[u8]]| {
+        let mut bytes = vec![kind];
+        bytes.extend_from_slice(&36u32.to_le_bytes());
+        bytes.extend_from_slice(run.to_string().as_bytes());
+        for text in texts {
+            bytes.extend_from_slice(&u32::try_from(text.len()).unwrap().to_le_bytes());
+            bytes.extend_from_slice(text);
+        }
+        ironflowx_execution::decode(&mut bytes.as_slice()).expect("an entry")
+    };
+    let completed = ended(6, &[b"7"]);
+    let failed = ended(10, &[b"ironflowx.executor_lost", "lost ✗".as_bytes()]);
     let entries = vec![
         Entry::FunctionPut(Definition {
             name: "charge".into(),
@@ -736,7 +742,17 @@ fn execution_entries(run: ironflowx_core::RunId) -> Vec<ironflowx_execution::Sto
             run,
             execution: 3,
             lease_until: Timestamp::from_millis(-1),
+            lease_seconds: u32::MAX,
         },
+        Entry::LeaseRenewed {
+            run,
+            lease_until: Timestamp::from_millis(i64::MAX),
+        },
+        Entry::LeaseLost {
+            run,
+            lost_leases: 10,
+        },
+        Entry::Released { run },
         Entry::StepBegan {
             run,
             position: 1,
@@ -760,7 +776,7 @@ fn execution_entries(run: ironflowx_core::RunId) -> Vec<ironflowx_execution::Sto
         },
     ];
     let mut stored: Vec<_> = entries.into_iter().map(Into::into).collect();
-    stored.push(completed);
+    stored.extend([completed, failed]);
     stored
 }
 
@@ -2375,6 +2391,7 @@ fn the_fold_refuses_an_entry_the_store_does_not_follow() {
             run: unknown,
             execution: 1,
             lease_until: Timestamp::from_millis(T),
+            lease_seconds: 60,
         },
         Entry::StepCompleted {
             run,
@@ -2431,8 +2448,8 @@ fn a_run_is_claimable_from_its_due_time() {
     crate::store::apply(&mut conn, applied, record, false).unwrap();
     let pairs = [("charge".to_owned(), "v1".to_owned())];
     let at = |millis| {
-        let taken = ReadStore(&conn).claimable(&pairs, Timestamp::from_millis(millis));
-        taken.unwrap().map(|r| r.id)
+        let taken = ReadStore(&conn).claimable(&pairs, Timestamp::from_millis(millis), 1);
+        taken.unwrap().first().map(|r| r.id)
     };
     assert_eq!(at(T + 999), None);
     assert_eq!(at(T + 1_000), Some(run));

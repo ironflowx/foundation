@@ -491,8 +491,12 @@ fn the_whole_proto_generates() {
         let limit = r#"\"limit\":{\"maximum\":4294967295,\"minimum\":1,\"type\":\"integer\"}"#;
         assert!(line(list).contains(limit), "{list}: {}", line(list));
     }
-    // One command per method of the proto: 9 of 0.3, and 9 of runs.
-    assert_eq!(cli.matches("    Command { path: ").count(), 18);
+    // A heartbeat's result is a renewal or an error.
+    let heartbeat = line("executions heartbeat");
+    let results = r#"\"oneOf\":[{\"required\":[\"renewed\"]},{\"required\":[\"error\"]}]"#;
+    assert!(heartbeat.contains(results), "{heartbeat}");
+    // One command per method of the proto: 9 of 0.3, and 11 of runs.
+    assert_eq!(cli.matches("    Command { path: ").count(), 20);
 }
 
 /// What a door sends of the embedder's call (D121): `Whoami`'s output still requires `key_id`,

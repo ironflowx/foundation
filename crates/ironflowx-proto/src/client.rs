@@ -18,7 +18,7 @@ use http::response::Parts;
 use http::uri::{Scheme, Uri};
 use http::{Request, Response, StatusCode};
 use hyper_util::client::legacy;
-use ironflowx_core::ErrorKind;
+use ironflowx_core::{ErrorKind, Timestamp};
 use serde::de::value::MapAccessDeserializer;
 use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
@@ -31,10 +31,11 @@ use crate::{
     BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, CompleteRunRequest,
     CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
     EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
-    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, KeyPage,
-    ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest, ListKeysRequest, OpError,
-    Operation, Operations, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd,
-    StartRunRequest, StartRunResponse, Whoami, WhoamiRequest,
+    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, HeartbeatRequest,
+    HeartbeatResponse, KeyPage, ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest,
+    ListKeysRequest, OpError, Operation, Operations, PutFunctionRequest, PutFunctionResponse,
+    ReleaseRunRequest, RevokeKeyRequest, Run, RunEnd, StartRunRequest, StartRunResponse, Whoami,
+    WhoamiRequest,
 };
 
 /// [`Operations`] over the network. It holds no key: each call sends its [`Call`]'s as the Bearer
@@ -394,7 +395,7 @@ const RETRY_REVOKE: &str =
     "retry: revoking a revoked key succeeds, and one that revoked itself is refused";
 const RETRY_PUT: &str = "retry only if this definition should still replace the current one: another put may have landed since";
 const RETRY_START: &str = "check first what landed: a retry starts a second run";
-const RETRY_CLAIM: &str = "claim again: until leases expire (a later release), the run of a lost claim is not claimed again";
+const RETRY_CLAIM: &str = "claim again: the run of a lost claim waits for its lease's deadline";
 const RETRY_LEASE: &str = "send the same call again, with the same lease: it repeats no work";
 
 /// The answer of `op`, or why there is none (architecture.md, Wire): the engine's own error as it
@@ -783,5 +784,44 @@ impl Operations for Client {
             .complete_run_with_options(req, self.options(cx));
         let answer = answer.await.map(UnaryResponse::into_owned);
         answered(Operation::CompleteRun, Some(RETRY_LEASE), answer)
+    }
+
+    /// Renews the leases named; one result per lease, in input order.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client`].
+    async fn heartbeat(
+        &self,
+        cx: &Call,
+        req: HeartbeatRequest,
+    ) -> Result<HeartbeatResponse, OpError> {
+        let leases = req.leases.len();
+        let req = fits(req.try_into()?)?;
+        let answer = self
+            .executions
+            .heartbeat_with_options(req, self.options(cx));
+        let answer = answer.await.map(UnaryResponse::into_owned).and_then(|a| {
+            // An empty answer decodes as one to a heartbeat of no lease.
+            let whole = a.results.len() == leases;
+            whole
+                .then_some(a)
+                .ok_or_else(|| ConnectError::new(ErrorCode::Unknown, "not a result per lease"))
+        });
+        answered(Operation::Heartbeat, Some(RETRY_LEASE), answer)
+    }
+
+    /// Gives a claimed run back, due now.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client`].
+    async fn release_run(&self, cx: &Call, req: ReleaseRunRequest) -> Result<Timestamp, OpError> {
+        let req = fits(req.try_into()?)?;
+        let answer = self
+            .executions
+            .release_run_with_options(req, self.options(cx));
+        let answer = answer.await.map(UnaryResponse::into_owned);
+        answered(Operation::ReleaseRun, Some(RETRY_LEASE), answer)
     }
 }

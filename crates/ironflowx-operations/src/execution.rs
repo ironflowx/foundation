@@ -2,20 +2,24 @@
 //! commands, outcomes as answers. It holds no rule of its own; refusals map as events' do.
 
 use ironflowx_cell::Outcome;
+use ironflowx_core::Timestamp;
 use ironflowx_execution::{self as execution, Begun, Command, Definition, Status};
 use ironflowx_proto::{
     BeginStepRequest, BeginStepResponse, Claim, ClaimRunRequest, CompleteRunRequest,
-    CompleteStepRequest, CompleteStepResponse, Function, PutFunctionRequest, PutFunctionResponse,
-    Run, RunEnd, RunStatus, StartRunRequest, StartRunResponse,
+    CompleteStepRequest, CompleteStepResponse, Function, HeartbeatRequest, HeartbeatResponse,
+    PutFunctionRequest, PutFunctionResponse, ReleaseRunRequest, Run, RunEnd, RunError, RunStatus,
+    StartRunRequest, StartRunResponse,
 };
+
+use crate::events::refused;
 
 /// What to do about a call whose outcome is unknown.
 pub(crate) const PUT_IF_UNKNOWN: &str = "reopen the engine, then put again only if this definition should still replace the current \
      one: another put may have landed since";
 pub(crate) const START_IF_UNKNOWN: &str =
     "reopen the engine, then check first what landed: a retry starts a second run";
-pub(crate) const CLAIM_IF_UNKNOWN: &str = "reopen the engine, then claim again: until leases expire (a later release), the run of a \
-     lost claim is not claimed again";
+pub(crate) const CLAIM_IF_UNKNOWN: &str =
+    "reopen the engine, then claim again: the run of a lost claim waits for its lease's deadline";
 pub(crate) const LEASE_IF_UNKNOWN: &str =
     "reopen the engine, then send the same call again with the same lease: it repeats no work";
 
@@ -68,6 +72,14 @@ pub(crate) fn complete(req: CompleteRunRequest) -> Command {
         steps: req.steps,
         output: req.output,
     }
+}
+
+pub(crate) fn heartbeat(req: HeartbeatRequest) -> Command {
+    Command::Heartbeat { leases: req.leases }
+}
+
+pub(crate) fn release(req: ReleaseRunRequest) -> Command {
+    Command::Release { lease: req.lease }
 }
 
 /// An execution command's outcome: the ledger answers each command with its own kind.
@@ -137,6 +149,23 @@ pub(crate) fn complete_answer(o: execution::Outcome) -> RunEnd {
     self::end(end)
 }
 
+/// Each refused lease through the engine's one mapping, as an emit's item.
+pub(crate) fn heartbeat_answer(o: execution::Outcome) -> HeartbeatResponse {
+    let execution::Outcome::Renewed(results) = o else {
+        unreachable!("a heartbeat answers Renewed: {o:?}")
+    };
+    HeartbeatResponse {
+        results: results.into_iter().map(|r| r.map_err(refused)).collect(),
+    }
+}
+
+pub(crate) fn release_answer(o: execution::Outcome) -> Timestamp {
+    let execution::Outcome::Released { due_at } = o else {
+        unreachable!("a release answers Released: {o:?}")
+    };
+    due_at
+}
+
 fn end(end: execution::RunEnd) -> RunEnd {
     RunEnd {
         run_id: end.run,
@@ -181,7 +210,12 @@ pub(crate) fn run(r: execution::Run) -> Run {
         lease_until: r.lease_until,
         steps: r.steps,
         step: r.step,
+        lost_leases: r.lost_leases,
         output: r.output,
+        error: r.error.map(|e| RunError {
+            code: e.code,
+            message: e.message,
+        }),
         ended_at: r.ended_at,
     }
 }

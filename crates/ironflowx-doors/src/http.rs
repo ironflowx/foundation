@@ -21,12 +21,13 @@ use ironflowx_proto::wire::{
     CreateKeyRequest, CreateKeyResponse, EmitBatchRequest, EmitBatchResponse, EmitRequest,
     EmitResponse, EnvironmentService, EnvironmentServiceServer, Event, EventService,
     EventServiceServer, ExecutionService, ExecutionServiceServer, Function, FunctionService,
-    FunctionServiceServer, GetEventRequest, GetFunctionRequest, GetRunRequest, IdentityService,
-    IdentityServiceServer, KeyService, KeyServiceServer, ListEnvironmentsRequest,
-    ListEnvironmentsResponse, ListEventsRequest, ListEventsResponse, ListFunctionsRequest,
-    ListFunctionsResponse, ListKeysRequest, ListKeysResponse, PutFunctionRequest,
-    PutFunctionResponse, RevokeKeyRequest, RevokeKeyResponse, Run, RunService, RunServiceServer,
-    StartRunRequest, StartRunResponse, WhoamiRequest, WhoamiResponse,
+    FunctionServiceServer, GetEventRequest, GetFunctionRequest, GetRunRequest, HeartbeatRequest,
+    HeartbeatResponse, IdentityService, IdentityServiceServer, KeyService, KeyServiceServer,
+    ListEnvironmentsRequest, ListEnvironmentsResponse, ListEventsRequest, ListEventsResponse,
+    ListFunctionsRequest, ListFunctionsResponse, ListKeysRequest, ListKeysResponse,
+    PutFunctionRequest, PutFunctionResponse, ReleaseRunRequest, ReleaseRunResponse,
+    RevokeKeyRequest, RevokeKeyResponse, Run, RunService, RunServiceServer, StartRunRequest,
+    StartRunResponse, WhoamiRequest, WhoamiResponse,
 };
 use ironflowx_proto::{Call, OpError, Operation, Operations};
 
@@ -328,6 +329,8 @@ handlers!(ExecutionService {
     begin_step(BeginStepRequest) -> BeginStepResponse;
     complete_step(CompleteStepRequest) -> CompleteStepResponse;
     complete_run(CompleteRunRequest) -> CompleteRunResponse;
+    heartbeat(HeartbeatRequest) -> HeartbeatResponse;
+    release_run(ReleaseRunRequest) -> ReleaseRunResponse;
 });
 
 /// The call a request makes: with the key of its one `Authorization` header, or with none. No

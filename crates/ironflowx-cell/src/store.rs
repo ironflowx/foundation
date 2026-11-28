@@ -6,7 +6,7 @@ use std::path::Path;
 use ironflowx_core::{Emitter, EnvRef, EventId, RunId, Timestamp};
 use ironflowx_events::{Event, EventTables, EventsView, PageBudget};
 use ironflowx_execution::{
-    Definition, ExecutionTables, ExecutionView, Function, Run, Status, Step,
+    Definition, ExecutionTables, ExecutionView, Function, Run, RunError, Status, Step,
 };
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
@@ -102,13 +102,17 @@ CREATE TABLE runs (
     due_at INTEGER,
     execution INTEGER NOT NULL,
     lease_until INTEGER,
+    lease_seconds INTEGER NOT NULL,
     claimed_by TEXT,
+    lost_leases INTEGER NOT NULL,
     steps INTEGER NOT NULL,
     step TEXT,
     output BLOB,
+    error_code TEXT,
+    error_message TEXT,
     ended_at INTEGER
 );
--- The claim's query: a pair, queued, by due time, then creation order.
+-- The claim's query: a pair, queued by due time or running by lease deadline, then creation order.
 CREATE INDEX runs_due ON runs (function, code, status, due_at, sequence);
 CREATE TABLE steps (
     run_id TEXT NOT NULL,
@@ -389,7 +393,7 @@ impl ExecutionTables for Tables<'_> {
 
     fn create_run(&mut self, r: &Run) -> rusqlite::Result<()> {
         self.0.execute(
-            &format!("INSERT INTO runs ({RUN_FIELDS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"),
+            &format!("INSERT INTO runs ({RUN_FIELDS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)"),
             params![
                 r.id.to_string(),
                 r.sequence,
@@ -402,10 +406,14 @@ impl ExecutionTables for Tables<'_> {
                 r.due_at.map(Millis),
                 r.execution,
                 r.lease_until.map(Millis),
+                r.lease_seconds,
                 r.claimed_by.as_ref().map(ToString::to_string),
+                r.lost_leases,
                 r.steps,
                 r.step,
                 r.output,
+                r.error.as_ref().map(|e| &e.code),
+                r.error.as_ref().map(|e| &e.message),
                 r.ended_at.map(Millis)
             ],
         )?;
@@ -417,17 +425,41 @@ impl ExecutionTables for Tables<'_> {
         run: RunId,
         execution: u32,
         lease_until: Timestamp,
+        lease_seconds: u32,
         by: &Emitter,
     ) -> rusqlite::Result<()> {
         one(self.0.execute(
-            "UPDATE runs SET status = 'running', execution = ?2, lease_until = ?3, claimed_by = ?4,
-             due_at = NULL WHERE id = ?1",
+            "UPDATE runs SET status = 'running', execution = ?2, lease_until = ?3,
+             lease_seconds = ?4, claimed_by = ?5, due_at = NULL WHERE id = ?1",
             params![
                 run.to_string(),
                 execution,
                 Millis(lease_until),
+                lease_seconds,
                 by.to_string()
             ],
+        )?)
+    }
+
+    fn renew(&mut self, run: RunId, lease_until: Timestamp) -> rusqlite::Result<()> {
+        one(self.0.execute(
+            "UPDATE runs SET lease_until = ?2 WHERE id = ?1 AND status = 'running'",
+            params![run.to_string(), Millis(lease_until)],
+        )?)
+    }
+
+    fn lose_lease(&mut self, run: RunId, lost_leases: u32) -> rusqlite::Result<()> {
+        one(self.0.execute(
+            "UPDATE runs SET lost_leases = ?2 WHERE id = ?1 AND status = 'running'",
+            params![run.to_string(), lost_leases],
+        )?)
+    }
+
+    fn release(&mut self, run: RunId, at: Timestamp) -> rusqlite::Result<()> {
+        one(self.0.execute(
+            "UPDATE runs SET status = 'queued', due_at = ?2, lease_until = NULL
+             WHERE id = ?1 AND status = 'running'",
+            params![run.to_string(), Millis(at)],
         )?)
     }
 
@@ -457,9 +489,10 @@ impl ExecutionTables for Tables<'_> {
             "UPDATE steps SET output = ?3 WHERE run_id = ?1 AND position = ?2 AND output IS NULL",
             params![id, position, output],
         )?)?;
-        one(self
-            .0
-            .execute("UPDATE runs SET step = NULL WHERE id = ?1", [id])?)
+        one(self.0.execute(
+            "UPDATE runs SET step = NULL, lost_leases = 0 WHERE id = ?1",
+            [id],
+        )?)
     }
 
     fn complete_run(&mut self, run: RunId, output: &[u8], at: Timestamp) -> rusqlite::Result<()> {
@@ -469,16 +502,26 @@ impl ExecutionTables for Tables<'_> {
             params![run.to_string(), output, Millis(at)],
         )?)
     }
+
+    fn fail_run(&mut self, run: RunId, error: &RunError, at: Timestamp) -> rusqlite::Result<()> {
+        one(self.0.execute(
+            "UPDATE runs SET status = 'failed', error_code = ?2, error_message = ?3, ended_at = ?4,
+             lease_until = NULL WHERE id = ?1 AND status = 'running'",
+            params![run.to_string(), error.code, error.message, Millis(at)],
+        )?)
+    }
 }
 
 const FUNCTION_COLUMNS: &str = "name, code, max_attempts, first_delay_seconds, \
     max_delay_seconds, put_at, put_by FROM functions";
 
 const RUN_FIELDS: &str = "id, sequence, function, code, status, input, created_at, created_by, \
-    due_at, execution, lease_until, claimed_by, steps, step, output, ended_at";
+    due_at, execution, lease_until, lease_seconds, claimed_by, lost_leases, steps, step, output, \
+    error_code, error_message, ended_at";
 
 const RUN_COLUMNS: &str = "id, sequence, function, code, status, input, created_at, created_by, \
-    due_at, execution, lease_until, claimed_by, steps, step, output, ended_at FROM runs";
+    due_at, execution, lease_until, lease_seconds, claimed_by, lost_leases, steps, step, output, \
+    error_code, error_message, ended_at FROM runs";
 
 const STEP_COLUMNS: &str = "position, name, once, input, execution, output FROM steps";
 
@@ -506,11 +549,21 @@ fn row_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         due_at: r.get::<_, Option<Millis>>(8)?.map(|m| m.0),
         execution: r.get(9)?,
         lease_until: r.get::<_, Option<Millis>>(10)?.map(|m| m.0),
-        claimed_by: r.get::<_, Option<Text<Emitter>>>(11)?.map(|e| e.0),
-        steps: r.get(12)?,
-        step: r.get(13)?,
-        output: r.get(14)?,
-        ended_at: r.get::<_, Option<Millis>>(15)?.map(|m| m.0),
+        lease_seconds: r.get(11)?,
+        claimed_by: r.get::<_, Option<Text<Emitter>>>(12)?.map(|e| e.0),
+        lost_leases: r.get(13)?,
+        steps: r.get(14)?,
+        step: r.get(15)?,
+        output: r.get(16)?,
+        // A code without its message is a store that has failed.
+        error: match r.get(17)? {
+            Some(code) => Some(RunError {
+                code,
+                message: r.get(18)?,
+            }),
+            None => None,
+        },
+        ended_at: r.get::<_, Option<Millis>>(19)?.map(|m| m.0),
     })
 }
 
@@ -624,26 +677,31 @@ impl ExecutionView for ReadStore<'_> {
         &self,
         pairs: &[(String, String)],
         now: Timestamp,
-    ) -> Result<Option<Run>, StoreError> {
+        limit: u32,
+    ) -> Result<Vec<Run>, StoreError> {
         if pairs.is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
-        let pair = "(function = ? AND code = ?)";
+        // ?1 is the time and ?2 the limit, so the pairs take ?3 on.
+        let pair = |i: usize| format!("(function = ?{} AND code = ?{})", 2 * i + 3, 2 * i + 4);
+        let pairs_sql: Vec<_> = (0..pairs.len()).map(pair).collect();
+        // A queued run has a due time and no deadline, a running one the reverse.
         let sql = format!(
-            "SELECT {RUN_COLUMNS} WHERE status = 'queued' AND due_at <= ? AND ({})
-             ORDER BY due_at, sequence LIMIT 1",
-            vec![pair; pairs.len()].join(" OR ")
+            "SELECT {RUN_COLUMNS} WHERE ((status = 'queued' AND due_at <= ?1)
+             OR (status = 'running' AND lease_until <= ?1)) AND ({})
+             ORDER BY COALESCE(due_at, lease_until), sequence LIMIT ?2",
+            pairs_sql.join(" OR ")
         );
         let millis = now.as_millis();
-        let mut values: Vec<&dyn ToSql> = vec![&millis];
+        let mut values: Vec<&dyn ToSql> = vec![&millis, &limit];
         for (name, code) in pairs {
             values.push(name);
             values.push(code);
         }
-        store_err(
-            self.0
-                .query_row(&sql, params_from_iter(values), row_run)
-                .optional(),
-        )
+        let runs = || -> rusqlite::Result<Vec<Run>> {
+            let mut rows = self.0.prepare(&sql)?;
+            rows.query_map(params_from_iter(values), row_run)?.collect()
+        };
+        store_err(runs())
     }
 }

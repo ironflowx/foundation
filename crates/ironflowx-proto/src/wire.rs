@@ -27,11 +27,13 @@ pub use generated::ironflowx::v1::{
     CompleteRunRequest, CompleteRunResponse, CompleteStepRequest, CompleteStepResponse,
     CreateKeyRequest, CreateKeyResponse, EmitBatchItem, EmitBatchRequest, EmitBatchResponse,
     EmitRequest, EmitResponse, Ended, Environment, ErrorInfo, Event, Function, GetEventRequest,
-    GetFunctionRequest, GetRunRequest, KeyInfo, ListEnvironmentsRequest, ListEnvironmentsResponse,
-    ListEventsRequest, ListEventsResponse, ListFunctionsRequest, ListFunctionsResponse,
-    ListKeysRequest, ListKeysResponse, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest,
-    RevokeKeyResponse, Run, RunEnd, StartRunRequest, StartRunResponse, StepCompleted, StepRun,
-    WhoamiRequest, WhoamiResponse, begin_step_response, complete_step_response, emit_batch_item,
+    GetFunctionRequest, GetRunRequest, HeartbeatRequest, HeartbeatResponse, HeartbeatResult,
+    KeyInfo, ListEnvironmentsRequest, ListEnvironmentsResponse, ListEventsRequest,
+    ListEventsResponse, ListFunctionsRequest, ListFunctionsResponse, ListKeysRequest,
+    ListKeysResponse, PutFunctionRequest, PutFunctionResponse, ReleaseRunRequest,
+    ReleaseRunResponse, Renewed, RevokeKeyRequest, RevokeKeyResponse, Run, RunEnd, RunError,
+    StartRunRequest, StartRunResponse, StepCompleted, StepRun, WhoamiRequest, WhoamiResponse,
+    begin_step_response, complete_step_response, emit_batch_item, heartbeat_result,
 };
 #[cfg(feature = "server")]
 pub use generated::ironflowx::v1::{
@@ -802,6 +804,15 @@ impl From<crate::Run> for Run {
             step: r.step,
             output: r.output.map(stored_text),
             ended_at: r.ended_at.map(sent_time).into(),
+            lost_leases: r.lost_leases,
+            error: r
+                .error
+                .map(|e| RunError {
+                    code: e.code,
+                    message: e.message,
+                    ..RunError::default()
+                })
+                .into(),
             ..Self::default()
         }
     }
@@ -825,7 +836,12 @@ impl TryFrom<Run> for crate::Run {
             lease_until: time(r.lease_until.into_option())?,
             steps: r.steps,
             step: r.step,
+            lost_leases: r.lost_leases,
             output: r.output.map(String::into_bytes),
+            error: r.error.into_option().map(|e| crate::RunError {
+                code: e.code,
+                message: e.message,
+            }),
             ended_at: time(r.ended_at.into_option())?,
         })
     }
@@ -1058,6 +1074,99 @@ impl TryFrom<CompleteRunResponse> for crate::RunEnd {
 
     fn try_from(a: CompleteRunResponse) -> Result<Self, Undecodable> {
         read_ended(a.ended.into_option().ok_or(Undecodable)?)
+    }
+}
+
+impl TryFrom<HeartbeatRequest> for crate::HeartbeatRequest {
+    type Error = OpError;
+
+    fn try_from(r: HeartbeatRequest) -> Result<Self, OpError> {
+        Ok(Self { leases: r.leases })
+    }
+}
+
+impl TryFrom<crate::HeartbeatRequest> for HeartbeatRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::HeartbeatRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            leases: r.leases,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<crate::HeartbeatResponse> for HeartbeatResponse {
+    fn from(a: crate::HeartbeatResponse) -> Self {
+        let result = |result: Result<Timestamp, OpError>| HeartbeatResult {
+            result: match result {
+                Ok(t) => Renewed {
+                    lease_until: Some(sent_time(t)).into(),
+                    ..Renewed::default()
+                }
+                .into(),
+                Err(e) => ErrorInfo::from(&e).into(),
+            },
+            ..HeartbeatResult::default()
+        };
+        Self {
+            results: a.results.into_iter().map(result).collect(),
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<HeartbeatResponse> for crate::HeartbeatResponse {
+    type Error = Undecodable;
+
+    fn try_from(a: HeartbeatResponse) -> Result<Self, Undecodable> {
+        let result = |result: HeartbeatResult| match result.result.ok_or(Undecodable)? {
+            heartbeat_result::Result::Renewed(r) => {
+                let t = r.lease_until.into_option().ok_or(Undecodable)?;
+                Ok(Ok(read_time(t)?))
+            }
+            heartbeat_result::Result::Error(e) => Ok(Err((*e).try_into()?)),
+        };
+        let results = a.results.into_iter().map(result);
+        Ok(Self {
+            results: results.collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+impl TryFrom<ReleaseRunRequest> for crate::ReleaseRunRequest {
+    type Error = OpError;
+
+    fn try_from(r: ReleaseRunRequest) -> Result<Self, OpError> {
+        Ok(Self { lease: r.lease })
+    }
+}
+
+impl TryFrom<crate::ReleaseRunRequest> for ReleaseRunRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::ReleaseRunRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            lease: r.lease,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<Timestamp> for ReleaseRunResponse {
+    fn from(due_at: Timestamp) -> Self {
+        Self {
+            due_at: Some(sent_time(due_at)).into(),
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<ReleaseRunResponse> for Timestamp {
+    type Error = Undecodable;
+
+    fn try_from(a: ReleaseRunResponse) -> Result<Self, Undecodable> {
+        read_time(a.due_at.into_option().ok_or(Undecodable)?)
     }
 }
 

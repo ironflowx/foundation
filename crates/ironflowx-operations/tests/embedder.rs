@@ -12,9 +12,10 @@ use ironflowx_operations::Engine;
 use ironflowx_proto::{
     BeginStepRequest, BeginStepResponse, Call, ClaimRunRequest, CompleteRunRequest,
     CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, EmitBatchRequest, EmitRequest,
-    GetEventRequest, GetFunctionRequest, GetRunRequest, ListEnvironmentsRequest, ListEventsRequest,
-    ListFunctionsRequest, ListKeysRequest, OpError, Operation, Operations, PutFunctionRequest,
-    RevokeKeyRequest, RunStatus, StartRunRequest, WhoamiRequest,
+    GetEventRequest, GetFunctionRequest, GetRunRequest, HeartbeatRequest, ListEnvironmentsRequest,
+    ListEventsRequest, ListFunctionsRequest, ListKeysRequest, OpError, Operation, Operations,
+    PutFunctionRequest, ReleaseRunRequest, RevokeKeyRequest, RunStatus, StartRunRequest,
+    WhoamiRequest,
 };
 
 /// The test of each operation, by its function, so a new operation fails to compile here until
@@ -38,6 +39,8 @@ fn tested(op: Operation) -> fn() {
         Operation::ClaimRun => a_claim_is_held_by_the_embedder,
         Operation::BeginStep | Operation::CompleteStep => the_embedder_steps_its_own_claim,
         Operation::CompleteRun => a_run_the_embedder_completes_is_its_event,
+        Operation::Heartbeat => the_embedder_renews_only_its_own_lease,
+        Operation::ReleaseRun => the_embedder_releases_its_own_claim,
     }
 }
 
@@ -438,4 +441,36 @@ async fn a_run_the_embedder_completes_is_its_event() {
         (event.name.as_str(), &event.emitted_by),
         ("ironflowx.run.completed", &app())
     );
+}
+
+/// The fence compares attributions in a heartbeat too: the embedder renews its lease, and the
+/// bootstrap key's heartbeat of it is refused.
+#[tokio::test]
+async fn the_embedder_renews_only_its_own_lease() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, admin, app_call) = open(dir.path()).await;
+    let (run_id, lease) = claimed(&engine, &admin, &app_call).await;
+    let req = || HeartbeatRequest {
+        leases: vec![lease.clone()],
+    };
+    let renewed = engine.heartbeat(&app_call, req()).await.unwrap();
+    let run = run_of(&engine, &admin, run_id).await;
+    assert_eq!(renewed.results, [Ok(run.lease_until.expect("running"))]);
+    let refused = engine.heartbeat(&admin, req()).await.unwrap();
+    let [Err(e)] = refused.results.as_slice() else {
+        panic!("one refusal: {refused:?}");
+    };
+    let held = (ErrorKind::Conflict, Some("another key holds this lease"));
+    assert_eq!((e.kind, e.hint.as_deref()), held);
+}
+
+#[tokio::test]
+async fn the_embedder_releases_its_own_claim() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, admin, app_call) = open(dir.path()).await;
+    let (run_id, lease) = claimed(&engine, &admin, &app_call).await;
+    let req = ReleaseRunRequest { lease };
+    let due_at = engine.release_run(&app_call, req).await.unwrap();
+    let run = run_of(&engine, &admin, run_id).await;
+    assert_eq!((run.status, run.due_at), (RunStatus::Queued, Some(due_at)));
 }

@@ -28,10 +28,11 @@ use ironflowx_proto::{
     BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, CompleteRunRequest,
     CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
     EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
-    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, KeyInfo, KeyPage, KeyStatus,
-    ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest, ListKeysRequest, OpError,
-    Operation, Operations, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd,
-    StartRunRequest, StartRunResponse, Whoami, WhoamiRequest,
+    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, HeartbeatRequest,
+    HeartbeatResponse, KeyInfo, KeyPage, KeyStatus, ListEnvironmentsRequest, ListEventsRequest,
+    ListFunctionsRequest, ListKeysRequest, OpError, Operation, Operations, PutFunctionRequest,
+    PutFunctionResponse, ReleaseRunRequest, RevokeKeyRequest, Run, RunEnd, StartRunRequest,
+    StartRunResponse, Whoami, WhoamiRequest,
 };
 use ironflowx_store::{ControlPlane, EnvironmentRecord, KeyChangeError, KeyRow, NewKey};
 
@@ -599,6 +600,38 @@ impl Operations for Engine {
             .execute(cx, op, cmd, execution::LEASE_IF_UNKNOWN)
             .await?;
         Ok(execution::complete_answer(outcome))
+    }
+
+    /// Renews the leases named that the calling key holds, in one record; each answers on its own.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::claim_run`]; a lease's own refusal, as [`Engine::begin_step`]'s, is its result.
+    async fn heartbeat(
+        &self,
+        cx: &Call,
+        req: HeartbeatRequest,
+    ) -> Result<HeartbeatResponse, OpError> {
+        let cmd = execution::heartbeat(req);
+        let op = Operation::Heartbeat;
+        let outcome = self
+            .execute(cx, op, cmd, execution::LEASE_IF_UNKNOWN)
+            .await?;
+        Ok(execution::heartbeat_answer(outcome))
+    }
+
+    /// Gives a run the calling key claimed back, due now, counting nothing.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::begin_step`].
+    async fn release_run(&self, cx: &Call, req: ReleaseRunRequest) -> Result<Timestamp, OpError> {
+        let cmd = execution::release(req);
+        let op = Operation::ReleaseRun;
+        let outcome = self
+            .execute(cx, op, cmd, execution::LEASE_IF_UNKNOWN)
+            .await?;
+        Ok(execution::release_answer(outcome))
     }
 }
 

@@ -13,9 +13,10 @@ use ironflowx_proto::{
     BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, CompleteRunRequest,
     CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
     EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
-    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, KeyInfo, KeyPage, KeyStatus,
-    ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest, ListKeysRequest, OpError,
-    Operations, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd, RunStatus,
+    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, HeartbeatRequest,
+    HeartbeatResponse, KeyInfo, KeyPage, KeyStatus, ListEnvironmentsRequest, ListEventsRequest,
+    ListFunctionsRequest, ListKeysRequest, OpError, Operations, PutFunctionRequest,
+    PutFunctionResponse, ReleaseRunRequest, RevokeKeyRequest, Run, RunEnd, RunError, RunStatus,
     StartRunRequest, StartRunResponse, Whoami, WhoamiRequest,
 };
 use tokio::net::TcpListener;
@@ -218,9 +219,32 @@ pub fn run() -> Run {
         lease_until: Some(Timestamp::from_millis(1_700_000_000_005)),
         steps: 1_000,
         step: Some("réserve\u{1}".into()),
+        lost_leases: u32::MAX,
         output: Some(METADATA.into()),
+        error: Some(RunError {
+            code: "ironflowx.executor_lost".into(),
+            message: "lost\u{1} ✗".into(),
+        }),
         ended_at: Some(Timestamp::from_millis(1_700_000_000_006)),
     }
+}
+
+/// A renewed lease beside a refused one, as a heartbeat answers both.
+pub fn renewed() -> HeartbeatResponse {
+    HeartbeatResponse {
+        results: vec![
+            Ok(Timestamp::from_millis(1_700_000_000_007)),
+            Err(OpError {
+                kind: ErrorKind::Conflict,
+                message: "the execution is over".into(),
+                hint: Some("this execution is over".into()),
+            }),
+        ],
+    }
+}
+
+pub fn released() -> Timestamp {
+    Timestamp::from_millis(1_700_000_000_008)
 }
 
 pub fn claim() -> Option<Claim> {
@@ -412,6 +436,18 @@ impl Operations for Recording {
 
     async fn complete_run(&self, cx: &Call, req: CompleteRunRequest) -> Result<RunEnd, OpError> {
         self.record(cx, req).await.map(|_| run_end())
+    }
+
+    async fn heartbeat(
+        &self,
+        cx: &Call,
+        req: HeartbeatRequest,
+    ) -> Result<HeartbeatResponse, OpError> {
+        self.record(cx, req).await.map(|_| renewed())
+    }
+
+    async fn release_run(&self, cx: &Call, req: ReleaseRunRequest) -> Result<Timestamp, OpError> {
+        self.record(cx, req).await.map(|_| released())
     }
 }
 

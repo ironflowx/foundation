@@ -14,10 +14,11 @@ use ironflowx_proto::{
     BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, CompleteRunRequest,
     CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
     EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
-    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, KeyInfo, KeyPage, KeyStatus,
-    ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest, ListKeysRequest, OpError,
-    Operation, Operations, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd,
-    RunStatus, StartRunRequest, StartRunResponse, Whoami, WhoamiRequest, required_scope,
+    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, HeartbeatRequest,
+    HeartbeatResponse, KeyInfo, KeyPage, KeyStatus, ListEnvironmentsRequest, ListEventsRequest,
+    ListFunctionsRequest, ListKeysRequest, OpError, Operation, Operations, PutFunctionRequest,
+    PutFunctionResponse, ReleaseRunRequest, RevokeKeyRequest, Run, RunEnd, RunStatus,
+    StartRunRequest, StartRunResponse, Whoami, WhoamiRequest, required_scope,
 };
 
 const KEY: &str =
@@ -153,7 +154,9 @@ impl Operations for Fixed {
             lease_until: None,
             steps: 0,
             step: None,
+            lost_leases: 0,
             output: None,
+            error: None,
             ended_at: None,
         })
     }
@@ -196,6 +199,21 @@ impl Operations for Fixed {
             run_id: lease.run,
             status: RunStatus::Completed,
         })
+    }
+
+    async fn heartbeat(
+        &self,
+        _cx: &Call,
+        req: HeartbeatRequest,
+    ) -> Result<HeartbeatResponse, OpError> {
+        let renewed = |_| Ok(Timestamp::from_millis(60_000));
+        Ok(HeartbeatResponse {
+            results: req.leases.iter().map(renewed).collect(),
+        })
+    }
+
+    async fn release_run(&self, _cx: &Call, _req: ReleaseRunRequest) -> Result<Timestamp, OpError> {
+        Ok(Timestamp::from_millis(0))
     }
 }
 
@@ -356,6 +374,20 @@ impl Operations for Recording {
         self.record(Operation::CompleteRun);
         Fixed.complete_run(cx, req).await
     }
+
+    async fn heartbeat(
+        &self,
+        cx: &Call,
+        req: HeartbeatRequest,
+    ) -> Result<HeartbeatResponse, OpError> {
+        self.record(Operation::Heartbeat);
+        Fixed.heartbeat(cx, req).await
+    }
+
+    async fn release_run(&self, cx: &Call, req: ReleaseRunRequest) -> Result<Timestamp, OpError> {
+        self.record(Operation::ReleaseRun);
+        Fixed.release_run(cx, req).await
+    }
 }
 
 /// Polls a future that must be ready at once; `Fixed` never awaits anything pending.
@@ -504,12 +536,19 @@ fn drive<O: Operations>(ops: &O) {
         }
     );
     let end = CompleteRunRequest {
-        lease,
+        lease: lease.clone(),
         steps: 1,
         output: None,
     };
     let end = ready(assert_send(ops.complete_run(&cx, end))).unwrap();
     assert_eq!(end.run_id, started.run_id);
+    let beat = HeartbeatRequest {
+        leases: vec![lease.clone()],
+    };
+    let beat = ready(assert_send(ops.heartbeat(&cx, beat))).unwrap();
+    assert_eq!(beat.results.len(), 1);
+    let release = ReleaseRunRequest { lease };
+    ready(assert_send(ops.release_run(&cx, release))).unwrap();
 }
 
 /// The scope table (architecture.md, "Keys"): `whoami` needs only a valid key.
@@ -534,6 +573,8 @@ fn each_operation_requires_its_scope() {
         (Operation::BeginStep, Some(Scope::Execute)),
         (Operation::CompleteStep, Some(Scope::Execute)),
         (Operation::CompleteRun, Some(Scope::Execute)),
+        (Operation::Heartbeat, Some(Scope::Execute)),
+        (Operation::ReleaseRun, Some(Scope::Execute)),
     ] {
         assert_eq!(required_scope(op), scope, "{op:?}");
     }
@@ -599,6 +640,14 @@ fn each_operation_has_its_rpc() {
                 Operation::CompleteRun,
                 "ironflowx.v1.ExecutionService/CompleteRun"
             ),
+            (
+                Operation::Heartbeat,
+                "ironflowx.v1.ExecutionService/Heartbeat"
+            ),
+            (
+                Operation::ReleaseRun,
+                "ironflowx.v1.ExecutionService/ReleaseRun"
+            ),
         ]
     );
 }
@@ -623,6 +672,8 @@ fn every_operation_but_the_reads_changes_state() {
             Operation::BeginStep,
             Operation::CompleteStep,
             Operation::CompleteRun,
+            Operation::Heartbeat,
+            Operation::ReleaseRun,
         ]
     );
 }

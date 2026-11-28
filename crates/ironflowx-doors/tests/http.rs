@@ -127,6 +127,8 @@ async fn an_operation_is_served_at_its_rpc() {
             .to_owned(),
         r#"CompleteStepRequest { lease: "", position: 0, output: None }"#.to_owned(),
         r#"CompleteRunRequest { lease: "", steps: 0, output: None }"#.to_owned(),
+        "HeartbeatRequest { leases: [] }".to_owned(),
+        r#"ReleaseRunRequest { lease: "" }"#.to_owned(),
     ];
     assert_eq!(requests.len(), Operation::ALL.len());
     for (op, request) in Operation::ALL.iter().zip(requests) {

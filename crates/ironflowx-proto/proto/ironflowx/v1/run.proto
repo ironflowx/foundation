@@ -63,6 +63,16 @@ message Run {
   // The run's output, JSON text, once completed.
   optional string output = 13 [(ironflowx.v1.json_text) = true];
   optional google.protobuf.Timestamp ended_at = 14 [json_name = "ended_at"];
+  // Leases lost in a row without progress; the tenth fails the run.
+  uint32 lost_leases = 15 [json_name = "lost_leases"];
+  // The last error, once one is recorded.
+  RunError error = 16;
+}
+
+// A run's error. A code that begins with "ironflowx." is the engine's own.
+message RunError {
+  string code = 1;
+  string message = 2;
 }
 
 // A run that has ended, as an answer names it.

@@ -163,13 +163,13 @@ async fn an_unknown_emits_hint_fits_its_keys() {
 }
 
 /// Each execution call's lost answer has the hint of what is true of it: a put again replaces
-/// whatever is current, a start again starts a second run, a lost claim's run stays claimed, and a
-/// call on a lease repeats no work.
+/// whatever is current, a start again starts a second run, a lost claim's run waits for its lease's
+/// deadline, and a call on a lease repeats no work.
 #[tokio::test]
 async fn an_unknown_execution_calls_hint_says_what_a_retry_does() {
     use ironflowx_proto::{
         BeginStepRequest, ClaimRunRequest, CompleteRunRequest, CompleteStepRequest,
-        PutFunctionRequest, StartRunRequest,
+        HeartbeatRequest, PutFunctionRequest, ReleaseRunRequest, StartRunRequest,
     };
     let _alone = ALONE.lock().await;
     set_fault_hook(lose_the_append);
@@ -188,6 +188,8 @@ async fn an_unknown_execution_calls_hint_says_what_a_retry_does() {
         "begin-step",
         "complete-step",
         "complete",
+        "heartbeat",
+        "release",
     ] {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::new(Timestamp::from_millis(1_800_000_000_000));
@@ -236,8 +238,8 @@ async fn an_unknown_execution_calls_hint_says_what_a_retry_does() {
             ),
             "claim" => (
                 engine.claim_run(&cx, claim()).await.map(drop),
-                "reopen the engine, then claim again: until leases expire (a later release), the \
-                 run of a lost claim is not claimed again",
+                "reopen the engine, then claim again: the run of a lost claim waits for its lease's \
+                 deadline",
             ),
             "begin-step" => (engine.begin_step(&cx, begin).await.map(drop), lease),
             "complete-step" => {
@@ -248,13 +250,23 @@ async fn an_unknown_execution_calls_hint_says_what_a_retry_does() {
                 };
                 (engine.complete_step(&cx, req).await.map(drop), lease)
             }
-            _ => {
+            "complete" => {
                 let req = CompleteRunRequest {
                     lease: lease_text,
                     steps: 0,
                     output: None,
                 };
                 (engine.complete_run(&cx, req).await.map(drop), lease)
+            }
+            "heartbeat" => {
+                let req = HeartbeatRequest {
+                    leases: vec![lease_text],
+                };
+                (engine.heartbeat(&cx, req).await.map(drop), lease)
+            }
+            _ => {
+                let req = ReleaseRunRequest { lease: lease_text };
+                (engine.release_run(&cx, req).await.map(drop), lease)
             }
         };
         let unknown = OpError {

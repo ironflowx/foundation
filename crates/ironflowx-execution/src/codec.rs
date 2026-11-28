@@ -3,7 +3,7 @@
 
 use ironflowx_core::{RunId, Timestamp};
 
-use crate::{Definition, Entry, RunCompleted, Stored};
+use crate::{Definition, Entry, RunCompleted, RunError, RunFailed, Stored};
 
 const FUNCTION_PUT: u8 = 1;
 const RUN_CREATED: u8 = 2;
@@ -11,6 +11,10 @@ const CLAIMED: u8 = 3;
 const STEP_BEGAN: u8 = 4;
 const STEP_COMPLETED: u8 = 5;
 const RUN_COMPLETED: u8 = 6;
+const LEASE_RENEWED: u8 = 7;
+const LEASE_LOST: u8 = 8;
+const RELEASED: u8 = 9;
+const RUN_FAILED: u8 = 10;
 
 /// Appends `entry` to `out`, led by its kind byte.
 pub fn encode(Stored(entry): &Stored, out: &mut Vec<u8>) {
@@ -46,11 +50,27 @@ pub fn encode(Stored(entry): &Stored, out: &mut Vec<u8>) {
             run,
             execution,
             lease_until,
+            lease_seconds,
         } => {
             e.byte(CLAIMED);
             e.run(*run);
             e.u32(*execution);
-            e.0.extend_from_slice(&lease_until.as_millis().to_le_bytes());
+            e.time(*lease_until);
+            e.u32(*lease_seconds);
+        }
+        Entry::LeaseRenewed { run, lease_until } => {
+            e.byte(LEASE_RENEWED);
+            e.run(*run);
+            e.time(*lease_until);
+        }
+        Entry::LeaseLost { run, lost_leases } => {
+            e.byte(LEASE_LOST);
+            e.run(*run);
+            e.u32(*lost_leases);
+        }
+        Entry::Released { run } => {
+            e.byte(RELEASED);
+            e.run(*run);
         }
         Entry::StepBegan {
             run,
@@ -88,6 +108,12 @@ pub fn encode(Stored(entry): &Stored, out: &mut Vec<u8>) {
             e.byte(RUN_COMPLETED);
             e.run(*run);
             e.bytes(output);
+        }
+        Entry::RunFailed(RunFailed { run, error }) => {
+            e.byte(RUN_FAILED);
+            e.run(*run);
+            e.bytes(error.code.as_bytes());
+            e.bytes(error.message.as_bytes());
         }
     }
 }
@@ -127,6 +153,10 @@ impl Enc<'_> {
     fn run(&mut self, run: RunId) {
         self.bytes(run.to_string().as_bytes());
     }
+
+    fn time(&mut self, t: Timestamp) {
+        self.0.extend_from_slice(&t.as_millis().to_le_bytes());
+    }
 }
 
 /// Reads one entry from the front of `bytes` and moves past it; `None` if they do not begin with
@@ -162,8 +192,18 @@ pub fn decode(bytes: &mut &[u8]) -> Option<Stored> {
         CLAIMED => Entry::Claimed {
             run: d.run()?,
             execution: d.u32()?,
-            lease_until: Timestamp::from_millis(i64::from_le_bytes(d.take()?)),
+            lease_until: d.time()?,
+            lease_seconds: d.u32()?,
         },
+        LEASE_RENEWED => Entry::LeaseRenewed {
+            run: d.run()?,
+            lease_until: d.time()?,
+        },
+        LEASE_LOST => Entry::LeaseLost {
+            run: d.run()?,
+            lost_leases: d.u32()?,
+        },
+        RELEASED => Entry::Released { run: d.run()? },
         STEP_BEGAN => Entry::StepBegan {
             run: d.run()?,
             position: d.u32()?,
@@ -188,6 +228,13 @@ pub fn decode(bytes: &mut &[u8]) -> Option<Stored> {
         RUN_COMPLETED => Entry::RunCompleted(RunCompleted {
             run: d.run()?,
             output: d.bytes()?.to_vec(),
+        }),
+        RUN_FAILED => Entry::RunFailed(RunFailed {
+            run: d.run()?,
+            error: RunError {
+                code: d.text()?,
+                message: d.text()?,
+            },
         }),
         _ => return None,
     };
@@ -232,5 +279,10 @@ impl<'a> Dec<'a, '_> {
 
     fn run(&mut self) -> Option<RunId> {
         std::str::from_utf8(self.bytes()?).ok()?.parse().ok()
+    }
+
+    fn time(&mut self) -> Option<Timestamp> {
+        self.take()
+            .map(|b| Timestamp::from_millis(i64::from_le_bytes(b)))
     }
 }

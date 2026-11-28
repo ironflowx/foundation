@@ -48,6 +48,14 @@ const MAX_STEPS: u32 = 1_000;
 const LEASE_SECONDS: RangeInclusive<u32> = 10..=900;
 const DEFAULT_LEASE_SECONDS: u32 = 60;
 const WAIT_SECONDS: RangeInclusive<u32> = 0..=20;
+/// The most leases a heartbeat names.
+const MAX_LEASES: usize = 100;
+/// Lost leases in a row without progress that fail a run (D97).
+const MAX_LOST_LEASES: u32 = 10;
+/// The most runs one claim fails for their lost leases before it stops, empty.
+const MAX_FAILED_BY_CLAIM: u32 = 100;
+/// The engine's error code for a run that keeps losing its executor.
+pub const EXECUTOR_LOST: &str = "ironflowx.executor_lost";
 /// A run's input until `StartRun` takes one (#222), and an absent output: JSON `null`.
 const NULL: &[u8] = b"null";
 
@@ -98,10 +106,6 @@ impl Status {
             .into_iter()
             .find(|s| s.as_str() == name)
     }
-
-    const fn ended(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed)
-    }
 }
 
 /// A run, as the read store holds it.
@@ -124,15 +128,30 @@ pub struct Run {
     pub execution: u32,
     /// While running.
     pub lease_until: Option<Timestamp>,
+    /// The current execution's lease length, which a renewal adds to now; 0 before the first
+    /// claim.
+    pub lease_seconds: u32,
     /// Who the current execution's claim was attributed to: the fence compares it.
     pub claimed_by: Option<Emitter>,
+    /// Leases lost in a row without progress: a claim of the run while it was running counts
+    /// one, and a step's output sets it back to 0.
+    pub lost_leases: u32,
     /// How many steps have been begun in the run's life.
     pub steps: u32,
     /// The open step's name, if one is open.
     pub step: Option<String>,
     /// JSON text, once completed.
     pub output: Option<Vec<u8>>,
+    /// The last error, once one is recorded.
+    pub error: Option<RunError>,
     pub ended_at: Option<Timestamp>,
+}
+
+/// A run's error. A code that begins with `ironflowx.` is the engine's own (D111).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunError {
+    pub code: String,
+    pub message: String,
 }
 
 /// A step of a run, as its first begin recorded it.
@@ -183,6 +202,14 @@ pub enum Command {
         steps: u32,
         output: Option<Vec<u8>>,
     },
+    /// Renews each lease it names that is accepted, in one record; each answers on its own.
+    Heartbeat {
+        leases: Vec<String>,
+    },
+    /// `ReleaseRun`: the run is due now, and nothing is counted.
+    Release {
+        lease: String,
+    },
 }
 
 /// One entry of a record. It carries every value `decide` computed; [`fold`] reads no policy. Its
@@ -199,11 +226,27 @@ pub enum Entry {
         code: String,
         input: Vec<u8>,
     },
-    /// The run is running under `execution`, held by the record's attribution.
+    /// The run is running under `execution`, held by the record's attribution, for a lease of
+    /// `lease_seconds`.
     Claimed {
         run: RunId,
         execution: u32,
         lease_until: Timestamp,
+        lease_seconds: u32,
+    },
+    /// The current execution's lease runs until `lease_until`.
+    LeaseRenewed {
+        run: RunId,
+        lease_until: Timestamp,
+    },
+    /// A claim took the run while it was running: it has lost `lost_leases` in a row.
+    LeaseLost {
+        run: RunId,
+        lost_leases: u32,
+    },
+    /// The run is queued, due at the record's time; nothing is counted.
+    Released {
+        run: RunId,
     },
     StepBegan {
         run: RunId,
@@ -219,6 +262,7 @@ pub enum Entry {
         output: Vec<u8>,
     },
     RunCompleted(RunCompleted),
+    RunFailed(RunFailed),
 }
 
 /// A run's completion. Only [`decide`] makes one, in the [`Decision`] that holds its end event
@@ -242,6 +286,28 @@ impl RunCompleted {
     /// JSON text.
     pub fn output(&self) -> &[u8] {
         &self.output
+    }
+}
+
+/// A run's failure. Only [`decide`] makes one, in the [`Decision`] that holds its end event
+/// (RUN-2), as [`RunCompleted`].
+///
+/// ```compile_fail,E0451
+/// let _ = ironflowx_execution::RunFailed { run: todo!(), error: todo!() };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunFailed {
+    run: RunId,
+    error: RunError,
+}
+
+impl RunFailed {
+    pub const fn run(&self) -> RunId {
+        self.run
+    }
+
+    pub const fn error(&self) -> &RunError {
+        &self.error
     }
 }
 
@@ -319,6 +385,12 @@ pub enum Outcome {
         output: Vec<u8>,
     },
     RunEnded(RunEnd),
+    /// `Heartbeat`: one per lease, in input order; the new deadline, or why it was refused.
+    Renewed(Vec<Result<Timestamp, Refusal>>),
+    /// `ReleaseRun`: when the run is due.
+    Released {
+        due_at: Timestamp,
+    },
 }
 
 /// What [`decide`] returns. Its parts come out together, so the entries and the engine events that
@@ -363,13 +435,16 @@ pub trait ExecutionView {
     fn step(&self, run: RunId, position: u32) -> Result<Step, Self::Error>;
     /// The highest run sequence; 0 when there is no run.
     fn last_run_sequence(&self) -> Result<u64, Self::Error>;
-    /// The run a claim of `pairs` takes at `now`: one of those `(name, code)` pairs, queued and due
-    /// by `now`; the earliest due first, then the first created.
+    /// Up to `limit` runs a claim of `pairs` may take at `now`, in the order it tries them: of one
+    /// of those `(name, code)` pairs, queued and due by `now`, or running with a lease whose
+    /// deadline is by `now`; the earliest due first, a lapsed lease due at its deadline, then the
+    /// first created.
     fn claimable(
         &self,
         pairs: &[(String, String)],
         now: Timestamp,
-    ) -> Result<Option<Run>, Self::Error>;
+        limit: u32,
+    ) -> Result<Vec<Run>, Self::Error>;
 }
 
 /// The read store, as `fold` writes it.
@@ -378,17 +453,26 @@ pub trait ExecutionTables {
     /// Inserts the function, or replaces the one of its name.
     fn put_function(&mut self, function: &Function) -> Result<(), Self::Error>;
     fn create_run(&mut self, run: &Run) -> Result<(), Self::Error>;
-    /// The run is running under `execution` until `lease_until`, held by `by`.
+    /// The run is running under `execution` until `lease_until`, a lease of `lease_seconds`, held
+    /// by `by`.
     fn claim(
         &mut self,
         run: RunId,
         execution: u32,
         lease_until: Timestamp,
+        lease_seconds: u32,
         by: &Emitter,
     ) -> Result<(), Self::Error>;
+    /// The running run's lease runs until `lease_until`.
+    fn renew(&mut self, run: RunId, lease_until: Timestamp) -> Result<(), Self::Error>;
+    /// The run has lost `lost_leases` in a row.
+    fn lose_lease(&mut self, run: RunId, lost_leases: u32) -> Result<(), Self::Error>;
+    /// The running run is queued, due `at`, with no lease deadline.
+    fn release(&mut self, run: RunId, at: Timestamp) -> Result<(), Self::Error>;
     /// Records the step, open, and counts it among the run's steps.
     fn begin_step(&mut self, run: RunId, step: &Step) -> Result<(), Self::Error>;
-    /// Records the step's output; no step is open after it.
+    /// Records the step's output; no step is open after it, and the run has lost no lease in a
+    /// row.
     fn complete_step(
         &mut self,
         run: RunId,
@@ -398,6 +482,8 @@ pub trait ExecutionTables {
     /// The run is completed with `output`, ended `at`.
     fn complete_run(&mut self, run: RunId, output: &[u8], at: Timestamp)
     -> Result<(), Self::Error>;
+    /// The run is failed with `error`, ended `at`.
+    fn fail_run(&mut self, run: RunId, error: &RunError, at: Timestamp) -> Result<(), Self::Error>;
 }
 
 fn refused<E>(r: Refusal) -> Error<E> {
@@ -465,31 +551,7 @@ pub fn decide<V: ExecutionView>(
             if wait_seconds.is_some_and(|w| !WAIT_SECONDS.contains(&w)) {
                 return Err(invalid("a wait is 0 to 20 seconds"));
             }
-            let Some(run) = view.claimable(&pairs, now).map_err(Error::Store)? else {
-                return answer(Outcome::Claimed(None), Vec::new());
-            };
-            let execution = run
-                .execution
-                .checked_add(1)
-                .ok_or_else(|| invalid("execution numbers are used up"))?;
-            let lease_until = after(now, lease_seconds);
-            let claim = Claim {
-                lease: Lease {
-                    run: run.id,
-                    execution,
-                },
-                function: run.function,
-                code: run.code,
-                input: run.input,
-                lease_until,
-                renew_after_seconds: lease_seconds / 3,
-            };
-            let entry = Entry::Claimed {
-                run: run.id,
-                execution,
-                lease_until,
-            };
-            answer(Outcome::Claimed(Some(claim)), vec![entry])
+            claim(view, &pairs, lease_seconds, now)
         }
         Command::BeginStep {
             lease,
@@ -512,7 +574,7 @@ pub fn decide<V: ExecutionView>(
                 check_value("step input", input, MAX_STEP_INPUT_BYTES).map_err(refused)?;
             }
             let run = fence(view, lease, by)?;
-            begin_step(view, &run, *position, name, *once, input.as_deref())
+            begin_step(view, &run, *position, name, *once, input.as_deref(), now)
         }
         Command::CompleteStep {
             lease,
@@ -525,7 +587,7 @@ pub fn decide<V: ExecutionView>(
             let output = output.as_deref().unwrap_or(NULL);
             check_value("step output", output, MAX_DATA_BYTES).map_err(refused)?;
             let run = fence(view, lease, by)?;
-            complete_step(view, &run, *position, output)
+            complete_step(view, &run, *position, output, now)
         }
         Command::Complete {
             lease,
@@ -537,6 +599,155 @@ pub fn decide<V: ExecutionView>(
             let run = fence(view, lease, by)?;
             complete(view, &run, *steps, output)
         }
+        Command::Heartbeat { leases } => heartbeat(view, leases, by, now),
+        Command::Release { lease } => {
+            let fenced = fence(view, lease, by)?;
+            let run = fenced.run();
+            match run.status {
+                Status::Running => {
+                    let entry = Entry::Released { run: run.id };
+                    answer(Outcome::Released { due_at: now }, vec![entry])
+                }
+                // shortcut: a queued run past its first claim was released, the one way back to
+                // queued until retries (#225), which keep how an execution ended.
+                Status::Queued => {
+                    let due_at = run.due_at.expect("a queued run is due");
+                    answer(Outcome::Released { due_at }, Vec::new())
+                }
+                Status::Completed | Status::Failed => Err(over()),
+            }
+        }
+    }
+}
+
+/// A claim after its request's checks: the first run it may take, in the view's order. Taking a
+/// running run counts a lost lease; the tenth in a row fails the run instead, with its event, and
+/// the claim goes on to the next, in the same record, until it has failed
+/// [`MAX_FAILED_BY_CLAIM`].
+fn claim<V: ExecutionView>(
+    view: &V,
+    pairs: &[(String, String)],
+    lease_seconds: u32,
+    now: Timestamp,
+) -> Result<Decision, Error<V::Error>> {
+    let runs = view
+        .claimable(pairs, now, MAX_FAILED_BY_CLAIM + 1)
+        .map_err(Error::Store)?;
+    let mut entries = Vec::new();
+    let mut engine_events = Vec::new();
+    let mut failed = 0;
+    for run in runs {
+        if failed == MAX_FAILED_BY_CLAIM {
+            break;
+        }
+        if run.status == Status::Running {
+            let lost_leases = run.lost_leases.saturating_add(1);
+            entries.push(Entry::LeaseLost {
+                run: run.id,
+                lost_leases,
+            });
+            if lost_leases >= MAX_LOST_LEASES {
+                let error = RunError {
+                    code: EXECUTOR_LOST.to_owned(),
+                    message: format!("the run lost {lost_leases} leases in a row without progress"),
+                };
+                engine_events.push(failure_event(&run, &error));
+                entries.push(Entry::RunFailed(RunFailed { run: run.id, error }));
+                failed += 1;
+                continue;
+            }
+        }
+        let execution = run
+            .execution
+            .checked_add(1)
+            .ok_or_else(|| invalid("execution numbers are used up"))?;
+        let lease_until = after(now, lease_seconds);
+        let claim = Claim {
+            lease: Lease {
+                run: run.id,
+                execution,
+            },
+            function: run.function,
+            code: run.code,
+            input: run.input,
+            lease_until,
+            renew_after_seconds: lease_seconds / 3,
+        };
+        entries.push(Entry::Claimed {
+            run: run.id,
+            execution,
+            lease_until,
+            lease_seconds,
+        });
+        return Ok(Decision {
+            outcome: Outcome::Claimed(Some(claim)),
+            entries,
+            engine_events,
+        });
+    }
+    Ok(Decision {
+        outcome: Outcome::Claimed(None),
+        entries,
+        engine_events,
+    })
+}
+
+/// `ironflowx.run.failed` for `run`. Function names and code labels hold no NUL (`label`), and
+/// neither does an engine's error, so event rules take this data.
+fn failure_event(run: &Run, error: &RunError) -> EngineEmit {
+    engine_event(EngineEvent::RunFailed {
+        run_id: run.id,
+        function: run.function.clone(),
+        code: run.code.clone(),
+        error_code: error.code.clone(),
+        error_message: error.message.clone(),
+    })
+}
+
+/// `Heartbeat`: 1 to [`MAX_LEASES`] different leases, each through the fence; one record renews
+/// every running one, and a refused one is its own item's error.
+fn heartbeat<V: ExecutionView>(
+    view: &V,
+    leases: &[String],
+    by: &Emitter,
+    now: Timestamp,
+) -> Result<Decision, Error<V::Error>> {
+    if !(1..=MAX_LEASES).contains(&leases.len()) {
+        return Err(invalid(format!(
+            "a heartbeat names 1 to {MAX_LEASES} leases"
+        )));
+    }
+    let mut named = BTreeSet::new();
+    if let Some(twice) = leases.iter().find(|l| !named.insert(l.as_str())) {
+        return Err(invalid(format!("{twice:?} is named twice")));
+    }
+    let mut entries = Vec::new();
+    let mut results = Vec::new();
+    for lease in leases {
+        let result = match fence(view, lease, by) {
+            Ok(fenced) if fenced.run().status == Status::Running => {
+                let run = fenced.run();
+                let lease_until = after(now, run.lease_seconds);
+                entries.push(Entry::LeaseRenewed {
+                    run: run.id,
+                    lease_until,
+                });
+                Ok(lease_until)
+            }
+            Ok(_) => Err(over_refusal()),
+            Err(Error::Refused(r)) => Err(r),
+            Err(e) => return Err(e),
+        };
+        results.push(result);
+    }
+    answer(Outcome::Renewed(results), entries)
+}
+
+/// The renewal of a running run's lease: now plus its length.
+fn renewal(run: &Run, now: Timestamp) -> Entry {
+    Entry::LeaseRenewed {
+        run: run.id,
+        lease_until: after(now, run.lease_seconds),
     }
 }
 
@@ -740,8 +951,12 @@ fn ended(run: &Run) -> RunEnd {
     }
 }
 
+fn over_refusal() -> Refusal {
+    Refusal::conflict("the execution is over").with_hint("this execution is over")
+}
+
 fn over<E>() -> Error<E> {
-    refused(Refusal::conflict("the execution is over").with_hint("this execution is over"))
+    refused(over_refusal())
 }
 
 /// A decision with no engine event: every one but a run's end.
@@ -766,10 +981,15 @@ fn begin_step<V: ExecutionView>(
     name: &str,
     once: bool,
     input: Option<&[u8]>,
+    now: Timestamp,
 ) -> Result<Decision, Error<V::Error>> {
     let run = fenced.run();
-    if run.status.ended() {
-        return answer(Outcome::StepBegun(Begun::Ended(ended(run))), Vec::new());
+    match run.status {
+        Status::Completed | Status::Failed => {
+            return answer(Outcome::StepBegun(Begun::Ended(ended(run))), Vec::new());
+        }
+        Status::Queued => return Err(over()),
+        Status::Running => {}
     }
     let n = run.steps;
     let begun = |attempt| Outcome::StepBegun(Begun::Run { attempt });
@@ -788,8 +1008,8 @@ fn begin_step<V: ExecutionView>(
         if step.execution == run.execution {
             return answer(begun(1), Vec::new());
         }
-        // shortcut: no step is open from an earlier execution until #223 lets a run be claimed
-        // again; #224 begins it again, or fails a `once` step with ironflowx.unknown_outcome.
+        // shortcut: #224 begins a step an earlier execution left open again, or fails a `once`
+        // step with ironflowx.unknown_outcome.
         return Err(invalid(format!(
             "step {position} was begun by an earlier execution"
         )));
@@ -815,7 +1035,7 @@ fn begin_step<V: ExecutionView>(
         input: input.map(<[u8]>::to_vec),
         execution: run.execution,
     };
-    answer(begun(1), vec![entry])
+    answer(begun(1), vec![entry, renewal(run, now)])
 }
 
 /// `CompleteStep` after the fence. The first outcome of a step stands.
@@ -824,6 +1044,7 @@ fn complete_step<V: ExecutionView>(
     fenced: &Fenced,
     position: u32,
     output: &[u8],
+    now: Timestamp,
 ) -> Result<Decision, Error<V::Error>> {
     let run = fenced.run();
     let step = if position <= run.steps {
@@ -838,7 +1059,7 @@ fn complete_step<V: ExecutionView>(
     {
         return answer(Outcome::StepCompleted { output: recorded }, Vec::new());
     }
-    if run.status.ended() {
+    if run.status != Status::Running {
         return Err(over());
     }
     match step {
@@ -851,7 +1072,7 @@ fn complete_step<V: ExecutionView>(
             let outcome = Outcome::StepCompleted {
                 output: output.to_vec(),
             };
-            answer(outcome, vec![entry])
+            answer(outcome, vec![entry, renewal(run, now)])
         }
         _ => Err(invalid(format!(
             "step {position} is not open in this execution"
@@ -867,8 +1088,12 @@ fn complete<V: ExecutionView>(
     output: &[u8],
 ) -> Result<Decision, Error<V::Error>> {
     let run = fenced.run();
-    if run.status.ended() {
-        return answer(Outcome::RunEnded(ended(run)), Vec::new());
+    match run.status {
+        Status::Completed | Status::Failed => {
+            return answer(Outcome::RunEnded(ended(run)), Vec::new());
+        }
+        Status::Queued => return Err(over()),
+        Status::Running => {}
     }
     let n = run.steps;
     if steps > n {
@@ -941,17 +1166,24 @@ pub fn fold<T: ExecutionTables>(
             due_at: Some(time),
             execution: 0,
             lease_until: None,
+            lease_seconds: 0,
             claimed_by: None,
+            lost_leases: 0,
             steps: 0,
             step: None,
             output: None,
+            error: None,
             ended_at: None,
         }),
         Entry::Claimed {
             run,
             execution,
             lease_until,
-        } => tables.claim(*run, *execution, *lease_until, by),
+            lease_seconds,
+        } => tables.claim(*run, *execution, *lease_until, *lease_seconds, by),
+        Entry::LeaseRenewed { run, lease_until } => tables.renew(*run, *lease_until),
+        Entry::LeaseLost { run, lost_leases } => tables.lose_lease(*run, *lost_leases),
+        Entry::Released { run } => tables.release(*run, time),
         Entry::StepBegan {
             run,
             position,
@@ -978,6 +1210,7 @@ pub fn fold<T: ExecutionTables>(
         Entry::RunCompleted(completed) => {
             tables.complete_run(completed.run, &completed.output, time)
         }
+        Entry::RunFailed(failed) => tables.fail_run(failed.run, &failed.error, time),
     }
 }
 

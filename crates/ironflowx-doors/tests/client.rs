@@ -10,17 +10,17 @@ use std::time::Duration;
 
 use common::{
     CREATED, DATA, KEY, KINDS, METADATA, batch, begun, claim, created, emitted, environments,
-    event, event_page, function, function_page, key_page, put, run, run_end, serve, serving,
-    started, step_output, whoami,
+    event, event_page, function, function_page, key_page, put, released, renewed, run, run_end,
+    serve, serving, started, step_output, whoami,
 };
 use ironflowx_core::{Address, ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_doors::Slot;
 use ironflowx_proto::{
     BeginStepRequest, Call, ClaimRunRequest, Client, CompleteRunRequest, CompleteStepRequest,
     CreateKeyRequest, EmitBatchRequest, EmitRequest, GetEventRequest, GetFunctionRequest,
-    GetRunRequest, ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest,
-    ListKeysRequest, OpError, Operation, Operations, PutFunctionRequest, RevokeKeyRequest,
-    StartRunRequest, Whoami, WhoamiRequest,
+    GetRunRequest, HeartbeatRequest, ListEnvironmentsRequest, ListEventsRequest,
+    ListFunctionsRequest, ListKeysRequest, OpError, Operation, Operations, PutFunctionRequest,
+    ReleaseRunRequest, RevokeKeyRequest, StartRunRequest, Whoami, WhoamiRequest,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
@@ -220,6 +220,18 @@ async fn ask_one(client: &Client, cx: &Call, op: Operation) -> Result<String, Op
             let answer = client.complete_run(cx, request).await;
             answer.map(|a| format!("{a:?}"))
         }
+        Operation::Heartbeat => {
+            let request = HeartbeatRequest {
+                leases: vec!["l".into(), "m".into()],
+            };
+            let answer = client.heartbeat(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
+        Operation::ReleaseRun => {
+            let request = ReleaseRunRequest { lease: "l".into() };
+            let answer = client.release_run(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
     }
 }
 
@@ -248,6 +260,8 @@ async fn each_operation_crosses_to_the_engine_and_back() {
         format!("{:?}", begun()),
         format!("{:?}", step_output()),
         format!("{:?}", run_end()),
+        format!("{:?}", renewed()),
+        format!("{:?}", released()),
     ];
     let mut asked = Vec::new();
     for (op, answer) in Operation::ALL.iter().zip(answers) {
@@ -276,6 +290,8 @@ async fn each_operation_crosses_to_the_engine_and_back() {
         format!(r#"BeginStepRequest {{ lease: "l", position: 2, name: "s", once: true, input: Some({:?}) }}"#, DATA.as_bytes()),
         format!(r#"CompleteStepRequest {{ lease: "l", position: 2, output: Some({:?}) }}"#, METADATA.as_bytes()),
         r#"CompleteRunRequest { lease: "l", steps: 3, output: None }"#.to_owned(),
+        r#"HeartbeatRequest { leases: ["l", "m"] }"#.to_owned(),
+        r#"ReleaseRunRequest { lease: "l" }"#.to_owned(),
     ];
     assert_eq!(asked, sent);
 
@@ -595,11 +611,13 @@ fn unanswered(op: Operation) -> (ErrorKind, Option<&'static str>) {
         ),
         Operation::ClaimRun => (
             ErrorKind::Unknown,
-            Some(
-                "claim again: until leases expire (a later release), the run of a lost claim is not claimed again",
-            ),
+            Some("claim again: the run of a lost claim waits for its lease's deadline"),
         ),
-        Operation::BeginStep | Operation::CompleteStep | Operation::CompleteRun => (
+        Operation::BeginStep
+        | Operation::CompleteStep
+        | Operation::CompleteRun
+        | Operation::Heartbeat
+        | Operation::ReleaseRun => (
             ErrorKind::Unknown,
             Some("send the same call again, with the same lease: it repeats no work"),
         ),
@@ -991,8 +1009,9 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
                     | Operation::BeginStep
                     | Operation::CompleteStep
                     | Operation::CompleteRun
+                    | Operation::ReleaseRun
             );
-            let one = !matches!(op, Operation::EmitBatch)
+            let one = !matches!(op, Operation::EmitBatch | Operation::Heartbeat)
                 && !op.rpc().contains("/List")
                 && !(first_is_a_message && *answer != answers[0]);
             let message = match decoded.contains(&answer) && one {

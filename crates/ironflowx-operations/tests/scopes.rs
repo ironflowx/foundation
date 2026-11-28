@@ -10,9 +10,9 @@ use ironflowx_operations::Engine;
 use ironflowx_proto::{
     BeginStepRequest, Call, ClaimRunRequest, CompleteRunRequest, CompleteStepRequest,
     CreateKeyRequest, EmitBatchRequest, EmitRequest, GetEventRequest, GetFunctionRequest,
-    GetRunRequest, ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest,
-    ListKeysRequest, OpError, Operation, Operations, PutFunctionRequest, RevokeKeyRequest,
-    StartRunRequest, WhoamiRequest, required_scope,
+    GetRunRequest, HeartbeatRequest, ListEnvironmentsRequest, ListEventsRequest,
+    ListFunctionsRequest, ListKeysRequest, OpError, Operation, Operations, PutFunctionRequest,
+    ReleaseRunRequest, RevokeKeyRequest, StartRunRequest, WhoamiRequest, required_scope,
 };
 
 /// Every operation. A new one fails to compile in `call` until it joins this list too.
@@ -55,6 +55,8 @@ struct Targets {
     key_id: String,
     run_id: String,
     lease: String,
+    /// Of a second run, which only `ReleaseRun` gives back: `CompleteRun` ends the first.
+    released: String,
 }
 
 fn charge() -> PutFunctionRequest {
@@ -160,6 +162,18 @@ async fn call(engine: &Engine, op: Operation, cx: &Call, t: &Targets) -> Result<
             };
             engine.complete_run(cx, req).await.map(drop)
         }
+        Operation::Heartbeat => {
+            let req = HeartbeatRequest {
+                leases: vec![t.lease.clone()],
+            };
+            engine.heartbeat(cx, req).await.map(drop)
+        }
+        Operation::ReleaseRun => {
+            let req = ReleaseRunRequest {
+                lease: t.released.clone(),
+            };
+            engine.release_run(cx, req).await.map(drop)
+        }
     }
 }
 
@@ -196,7 +210,8 @@ async fn every_operation_admits_exactly_the_keys_holding_its_scope() {
     let req = StartRunRequest {
         function: "charge".into(),
     };
-    let run_id = engine.start_run(&admin, req).await.unwrap().run_id;
+    let run_id = engine.start_run(&admin, req.clone()).await.unwrap().run_id;
+    let second = engine.start_run(&admin, req).await.unwrap().run_id;
     let every = [Scope::Read, Scope::Write, Scope::Admin, Scope::Execute];
     let revoked = make(BTreeSet::from(every)).await;
     let revoked_key = revoked.key.expose().to_owned();
@@ -218,11 +233,15 @@ async fn every_operation_admits_exactly_the_keys_holding_its_scope() {
     let claimed = engine.claim_run(&executor, claim()).await.unwrap();
     let lease = claimed.expect("the run is due").lease;
     assert_eq!(lease.run, run_id);
+    let claimed = engine.claim_run(&executor, claim()).await.unwrap();
+    let released = claimed.expect("the second run is due").lease;
+    assert_eq!(released.run, second);
     let targets = Targets {
         event_id,
         key_id: victim.info.key_id.to_string(),
         run_id: run_id.to_string(),
         lease: lease.to_string(),
+        released: released.to_string(),
     };
 
     for op in ALL {

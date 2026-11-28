@@ -29,7 +29,8 @@ pub(crate) fn emit(req: EmitRequest) -> Emit {
     }
 }
 
-fn refused(r: Refusal) -> OpError {
+/// The engine's one mapping of a rule's refusal to an error, its hint copied.
+pub(crate) fn refused(r: Refusal) -> OpError {
     OpError {
         kind: r.kind(),
         message: r.message().to_owned(),

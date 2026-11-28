@@ -372,6 +372,8 @@ fn always_printed(field: &FieldDescriptor) -> bool {
                 | "ironflowx.v1.StepCompleted.output"
                 | "ironflowx.v1.Ended.run"
                 | "ironflowx.v1.CompleteRunResponse.ended"
+                | "ironflowx.v1.Renewed.lease_until"
+                | "ironflowx.v1.ReleaseRunResponse.due_at"
                 // Absent only for an embedder's call, which no door carries (D121).
                 | "ironflowx.v1.WhoamiResponse.key_id"
         )
