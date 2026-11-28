@@ -10,12 +10,12 @@ use ironflowx_proto::{
 };
 
 /// What to do about a call whose outcome is unknown.
-pub(crate) const PUT_IF_UNKNOWN: &str = "reopen the engine, then put the same definition again: \
-                                         it changes nothing";
+pub(crate) const PUT_IF_UNKNOWN: &str = "reopen the engine, then put again only if this definition should still replace the current \
+     one: another put may have landed since";
 pub(crate) const START_IF_UNKNOWN: &str =
     "reopen the engine, then check first what landed: a retry starts a second run";
-pub(crate) const CLAIM_IF_UNKNOWN: &str = "reopen the engine, then claim again: the run of a lost \
-                                           claim waits for its lease's deadline";
+pub(crate) const CLAIM_IF_UNKNOWN: &str = "reopen the engine, then claim again: until leases expire (a later release), the run of a \
+     lost claim is not claimed again";
 pub(crate) const LEASE_IF_UNKNOWN: &str =
     "reopen the engine, then send the same call again with the same lease: it repeats no work";
 

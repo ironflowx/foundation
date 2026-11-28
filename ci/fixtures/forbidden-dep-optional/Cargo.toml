@@ -1,0 +1,10 @@
+[package]
+name = "forbidden-dep-optional"
+edition = "2024"
+publish = false
+
+# Off by default: a dependent can turn it on.
+[dependencies]
+getrandom = { version = "0.3", optional = true }
+
+[workspace]

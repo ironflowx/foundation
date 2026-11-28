@@ -362,6 +362,50 @@ async fn a_read_store_with_damaged_tables_is_rebuilt() {
     }
 }
 
+/// The same of each execution table: a store that lacks one is rebuilt, and answers as before.
+#[tokio::test]
+async fn a_read_store_without_an_execution_table_is_rebuilt() {
+    use ironflowx_execution::{Begun, Command, Outcome as Answer};
+    for table in ["functions", "triggers", "runs", "steps"] {
+        let dir = tempfile::tempdir().unwrap();
+        let env = new_env_ref();
+        let ledger = open(dir.path(), env).await;
+        execute(&ledger, put("charge", "v1", &["order.placed"]))
+            .await
+            .unwrap();
+        let run = started(&ledger, "charge").await;
+        claim_of(&ledger, &["charge@v1"]).await.unwrap();
+        let begin = Command::BeginStep {
+            lease: format!("{run}.1"),
+            position: 1,
+            name: "reserve".into(),
+            once: false,
+            input: None,
+        };
+        execute(&ledger, begin.clone()).await.unwrap();
+        let function = ledger.get_function("charge").await.unwrap();
+        let read = ledger.get_run(&run.to_string()).await.unwrap();
+        ledger.close().await;
+        let conn = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
+        conn.execute_batch(&format!("DROP TABLE {table}")).unwrap();
+        drop(conn);
+        let ledger = open(dir.path(), env).await;
+        assert_eq!(
+            ledger.get_function("charge").await.unwrap(),
+            function,
+            "{table}"
+        );
+        assert_eq!(
+            ledger.get_run(&run.to_string()).await.unwrap(),
+            read,
+            "{table}"
+        );
+        let open_step = Answer::StepBegun(Begun::Run { attempt: 1 });
+        assert_eq!(execute(&ledger, begin).await.unwrap(), open_step, "{table}");
+        ledger.close().await;
+    }
+}
+
 #[tokio::test]
 async fn a_panicking_query_fails_the_ledger_and_reopen_recovers() {
     let dir = tempfile::tempdir().unwrap();
@@ -650,9 +694,9 @@ fn minted_tokens_are_distinct() {
     assert_eq!(tokens.len(), 10_000);
 }
 
-/// One execution entry of each kind, about `run`. Only execution rules make a `RunCompleted`, so
-/// it comes from a decided `CompleteRun`'s record.
-fn execution_entries(run: ironflowx_core::RunId) -> Vec<ironflowx_execution::Entry> {
+/// One execution entry of each kind, about `run`, as a record holds them. Only execution rules
+/// make a `RunCompleted` entry, so that one is read back from its bytes.
+fn execution_entries(run: ironflowx_core::RunId) -> Vec<ironflowx_execution::Stored> {
     use ironflowx_execution::{Definition, Entry};
     let mut completed = vec![6];
     completed.extend_from_slice(&36u32.to_le_bytes());
@@ -660,7 +704,7 @@ fn execution_entries(run: ironflowx_core::RunId) -> Vec<ironflowx_execution::Ent
     completed.extend_from_slice(&1u32.to_le_bytes());
     completed.push(b'7');
     let completed = ironflowx_execution::decode(&mut completed.as_slice()).expect("an entry");
-    vec![
+    let entries = vec![
         Entry::FunctionPut(Definition {
             name: "charge".into(),
             code: "v1".into(),
@@ -702,8 +746,10 @@ fn execution_entries(run: ironflowx_core::RunId) -> Vec<ironflowx_execution::Ent
             position: 1,
             output: b"{\"id\":  9007199254740993}".to_vec(),
         },
-        completed,
-    ]
+    ];
+    let mut stored: Vec<_> = entries.into_iter().map(Into::into).collect();
+    stored.push(completed);
+    stored
 }
 
 #[test]
@@ -2015,7 +2061,7 @@ async fn execute(
 /// stored event; RUN-11: a read store rebuilt from the log answers the same.
 #[tokio::test]
 async fn a_runs_end_and_its_event_are_one_record() {
-    use ironflowx_execution::{Command, Definition, Entry, Outcome as Answer};
+    use ironflowx_execution::{Command, Definition, Outcome as Answer};
     let dir = tempfile::tempdir().unwrap();
     let env = new_env_ref();
     let ledger = open(dir.path(), env).await;
@@ -2064,7 +2110,17 @@ async fn a_runs_end_and_its_event_are_one_record() {
     let Some(record::Decoded::Entries { entries, .. }) = records.last() else {
         panic!("a record of entries");
     };
-    assert!(matches!(entries.execution.as_slice(), [Entry::RunCompleted(c)] if c.run() == run));
+    // The one execution entry is the run's completion with its output: kind 6, the run's ID, `[1]`.
+    let [completion] = entries.execution.as_slice() else {
+        panic!("one execution entry: {entries:?}");
+    };
+    let mut written = Vec::new();
+    ironflowx_execution::encode(completion, &mut written);
+    let mut expected = vec![6, 36, 0, 0, 0];
+    expected.extend_from_slice(run.to_string().as_bytes());
+    expected.extend_from_slice(&[3, 0, 0, 0]);
+    expected.extend_from_slice(b"[1]");
+    assert_eq!(written, expected);
     let [event] = entries.record.events.as_slice() else {
         panic!("one event: {entries:?}");
     };
@@ -2140,4 +2196,191 @@ async fn a_replayed_step_appends_nothing() {
     );
     ledger.close().await;
     assert_eq!(log_records(dir.path()).1, before);
+}
+
+fn put(name: &str, code: &str, triggers: &[&str]) -> ironflowx_execution::Command {
+    ironflowx_execution::Command::PutFunction(ironflowx_execution::Definition {
+        name: name.into(),
+        code: code.into(),
+        triggers: triggers.iter().map(|t| (*t).to_owned()).collect(),
+        max_attempts: None,
+        first_delay_seconds: None,
+        max_delay_seconds: None,
+    })
+}
+
+fn start(function: &str) -> ironflowx_execution::Command {
+    ironflowx_execution::Command::StartRun {
+        function: function.into(),
+    }
+}
+
+/// A claim of `pairs`: the run it took, if any.
+async fn claim_of(ledger: &Ledger, pairs: &[&str]) -> Option<ironflowx_core::RunId> {
+    let cmd = ironflowx_execution::Command::Claim {
+        functions: pairs.iter().map(|p| (*p).to_owned()).collect(),
+        lease_seconds: None,
+        wait_seconds: None,
+    };
+    match execute(ledger, cmd).await.unwrap() {
+        ironflowx_execution::Outcome::Claimed(claim) => claim.map(|c| c.lease.run),
+        other => panic!("a claim answered {other:?}"),
+    }
+}
+
+async fn started(ledger: &Ledger, function: &str) -> ironflowx_core::RunId {
+    match execute(ledger, start(function)).await.unwrap() {
+        ironflowx_execution::Outcome::RunStarted { run, .. } => run,
+        other => panic!("a start answered {other:?}"),
+    }
+}
+
+/// RUN-7 on the read store: a claim takes a run only of a pair it names, name and label together,
+/// and of the runs it may take, the first created when they are due alike.
+#[tokio::test]
+async fn a_claim_takes_a_run_of_a_pair_it_names_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = open(dir.path(), new_env_ref()).await;
+    execute(&ledger, put("charge", "v1", &[])).await.unwrap();
+    execute(&ledger, put("refund", "v2", &[])).await.unwrap();
+    // Created against name order, so neither the names nor the pairs give creation order.
+    let refund = started(&ledger, "refund").await;
+    let charge = started(&ledger, "charge").await;
+    // Each name with the other's label: neither run is of such a pair.
+    assert_eq!(claim_of(&ledger, &["charge@v2", "refund@v1"]).await, None);
+    // Both due at the same time: creation order.
+    let both = ["charge@v1", "refund@v2"];
+    assert_eq!(claim_of(&ledger, &both).await, Some(refund));
+    assert_eq!(claim_of(&ledger, &both).await, Some(charge));
+    assert_eq!(claim_of(&ledger, &both).await, None);
+    ledger.close().await;
+}
+
+/// A put that changes a function replaces its triggers whole, on the read store and after a
+/// rebuild.
+#[tokio::test]
+async fn a_changed_put_replaces_the_definition_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    execute(&ledger, put("charge", "v1", &["b", "a"]))
+        .await
+        .unwrap();
+    execute(&ledger, put("charge", "v2", &["a"])).await.unwrap();
+    let f = ledger.get_function("charge").await.unwrap();
+    assert_eq!(
+        (f.definition.code.as_str(), f.definition.triggers.as_slice()),
+        ("v2", ["a".to_owned()].as_slice())
+    );
+    ledger.close().await;
+    std::fs::remove_file(dir.path().join("read.db")).unwrap();
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(ledger.get_function("charge").await.unwrap(), f);
+    ledger.close().await;
+}
+
+/// A step the run counts that the read store lost fails the ledger, as any store failure does;
+/// a rebuilt read store has it again.
+#[tokio::test]
+async fn a_lost_step_fails_the_ledger() {
+    use ironflowx_execution::Command;
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    execute(&ledger, put("charge", "v1", &[])).await.unwrap();
+    let run = started(&ledger, "charge").await;
+    claim_of(&ledger, &["charge@v1"]).await.unwrap();
+    let begin = Command::BeginStep {
+        lease: format!("{run}.1"),
+        position: 1,
+        name: "reserve".into(),
+        once: false,
+        input: None,
+    };
+    execute(&ledger, begin.clone()).await.unwrap();
+    ledger
+        .store
+        .lock()
+        .unwrap()
+        .execute("DELETE FROM steps", [])
+        .unwrap();
+    assert_eq!(
+        execute(&ledger, begin.clone()).await,
+        Err(SubmitError::Unavailable)
+    );
+    assert_eq!(ledger.state(), LedgerState::Unavailable);
+    ledger.close().await;
+    // Its rows deleted, its tables whole: open keeps it, and only a rebuild finds the step again.
+    std::fs::remove_file(dir.path().join("read.db")).unwrap();
+    let ledger = open(dir.path(), env).await;
+    let again = execute(&ledger, begin).await.unwrap();
+    let run_again = ironflowx_execution::Begun::Run { attempt: 1 };
+    assert_eq!(again, ironflowx_execution::Outcome::StepBegun(run_again));
+    ledger.close().await;
+}
+
+/// The fold writes only what follows from the store: an entry about a run it lacks, or a second
+/// output for a step, fails its transaction and changes nothing (RUN-3's fold half).
+#[test]
+fn the_fold_refuses_an_entry_the_store_does_not_follow() {
+    use ironflowx_execution::Entry;
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = Ledger::open_blocking(dir.path(), env, clock()).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let run = rt.block_on(async {
+        execute(&ledger, put("charge", "v1", &[])).await.unwrap();
+        let run = started(&ledger, "charge").await;
+        claim_of(&ledger, &["charge@v1"]).await.unwrap();
+        let begin = ironflowx_execution::Command::BeginStep {
+            lease: format!("{run}.1"),
+            position: 1,
+            name: "reserve".into(),
+            once: false,
+            input: None,
+        };
+        execute(&ledger, begin).await.unwrap();
+        let complete = ironflowx_execution::Command::CompleteStep {
+            lease: format!("{run}.1"),
+            position: 1,
+            output: Some(b"1".to_vec()),
+        };
+        execute(&ledger, complete).await.unwrap();
+        run
+    });
+    let unknown = "0190b5f0-0000-7000-8000-000000000999".parse().unwrap();
+    let mut conn = ledger.store.lock().unwrap();
+    let applied = crate::store::applied(&conn).unwrap();
+    for entry in [
+        Entry::Claimed {
+            run: unknown,
+            execution: 1,
+            lease_until: Timestamp::from_millis(T),
+        },
+        Entry::StepCompleted {
+            run,
+            position: 1,
+            output: b"2".to_vec(),
+        },
+    ] {
+        let entries = Entries {
+            record: ironflowx_events::Record {
+                time: Timestamp::from_millis(T),
+                events: vec![],
+            },
+            execution: vec![entry.clone().into()],
+        };
+        let record = Some((uuid::Uuid::now_v7(), &entries, &emitter()));
+        let folded = crate::store::apply(&mut conn, applied, record, false);
+        assert!(folded.is_err(), "{entry:?}");
+        assert_eq!(crate::store::applied(&conn).unwrap(), applied, "{entry:?}");
+    }
+    let output: Vec<u8> = conn
+        .query_row("SELECT output FROM steps", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(output, b"1");
+    drop(conn);
+    drop(ledger);
 }

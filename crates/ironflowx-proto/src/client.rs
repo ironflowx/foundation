@@ -392,9 +392,9 @@ const RETRY_CREATE: &str = "the key may be stored: list the keys before the retr
                             the engine reopens; revoke the one no holder has";
 const RETRY_REVOKE: &str =
     "retry: revoking a revoked key succeeds, and one that revoked itself is refused";
-const RETRY_PUT: &str = "retry: the same definition, put again, changes nothing";
+const RETRY_PUT: &str = "retry only if this definition should still replace the current one: another put may have landed since";
 const RETRY_START: &str = "check first what landed: a retry starts a second run";
-const RETRY_CLAIM: &str = "claim again: the run of a lost claim waits for its lease's deadline";
+const RETRY_CLAIM: &str = "claim again: until leases expire (a later release), the run of a lost claim is not claimed again";
 const RETRY_LEASE: &str = "send the same call again, with the same lease: it repeats no work";
 
 /// The answer of `op`, or why there is none (architecture.md, Wire): the engine's own error as it

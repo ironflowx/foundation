@@ -559,7 +559,7 @@ impl ExecutionView for ReadStore<'_> {
         store_err(self.0.query_row(&sql, [id.to_string()], row_run).optional())
     }
 
-    fn step(&self, run: RunId, position: u32) -> Result<Option<Step>, StoreError> {
+    fn step(&self, run: RunId, position: u32) -> Result<Step, StoreError> {
         let sql = format!("SELECT {STEP_COLUMNS} WHERE run_id = ?1 AND position = ?2");
         let step = self
             .0
@@ -573,7 +573,8 @@ impl ExecutionView for ReadStore<'_> {
                     output: r.get(5)?,
                 })
             });
-        store_err(step.optional())
+        // No row: a step the run counts is lost, so the read store has failed.
+        store_err(step)
     }
 
     fn last_run_sequence(&self) -> Result<u64, StoreError> {

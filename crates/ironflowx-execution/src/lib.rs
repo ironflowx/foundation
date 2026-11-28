@@ -209,13 +209,12 @@ pub enum Entry {
 }
 
 /// A run's completion. Only [`decide`] makes one, in the [`Decision`] that holds its end event
-/// (RUN-2), and [`decode`] reads one back from a record the writer appended so:
+/// (RUN-2): its fields are private, and what [`decode`] reads back is a [`Stored`], from which no
+/// entry comes out.
 ///
 /// ```compile_fail,E0451
 /// let _ = ironflowx_execution::RunCompleted { run: todo!(), output: Vec::new() };
 /// ```
-// shortcut: decode takes any bytes, so a caller that crafts a record can make one without its
-// event; only the ledger's writer appends records. Upgrade if anything else ever does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunCompleted {
     run: RunId,
@@ -230,6 +229,29 @@ impl RunCompleted {
     /// JSON text.
     pub fn output(&self) -> &[u8] {
         &self.output
+    }
+}
+
+/// An entry as a record holds it: what [`encode`] writes, [`decode`] reads and [`fold`] applies.
+/// An [`Entry`] becomes one; nothing turns one back into an entry, so a decoded `RunCompleted`
+/// joins no other decision or record (RUN-2).
+///
+/// ```compile_fail,E0616
+/// fn out(s: ironflowx_execution::Stored) -> ironflowx_execution::Entry { s.0 }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stored(Entry);
+
+impl From<Entry> for Stored {
+    fn from(entry: Entry) -> Self {
+        Self(entry)
+    }
+}
+
+/// So a reader of records can say which entry it holds.
+impl PartialEq<Entry> for Stored {
+    fn eq(&self, entry: &Entry) -> bool {
+        self.0 == *entry
     }
 }
 
@@ -312,7 +334,8 @@ pub trait ExecutionView {
     type Error;
     fn function(&self, name: &str) -> Result<Option<Function>, Self::Error>;
     fn run(&self, id: RunId) -> Result<Option<Run>, Self::Error>;
-    fn step(&self, run: RunId, position: u32) -> Result<Option<Step>, Self::Error>;
+    /// A step the run counts among those begun: a store that lacks it has failed.
+    fn step(&self, run: RunId, position: u32) -> Result<Step, Self::Error>;
     /// The highest run sequence; 0 when there is no run.
     fn last_run_sequence(&self) -> Result<u64, Self::Error>;
     /// The run a claim of `pairs` takes at `now`: one of those `(name, code)` pairs, queued and due
@@ -378,11 +401,6 @@ pub fn decide<V: ExecutionView>(
     draws: Draws<'_>,
 ) -> Result<Decision, Error<V::Error>> {
     let now = now.timestamp();
-    let decided = |outcome, entries| Decision {
-        outcome,
-        entries,
-        engine_events: Vec::new(),
-    };
     match cmd {
         Command::PutFunction(definition) => put_function(view, definition, now, by),
         Command::StartRun { function } => {
@@ -406,7 +424,7 @@ pub fn decide<V: ExecutionView>(
                 run,
                 duplicate: false,
             };
-            Ok(decided(outcome, vec![entry]))
+            answer(outcome, vec![entry])
         }
         Command::Claim {
             functions,
@@ -423,7 +441,7 @@ pub fn decide<V: ExecutionView>(
                 return Err(invalid("a wait is 0 to 20 seconds"));
             }
             let Some(run) = view.claimable(&pairs, now).map_err(Error::Store)? else {
-                return Ok(decided(Outcome::Claimed(None), Vec::new()));
+                return answer(Outcome::Claimed(None), Vec::new());
             };
             let execution = run
                 .execution
@@ -446,7 +464,7 @@ pub fn decide<V: ExecutionView>(
                 execution,
                 lease_until,
             };
-            Ok(decided(Outcome::Claimed(Some(claim)), vec![entry]))
+            answer(Outcome::Claimed(Some(claim)), vec![entry])
         }
         Command::BeginStep {
             lease,
@@ -528,25 +546,18 @@ fn put_function<V: ExecutionView>(
             function,
             changed: false,
         };
-        return Ok(Decision {
-            outcome,
-            entries: Vec::new(),
-            engine_events: Vec::new(),
-        });
+        return answer(outcome, Vec::new());
     }
     let function = Function {
         definition: definition.clone(),
         put_at: now,
         put_by: by.clone(),
     };
-    Ok(Decision {
-        outcome: Outcome::FunctionPut {
-            function,
-            changed: true,
-        },
-        entries: vec![Entry::FunctionPut(definition)],
-        engine_events: Vec::new(),
-    })
+    let outcome = Outcome::FunctionPut {
+        function,
+        changed: true,
+    };
+    answer(outcome, vec![Entry::FunctionPut(definition)])
 }
 
 /// A function name or a code label: 1 to [`MAX_FUNCTION_NAME_BYTES`] bytes of `[A-Za-z0-9._-]`,
@@ -590,32 +601,53 @@ fn after(at: Timestamp, seconds: u32) -> Timestamp {
     Timestamp::from_millis(at.as_millis().saturating_add(i64::from(seconds) * 1_000))
 }
 
-/// A run an execution call may act on. Only [`fence`] makes one, so no rule of an execution call
-/// reaches a run without the fence (RUN-1).
-struct Fenced(Run);
+use fenced::{Fenced, fence};
 
-/// The fence, in the decision that writes, and in its order: the lease parses and its run exists,
-/// else `NotFound`; its execution is the run's current one, else `Conflict`; the call's attribution
-/// is the claim's, else `Conflict`.
-fn fence<V: ExecutionView>(view: &V, lease: &str, by: &Emitter) -> Result<Fenced, Error<V::Error>> {
-    let not_found = || refused(Refusal::not_found("run not found"));
-    let lease: Lease = lease.parse().map_err(|_| not_found())?;
-    let run = view
-        .run(lease.run)
-        .map_err(Error::Store)?
-        .ok_or_else(not_found)?;
-    // A run never claimed is at execution 0, which no lease names.
-    if lease.execution != run.execution {
-        let r = Refusal::conflict("the lease is not the run's current execution")
-            .with_hint("this execution was superseded: stop working on this run");
-        return Err(refused(r));
+/// The fence, apart from the rules: its type's field is private to this module, so only [`fence`]
+/// makes a [`Fenced`], and no rule of an execution call reaches a run without the fence (RUN-1).
+mod fenced {
+    use ironflowx_core::{Emitter, Lease};
+
+    use super::{Error, ExecutionView, Refusal, Run, refused};
+
+    /// A run an execution call may act on.
+    pub(super) struct Fenced {
+        run: Run,
     }
-    if run.claimed_by.as_ref() != Some(by) {
-        let r = Refusal::conflict("the lease is held by another key")
-            .with_hint("another key holds this lease");
-        return Err(refused(r));
+
+    impl Fenced {
+        pub(super) const fn run(&self) -> &Run {
+            &self.run
+        }
     }
-    Ok(Fenced(run))
+
+    /// The fence, in the decision that writes, and in its order: the lease parses and its run
+    /// exists, else `NotFound`; its execution is the run's current one, else `Conflict`; the
+    /// call's attribution is the claim's, else `Conflict`.
+    pub(super) fn fence<V: ExecutionView>(
+        view: &V,
+        lease: &str,
+        by: &Emitter,
+    ) -> Result<Fenced, Error<V::Error>> {
+        let not_found = || refused(Refusal::not_found("run not found"));
+        let lease: Lease = lease.parse().map_err(|_| not_found())?;
+        let run = view
+            .run(lease.run)
+            .map_err(Error::Store)?
+            .ok_or_else(not_found)?;
+        // A run never claimed is at execution 0, which no lease names.
+        if lease.execution != run.execution {
+            let r = Refusal::conflict("the lease is not the run's current execution")
+                .with_hint("this execution was superseded: stop working on this run");
+            return Err(refused(r));
+        }
+        if run.claimed_by.as_ref() != Some(by) {
+            let r = Refusal::conflict("the lease is held by another key")
+                .with_hint("another key holds this lease");
+            return Err(refused(r));
+        }
+        Ok(Fenced { run })
+    }
 }
 
 fn ended(run: &Run) -> RunEnd {
@@ -629,6 +661,7 @@ fn over<E>() -> Error<E> {
     refused(Refusal::conflict("the execution is over").with_hint("this execution is over"))
 }
 
+/// A decision with no engine event: every one but a run's end.
 fn answer<E>(outcome: Outcome, entries: Vec<Entry>) -> Result<Decision, Error<E>> {
     Ok(Decision {
         outcome,
@@ -637,22 +670,21 @@ fn answer<E>(outcome: Outcome, entries: Vec<Entry>) -> Result<Decision, Error<E>
     })
 }
 
-/// The step at `position`, which exists when the run has begun that many.
+/// The step at `position`, which the run counts: begun that many.
 fn step_at<V: ExecutionView>(view: &V, run: &Run, position: u32) -> Result<Step, Error<V::Error>> {
-    let step = view.step(run.id, position).map_err(Error::Store)?;
-    // A store that lost a step it counted cannot be read further.
-    step.ok_or_else(|| invalid(format!("step {position} is missing from the run")))
+    view.step(run.id, position).map_err(Error::Store)
 }
 
 /// `BeginStep` after the fence: the Steps table (architecture.md, "Steps").
 fn begin_step<V: ExecutionView>(
     view: &V,
-    Fenced(run): &Fenced,
+    fenced: &Fenced,
     position: u32,
     name: &str,
     once: bool,
     input: Option<&[u8]>,
 ) -> Result<Decision, Error<V::Error>> {
+    let run = fenced.run();
     if run.status.ended() {
         return answer(Outcome::StepBegun(Begun::Ended(ended(run))), Vec::new());
     }
@@ -706,10 +738,11 @@ fn begin_step<V: ExecutionView>(
 /// `CompleteStep` after the fence. The first outcome of a step stands.
 fn complete_step<V: ExecutionView>(
     view: &V,
-    Fenced(run): &Fenced,
+    fenced: &Fenced,
     position: u32,
     output: &[u8],
 ) -> Result<Decision, Error<V::Error>> {
+    let run = fenced.run();
     let step = if position <= run.steps {
         Some(step_at(view, run, position)?)
     } else {
@@ -746,10 +779,11 @@ fn complete_step<V: ExecutionView>(
 /// `CompleteRun` after the fence: its `steps` count first, then the open step.
 fn complete<V: ExecutionView>(
     view: &V,
-    Fenced(run): &Fenced,
+    fenced: &Fenced,
     steps: u32,
     output: &[u8],
 ) -> Result<Decision, Error<V::Error>> {
+    let run = fenced.run();
     if run.status.ended() {
         return answer(Outcome::RunEnded(ended(run)), Vec::new());
     }
@@ -796,7 +830,7 @@ fn complete<V: ExecutionView>(
 /// The tables' error.
 pub fn fold<T: ExecutionTables>(
     tables: &mut T,
-    entry: &Entry,
+    Stored(entry): &Stored,
     time: Timestamp,
     by: &Emitter,
 ) -> Result<(), T::Error> {

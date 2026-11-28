@@ -1043,7 +1043,10 @@ fn read_ended(e: Ended) -> Result<crate::RunEnd, Undecodable> {
     let run = e.run.into_option().ok_or(Undecodable)?;
     Ok(crate::RunEnd {
         run_id: run.run_id.parse().map_err(|_| Undecodable)?,
-        status: read_run_status(&run.status)?,
+        status: match read_run_status(&run.status)? {
+            status @ (RunStatus::Completed | RunStatus::Failed) => status,
+            RunStatus::Queued | RunStatus::Running => return Err(Undecodable),
+        },
     })
 }
 

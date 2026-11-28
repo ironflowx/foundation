@@ -680,7 +680,7 @@ impl Writer {
                     let some = !execution.is_empty() || !events.is_empty();
                     let entries = some.then_some(Entries {
                         record: Record { time: now, events },
-                        execution,
+                        execution: execution.into_iter().map(Into::into).collect(),
                     });
                     Ok((Outcome::Execution(outcome), entries))
                 })

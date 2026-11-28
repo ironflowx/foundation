@@ -14,8 +14,9 @@
 # file here lists it under disallowed-methods. Nor is a clippy.toml outside the root and crates/*
 # (examples/embed has none, and takes the root's), or a manifest's [lints.clippy] allowing the
 # lint (the one [lints] here, ironflowx-cell's, only warns of two casts; the by-name greps catch
-# what it lets through). Wrongly refused: a ban that does not open its line as an entry; every
-# ban here opens its line.
+# what it lets through). Wrongly refused: a ban that does not open its line as an entry, and, by
+# the copy check, a ban of a copy with a trailing comment its core line lacks; every ban here opens
+# its line, and no copy's line has a comment.
 set -euo pipefail
 root=$1
 # <path>|<crate exempt from it>

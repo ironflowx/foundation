@@ -12,7 +12,7 @@ service FunctionService {
     option (ironflowx.v1.cli) = "functions put";
     option (ironflowx.v1.summary) =
       "Put a function: its code label, the events that trigger it and its retry policy. It "
-      "replaces the whole definition; sent again unchanged it changes nothing";
+      "replaces the whole definition; the one already current again changes nothing";
     option (ironflowx.v1.example) =
       "{\"name\": \"charge\", \"code\": \"v1\", \"triggers\": [\"order.placed\"], "
       "\"max_attempts\": 5}";

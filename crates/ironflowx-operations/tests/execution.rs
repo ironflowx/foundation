@@ -234,7 +234,7 @@ async fn a_completed_run_is_an_event_of_its_executor() {
 }
 
 /// A start answers its run, queued, due at once, with a `null` input and no duplicate; an unknown
-/// function, or run, is `NotFound`.
+/// function, to start or to read, or run, is `NotFound`.
 #[tokio::test]
 async fn a_started_run_reads_back_queued() {
     let f = fixture().await;
@@ -257,6 +257,14 @@ async fn a_started_run_reads_back_queued() {
         function: "refund".into(),
     };
     let err = f.engine.start_run(&f.admin, req).await.unwrap_err();
+    assert_eq!(
+        (err.kind, err.message.as_str()),
+        (ErrorKind::NotFound, "function not found")
+    );
+    let req = ironflowx_proto::GetFunctionRequest {
+        name: "refund".into(),
+    };
+    let err = f.engine.get_function(&f.admin, req).await.unwrap_err();
     assert_eq!(
         (err.kind, err.message.as_str()),
         (ErrorKind::NotFound, "function not found")

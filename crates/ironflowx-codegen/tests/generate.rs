@@ -533,3 +533,20 @@ fn a_creator_is_a_key_or_an_embedder_and_whoami_names_its_key() {
         assert_eq!(valid(&text), ok, "{text}");
     }
 }
+
+/// An answer with two oneofs must hold one member of each: neither group's constraint is lost.
+#[test]
+fn an_answer_of_two_oneofs_holds_one_of_each() {
+    let body = method(
+        &format!("{CLI} {SUMMARY} {EXAMPLE}"),
+        "",
+        "oneof x { string a = 1; string b = 2; } oneof y { string c = 3; string d = 4; }",
+    );
+    let cli = generate(&body).unwrap();
+    let both = r#"\"allOf\":[{\"oneOf\":[{\"required\":[\"a\"]},{\"required\":[\"b\"]}]},{\"oneOf\":[{\"required\":[\"c\"]},{\"required\":[\"d\"]}]}]"#;
+    assert!(cli.contains(both), "{cli}");
+    assert!(
+        !cli.contains(r#"\"oneOf\":[{\"required\":[\"c\"]},{\"required\":[\"d\"]}],"#),
+        "{cli}"
+    );
+}

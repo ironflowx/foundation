@@ -63,6 +63,7 @@ disallowed-methods = [
   { path = "std::env::var", reason = "pure crates read no ambient state" },
   { path = "std::env::var_os", reason = "pure crates read no ambient state" },
   { path = "std::env::vars", reason = "pure crates read no ambient state" },
+  { path = "std::env::vars_os", reason = "pure crates read no ambient state" },
   { path = "std::io::stdin", reason = "pure crates do no I/O" },
   { path = "std::io::stdout", reason = "pure crates do no I/O" },
   { path = "std::io::stderr", reason = "pure crates do no I/O" },

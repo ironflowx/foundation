@@ -12,7 +12,7 @@ use uuid::Uuid;
 pub(crate) struct Entries {
     /// The record's time and its events.
     pub(crate) record: Record,
-    pub(crate) execution: Vec<ironflowx_execution::Entry>,
+    pub(crate) execution: Vec<ironflowx_execution::Stored>,
 }
 
 /// The directory format. A change refuses older directories at open (D8).

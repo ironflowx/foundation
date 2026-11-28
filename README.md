@@ -43,6 +43,7 @@ More diagrams (crates, modules and seams, crash recovery) and the details are in
 | --- | --- |
 | ironflowx-core | IDs, the environment reference, attribution, scopes, addresses, secrets, stored and event-clock time, the clock trait, error kinds |
 | ironflowx-events | event rules: what an event is and when an emit is refused |
+| ironflowx-execution | execution rules: functions, runs, claims and steps; published from 0.4 |
 | ironflowx-proto | the Operations interface and its request and answer types; behind features, the proto, its wire messages and the proto client |
 | ironflowx-cell | the ledger: one environment's durable commit log and read store |
 | ironflowx-authz | credentials: the key format, and whether a key is valid and may make a call |
@@ -68,7 +69,7 @@ ironflowx = "0.3"
 tokio = { version = "1", default-features = false, features = ["rt"] }
 ```
 
-From 0.4 (unreleased; 0.3 re-exports every crate), the facade re-exports `core`, `proto`, `cell` and `operations`. The engine's own crates, `ironflowx-store`, `ironflowx-authz` and `ironflowx-events`, are published for it, not for apps.
+From 0.4 (unreleased; 0.3 re-exports every crate), the facade re-exports `core`, `proto`, `cell` and `operations`. The engine's own crates, `ironflowx-store`, `ironflowx-authz`, `ironflowx-events` and `ironflowx-execution`, are published for it, not for apps.
 
 [`examples/embed`](https://github.com/ironflowx/foundation/tree/main/examples/embed) bootstraps an engine with a seed it wrote to disk first, emits an event, reads it back with a read-only key and sees that key's emit refused, then restarts the engine and reads the event with the seed from disk ([Engine open](https://github.com/ironflowx/foundation/blob/main/docs/architecture.md#engine-open)). The engine refuses 0.1 ledger directories (D39, [changelog](https://github.com/ironflowx/foundation/blob/main/CHANGELOG.md)).
 

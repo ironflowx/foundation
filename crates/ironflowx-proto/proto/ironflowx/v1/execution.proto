@@ -14,7 +14,7 @@ service ExecutionService {
     option (ironflowx.v1.cli) = "executions claim";
     option (ironflowx.v1.summary) =
       "Claim one due run of the functions named as name@code, under a lease; no claim when none "
-      "is due. Sent again it is a new claim: the run of a lost answer waits for its lease";
+      "is due. Sent again it is a new claim, and the run of a lost answer stays claimed";
     option (ironflowx.v1.example) = "{\"functions\": [\"charge@v1\"], \"wait_seconds\": 0}";
   }
   // Asks about a step of a claimed run.

@@ -1,5 +1,5 @@
 //! Purity fixture: a pure crate that reads the clock, the filesystem, the network and OS
-//! randomness, spawns a thread, prints and keeps a HashMap.
+//! randomness and the environment, spawns a thread, prints and keeps a HashMap.
 //! `ci/must-reject.sh` requires clippy to refuse it. Its header matches the pure crates' lib.rs.
 
 // Purity (LED-15): forbid, so an inner #[allow] cannot switch these off.
@@ -35,4 +35,8 @@ pub fn prints() {
 
 pub fn keeps_a_hash_map() -> usize {
     std::collections::HashMap::<u8, u8>::default().len()
+}
+
+pub fn reads_the_environment() -> usize {
+    std::env::vars_os().count()
 }

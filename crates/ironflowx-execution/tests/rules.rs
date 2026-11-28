@@ -1,7 +1,6 @@
 //! Execution rules against an in-memory read store: `decide`, then `fold` of what it decided.
 
 use std::collections::BTreeMap;
-use std::convert::Infallible;
 
 use ironflowx_core::limits::MAX_DATA_BYTES;
 use ironflowx_core::{Emitter, ErrorKind, Lease, RunId, SequencedTime, Timestamp};
@@ -22,29 +21,26 @@ struct Store {
 }
 
 impl ExecutionView for Store {
-    type Error = Infallible;
+    type Error = String;
 
-    fn function(&self, name: &str) -> Result<Option<Function>, Infallible> {
+    fn function(&self, name: &str) -> Result<Option<Function>, String> {
         Ok(self.functions.get(name).cloned())
     }
 
-    fn run(&self, id: RunId) -> Result<Option<Run>, Infallible> {
+    fn run(&self, id: RunId) -> Result<Option<Run>, String> {
         Ok(self.runs.get(&id.to_string()).cloned())
     }
 
-    fn step(&self, run: RunId, position: u32) -> Result<Option<Step>, Infallible> {
-        Ok(self.steps.get(&(run.to_string(), position)).cloned())
+    fn step(&self, run: RunId, position: u32) -> Result<Step, String> {
+        let step = self.steps.get(&(run.to_string(), position)).cloned();
+        step.ok_or_else(|| format!("step {position} of {run} is lost"))
     }
 
-    fn last_run_sequence(&self) -> Result<u64, Infallible> {
+    fn last_run_sequence(&self) -> Result<u64, String> {
         Ok(self.runs.values().map(|r| r.sequence).max().unwrap_or(0))
     }
 
-    fn claimable(
-        &self,
-        pairs: &[(String, String)],
-        now: Timestamp,
-    ) -> Result<Option<Run>, Infallible> {
+    fn claimable(&self, pairs: &[(String, String)], now: Timestamp) -> Result<Option<Run>, String> {
         let mut due: Vec<_> = self
             .runs
             .values()
@@ -57,14 +53,14 @@ impl ExecutionView for Store {
 }
 
 impl ExecutionTables for Store {
-    type Error = Infallible;
+    type Error = String;
 
-    fn put_function(&mut self, f: &Function) -> Result<(), Infallible> {
+    fn put_function(&mut self, f: &Function) -> Result<(), String> {
         self.functions.insert(f.definition.name.clone(), f.clone());
         Ok(())
     }
 
-    fn create_run(&mut self, run: &Run) -> Result<(), Infallible> {
+    fn create_run(&mut self, run: &Run) -> Result<(), String> {
         self.runs.insert(run.id.to_string(), run.clone());
         Ok(())
     }
@@ -75,7 +71,7 @@ impl ExecutionTables for Store {
         execution: u32,
         lease_until: Timestamp,
         by: &Emitter,
-    ) -> Result<(), Infallible> {
+    ) -> Result<(), String> {
         let r = self.runs.get_mut(&run.to_string()).unwrap();
         r.status = Status::Running;
         r.execution = execution;
@@ -85,7 +81,7 @@ impl ExecutionTables for Store {
         Ok(())
     }
 
-    fn begin_step(&mut self, run: RunId, step: &Step) -> Result<(), Infallible> {
+    fn begin_step(&mut self, run: RunId, step: &Step) -> Result<(), String> {
         let key = (run.to_string(), step.position);
         assert!(self.steps.insert(key, step.clone()).is_none(), "begun once");
         let r = self.runs.get_mut(&run.to_string()).unwrap();
@@ -94,12 +90,7 @@ impl ExecutionTables for Store {
         Ok(())
     }
 
-    fn complete_step(
-        &mut self,
-        run: RunId,
-        position: u32,
-        output: &[u8],
-    ) -> Result<(), Infallible> {
+    fn complete_step(&mut self, run: RunId, position: u32, output: &[u8]) -> Result<(), String> {
         let step = self.steps.get_mut(&(run.to_string(), position)).unwrap();
         assert!(step.output.is_none(), "one outcome");
         step.output = Some(output.to_vec());
@@ -107,7 +98,7 @@ impl ExecutionTables for Store {
         Ok(())
     }
 
-    fn complete_run(&mut self, run: RunId, output: &[u8], at: Timestamp) -> Result<(), Infallible> {
+    fn complete_run(&mut self, run: RunId, output: &[u8], at: Timestamp) -> Result<(), String> {
         let r = self.runs.get_mut(&run.to_string()).unwrap();
         r.status = Status::Completed;
         r.output = Some(output.to_vec());
@@ -146,12 +137,18 @@ impl Store {
         self.drawn = drawn.get();
         let decision = decision.map_err(|e| match e {
             Error::Refused(r) => r,
-            Error::Store(never) => match never {},
+            Error::Store(e) => panic!("the store failed: {e}"),
         })?;
         let (outcome, entries, events) = decision.clone().into_parts();
         let _ = (outcome, events);
         for entry in &entries {
-            fold(self, entry, Timestamp::from_millis(self.time), by).unwrap();
+            fold(
+                self,
+                &entry.clone().into(),
+                Timestamp::from_millis(self.time),
+                by,
+            )
+            .unwrap();
         }
         Ok(decision)
     }
@@ -289,17 +286,17 @@ fn an_ended_run_appends_nothing() {
         run,
         status: Status::Completed,
     };
-    for cmd in [
-        complete(&lease, 1),
-        complete(&lease, 5),
-        begin(&lease, 2, "b"),
+    for (cmd, answer) in [
+        (complete(&lease, 1), Outcome::RunEnded(end.clone())),
+        (complete(&lease, 5), Outcome::RunEnded(end.clone())),
+        (
+            begin(&lease, 2, "b"),
+            Outcome::StepBegun(Begun::Ended(end.clone())),
+        ),
     ] {
         let (outcome, entries, events) = s.run_cmd(cmd.clone(), &key(1)).unwrap().into_parts();
         assert!(entries.is_empty() && events.is_empty(), "{cmd:?}");
-        match outcome {
-            Outcome::RunEnded(e) | Outcome::StepBegun(Begun::Ended(e)) => assert_eq!(e, end),
-            other => panic!("{cmd:?}: {other:?}"),
-        }
+        assert_eq!(outcome, answer, "{cmd:?}");
     }
     let first = s.outcome(complete_step(&lease, 1, b"2"), &key(1)).unwrap();
     assert_eq!(
@@ -431,18 +428,28 @@ fn a_step_answers_by_its_position() {
     s.outcome(complete_step(&lease, 1, output), &key(1))
         .unwrap();
     // Recorded: that output, byte for byte, appending nothing; the first outcome stands.
-    for cmd in [begin(&lease, 1, "a"), complete_step(&lease, 1, b"2")] {
-        let (outcome, entries, _) = s.run_cmd(cmd, &key(1)).unwrap().into_parts();
-        assert!(entries.is_empty());
-        let got = match outcome {
-            Outcome::StepBegun(Begun::Completed { output }) | Outcome::StepCompleted { output } => {
-                output
-            }
-            other => panic!("{other:?}"),
-        };
-        assert_eq!(got, output);
+    let recorded = output.to_vec();
+    for (cmd, answer) in [
+        (
+            begin(&lease, 1, "a"),
+            Outcome::StepBegun(Begun::Completed {
+                output: recorded.clone(),
+            }),
+        ),
+        (
+            complete_step(&lease, 1, b"2"),
+            Outcome::StepCompleted {
+                output: recorded.clone(),
+            },
+        ),
+    ] {
+        let (outcome, entries, _) = s.run_cmd(cmd.clone(), &key(1)).unwrap().into_parts();
+        assert!(entries.is_empty(), "{cmd:?}");
+        assert_eq!(outcome, answer, "{cmd:?}");
     }
     invalid(&mut s, begin(&lease, 3, "c"));
+    // Rows that fail the run once #224 lands answer `Invalid` until then, appending nothing.
+    invalid(&mut s, begin(&lease, 1, "renamed"));
     let next = s.outcome(begin(&lease, 2, "b"), &key(1)).unwrap();
     assert_eq!(next, Outcome::StepBegun(Begun::Run { attempt: 1 }));
 }
@@ -502,7 +509,12 @@ fn an_output_follows_the_event_data_rules() {
         },
         &key(1),
     );
-    assert!(matches!(ended, Ok(Outcome::RunEnded(_))));
+    let run = s.runs.values().next().unwrap().id;
+    let end = RunEnd {
+        run,
+        status: Status::Completed,
+    };
+    assert_eq!(ended, Ok(Outcome::RunEnded(end)));
     assert_eq!(s.runs.values().next().unwrap().output, Some(largest));
 }
 
@@ -682,13 +694,111 @@ fn entries_round_trip() {
     entries.push(put);
     for entry in entries {
         let mut bytes = Vec::new();
-        encode(&entry, &mut bytes);
+        encode(&entry.clone().into(), &mut bytes);
         let mut rest = bytes.as_slice();
-        assert_eq!(decode(&mut rest), Some(entry.clone()));
+        assert_eq!(decode(&mut rest).expect("an entry"), entry);
         assert!(rest.is_empty());
         for cut in 0..bytes.len() {
             assert_eq!(decode(&mut &bytes[..cut]), None, "{entry:?} cut at {cut}");
         }
     }
     assert_eq!(decode(&mut [0u8].as_slice()), None, "kind 0 is an event's");
+}
+
+/// The Steps rows that fail the run once #224 lands answer `Invalid` here, and append nothing:
+/// `CompleteRun` with fewer steps than were begun, and a begin past 1,000 steps; and `CompleteRun`
+/// with more steps than were begun, the last one recorded.
+#[test]
+fn rows_that_will_fail_the_run_are_invalid_until_then() {
+    let (mut s, lease) = claimed();
+    let lease = lease.to_string();
+    for p in 1..=1_000 {
+        s.outcome(begin(&lease, p, "s"), &key(1)).unwrap();
+        s.outcome(complete_step(&lease, p, b"1"), &key(1)).unwrap();
+    }
+    let before = s.runs.clone();
+    for cmd in [
+        begin(&lease, 1_001, "one-more"),
+        complete(&lease, 999),
+        complete(&lease, 1_001),
+    ] {
+        let refused = s.outcome(cmd.clone(), &key(1)).unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Invalid, "{cmd:?}");
+    }
+    assert_eq!(s.runs, before);
+    assert_eq!(s.steps.len(), 1_000);
+    let end = s.outcome(complete(&lease, 1_000), &key(1));
+    assert!(matches!(
+        end,
+        Ok(Outcome::RunEnded(RunEnd {
+            status: Status::Completed,
+            ..
+        }))
+    ));
+}
+
+/// The edges no other test reaches: 10 triggers are taken; a claim's lease runs the length it
+/// asks for, renewed after a third of it; a pair's name and label each meet the name rule; a step
+/// input of 65,536 bytes is taken and one byte more is refused before the fence.
+#[test]
+fn the_edges_of_a_put_a_claim_and_a_step_input() {
+    use ironflowx_core::limits::MAX_STEP_INPUT_BYTES;
+    let mut s = Store {
+        time: T,
+        ..Store::default()
+    };
+    let ten = Definition {
+        triggers: (0..10).map(|i| format!("e.{i}")).collect(),
+        ..definition()
+    };
+    let put = s.outcome(Command::PutFunction(ten), &key(1)).unwrap();
+    assert!(matches!(put, Outcome::FunctionPut { changed: true, .. }));
+    assert_eq!(s.functions["charge"].definition.triggers.len(), 10);
+    for pair in ["char ge@v1", "charge@v 1", "charge@é", "@v1", "charge@"] {
+        let refused = s.outcome(claim(&[pair]), &key(1)).unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Invalid, "{pair}");
+    }
+    s.outcome(start(), &key(1)).unwrap();
+    let cmd = Command::Claim {
+        functions: vec!["charge@v1".into()],
+        lease_seconds: Some(30),
+        wait_seconds: None,
+    };
+    let Outcome::Claimed(Some(claim)) = s.outcome(cmd, &key(1)).unwrap() else {
+        panic!("a claim");
+    };
+    assert_eq!(claim.lease_until, Timestamp::from_millis(T + 30_000));
+    assert_eq!(claim.renew_after_seconds, 10);
+    assert_eq!(
+        s.runs.values().next().unwrap().lease_until,
+        Some(claim.lease_until)
+    );
+    let lease = claim.lease.to_string();
+    let input = |len: usize| Command::BeginStep {
+        lease: lease.clone(),
+        position: 1,
+        name: "a".into(),
+        once: false,
+        input: Some(format!("\"{}\"", "x".repeat(len - 2)).into_bytes()),
+    };
+    let refused = s
+        .outcome(input(MAX_STEP_INPUT_BYTES + 1), &key(2))
+        .unwrap_err();
+    assert_eq!(
+        (refused.kind(), refused.message()),
+        (ErrorKind::Invalid, "step input exceeds 65536 bytes"),
+        "before the fence, which would answer another key"
+    );
+    let begun = s.outcome(input(MAX_STEP_INPUT_BYTES), &key(1)).unwrap();
+    assert_eq!(begun, Outcome::StepBegun(Begun::Run { attempt: 1 }));
+    assert_eq!(
+        s.steps
+            .values()
+            .next()
+            .unwrap()
+            .input
+            .as_ref()
+            .map(Vec::len),
+        Some(MAX_STEP_INPUT_BYTES)
+    );
 }

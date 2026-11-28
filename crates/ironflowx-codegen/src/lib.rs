@@ -329,12 +329,25 @@ fn object(message: &MessageDescriptor, shape: Shape) -> Result<Value, CodegenErr
     // An answer of several shapes holds exactly one of them. `optional` makes a oneof of its own,
     // a synthetic one, which says nothing of the kind.
     if shape == Shape::Output {
-        for oneof in message.oneofs().filter(|o| !o.is_synthetic()) {
-            let shapes: Vec<_> = oneof
-                .fields()
-                .map(|f| json!({"required": [f.json_name()]}))
-                .collect();
-            schema["oneOf"] = json!(shapes);
+        let mut groups: Vec<_> = message
+            .oneofs()
+            .filter(|o| !o.is_synthetic())
+            .map(|oneof| {
+                let shapes: Vec<_> = oneof
+                    .fields()
+                    .map(|f| json!({"required": [f.json_name()]}))
+                    .collect();
+                json!(shapes)
+            })
+            .collect();
+        // One oneof is the schema's `oneOf`; several must each hold.
+        match groups.len() {
+            0 => {}
+            1 => schema["oneOf"] = groups.remove(0),
+            _ => {
+                let each: Vec<_> = groups.into_iter().map(|g| json!({"oneOf": g})).collect();
+                schema["allOf"] = json!(each);
+            }
         }
     }
     Ok(schema)

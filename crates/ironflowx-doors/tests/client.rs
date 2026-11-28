@@ -574,7 +574,9 @@ fn unanswered(op: Operation) -> (ErrorKind, Option<&'static str>) {
         ),
         Operation::PutFunction => (
             ErrorKind::Unknown,
-            Some("retry: the same definition, put again, changes nothing"),
+            Some(
+                "retry only if this definition should still replace the current one: another put may have landed since",
+            ),
         ),
         Operation::StartRun => (
             ErrorKind::Unknown,
@@ -582,7 +584,9 @@ fn unanswered(op: Operation) -> (ErrorKind, Option<&'static str>) {
         ),
         Operation::ClaimRun => (
             ErrorKind::Unknown,
-            Some("claim again: the run of a lost claim waits for its lease's deadline"),
+            Some(
+                "claim again: until leases expire (a later release), the run of a lost claim is not claimed again",
+            ),
         ),
         Operation::BeginStep | Operation::CompleteStep | Operation::CompleteRun => (
             ErrorKind::Unknown,

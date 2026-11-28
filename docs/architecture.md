@@ -340,12 +340,14 @@ fn decide<V: ExecutionView>(view: &V, cmd: &Command, by: &Emitter, now: Sequence
 // Entry FunctionPut(Definition) | RunCreated { run, sequence, function, code, input } | Claimed { run, execution, lease_until }
 //     | StepBegan { run, position, name, once, input, execution } | StepCompleted { run, position, output }
 //     | RunCompleted(RunCompleted)   // private fields: only decide makes one, with its end event (RUN-2)
-fn fold<T: ExecutionTables>(tables: &mut T, entry: &Entry, time: Timestamp, by: &Emitter) -> Result<(), T::Error>;
+// Stored: an entry as a record holds it; From<Entry>, compared with an Entry, and nothing turns one back
+fn fold<T: ExecutionTables>(tables: &mut T, entry: &Stored, time: Timestamp, by: &Emitter) -> Result<(), T::Error>;
 fn get_function<V: ExecutionView>(view: &V, name: &str) -> Result<Function, Error<V::Error>>;
 fn get_run<V: ExecutionView>(view: &V, id: &str) -> Result<Run, Error<V::Error>>;
-fn encode(entry: &Entry, out: &mut Vec<u8>);   // led by its kind, 1 to 6
-fn decode(bytes: &mut &[u8]) -> Option<Entry>;
-// ExecutionView: function, run, step, last_run_sequence, claimable(pairs, now)
+fn encode(entry: &Stored, out: &mut Vec<u8>);   // led by its kind, 1 to 6
+fn decode(bytes: &mut &[u8]) -> Option<Stored>;   // a decoded RunCompleted joins no decision
+// ExecutionView: function, run, step (one the run counts: none is the store's failure), last_run_sequence,
+// claimable(pairs, now)
 // ExecutionTables: put_function, create_run, claim, begin_step, complete_step, complete_run
 ```
 
@@ -405,7 +407,7 @@ A function is a definition in the ledger; a run is one durable invocation of it;
 | `CompleteStep` | `execute` | Records the open step's output, begun by this execution; a step that has an output answers it, the first one standing |
 | `CompleteRun` | `execute` | Completes the run with its output, `ironflowx.run.completed` in the same record (RUN-2, D103). `steps`, the positions this execution reached, above the steps begun, or equal with the last open, is `Invalid` |
 
-**The fence** (RUN-1, D95). Every call that names a lease is checked, in the decision that writes, in this order, and the first failure answers: what the request alone shows (`Invalid`: a position of 0, a step name that is not 1–256 bytes without a control character, an input or output outside its rules), then the lease parses and its run exists (`NotFound`, `run not found`), then its execution number is the run's current one (`Conflict`, hint `this execution was superseded: stop working on this run`; a run never claimed is at execution 0, which no lease names), then the call's key is the one that claimed it (`Conflict`, hint `another key holds this lease`). One function, `fence`, returns the run the rules then need, in a type only it makes, so no rule of an execution call reaches a run without it. A refusal appends nothing.
+**The fence** (RUN-1, D95). Every call that names a lease is checked, in the decision that writes, in this order, and the first failure answers: what the request alone shows (`Invalid`: a position of 0, a step name that is not 1–256 bytes without a control character, an input or output outside its rules), then the lease parses and its run exists (`NotFound`, `run not found`), then its execution number is the run's current one (`Conflict`, hint `this execution was superseded: stop working on this run`; a run never claimed is at execution 0, which no lease names), then the call's key is the one that claimed it (`Conflict`, hint `another key holds this lease`). One function, `fence`, returns the run the rules then need, in a type whose field is private to the module that holds only the fence, so no rule of an execution call reaches a run without it. A refusal appends nothing. A step the run counts that the read store lacks is the store's failure, which fails the ledger, not a refusal.
 
 A run that has ended answers `BeginStep` and `CompleteRun` with `ended { run }` (D108), and `CompleteStep` with the step's output if it has one, else `Conflict`, hint `this execution is over`; each appends nothing.
 
@@ -424,7 +426,7 @@ A step's name, `once` and input are those of its first begin. Until a run can be
 
 **Values.** A step's input is JSON of at most 65,536 bytes (`limits::MAX_STEP_INPUT_BYTES`), a step's or a run's output at most 524,288 (`limits::MAX_DATA_BYTES`); each meets event data's JSON rules through event rules' `check_value`, with its own name in the message (`step output exceeds 524288 bytes`, `run output is invalid: …`). An absent output stores `null`.
 
-**Entries.** Each command that changes something appends one record of execution entries (D112), which carry every value `decide` computed; `fold` writes them and reads no policy, so a rebuilt `read.db` answers the same (RUN-11). No run entry but `RunCreated` carries a code label (RUN-7). A run's attribution is its record's: its creator, its claimant, and its end event's emitter come from the verified grant (TEN-6).
+**Entries.** Each command that changes something appends one record of execution entries (D112), which carry every value `decide` computed; `fold` writes them and reads no policy, so a rebuilt `read.db` answers the same (RUN-11). No run entry but `RunCreated` carries a code label (RUN-7); `FunctionPut` carries the function's. A record's entries read back as `Stored`, which `fold` applies and from which no `Entry` comes out, so a decoded `RunCompleted` joins no other record. A run's attribution is its record's: its creator, its claimant, and its end event's emitter come from the verified grant (TEN-6).
 
 ## Keys
 

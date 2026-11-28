@@ -3,7 +3,7 @@
 
 use ironflowx_core::{RunId, Timestamp};
 
-use crate::{Definition, Entry, RunCompleted};
+use crate::{Definition, Entry, RunCompleted, Stored};
 
 const FUNCTION_PUT: u8 = 1;
 const RUN_CREATED: u8 = 2;
@@ -13,7 +13,7 @@ const STEP_COMPLETED: u8 = 5;
 const RUN_COMPLETED: u8 = 6;
 
 /// Appends `entry` to `out`, led by its kind byte.
-pub fn encode(entry: &Entry, out: &mut Vec<u8>) {
+pub fn encode(Stored(entry): &Stored, out: &mut Vec<u8>) {
     let mut e = Enc(out);
     match entry {
         Entry::FunctionPut(d) => {
@@ -130,8 +130,9 @@ impl Enc<'_> {
 }
 
 /// Reads one entry from the front of `bytes` and moves past it; `None` if they do not begin with
-/// an entry this format writes, kind 0 included.
-pub fn decode(bytes: &mut &[u8]) -> Option<Entry> {
+/// an entry this format writes, kind 0 included. It reads back as a [`Stored`], which is folded,
+/// never decided again.
+pub fn decode(bytes: &mut &[u8]) -> Option<Stored> {
     let mut d = Dec(bytes);
     let entry = match d.byte()? {
         FUNCTION_PUT => {
@@ -190,7 +191,7 @@ pub fn decode(bytes: &mut &[u8]) -> Option<Entry> {
         }),
         _ => return None,
     };
-    Some(entry)
+    Some(Stored(entry))
 }
 
 struct Dec<'a, 'b>(&'b mut &'a [u8]);
