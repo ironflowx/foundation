@@ -6,8 +6,9 @@
 # an ASCII letter, a digit, `.`, `_`, `-` or `/` (a space, a CR, a BOM, a NUL), or a name git
 # refuses for a branch fails, naming the file. A well-formed name of no branch (a typo,
 # `origin/main`, a commit) passes here and fails at the checkout, which names the ref, not the file;
-# any ref whose name ends in refs/heads/<name>, such as a tag or a branch literally named so, would
-# stand in for it, and ironflowx/ironflow has none.
+# a ref git fetch abbreviates to refs/heads/<name> would stand in for it: refs/refs/heads/<name>, a
+# tag or a branch literally named so, refs/remotes/refs/heads/<name>, or that last with /HEAD.
+# ironflowx/ironflow has none.
 # A branch name git takes with another byte (`+`, `@`, a non-ASCII letter) is refused on purpose:
 # the app's branches have none.
 set -euo pipefail
