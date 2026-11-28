@@ -16,7 +16,7 @@ const ID: &str = "0190b5f0-0000-7000-8000-000000000001";
 
 fn whoami(expires_at: Option<i64>) -> Whoami {
     Whoami {
-        key_id: ID.parse().unwrap(),
+        key_id: Some(ID.parse().unwrap()),
         scopes: [Scope::Write].into(),
         environment: Address::new("default", "main"),
         expires_at: expires_at.map(Timestamp::from_millis),
@@ -55,6 +55,18 @@ fn a_time_outside_the_wires_years_is_sent_as_the_nearer_bound() {
     assert_eq!(Whoami::try_from(sent), Ok(whoami(None)));
 }
 
+/// An embedder's call holds no key (D121): its answer, which no door sends, has no key ID.
+#[test]
+fn a_whoami_without_a_key_has_no_key_id() {
+    let sent = Whoami {
+        key_id: None,
+        ..whoami(None)
+    };
+    let wire = WhoamiResponse::from(sent.clone());
+    assert_eq!(wire.key_id, None);
+    assert_eq!(Whoami::try_from(wire), Ok(sent));
+}
+
 #[test]
 fn an_answer_that_is_not_what_the_proto_says_does_not_decode() {
     let good = || WhoamiResponse::from(whoami(Some(0)));
@@ -66,16 +78,16 @@ fn an_answer_that_is_not_what_the_proto_says_does_not_decode() {
     };
     for (why, answer) in [
         (
-            "no key ID",
+            "an empty key ID",
             WhoamiResponse {
-                key_id: String::new(),
+                key_id: Some(String::new()),
                 ..good()
             },
         ),
         (
             "a key ID in another spelling",
             WhoamiResponse {
-                key_id: ID.to_uppercase(),
+                key_id: Some(ID.to_uppercase()),
                 ..good()
             },
         ),
@@ -355,7 +367,7 @@ fn info() -> KeyInfo {
         label: None,
         scopes: [Scope::Read].into(),
         origin: KeyOrigin::Created,
-        created_by: Some("0190b5f0-0000-7000-8000-000000000002".parse().unwrap()),
+        created_by: Some("key:0190b5f0-0000-7000-8000-000000000002".parse().unwrap()),
         created_at: Timestamp::from_millis(0),
         expires_at: None,
         status: KeyStatus::Active,
@@ -460,6 +472,26 @@ fn a_keys_information_crosses_whole() {
         assert_eq!(wire.status, text);
         assert_eq!(KeyInfo::try_from(wire), Ok(sent));
     }
+    // A creating key by its bare ID, as since 0.2; an embedder by its `embedder:<name>` (D121).
+    for (created_by, text) in [
+        (
+            info().created_by,
+            Some("0190b5f0-0000-7000-8000-000000000002"),
+        ),
+        (
+            Some("embedder:app é".parse().unwrap()),
+            Some("embedder:app é"),
+        ),
+        (None, None),
+    ] {
+        let sent = KeyInfo {
+            created_by,
+            ..info()
+        };
+        let wire = wire::KeyInfo::from(sent.clone());
+        assert_eq!(wire.created_by.as_deref(), text);
+        assert_eq!(KeyInfo::try_from(wire), Ok(sent));
+    }
     // D76, in each of its times.
     for (stored, shown) in [(i64::MIN, FIRST), (i64::MAX, LAST), (1, 1)] {
         let at = |t| Timestamp::from_millis(t);
@@ -486,13 +518,17 @@ fn a_keys_information_crosses_whole() {
 
 #[test]
 fn a_key_that_is_not_what_the_proto_says_does_not_decode() {
-    let changes: [fn(&mut wire::KeyInfo); 9] = [
+    let changes: [fn(&mut wire::KeyInfo); 12] = [
         |k| k.key_id = ID.to_uppercase(),
         |k| k.scopes.push("own".into()),
         |k| k.origin = "Minted".into(),
         |k| k.origin.clear(),
         |k| k.status = "unknown".into(),
         |k| k.created_by = Some(String::new()),
+        // A key's creator is its bare ID; an embedder's name is checked as a stored one is.
+        |k| k.created_by = Some("key:0190b5f0-0000-7000-8000-000000000002".into()),
+        |k| k.created_by = Some("embedder:".into()),
+        |k| k.created_by = Some("embedder:a\nb".into()),
         |k| k.created_at = None.into(),
         |k| k.created_at.get_or_insert_default().nanos = 1,
         |k| k.expires_at.get_or_insert_default().nanos = -1,

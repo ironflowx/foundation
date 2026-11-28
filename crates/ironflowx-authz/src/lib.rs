@@ -314,13 +314,14 @@ impl std::error::Error for CreateRefusal {}
 /// Decides whether `creator` may create a key holding `scopes` until `expires_at`, labelled
 /// `label`, at `now`. The new key holds no scope its creator lacks and outlives it in no way
 /// (D28, TEN-5); its expiry is after now; its label is 0 to [`MAX_KEY_LABEL_BYTES`] bytes with
-/// no control character.
+/// no control character. A `creator` of `None` is the embedding process (D121), which holds every
+/// scope and never expires.
 ///
 /// # Errors
 ///
 /// [`CreateRefusal`], saying which rule the request breaks.
 pub fn may_create(
-    creator: &Grant,
+    creator: Option<&Grant>,
     scopes: &BTreeSet<Scope>,
     expires_at: Option<Timestamp>,
     label: Option<&str>,
@@ -330,10 +331,10 @@ pub fn may_create(
     if scopes.is_empty() {
         return refuse("a key holds at least one scope");
     }
-    if !scopes.is_subset(&creator.scopes) {
+    if creator.is_some_and(|c| !scopes.is_subset(&c.scopes)) {
         return refuse("a key cannot hold a scope its creator lacks");
     }
-    match (creator.expires_at, expires_at) {
+    match (creator.and_then(|c| c.expires_at), expires_at) {
         (_, Some(t)) if t <= now => return refuse("the expiry must be after now"),
         (Some(_), None) => return refuse("a key cannot outlive its creator: give it an expiry"),
         (Some(c), Some(t)) if t > c => return refuse("a key cannot expire after its creator"),

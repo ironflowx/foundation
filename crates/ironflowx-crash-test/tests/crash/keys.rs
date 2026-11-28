@@ -388,7 +388,7 @@ impl Killed {
                     None => KeyOrigin::Seed,
                     Some(_) => KeyOrigin::Created,
                 },
-                created_by: k.created_by.map(|by| self.told[by].0),
+                created_by: k.created_by.map(|by| self.told[by].0.into()),
                 created_at: Timestamp::from_millis(k.created_at),
                 expires_at: k.expires.map(Timestamp::from_millis),
                 status: k.status(now),
@@ -403,7 +403,7 @@ impl Killed {
             match engine.whoami(&call(text), WhoamiRequest {}).await {
                 Ok(me) => {
                     assert!(want, "{id} is accepted at {now}");
-                    assert_eq!((me.key_id, &me.scopes), (*id, &key.scopes));
+                    assert_eq!((me.key_id, &me.scopes), (Some(*id), &key.scopes));
                     let expires = key.expires.map(Timestamp::from_millis);
                     assert_eq!(me.expires_at, expires, "{id}");
                     self.accepted.push(*id);

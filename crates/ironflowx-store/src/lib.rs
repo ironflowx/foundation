@@ -23,7 +23,9 @@ use ironflowx_authz::{
     CreateRefusal, Grant, KeyDigest, KeyParts, KeyRecord, SeedConflict, SeedState, may_create,
     recheck, verify_seed,
 };
-use ironflowx_core::{Clock, EnvRef, KeyId, KeyOrigin, ProjectId, Scope, TenantId, Timestamp};
+use ironflowx_core::{
+    Clock, Emitter, EnvRef, KeyId, KeyOrigin, ProjectId, Scope, TenantId, Timestamp,
+};
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
@@ -154,6 +156,15 @@ pub struct NewKey {
     pub expires_at: Option<Timestamp>,
 }
 
+/// Who makes a key change: a key, whose record the change reads again and checks inside its
+/// transaction (D43), or the embedding process, which no record backs (D121).
+#[derive(Debug, Clone)]
+pub enum Changer {
+    Key(KeyId),
+    /// Recorded as its `embedder:<name>`.
+    Embedder(Emitter),
+}
+
 /// A stored key: what credentials need, and what is listed beside it.
 #[derive(Debug, Clone)]
 pub struct KeyRow {
@@ -161,8 +172,8 @@ pub struct KeyRow {
     pub seq: u64,
     pub record: KeyRecord,
     pub origin: KeyOrigin,
-    /// The key that created it; `None` unless its origin is `Created`.
-    pub created_by: Option<KeyId>,
+    /// The key or embedder that created it; `None` unless its origin is `Created`.
+    pub created_by: Option<Emitter>,
     pub label: Option<String>,
     pub created_at: Timestamp,
 }
@@ -576,7 +587,7 @@ impl ControlPlane {
     }
 
     /// Creates `new` in `env` for `creator`, in one transaction: with the write lock held and
-    /// now read from `clock`, the creator's record is read again and checked (`recheck`), then
+    /// now read from `clock`, a creating key's record is read again and checked (`recheck`), then
     /// the request (`may_create`), so no key outlives or outranks its creator (TEN-5), then
     /// that fewer than `cap` created keys hold a slot: one does until it is revoked or its
     /// expiry is recorded, whatever the clock reads (TEN-15).
@@ -590,7 +601,7 @@ impl ControlPlane {
         &self,
         env: &EnvRef,
         new: NewKey,
-        creator: KeyId,
+        creator: &Changer,
         clock: &dyn Clock,
         cap: u32,
     ) -> Result<KeyRow, KeyChangeError> {
@@ -599,11 +610,11 @@ impl ControlPlane {
             let mut conn = self.lock()?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let now = clock.now();
-            let Some((tx, grant)) = caller(tx, creator, env, now)? else {
+            let Some((tx, grant)) = changer(tx, creator, env, now)? else {
                 return Ok(Err(KeyChangeError::Caller));
             };
             let label = new.label.as_deref();
-            if let Err(r) = may_create(&grant, &new.scopes, new.expires_at, label, now) {
+            if let Err(r) = may_create(grant.as_ref(), &new.scopes, new.expires_at, label, now) {
                 return Ok(Err(KeyChangeError::Refused(r)));
             }
             let slots: u32 = tx.query_row(
@@ -626,7 +637,10 @@ impl ControlPlane {
                     scopes_text(&new.scopes),
                     new.digest.to_stored(),
                     CREATED,
-                    creator.to_string(),
+                    match creator {
+                        Changer::Key(id) => id.to_string(),
+                        Changer::Embedder(by) => by.to_string(),
+                    },
                     label,
                     new.expires_at.map(Timestamp::as_millis),
                     now.as_millis()
@@ -650,7 +664,10 @@ impl ControlPlane {
                     revoked_at: None,
                 },
                 origin: KeyOrigin::Created,
-                created_by: Some(creator),
+                created_by: Some(match creator {
+                    Changer::Key(id) => Emitter::from(*id),
+                    Changer::Embedder(by) => by.clone(),
+                }),
                 label: new.label,
                 created_at: now,
             }))
@@ -659,8 +676,8 @@ impl ControlPlane {
     }
 
     /// Revokes `id` in `env` for `by`, in one transaction: with the write lock held and now read
-    /// from `clock`, `by`'s record is read again and checked (`recheck`, D43), then `id`'s
-    /// `revoked_at` is set unless it already is. The row stays (D35).
+    /// from `clock`, a revoking key's record is read again and checked (`recheck`, D43), then
+    /// `id`'s `revoked_at` is set unless it already is. The row stays (D35).
     ///
     /// # Errors
     ///
@@ -671,7 +688,7 @@ impl ControlPlane {
         &self,
         env: &EnvRef,
         id: KeyId,
-        by: KeyId,
+        by: &Changer,
         clock: &dyn Clock,
     ) -> Result<(), KeyChangeError> {
         // The outer error is SQLite's; the inner one, a check that refused.
@@ -679,7 +696,7 @@ impl ControlPlane {
             let mut conn = self.lock()?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let now = clock.now();
-            let Some((tx, _)) = caller(tx, by, env, now)? else {
+            let Some((tx, _)) = changer(tx, by, env, now)? else {
                 return Ok(Err(KeyChangeError::Caller));
             };
             if lookup(&tx, id, env)?.is_none() {
@@ -747,9 +764,7 @@ impl ControlPlane {
                     seq: u64::try_from(seq).map_err(|_| refused("bad seq"))?,
                     record: stored.record(id, env)?,
                     origin: origin_from(&origin)?,
-                    created_by: created_by
-                        .map(|c| c.parse().map_err(|_| refused("bad creator ID")))
-                        .transpose()?,
+                    created_by: created_by.map(|c| creator_from(&c)).transpose()?,
                     label,
                     created_at: Timestamp::from_millis(created_at),
                 })
@@ -934,7 +949,7 @@ fn revoke_all(
     )?)
 }
 
-/// Inserts an admin key no key created: all three scopes, no expiry.
+/// Inserts an admin key no key created: every scope, no expiry.
 fn insert_admin(
     conn: &Connection,
     key: &KeyParts,
@@ -943,7 +958,7 @@ fn insert_admin(
     label: Option<&str>,
     now: Timestamp,
 ) -> Result<(), Error> {
-    let every = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]);
+    let every = BTreeSet::from(Scope::ALL);
     conn.execute(
         "INSERT INTO keys (id, environment_id, environment_token, scopes, digest, origin, \
          label, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -1006,6 +1021,29 @@ fn caller<'c>(
             }
             Ok(None)
         }
+    }
+}
+
+/// A key change's maker, as [`caller`] reads it: `Some((tx, None))` for the embedding process,
+/// which no record backs and which holds every scope with no expiry (D121).
+fn changer<'c>(
+    tx: Transaction<'c>,
+    by: &Changer,
+    env: &EnvRef,
+    now: Timestamp,
+) -> Result<Option<(Transaction<'c>, Option<Grant>)>, Error> {
+    Ok(match by {
+        Changer::Key(id) => caller(tx, *id, env, now)?.map(|(tx, grant)| (tx, Some(grant))),
+        Changer::Embedder(_) => Some((tx, None)),
+    })
+}
+
+/// A stored creator: a creating key's bare ID, as since 0.2, or an embedder's `embedder:<name>`.
+fn creator_from(text: &str) -> Result<Emitter, Error> {
+    match text.parse::<KeyId>() {
+        Ok(id) => Ok(id.into()),
+        Err(_) if text.starts_with("embedder:") => text.parse().map_err(|_| refused("bad creator")),
+        Err(_) => Err(refused("bad creator ID")),
     }
 }
 

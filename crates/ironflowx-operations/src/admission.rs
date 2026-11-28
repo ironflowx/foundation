@@ -1,28 +1,93 @@
-//! Admission: the one way to an [`Authorized`] (TEN-1). Every call runs, in order: no key →
-//! `Unauthenticated`; `parse`; `lookup_key`, with no cache (D45); `verify` at the now it read;
-//! `admit` against the operation's `required_scope` (D37). A key refused as newly
+//! Admission: the one way to an [`Authorized`] (TEN-1). A call that carries this engine's
+//! embedder grant is admitted as admin with no key (D121). Every other call runs, in order: no
+//! key → `Unauthenticated`; `parse`; `lookup_key`, with no cache (D45); `verify` at the now it
+//! read; `admit` against the operation's `required_scope` (D37). A key refused as newly
 //! expired has its expiry recorded (`record_expiry`, D42), admission's one write.
 
+use std::collections::BTreeSet;
+
 use ironflowx_authz::{Grant, admit, parse, verify};
-use ironflowx_core::ErrorKind;
+use ironflowx_core::{EnvRef, ErrorKind, KeyId, Scope, SubmitAs, Timestamp};
 use ironflowx_proto::{Call, OpError, Operation, required_scope};
+use ironflowx_store::Changer;
 
 use crate::{Engine, blocking};
 
-/// Proof that a call's key was verified. Its field is private to this module, so no handler can
-/// build one without admission, and the type is private to the crate, so no other crate can
-/// name one:
+/// The embedding process's credential (D121): only [`Engine::embedder_call`] makes one, as no
+/// other crate can name the type, and a door has no field to carry one:
+///
+/// ```compile_fail,E0603
+/// # let (by, env) = todo!();
+/// let _ = ironflowx_operations::EmbedderGrant { by, env };
+/// ```
+pub(crate) struct EmbedderGrant {
+    pub(crate) by: SubmitAs,
+    /// The environment and incarnation of the engine that made it, the only one it reaches.
+    pub(crate) env: EnvRef,
+}
+
+/// Proof that a call was admitted: its key verified, or its grant this engine's own. Its field
+/// is private to this module, so no handler can build one without admission, and the type is
+/// private to the crate, so no other crate can name one:
 ///
 /// ```compile_fail,E0603
 /// fn hold(_: &ironflowx_operations::Authorized) {}
 /// ```
 pub(crate) struct Authorized {
-    grant: Grant,
+    caller: Caller,
+}
+
+enum Caller {
+    Key(Grant),
+    /// Holds every scope and never expires.
+    Embedder(SubmitAs, EnvRef),
 }
 
 impl Authorized {
-    pub(crate) const fn grant(&self) -> &Grant {
-        &self.grant
+    /// The calling key's ID; `None` for an embedder.
+    pub(crate) const fn key_id(&self) -> Option<KeyId> {
+        match &self.caller {
+            Caller::Key(grant) => Some(grant.key_id()),
+            Caller::Embedder(..) => None,
+        }
+    }
+
+    pub(crate) fn scopes(&self) -> BTreeSet<Scope> {
+        match &self.caller {
+            Caller::Key(grant) => grant.scopes().clone(),
+            Caller::Embedder(..) => BTreeSet::from(Scope::ALL),
+        }
+    }
+
+    pub(crate) const fn env(&self) -> EnvRef {
+        match &self.caller {
+            Caller::Key(grant) => grant.env(),
+            Caller::Embedder(_, env) => *env,
+        }
+    }
+
+    /// `None`: never.
+    pub(crate) const fn expires_at(&self) -> Option<Timestamp> {
+        match &self.caller {
+            Caller::Key(grant) => grant.expires_at(),
+            Caller::Embedder(..) => None,
+        }
+    }
+
+    /// What a submission of this call is attributed to: its key, or `embedder:<name>` (TEN-6).
+    pub(crate) fn submit_as(&self) -> SubmitAs {
+        match &self.caller {
+            Caller::Key(grant) => grant.submit_as(),
+            Caller::Embedder(by, _) => by.clone(),
+        }
+    }
+
+    /// Who a key change of this call is made by.
+    pub(crate) fn changer(&self) -> Changer {
+        match &self.caller {
+            Caller::Key(grant) => Changer::Key(grant.key_id()),
+            Caller::Embedder(by, _) => Changer::Embedder(by.clone().into()),
+        }
     }
 }
 
@@ -36,6 +101,15 @@ pub(crate) fn unauthenticated(message: &str, hint: Option<String>) -> OpError {
 
 impl Engine {
     pub(crate) async fn admit(&self, cx: &Call, op: Operation) -> Result<Authorized, OpError> {
+        if let Some(grant) = cx.grant() {
+            // Another engine's grant, of another directory or incarnation, reaches nothing here.
+            return match grant.downcast_ref::<EmbedderGrant>() {
+                Some(g) if g.env == self.env => Ok(Authorized {
+                    caller: Caller::Embedder(g.by.clone(), g.env),
+                }),
+                _ => Err(unauthenticated("invalid grant", None)),
+            };
+        }
         let key = match cx.key() {
             Some(key) if !key.expose().is_empty() => key,
             _ => return Err(unauthenticated("authentication required", None)),
@@ -67,6 +141,8 @@ impl Engine {
                 )),
             }
         })?;
-        Ok(Authorized { grant })
+        Ok(Authorized {
+            caller: Caller::Key(grant),
+        })
     }
 }

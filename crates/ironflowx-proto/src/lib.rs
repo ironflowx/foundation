@@ -18,6 +18,7 @@ pub mod wire;
 #[cfg(all(feature = "client", not(feature = "wire")))]
 mod wire;
 
+use std::any::Any;
 use std::fmt;
 use std::future::Future;
 use std::num::NonZeroU32;
@@ -174,8 +175,8 @@ pub const fn required_scope(op: Operation) -> Option<Scope> {
     }
 }
 
-/// Who is calling: the key as presented, or none (D2, D45). Not `Clone`, since the key is a
-/// [`Secret`]:
+/// Who is calling: the key as presented, a grant in its place, or neither (D2, D45, D121). Not
+/// `Clone`, since the key is a [`Secret`]:
 ///
 /// ```compile_fail,E0599
 /// # use ironflowx_proto::Call;
@@ -183,6 +184,7 @@ pub const fn required_scope(op: Operation) -> Option<Scope> {
 /// ```
 pub struct Call {
     key: Option<Secret>,
+    grant: Option<Box<dyn Any + Send + Sync>>,
 }
 
 /// Prints no field, so the key cannot reach a log through `{:?}`.
@@ -195,17 +197,38 @@ impl fmt::Debug for Call {
 impl Call {
     /// A call that carries no credential.
     pub const fn anonymous() -> Self {
-        Self { key: None }
+        Self {
+            key: None,
+            grant: None,
+        }
     }
 
     /// A call that presents `key`, the whole key text.
     pub const fn with_key(key: Secret) -> Self {
-        Self { key: Some(key) }
+        Self {
+            key: Some(key),
+            grant: None,
+        }
+    }
+
+    /// A call that carries `grant` in place of a key: a value of a type only its maker can name,
+    /// as the engine's `embedder_call` makes, so only that maker reads it. No wire message has a
+    /// field for it, so no door makes one (D121).
+    pub fn with_grant(grant: impl Any + Send + Sync) -> Self {
+        Self {
+            key: None,
+            grant: Some(Box::new(grant)),
+        }
     }
 
     /// The key as presented, if any.
     pub const fn key(&self) -> Option<&Secret> {
         self.key.as_ref()
+    }
+
+    /// The grant it carries, if any.
+    pub fn grant(&self) -> Option<&(dyn Any + Send + Sync)> {
+        self.grant.as_deref()
     }
 }
 
@@ -309,7 +332,8 @@ pub struct WhoamiRequest {}
 /// The calling key, as it sees itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Whoami {
-    pub key_id: KeyId,
+    /// `None` for an embedder's call, which holds no key and which no door carries (D121).
+    pub key_id: Option<KeyId>,
     pub scopes: BTreeSet<Scope>,
     pub environment: Address,
     /// `None`: the key never expires.
@@ -373,8 +397,8 @@ pub struct KeyInfo {
     pub label: Option<String>,
     pub scopes: BTreeSet<Scope>,
     pub origin: KeyOrigin,
-    /// The key that created it; `None` for a key no key created.
-    pub created_by: Option<KeyId>,
+    /// The key, or the embedder (D121), that created it; `None` for a key neither created.
+    pub created_by: Option<Emitter>,
     pub created_at: Timestamp,
     /// `None`: it never expires.
     pub expires_at: Option<Timestamp>,

@@ -58,7 +58,8 @@ async fn keys_list_newest_first_with_their_origin_creator_and_status() {
         .whoami(&admin, WhoamiRequest {})
         .await
         .unwrap()
-        .key_id;
+        .key_id
+        .unwrap();
     let a = create(&engine, &admin, "A", None).await;
     let b = create(&engine, &admin, "B", None).await;
     let c = create(&engine, &admin, "C", Some(T + HOUR)).await;
@@ -76,17 +77,17 @@ async fn keys_list_newest_first_with_their_origin_creator_and_status() {
                 k.label.as_deref(),
                 k.status,
                 k.origin,
-                k.created_by,
+                k.created_by.clone(),
             )
         })
         .collect();
-    let by = Some(admin_id);
+    let by = || Some(admin_id.into());
     assert_eq!(
         shown,
         [
-            (c, Some("C"), KeyStatus::Expired, KeyOrigin::Created, by),
-            (b, Some("B"), KeyStatus::Revoked, KeyOrigin::Created, by),
-            (a, Some("A"), KeyStatus::Active, KeyOrigin::Created, by),
+            (c, Some("C"), KeyStatus::Expired, KeyOrigin::Created, by()),
+            (b, Some("B"), KeyStatus::Revoked, KeyOrigin::Created, by()),
+            (a, Some("A"), KeyStatus::Active, KeyOrigin::Created, by()),
             (
                 admin_id.to_string(),
                 None,

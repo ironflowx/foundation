@@ -69,7 +69,7 @@ impl Operations for Fixed {
 
     async fn whoami(&self, _cx: &Call, _req: WhoamiRequest) -> Result<Whoami, OpError> {
         Ok(Whoami {
-            key_id: KEY[4..40].parse().unwrap(),
+            key_id: Some(KEY[4..40].parse().unwrap()),
             scopes: BTreeSet::from([Scope::Read]),
             environment: Address::new("default", "default"),
             expires_at: None,
