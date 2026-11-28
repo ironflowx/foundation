@@ -74,9 +74,9 @@ an ASCII letter, a digit, `.`, `_`, `-` or `/` (a trailing space, a CR, a BOM), 
 refuses for a branch (`git check-ref-format --branch`) fails `conformance` with a message that names
 the file. A name git takes with another byte, `+`, `@` or a non-ASCII letter, is refused too: name
 the app's branch without them. A well-formed name of no branch, a typo or `origin/<branch>`, fails
-at the checkout, whose message names the ref but not the file (a tag or a branch literally named
-`refs/heads/<name>` would stand in for the branch; the app has neither). A commit or a tag cannot be
-named.
+at the checkout, whose message names the ref but not the file (any ref whose name ends in
+`refs/heads/<name>`, such as a tag or a branch literally named so, would stand in for the branch;
+the app has none). A commit or a tag cannot be named.
 
 ## Pure crates
 
