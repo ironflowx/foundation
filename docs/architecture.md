@@ -6,7 +6,7 @@ One environment's commit path and the engine in front of it, as foundation crate
 
 ![C1 system context](img/c1-context.svg)
 
-The engine is a library: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead.
+The engine is a library: a host opens it on a data directory, and every call to it carries a key, but the embedding process's own call (`Engine::embedder_call`), which carries none and which no door can carry (D121). An embedder that needs no engine opens a ledger in a directory instead.
 
 A host that serves the engine through the HTTP door, as `ironflowx serve` does, is a process. Outside it:
 
@@ -67,13 +67,13 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 | Proto client | Calls `Operations` over Connect, sending each `Call`'s key | `Client::new(url)`, `with_timeout`, `Operations` | `ironflowx-proto` (`client`; `client-tls` for `https`) |
 | HTTP door | Serves `Operations` over Connect, gRPC and gRPC-Web, with `/health` and `/ready`. Holds no rule | `router(slot)`, `Slot`, `Readiness` | `ironflowx-doors` (`http`) |
 | Generator | Derives a CLI's commands from the proto at build time, and refuses a proto that does not say enough | `generate(descriptor_set, out_dir)`, from `build.rs` | `ironflowx-codegen` |
-| Engine | Reads whether the bootstrap is marked; opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records; reports its health and a ledger fault to the host; checks an emit without a submit | `is_bootstrapped`, `Engine::open`, `health`, `faulted`, `close`, `Operations`, `recover_admin_key`, `check_emit` | `ironflowx-operations` |
-| Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create` | `ironflowx-authz` |
+| Engine | Reads whether the bootstrap is marked; opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked, or its grant the engine's own embedder grant) before the handler reaches the ledger or the key records; gives the embedding process its own call; reports its health and a ledger fault to the host; checks an emit without a submit | `is_bootstrapped`, `Engine::open`, `embedder_call`, `health`, `faulted`, `close`, `Operations`, `recover_admin_key`, `check_emit` | `ironflowx-operations` |
+| Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold, from a key or from the embedding process. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create`, `may_create_as_embedder` | `ironflowx-authz` |
 | Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `undo_bootstrap`, `mark_ledger_created`, `finish_bootstrap`, `check_seed`, `apply_seed`, `lookup_key`, `record_expiry`, `insert_key`, `insert_recovered`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
 | Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Scope`, `KeyOrigin`, `Address`, `Secret`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors; the size limits of what a caller sends | Types, `limits` | `ironflowx-core` |
 | Facade | Gives embedders one dependency on foundation | Re-exports `core`, `proto`, `cell` and `operations`, not the engine's own `store`, `authz` and `events` (D83). `proto::Client` with `client`, also accepting `https` with `client-tls` | `ironflowx` |
 
-`Engine` is the one in-process `Operations`, so `Operations` always means credentialed (D36). For an event operation it maps the request to a submission or a query and the outcome to an answer, and holds no event rule: every check and default is in event rules, and the size limits they check are in `ironflowx_core::limits` (D120). `check_emit` runs event rules' checks of one emit without a submit, so an embedder or executor sizes a payload before it sends it instead of learning a limit from a refusal: an emit that admission lets through is refused by event rules, with the same kind and message, exactly when `check_emit` refuses it, unless event sequences are used up. It reads no key, so it cannot say what admission will answer. It submits as its verified grant's `submit_as()`, so an event emitted with a key records `key:<key-id>`. An embedder that needs no keys calls `Ledger::submit`, `get_event` and `list_events` directly, as `SubmitAs::embedder(name)`; the ledger trusts it.
+`Engine` is the one in-process `Operations`, so `Operations` always means credentialed (D36). For an event operation it maps the request to a submission or a query and the outcome to an answer, and holds no event rule: every check and default is in event rules, and the size limits they check are in `ironflowx_core::limits` (D120). `check_emit` runs event rules' checks of one emit without a submit, so an embedder or executor sizes a payload before it sends it instead of learning a limit from a refusal: an emit that admission lets through is refused by event rules, with the same kind and message, exactly when `check_emit` refuses it, unless event sequences are used up. It reads no key, so it cannot say what admission will answer. It submits as its verified grant's `submit_as()`, so an event emitted with a key records `key:<key-id>`; an embedder's call submits as `embedder:<name>`, and a key it creates names it in `created_by` ([Keys](#keys), "The embedder's call"). An embedder that needs no engine calls `Ledger::submit`, `get_event` and `list_events` directly, as `SubmitAs::embedder(name)`; the ledger trusts it.
 
 | Type | Is |
 |---|---|
@@ -140,14 +140,18 @@ pub use ironflowx_core::limits;   // the size limits of what a request sends (D1
 // EventPage        { events: Vec<Event> /* newest first; data and metadata within 3 MiB, or one event (D73) */,
 //                    next: Option<String> /* None on the last page, else continues after the last event */ }
 // Call             Call::anonymous() | Call::with_key(Secret)   // the key as presented (D45); not Clone
+//                  | Call::with_grant(impl Any + Send + Sync)   // only its maker reads it: the engine's embedder
+//                                                               // grant (D121); grant() -> Option<&dyn Any>
 // OpError          { kind: ErrorKind, message: String, hint: Option<String> }   // see Errors
-// Whoami           { key_id: KeyId, scopes: BTreeSet<Scope>, environment: Address, expires_at: Option<Timestamp> }
+// Whoami           { key_id: Option<KeyId> /* None for an embedder's call */, scopes: BTreeSet<Scope>,
+//                    environment: Address, expires_at: Option<Timestamp> }
 // Environment      { env: EnvRef, name, address: Address, project_id: ProjectId, created_at: Timestamp }
 // WhoamiRequest {} · ListEnvironmentsRequest {}   // no request takes an environment (LED-7)
 // CreateKeyRequest { scopes: BTreeSet<Scope> /* empty: {read} */, expires_at: Option<Timestamp>, label: Option<String> }
 // CreatedKey       { key: Secret /* returned once */, info: KeyInfo }   // no Clone or PartialEq; Debug prints no key
 // KeyInfo          { key_id, label, scopes, origin: KeyOrigin /* core: Minted | Seed | Recovered | Created */,
-//                    created_by: Option<KeyId>, created_at, expires_at, status: Active | Expired | Revoked }
+//                    created_by: Option<Emitter> /* key:<key-id> or embedder:<name> */, created_at, expires_at,
+//                    status: Active | Expired | Revoked }
 // ListKeysRequest  { limit: Option<NonZeroU32> /* None 100, above 1,000 clamps */, cursor: Option<String> }
 // KeyPage          { keys: Vec<KeyInfo> /* newest first, by seq */, next: Option<String> /* <token>.<seq> */ }
 // RevokeKeyRequest { key_id: String }   // an ID that does not parse is NotFound
@@ -201,8 +205,13 @@ impl Engine {
     async fn close_with_state(self) -> LedgerState;   // ledger state at the start of close
 }
 // Each call is admitted first, with no cache; each submission is attributed to the calling key,
-// from its grant (TEN-6).
+// from its grant, or to the embedder (TEN-6).
 impl Operations for Engine { .. }
+impl Engine {
+    // Admin, no key, attributed embedder:<name>; admitted by any engine on this directory and
+    // incarnation; in process only (D121). Err for a name SubmitAs::embedder refuses.
+    fn embedder_call(&self, name: &str) -> Result<Call, ParseError>;
+}
 // Opened      { engine: Engine,
 //               minted: Option<Secret>,      // a bootstrapping open without a seed, or a finishing open that replaced a lost minted key
 //               lost_secret: bool,           // a finishing open revoked a minted key whose secret no open returned
@@ -222,6 +231,9 @@ fn recheck(record: &KeyRecord, env: &EnvRef, now: Timestamp) -> Result<Grant, Re
 fn verify_seed(seed: &KeyParts, record: &KeyRecord, origin: KeyOrigin, env: &EnvRef) -> Result<SeedState, SeedConflict>;
 fn admit(grant: &Grant, required: Option<Scope>) -> Result<(), MissingScope>;   // MissingScope::scope() names it
 fn may_create(creator: &Grant, scopes: &BTreeSet<Scope>, expires_at: Option<Timestamp>, label: Option<&str>,
+              now: Timestamp) -> Result<(), CreateRefusal>;
+// may_create's rules for a creator with every scope and no expiry: the embedding process (D121)
+fn may_create_as_embedder(scopes: &BTreeSet<Scope>, expires_at: Option<Timestamp>, label: Option<&str>,
               now: Timestamp) -> Result<(), CreateRefusal>;
 
 // ironflowx-store: blocking; async Engine methods call it under spawn_blocking.
@@ -245,18 +257,20 @@ impl ControlPlane {
     // Admission's one read: the key's record, then now, as one step no recorded expiry falls between
     fn lookup_key(&self, id: KeyId, env: &EnvRef, clock: &dyn Clock) -> Result<(Option<KeyRecord>, Timestamp), StoreError>;
     fn record_expiry(&self, env: &EnvRef, id: KeyId) -> Result<(), StoreError>;             // sets expiry_recorded, once
-    // One transaction: reads the creator's record again and checks it (recheck), then the request (may_create), then
-    // that fewer than `cap` created keys hold a slot
-    fn insert_key(&self, env: &EnvRef, new: NewKey, creator: KeyId, clock: &dyn Clock, cap: u32)
+    // One transaction: reads a creating key's record again and checks it (recheck), then the request (may_create;
+    // may_create_as_embedder for an embedder, which no record backs), then that fewer than `cap` created keys hold
+    // a slot. A key's creator is stored by its bare ID, an embedder as embedder:<name>
+    fn insert_key(&self, env: &EnvRef, new: NewKey, creator: &Emitter, clock: &dyn Clock, cap: u32)
         -> Result<KeyRow, KeyChangeError>;
     // One transaction: refuses unless the bootstrap is marked, then inserts an admin key of origin `Recovered`
     fn insert_recovered(&self, key: &KeyParts, clock: &dyn Clock) -> Result<(), RecoverError>;
     // RecoverError NotReady | Store(StoreError), re-exported by ironflowx-operations
     // One transaction: reads `by`'s record again and checks it (recheck), then sets revoked_at once; the row stays
-    fn revoke_key(&self, env: &EnvRef, id: KeyId, by: KeyId, clock: &dyn Clock) -> Result<(), KeyChangeError>;
+    // A revoking key is read again and checked; an embedder is not. Stores no revoker
+    fn revoke_key(&self, env: &EnvRef, id: KeyId, by: &Emitter, clock: &dyn Clock) -> Result<(), KeyChangeError>;
     fn list_keys(&self, env: &EnvRef, before_seq: Option<u64>, limit: u32) -> Result<Vec<KeyRow>, StoreError>; // newest first
     // NewKey { id, digest, scopes, label, expires_at }
-    // KeyRow { seq, record: KeyRecord, origin: KeyOrigin, created_by: Option<KeyId>, label, created_at }
+    // KeyRow { seq, record: KeyRecord, origin: KeyOrigin, created_by: Option<Emitter>, label, created_at }
     // KeyChangeError Caller | Refused(CreateRefusal) | Full | NotFound | Store(StoreError)
     fn environment(&self, env: &EnvRef) -> Result<EnvironmentRecord, StoreError>;
 }
@@ -344,22 +358,25 @@ A page holds 20 events unless asked otherwise, at most 200, and stops before its
 | Valid | Parses; a record exists for the engine's environment ID and token; digests match, compared in constant time; not revoked; not expired: `now < expires_at` when an expiry is set, by the clock the engine was opened with, and `expiry_recorded` unset |
 | Scopes | A non-empty set of `read`, `write`, `admin`, none implying another (D27). The bootstrap key holds all three |
 | Created | By a key holding `admin`. Scopes default to `{read}` when none are asked for, and must be a subset of the creator's. The expiry must be after now and no later than the creator's; no expiry only when the creator has none (D28). A label is 0–128 bytes of UTF-8 with no control character (Unicode Cc). At most 1,000 created keys per environment hold a slot: a key holds one until it is revoked or its expiry is recorded, whatever the clock reads. All checked inside the transaction, with now read after the write lock, the creator's record read again there |
-| Origin | `Minted` for a bootstrap key the engine minted; `Seed` for a key the host supplied; `Recovered` for one recovered from the data directory, which is labelled `recovered`; none of these has a creator or holds a slot. `Created` keys name their creator in `created_by` (D35) |
+| Origin | `Minted` for a bootstrap key the engine minted; `Seed` for a key the host supplied; `Recovered` for one recovered from the data directory, which is labelled `recovered`; none of these has a creator or holds a slot. `Created` keys name their creator in `created_by` (D35): the creating key, or the embedder whose call created it (D121) |
 | Status | `Revoked` when `revoked_at` is set, whatever the expiry; otherwise `Expired` from `now ≥ expires_at`, by the clock, or once its expiry is recorded (`KeyRecord::expired`, as admission decides it); otherwise `Active` |
 | Revoked | `revoked_at` is set; the row stays, so every `key:` emitter names a row (D35). Revoking a revoked key succeeds and keeps the first time |
 | Order | Keys list newest first by `seq`, a counter assigned under the write lock, so keys made in the same millisecond never tie. A page holds 100 keys unless asked otherwise, 1,000 at most; its cursor is `<incarnation token>.<seq>`, as event cursors are |
 
-**Admission.** Every call runs, in order: no key, or an empty one → `Unauthenticated`; `parse`; `lookup_key(id, env)`, a read-only lookup with no cache (D45) that then reads now, both under the control plane's lock, so no recorded expiry falls between them; `verify` at that now, and `record_expiry` when `Refused::newly_expired()` is true; `admit` against `required_scope(op)` (D37). Only then does the handler run, and it reaches the ledger only through `ledger(&Authorized)` and the key records only through `keys(&Authorized)`. `Authorized`, the proof of admission, is private to the engine, and its field private to the admission module (TEN-1). Admission's one write is that flag. Of an open `Engine`'s methods, besides `close`, only the host's `health` and `faulted` reach either without a key, and they reach no event and no key record.
+**Admission.** Every call runs, in order: no key, or an empty one → `Unauthenticated`; `parse`; `lookup_key(id, env)`, a read-only lookup with no cache (D45) that then reads now, both under the control plane's lock, so no recorded expiry falls between them; `verify` at that now, and `record_expiry` when `Refused::newly_expired()` is true; `admit` against `required_scope(op)` (D37). Only then does the handler run, and it reaches the ledger only through `ledger(&Authorized)` and the key records only through `keys(&Authorized)`. `Authorized`, the proof of admission, is private to the engine, and its field private to the admission module (TEN-1). Admission's one write is that flag. Of an open `Engine`'s methods, besides `close`, only the host's `health` and `faulted` reach either without a key, and they reach no event and no key record; an embedder's call is admitted without one, as below.
+
+**The embedder's call.** `Engine::embedder_call(name)` gives the embedding process a `Call` that carries a grant in place of a key: a value of a type private to `ironflowx-operations`, holding `SubmitAs::embedder(name)` and the engine's `EnvRef`, so no other crate can build one (a `compile_fail` proof), and a door, which builds a `Call` only from the key a request presents, cannot carry one. Admission checks it first: this engine's directory and incarnation admit it as a caller with every scope and no expiry, with no key, no lookup and no write; another engine's, or a grant of any other type, is `Unauthenticated` "invalid grant". What its call writes is attributed `embedder:<name>`: its events' `emitted_by`, and a key it creates, whose `created_by` names it. A revoke stores no revoker, for a key or an embedder. `whoami` answers it with every scope, no expiry and no `key_id`. It is never revoked and never expires: any engine on the same directory and incarnation admits it, so an embedder keeps no secret on disk to stay in across restarts, as a seed does ([Engine open](#engine-open)). Only the embedding process holds one, and dropping it ends it (D121). A name `SubmitAs::embedder` refuses is an error from `embedder_call` itself.
 
 **Recorded expiry sticks.** A key is expired when `now ≥ expires_at` or its `expiry_recorded` flag is set (D42). The flag is set, once, when the key is refused as expired with a matching digest and not revoked (`record_expiry`), or when a key change finds its calling key newly expired, in that change's transaction. A key whose expiry was recorded is never accepted again, whatever the clock does later, across restarts too. If recording fails, the call still gets the one uniform refusal, but nothing is recorded, unless its commit is unsettled and lands (D48): until the unsettled commit lands or a later refusal records it, a clock set back can accept that key again. A clock that runs ahead and is corrected expires for good only the keys refused while it ran ahead; a recorded expiry does not spread to the keys a key created, so a child can stay usable until its own expiry. `list_keys` reports status by the clock and the flag and records nothing, so a key listed as expired can list as active again after the clock is set back. Event time is never compared with key time (LED-1).
 
-**Revocation and calls in flight.** A revoke, or the revoke a seed's rotation makes, which has no calling key, takes effect when its transaction commits: a call whose `lookup_key` runs after it is refused; a call that read the key before may finish. `insert_key` and `revoke_key` take the write lock, read now, then read their calling key's record again and `recheck` it: a key revoked or expired by then changes no key, except that a newly expired one has its own expiry recorded, and the call is `Unauthenticated` (D43). No lock spans the control plane and the ledger, so an emit admitted before a revoke may still commit after it. Key and identity operations do not touch the ledger, so they keep working while it is `Unavailable`. Cancelling a key change only drops its answer: once it is admitted it can still commit, even after `close`. A created key's secret is then lost and its slot held: list the keys and revoke it.
+**Revocation and calls in flight.** A revoke, or the revoke a seed's rotation makes, which has no calling key, takes effect when its transaction commits: a call whose `lookup_key` runs after it is refused; a call that read the key before may finish. `insert_key` and `revoke_key` take the write lock, read now, then read their calling key's record again and `recheck` it: a key revoked or expired by then changes no key, except that a newly expired one has its own expiry recorded, and the call is `Unauthenticated` (D43). An embedder's call has no record to read again (D121). No lock spans the control plane and the ledger, so an emit admitted before a revoke may still commit after it. Key and identity operations do not touch the ledger, so they keep working while it is `Unavailable`. Cancelling a key change only drops its answer: once it is admitted it can still commit, even after `close`. A created key's secret is then lost and its slot held: list the keys and revoke it.
 
 | Operation | Scope |
 |---|---|
 | `emit`, `emit_batch` | `write` |
 | `get_event`, `list_events`, `list_environments` | `read` |
 | `whoami` | any valid key |
+| every operation | an embedder's call (D121) |
 | `create_key`, `list_keys`, `revoke_key` | `admin` |
 
 ## Errors
@@ -383,6 +400,7 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 | `Unknown` | From the proto client, `create_key` or `revoke_key`, likewise | A `revoke_key`, at once: the hint says so, and that a key which revoked itself is refused. A `create_key` once the keys are listed; after a reopen, list them once more. Its hint says so |
 | `Unauthenticated` | No key, or an empty one: `authentication required` | No |
 | `Unauthenticated` | A malformed key: `invalid API key`, with the key format in `hint` | No |
+| `Unauthenticated` | A grant that is not this engine's embedder grant: another engine's, of another directory or incarnation, or a value of any other type: `invalid grant`, no hint (D121) | No |
 | `Unauthenticated` | An unknown key ID, a wrong secret, a revoked or expired key, or a key of another environment or incarnation: `invalid API key`, the same answer for each, with no hint, whether or not recording an expiry failed (D29, D30). Also a key change whose calling key was revoked or expired before its transaction (D43) | No |
 | `PermissionDenied` | The key lacks the operation's scope: `missing scope: <scope>`, with `hint` saying to create or use a key with that scope (D31) | No |
 | `ResourceExhausted` | `create_key` when 1,000 created keys hold a slot: `key limit reached`, with `hint` saying to revoke keys, expired ones first (D44) | After a revoke, or once an expiry is recorded |
@@ -514,7 +532,7 @@ An open is one of three kinds (D41):
 
 **The first secret is returned at most once.** A finishing open that succeeds reports `lost_secret` for the minted key it revoked and, without a seed, returns a replacement; a seeded bootstrap has no minted key, so its seed stays the bootstrap key unless the open is given another. If an open's mark commits, bootstrapping or finishing, and it does not return, since it dies, is cancelled or, finishing with a seed, fails at that seed, or if a mark it answered as failed is unsettled and lands (D48), any minted secret or `lost_secret` it would have returned is lost: no later open reports it, and nothing can tell. A lost secret's key stays listed with origin `Minted`. The host, which knows what it saved, recovers an admin key and revokes that one with it.
 
-**An embedder that restarts keeps its key with a seed.** `minted` is returned once, so an app that takes its key from it has none on its next start. Instead: call `generate_seed()`, write the secret to a file only the app's user can read, synced, before the first open, and pass it, read back from that file, to every `Engine::open`. Since the seed is on disk before any open sees it, no open can make a key the app then loses. Keep the file outside the engine's root. An engine bootstrapped without a seed takes one at its next open. [`examples/embed`](https://github.com/ironflowx/foundation/tree/main/examples/embed) does this.
+**An embedder that restarts keeps its key with a seed, or needs none.** An app that calls the engine only in process can use `embedder_call` instead, which needs no key and no file, and attributes its writes to the app (D121); a seed is for an app that needs a key of its own, as one that calls its engine through a door does. `minted` is returned once, so an app that takes its key from it has none on its next start. Instead: call `generate_seed()`, write the secret to a file only the app's user can read, synced, before the first open, and pass it, read back from that file, to every `Engine::open`. Since the seed is on disk before any open sees it, no open can make a key the app then loses. Keep the file outside the engine's root. An engine bootstrapped without a seed takes one at its next open. [`examples/embed`](https://github.com/ironflowx/foundation/tree/main/examples/embed) does this.
 
 **Recovery.** `recover_admin_key(root, clock)` stores a fresh admin key, with all three scopes and no expiry, of origin `Recovered` and labelled `recovered`, and returns its secret, once (D34). Reaching the data directory is the authority. It is a host's function, not an operation: it takes no engine lock and works with or without a running engine, whose next call accepts the key, since every call reads keys from the control plane. With it, revoking the last admin key, your own included, needs no guard.
 
@@ -622,6 +640,7 @@ It writes `cli.rs`: each command with its RPC name, summary, input and output sc
 | 64-bit integers | Strings in JSON, as protobuf prints them: `"version":"1"`. A number is read too |
 | A batch item's result | `oneof result { EmitResponse ok; ErrorInfo error; }`: one per item, in their order. `Client` takes no other number of them |
 | Who emitted | `emitted_by` is the `Emitter`'s text: `key:<key-id>` or `embedder:<name>` |
+| Who created a key | `created_by` is the creating key's bare ID, as in 0.3, or `embedder:<name>` for an embedder (D121); a 0.3 client fails to decode a page holding a key an embedder created. `WhoamiResponse.key_id` is `optional`, absent only for an embedder's call, which no door carries; a key's call sends and receives the same bytes as in 0.3 |
 | Times | `google.protobuf.Timestamp`, RFC 3339 in JSON, in whole milliseconds and in years 0001–9999. What the library reads as one is one: it also takes a `+` in place of the first digit of a part (`2027-+1-15T08:00:00Z`). A stored time outside years 0001–9999, which only an in-process caller or a wrong clock can make, is sent as the nearer bound, `0001-01-01T00:00:00Z` or `9999-12-31T23:59:59.999Z` (D76); the stored value still decides expiry |
 | IDs | Strings in their text form; an environment travels as its `EnvRef`'s, `env`, never a bare ID (LED-9) |
 | Addresses | The text `project/environment`. The client splits it at the first `/` for `Address::new`, so it prints back exactly, and never makes an ID from it (D75, TEN-8) |
