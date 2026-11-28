@@ -283,27 +283,45 @@ async fn a_run_due_at_the_last_record_is_due_with_the_clock_set_back() {
     f.close().await;
 }
 
-/// RUN-16's order when several happen at once: a due run, then a fault or a drain, then the end of
-/// the wait. The claim is held at the clock reading after its first read's snapshot, which saw no
-/// run, while both happen; then it goes on. A run folded since that read is taken by one read more
-/// at the end of the wait. A run on a ledger that then failed cannot be read or taken.
+/// RUN-16's order when several happen at once: a claimable run, then a fault or a drain, then the
+/// end of the wait. The claim is held at the clock reading after its first read's snapshot, which
+/// saw no claimable run, while both happen; then it goes on. A run folded, or come due by the
+/// clock, since that read is taken by one read more, whatever came with it. A run on a ledger that
+/// then failed cannot be read or taken.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_run_a_fault_a_drain_and_the_end_of_the_wait_at_one_barrier() {
     #[derive(Debug, Clone, Copy, PartialEq)]
     enum Event {
+        /// A run started and folded.
         Run,
+        /// The clock set past the due time of a run, a minute away at the read.
+        Due,
         Fault,
         Drain,
         End,
     }
-    use Event::{Drain, End, Fault, Run};
-    for pair in [[Run, End], [Run, Fault], [Fault, End], [Drain, End]] {
+    use Event::{Drain, Due, End, Fault, Run};
+    let pairs = [
+        [Run, End],
+        [Run, Drain],
+        [Due, End],
+        [Due, Drain],
+        [Run, Fault],
+        [Fault, End],
+        [Drain, End],
+    ];
+    for pair in pairs {
         let clock = Probe::at(T);
         let f = fixture(clock.clone()).await;
+        let mut run = None;
+        if pair[0] == Due {
+            let started = f.start().await;
+            f.due_at(&started, T + 60_000).await;
+            run = Some(started);
+        }
         let (read, go) = clock.stop_other(1);
         let claim = f.spawn_claim(Some(1));
         receive(&read, 1);
-        let mut run = None;
         for event in pair {
             match event {
                 Run => {
@@ -312,6 +330,7 @@ async fn a_run_a_fault_a_drain_and_the_end_of_the_wait_at_one_barrier() {
                     assert_eq!(f.status(&started).await, RunStatus::Queued);
                     run = Some(started);
                 }
+                Due => clock.set(T + 60_000),
                 Fault => {
                     f.fail_next_start().await;
                     let req = StartRunRequest {
@@ -326,12 +345,40 @@ async fn a_run_a_fault_a_drain_and_the_end_of_the_wait_at_one_barrier() {
         }
         go.send(()).unwrap();
         let (claimed, _) = claim.await.unwrap();
-        if pair == [Run, End] {
+        if matches!(pair, [Run | Due, End | Drain]) {
             let taken = claimed.unwrap().expect("the run");
-            assert_eq!(Some(taken.lease.run.to_string()), run);
+            assert_eq!(Some(taken.lease.run.to_string()), run, "{pair:?}");
         } else {
             assert!(unavailable(&claimed), "{pair:?}: {claimed:?}");
         }
+        f.close().await;
+    }
+}
+
+/// A fault or a drain that comes during a read begun after the wait was over ends the claim as
+/// `Unavailable`, not empty: one read more meets it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fault_or_a_drain_during_the_last_read_is_no_empty_claim() {
+    for fault in [true, false] {
+        let clock = Probe::at(T);
+        let f = fixture(clock.clone()).await;
+        // A claim that does not wait: its one read begins with its wait over.
+        let (read, go) = clock.stop_other(1);
+        let claim = f.spawn_claim(Some(0));
+        receive(&read, 1);
+        if fault {
+            f.fail_next_start().await;
+            let req = StartRunRequest {
+                function: "charge".into(),
+            };
+            f.engine.start_run(&f.admin, req).await.unwrap();
+            f.engine.faulted().await;
+        } else {
+            f.engine.begin_drain();
+        }
+        go.send(()).unwrap();
+        let (claimed, _) = claim.await.unwrap();
+        assert!(unavailable(&claimed), "fault: {fault}: {claimed:?}");
         f.close().await;
     }
 }
@@ -445,5 +492,47 @@ async fn a_run_come_due_comes_before_a_drain() {
         claimed.unwrap().expect("the run").lease.run.to_string(),
         run
     );
+    f.close().await;
+}
+
+/// A claim already submitted to the writer when the drain begins is not ended by it: it answers as
+/// the writer decides (D72), here with the run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_claim_at_the_writer_when_the_drain_begins_gets_the_writers_answer() {
+    let clock = Probe::at(T);
+    let f = fixture(clock.clone()).await;
+    let run = f.start().await;
+    let (at_writer, go) = clock.stop_writer(0);
+    let claim = f.spawn_claim(Some(0));
+    receive(&at_writer, 1);
+    f.engine.begin_drain();
+    go.send(()).unwrap();
+    let (claimed, _) = claim.await.unwrap();
+    assert_eq!(
+        claimed.unwrap().expect("the run").lease.run.to_string(),
+        run
+    );
+    f.close().await;
+}
+
+/// A key revoked while its claim waits, then a run made claimable, then a drain: the read after
+/// the drain finds the run, and admission refuses the key. The run stays queued.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_revoked_key_then_a_run_then_a_drain_is_unauthenticated() {
+    let clock = Probe::at(T);
+    let f = fixture(clock.clone()).await;
+    let readings = clock.tell_others();
+    let claim = f.spawn_claim(None);
+    // Its admission, and its read: it found nothing and waits.
+    receive(&readings, 2);
+    let req = RevokeKeyRequest {
+        key_id: f.executor_id.clone(),
+    };
+    f.engine.revoke_key(&f.admin, req).await.unwrap();
+    let run = f.start().await;
+    f.engine.begin_drain();
+    let (claimed, _) = claim.await.unwrap();
+    assert_eq!(claimed.unwrap_err().kind, ErrorKind::Unauthenticated);
+    assert_eq!(f.status(&run).await, RunStatus::Queued);
     f.close().await;
 }

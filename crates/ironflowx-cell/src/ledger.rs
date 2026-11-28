@@ -616,20 +616,12 @@ pub struct Changes {
 }
 
 impl Changes {
-    /// Whether a fold or a failure has come since this was taken or last resolved.
-    pub fn has_changed(&self) -> bool {
-        let p = self.rx.borrow();
-        p.failed || p.applied != self.seen
-    }
-
-    /// Resolves at the first fold or failure it has not told of since it was taken, so a fold tells
-    /// once; never once the ledger has closed, which is no change.
+    /// Resolves at the first fold it has not told of since it was taken, so a fold tells once, and
+    /// at once from a failure on, which stays; never once the ledger has closed, a close being no
+    /// change.
     pub async fn changed(&mut self) {
         let seen = self.seen;
-        let told = self
-            .rx
-            .wait_for(|p| p.failed || p.closed || p.applied != seen)
-            .await;
+        let told = self.rx.wait_for(|p| p.failed || p.applied != seen).await;
         match told.map(|p| (p.failed, p.closed, p.applied)) {
             Ok((failed, closed, applied)) if failed || !closed => self.seen = applied,
             // Closed, and not failed: no change comes.

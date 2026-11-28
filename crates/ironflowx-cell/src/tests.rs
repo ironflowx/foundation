@@ -2485,6 +2485,8 @@ fn the_earliest_due_time_is_of_a_pair_the_claim_names() {
     assert_eq!(due(&[("charge", "v1")]), at(1_000));
     assert_eq!(due(&[("charge", "v2"), ("refund", "v1")]), at(500));
     assert_eq!(due(&[("charge", "v2")]), None);
+    // Two pairs, each with a queued run: the earlier of the two.
+    assert_eq!(due(&[("charge", "v1"), ("refund", "v1")]), at(500));
     drop(conn);
     drop(ledger);
 }
@@ -2500,9 +2502,7 @@ async fn changes_resolve_at_a_commit_and_a_failure_and_never_after_a_close() {
     let a = emit(&ledger, named("a")).await.unwrap();
     // Folded, by a read, so the hold below holds b's fold, not a's.
     get(&ledger, a).await.unwrap();
-    assert!(changes.has_changed());
     assert!(ready(std::pin::pin!(changes.changed())), "a fold");
-    assert!(!changes.has_changed());
     assert!(
         !ready(std::pin::pin!(changes.changed())),
         "a fold tells once"
@@ -2519,7 +2519,6 @@ async fn changes_resolve_at_a_commit_and_a_failure_and_never_after_a_close() {
     );
     ledger.release_fold();
     ledger.faulted().await;
-    assert!(at_fold.has_changed());
     assert!(ready(std::pin::pin!(at_fold.changed())), "a failure");
     // A failed ledger's claim read is refused, as every read is.
     let claim = ironflowx_execution::Command::Claim {

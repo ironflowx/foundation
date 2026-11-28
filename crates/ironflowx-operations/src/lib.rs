@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
-use ironflowx_cell::{Ledger, Outcome, ReadError, Submission};
+use ironflowx_cell::{Ledger, Outcome, Submission};
 use ironflowx_core::{
     Address, Clock, Emitter, EnvRef, ErrorKind, IncarnationToken, ParseError, Scope, Secret,
     SubmitAs, Timestamp,
@@ -553,8 +553,12 @@ impl Operations for Engine {
         // Execution rules check it at the first read.
         let wait = Duration::from_secs(req.wait_seconds.unwrap_or(DEFAULT_WAIT_SECONDS).into());
         let cmd = execution::claim(req);
-        let mut last_read = false;
         loop {
+            // The claim ends empty, or `Unavailable`, only from a read that began once its wait was
+            // over, or the drain or a fault had begun; else it reads once more, so a run claimable
+            // by then is taken first (RUN-16). The fault check is the read's own.
+            let over = started.elapsed() >= wait;
+            let drained = *drain.borrow();
             // Taken before the read, so a fold after its snapshot wakes the wait (RUN-16). The read
             // waits for no fold, so no fold holds a drain up (RUN-15).
             let mut changes = self.ledger(&a).changes();
@@ -577,21 +581,21 @@ impl Operations for Engine {
                 Some(until) => nap = nap.min(until),
                 None => {}
             }
-            // A fault or a drain since the read comes before the end of the wait.
             if self.ledger(&a).state() == LedgerState::Unavailable {
-                return Err(events::read_error(ReadError::Unavailable));
+                continue;
             }
             if *drain.borrow() {
-                return Err(draining());
+                if drained {
+                    return Err(draining());
+                }
+                continue;
             }
             let left = wait.saturating_sub(started.elapsed());
             if left.is_zero() {
-                // A commit folded since the read comes before the end: one read more, at most.
-                if changes.has_changed() && !last_read {
-                    last_read = true;
-                    continue;
+                if over {
+                    return Ok(None);
                 }
-                return Ok(None);
+                continue;
             }
             let mut woken = pin!(changes.changed());
             let mut slept = pin!(tokio::time::sleep(nap.min(left)));

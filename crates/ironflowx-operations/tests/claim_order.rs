@@ -44,6 +44,7 @@ async fn a_held_fold_holds_up_neither_the_end_of_a_wait_nor_a_drain() {
         let clock = Probe::at(T);
         let f = fixture(clock.clone()).await;
         let readings = clock.tell_others();
+        let sent = Instant::now();
         let claim = f.spawn_claim(Some(1));
         // Its admission, and its read: it found nothing and waits.
         receive(&readings, 2);
@@ -72,6 +73,8 @@ async fn a_held_fold_holds_up_neither_the_end_of_a_wait_nor_a_drain() {
             assert!(when - at < Duration::from_secs(1), "{:?}", when - at);
         } else {
             assert_eq!(claimed, Ok(None));
+            // It waited its whole 1 s, counted from before it was sent.
+            assert!(when - sent >= Duration::from_secs(1), "{:?}", when - sent);
         }
         assert_eq!(waited, 0, "drain: {drain}: a read waited for the fold");
         f.close().await;
