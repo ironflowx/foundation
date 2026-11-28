@@ -185,6 +185,18 @@ pub fn ironflowx_execution::Function::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_execution::Function
 pub fn ironflowx_execution::Function::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_execution::Function
+pub struct ironflowx_execution::FunctionPage
+pub ironflowx_execution::FunctionPage::functions: alloc::vec::Vec<ironflowx_execution::Function>
+pub ironflowx_execution::FunctionPage::next: core::option::Option<alloc::string::String>
+impl core::clone::Clone for ironflowx_execution::FunctionPage
+pub fn ironflowx_execution::FunctionPage::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_execution::FunctionPage
+pub fn ironflowx_execution::FunctionPage::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_execution::FunctionPage
+pub fn ironflowx_execution::FunctionPage::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_execution::FunctionPage
+pub fn ironflowx_execution::FunctionPage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_execution::FunctionPage
 pub struct ironflowx_execution::Run
 pub ironflowx_execution::Run::claimed_by: core::option::Option<ironflowx_core::who::Emitter>
 pub ironflowx_execution::Run::code: alloc::string::String
@@ -278,12 +290,16 @@ pub trait ironflowx_execution::ExecutionView
 pub type ironflowx_execution::ExecutionView::Error
 pub fn ironflowx_execution::ExecutionView::claimable(&self, &[(alloc::string::String, alloc::string::String)], ironflowx_core::time::Timestamp) -> core::result::Result<core::option::Option<ironflowx_execution::Run>, Self::Error>
 pub fn ironflowx_execution::ExecutionView::function(&self, &str) -> core::result::Result<core::option::Option<ironflowx_execution::Function>, Self::Error>
+pub fn ironflowx_execution::ExecutionView::function_count(&self) -> core::result::Result<u64, Self::Error>
+pub fn ironflowx_execution::ExecutionView::functions_after(&self, core::option::Option<&str>, u32) -> core::result::Result<alloc::vec::Vec<ironflowx_execution::Function>, Self::Error>
 pub fn ironflowx_execution::ExecutionView::last_run_sequence(&self) -> core::result::Result<u64, Self::Error>
 pub fn ironflowx_execution::ExecutionView::run(&self, ironflowx_core::id::RunId) -> core::result::Result<core::option::Option<ironflowx_execution::Run>, Self::Error>
 pub fn ironflowx_execution::ExecutionView::step(&self, ironflowx_core::id::RunId, u32) -> core::result::Result<ironflowx_execution::Step, Self::Error>
+pub fn ironflowx_execution::ExecutionView::triggered_by(&self, &str, &str) -> core::result::Result<u64, Self::Error>
 pub fn ironflowx_execution::decide<V: ironflowx_execution::ExecutionView>(&V, &ironflowx_execution::Command, &ironflowx_core::who::Emitter, ironflowx_core::time::SequencedTime, ironflowx_execution::Draws<'_>) -> core::result::Result<ironflowx_execution::Decision, ironflowx_events::Error<<V as ironflowx_execution::ExecutionView>::Error>>
 pub fn ironflowx_execution::decode(&mut &[u8]) -> core::option::Option<ironflowx_execution::Stored>
 pub fn ironflowx_execution::encode(&ironflowx_execution::Stored, &mut alloc::vec::Vec<u8>)
 pub fn ironflowx_execution::fold<T: ironflowx_execution::ExecutionTables>(&mut T, &ironflowx_execution::Stored, ironflowx_core::time::Timestamp, &ironflowx_core::who::Emitter) -> core::result::Result<(), <T as ironflowx_execution::ExecutionTables>::Error>
 pub fn ironflowx_execution::get_function<V: ironflowx_execution::ExecutionView>(&V, &str) -> core::result::Result<ironflowx_execution::Function, ironflowx_events::Error<<V as ironflowx_execution::ExecutionView>::Error>>
 pub fn ironflowx_execution::get_run<V: ironflowx_execution::ExecutionView>(&V, &str) -> core::result::Result<ironflowx_execution::Run, ironflowx_events::Error<<V as ironflowx_execution::ExecutionView>::Error>>
+pub fn ironflowx_execution::list_functions<V: ironflowx_execution::ExecutionView>(&V, ironflowx_core::id::IncarnationToken, core::option::Option<core::num::nonzero::NonZeroU32>, core::option::Option<&str>) -> core::result::Result<ironflowx_execution::FunctionPage, ironflowx_events::Error<<V as ironflowx_execution::ExecutionView>::Error>>

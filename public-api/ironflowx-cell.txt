@@ -9,6 +9,7 @@ pub use ironflowx_cell::EventPage
 pub use ironflowx_cell::EventSubmission
 pub use ironflowx_cell::ExecutionOutcome
 pub use ironflowx_cell::Function
+pub use ironflowx_cell::FunctionPage
 pub use ironflowx_cell::ItemOutcome
 pub use ironflowx_cell::Refusal
 pub use ironflowx_cell::Run
@@ -139,6 +140,7 @@ pub async fn ironflowx_cell::Ledger::get_event(&self, &str) -> core::result::Res
 pub async fn ironflowx_cell::Ledger::get_function(&self, &str) -> core::result::Result<ironflowx_execution::Function, ironflowx_cell::ReadError>
 pub async fn ironflowx_cell::Ledger::get_run(&self, &str) -> core::result::Result<ironflowx_execution::Run, ironflowx_cell::ReadError>
 pub async fn ironflowx_cell::Ledger::list_events(&self, core::option::Option<core::num::nonzero::NonZeroU32>, core::option::Option<&str>) -> core::result::Result<ironflowx_events::EventPage, ironflowx_cell::ReadError>
+pub async fn ironflowx_cell::Ledger::list_functions(&self, core::option::Option<core::num::nonzero::NonZeroU32>, core::option::Option<&str>) -> core::result::Result<ironflowx_execution::FunctionPage, ironflowx_cell::ReadError>
 pub async fn ironflowx_cell::Ledger::open(&std::path::Path, ironflowx_core::id::EnvRef, impl ironflowx_core::time::Clock + core::marker::Send + 'static) -> core::result::Result<Self, ironflowx_cell::OpenError>
 pub fn ironflowx_cell::Ledger::open_blocking(&std::path::Path, ironflowx_core::id::EnvRef, impl ironflowx_core::time::Clock + core::marker::Send + 'static) -> core::result::Result<Self, ironflowx_cell::OpenError>
 pub fn ironflowx_cell::Ledger::open_existing_blocking(&std::path::Path, ironflowx_core::id::EnvRef, impl ironflowx_core::time::Clock + core::marker::Send + 'static) -> core::result::Result<Self, ironflowx_cell::OpenError>

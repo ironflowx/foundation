@@ -3,9 +3,10 @@
 //!
 //! [`decide`] checks a [`Command`] against the current state and returns what to append: entries,
 //! and the engine's own events, which the ledger sequences with event rules; [`fold`] applies an
-//! appended entry to the read store; [`get_function`], [`list_functions`] and [`get_run`] read back. Nothing here does
-//! I/O, reads a clock or draws randomness (LED-15): state comes through [`ExecutionView`], goes out
-//! through [`ExecutionTables`], and run IDs come from the caller's [`Draws`].
+//! appended entry to the read store; [`get_function`], [`list_functions`] and [`get_run`] read
+//! back. Nothing here does I/O, reads a clock or draws randomness (LED-15): state comes through
+//! [`ExecutionView`], goes out through [`ExecutionTables`], and run IDs come from the caller's
+//! [`Draws`].
 
 // Purity (LED-15): forbid, so an inner #[allow] cannot switch these off.
 #![forbid(unsafe_code)]
