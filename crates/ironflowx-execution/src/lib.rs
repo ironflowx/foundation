@@ -4,9 +4,9 @@
 //! [`decide`] checks a [`Command`] against the current state and returns what to append: entries,
 //! and the engine's own events, which the ledger sequences with event rules; [`fold`] applies an
 //! appended entry to the read store; [`get_function`], [`list_functions`] and [`get_run`] read
-//! back. Nothing here does I/O, reads a clock or draws randomness (LED-15): state comes through
-//! [`ExecutionView`], goes out through [`ExecutionTables`], and run IDs come from the caller's
-//! [`Draws`].
+//! back, and [`claim_pairs`] checks a waiting claim before it reads. Nothing here does I/O, reads a
+//! clock or draws randomness (LED-15): state comes through [`ExecutionView`], goes out through
+//! [`ExecutionTables`], and run IDs come from the caller's [`Draws`].
 
 // Purity (LED-15): forbid, so an inner #[allow] cannot switch these off.
 #![forbid(unsafe_code)]
@@ -541,15 +541,7 @@ pub fn decide<V: ExecutionView>(
             lease_seconds,
             wait_seconds,
         } => {
-            let pairs = pairs(functions)?;
-            let lease_seconds = lease_seconds.unwrap_or(DEFAULT_LEASE_SECONDS);
-            if !LEASE_SECONDS.contains(&lease_seconds) {
-                return Err(invalid("a lease is 10 to 900 seconds"));
-            }
-            // shortcut: accepted, and the claim answers at once; #226 makes it wait.
-            if wait_seconds.is_some_and(|w| !WAIT_SECONDS.contains(&w)) {
-                return Err(invalid("a wait is 0 to 20 seconds"));
-            }
+            let (pairs, lease_seconds) = check_claim(functions, *lease_seconds, *wait_seconds)?;
             claim(view, &pairs, lease_seconds, now)
         }
         Command::BeginStep {
@@ -867,8 +859,29 @@ fn is_label(text: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
+/// A function's name and a code label, as a claim names them.
+type Pair = (String, String);
+
+/// A claim's pairs and lease length, or why the claim is outside the rules. The engine waits; a
+/// wait is only checked here.
+fn check_claim<E>(
+    functions: &[String],
+    lease_seconds: Option<u32>,
+    wait_seconds: Option<u32>,
+) -> Result<(Vec<Pair>, u32), Error<E>> {
+    let pairs = pairs(functions)?;
+    let lease_seconds = lease_seconds.unwrap_or(DEFAULT_LEASE_SECONDS);
+    if !LEASE_SECONDS.contains(&lease_seconds) {
+        return Err(invalid("a lease is 10 to 900 seconds"));
+    }
+    if wait_seconds.is_some_and(|w| !WAIT_SECONDS.contains(&w)) {
+        return Err(invalid("a wait is 0 to 20 seconds"));
+    }
+    Ok((pairs, lease_seconds))
+}
+
 /// A claim's `name@code` pairs: 1 to [`MAX_PAIRS`], none repeated.
-fn pairs<E>(functions: &[String]) -> Result<Vec<(String, String)>, Error<E>> {
+fn pairs<E>(functions: &[String]) -> Result<Vec<Pair>, Error<E>> {
     if !(1..=MAX_PAIRS).contains(&functions.len()) {
         return Err(invalid(format!(
             "a claim names 1 to {MAX_PAIRS} functions as name@code"
@@ -1282,4 +1295,26 @@ pub fn get_run<V: ExecutionView>(view: &V, id: &str) -> Result<Run, Error<V::Err
     let not_found = || refused(Refusal::not_found("run not found"));
     let id = id.parse().map_err(|_| not_found())?;
     view.run(id).map_err(Error::Store)?.ok_or_else(not_found)
+}
+
+/// A claim's `(name, code)` pairs, in order, for a claim that waits to read with (D113): the
+/// claim is checked as [`decide`] checks it.
+///
+/// # Errors
+///
+/// `Invalid` for a claim outside the rules, or a command that is no claim.
+pub fn claim_pairs(claim: &Command) -> Result<Vec<(String, String)>, Refusal> {
+    let Command::Claim {
+        functions,
+        lease_seconds,
+        wait_seconds,
+    } = claim
+    else {
+        return Err(Refusal::invalid("not a claim"));
+    };
+    match check_claim::<std::convert::Infallible>(functions, *lease_seconds, *wait_seconds) {
+        Ok((pairs, _)) => Ok(pairs),
+        Err(Error::Refused(r)) => Err(r),
+        Err(Error::Store(never)) => match never {},
+    }
 }

@@ -264,6 +264,7 @@ impl Engine {
                 control: made.control,
                 env: made.env,
                 clock: Arc::new(clock),
+                drain: tokio::sync::watch::Sender::new(false),
                 _lock: root.lock,
             },
             minted: made.minted,

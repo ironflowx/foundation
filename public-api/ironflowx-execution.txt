@@ -344,6 +344,7 @@ pub fn ironflowx_execution::ExecutionView::last_run_sequence(&self) -> core::res
 pub fn ironflowx_execution::ExecutionView::run(&self, ironflowx_core::id::RunId) -> core::result::Result<core::option::Option<ironflowx_execution::Run>, Self::Error>
 pub fn ironflowx_execution::ExecutionView::step(&self, ironflowx_core::id::RunId, u32) -> core::result::Result<ironflowx_execution::Step, Self::Error>
 pub fn ironflowx_execution::ExecutionView::triggered_by(&self, &str, &str) -> core::result::Result<u64, Self::Error>
+pub fn ironflowx_execution::claim_pairs(&ironflowx_execution::Command) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, ironflowx_events::Refusal>
 pub fn ironflowx_execution::decide<V: ironflowx_execution::ExecutionView>(&V, &ironflowx_execution::Command, &ironflowx_core::who::Emitter, ironflowx_core::time::SequencedTime, ironflowx_execution::Draws<'_>) -> core::result::Result<ironflowx_execution::Decision, ironflowx_events::Error<<V as ironflowx_execution::ExecutionView>::Error>>
 pub fn ironflowx_execution::decode(&mut &[u8]) -> core::option::Option<ironflowx_execution::Stored>
 pub fn ironflowx_execution::encode(&ironflowx_execution::Stored, &mut alloc::vec::Vec<u8>)

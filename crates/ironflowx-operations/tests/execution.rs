@@ -301,6 +301,34 @@ async fn of_50_claims_racing_for_one_run_one_takes_it() {
     engine.close().await;
 }
 
+/// RUN-16 with a real future due time: a lapsed lease. A claim waiting on a run whose lease holds
+/// takes it within 5 s of the clock being set past the deadline, with no commit to wake it.
+#[tokio::test]
+async fn a_waiting_claim_takes_a_lease_once_the_clock_passes_its_deadline() {
+    let f = fixture().await;
+    let run_id = f.start().await;
+    f.claim().await;
+    let req = ClaimRunRequest {
+        functions: vec!["charge@v1".into()],
+        wait_seconds: Some(20),
+        ..ClaimRunRequest::default()
+    };
+    let sent = std::time::Instant::now();
+    let (claim, ()) = tokio::join!(f.engine.claim_run(&f.other, req), async {
+        // The claim has read and waits; then the clock passes the deadline, and nothing commits.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        f.clock.step(60_000);
+    });
+    let took = sent.elapsed();
+    let claim = claim.unwrap().expect("the lapsed lease is taken");
+    assert_eq!(
+        (claim.lease.run.to_string(), claim.lease.execution),
+        (run_id, 2)
+    );
+    assert!(took < std::time::Duration::from_secs(6), "{took:?}");
+    f.engine.close().await;
+}
+
 /// RUN-9 through the engine: one lost lease counts 1, and the tenth in a row fails the run with
 /// `ironflowx.executor_lost` and `ironflowx.run.failed`, emitted as the key whose claim failed it.
 #[tokio::test]

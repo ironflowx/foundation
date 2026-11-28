@@ -41,24 +41,24 @@ Feature: Running a function step by step
     When the executor claims "refund@v1" without waiting
     Then its claim is empty
 
-  @EXE-005 @release-0.4 @pending
+  @EXE-005 @release-0.4
   Scenario: The earliest due run is claimed first
     Given runs 1, 2 and 3 of "charge" were started in that order
     When the executor claims three times
     Then it gets runs 1, 2 and 3
 
-  @EXE-006 @release-0.4 @pending
+  @EXE-006 @release-0.4
   Scenario: A waiting claim returns when a run is created
     Given the executor is waiting on a claim of "charge"
     When the builder starts "charge"
     Then the claim returns that run
 
-  @EXE-007 @release-0.4 @pending
+  @EXE-007 @release-0.4
   Scenario: A claim that waits for nothing comes back empty
     When the executor claims "charge" and waits 1 second
     Then its claim is empty
 
-  @EXE-008 @release-0.4 @pending
+  @EXE-008 @release-0.4
   Scenario Outline: A claim outside the rules is refused
     When the executor claims with <what>
     Then it is refused as invalid

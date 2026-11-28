@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use ironflowx_core::{Clock, Emitter, EnvRef, EventId, RunId, SequencedTime, SubmitAs, Timestamp};
 use ironflowx_events::{Error, Event, EventPage, ItemOutcome, Record, Refusal};
@@ -171,6 +172,8 @@ impl From<std::io::Error> for OpenError {
 struct Progress {
     committed: u64,
     applied: u64,
+    /// The event time of the last applied record; `None` before the first.
+    time: Option<Timestamp>,
     failed: bool,
     /// The writer has joined: no failure counts from here on.
     closed: bool,
@@ -264,6 +267,7 @@ impl Ledger {
         let progress = Arc::new(watch::Sender::new(Progress {
             committed: recovered.watermark,
             applied: recovered.watermark,
+            time: recovered.last_time,
             failed: false,
             closed: false,
         }));
@@ -444,6 +448,57 @@ impl Ledger {
             .await
     }
 
+    /// What a waiting claim watches: it wakes once each commit is folded, and when the ledger
+    /// fails. Taken before a read, it misses nothing folded after that read's snapshot.
+    pub fn changes(&self) -> Changes {
+        let rx = self.progress.subscribe();
+        let seen = rx.borrow().applied;
+        Changes { rx, seen }
+    }
+
+    /// How long until a run that `claim` may take is due, by the event clock, in the read store as
+    /// it is: zero when one is due now, `None` when no run of its pairs is queued or running (a
+    /// running run is due at its lease's deadline). It waits for no
+    /// fold: a commit it does not see is folded later, and `changes` tells of it. The claim is
+    /// checked as a submission's is. `clock` is the one the ledger was opened with: it is read
+    /// after the snapshot, and the event time is the later of it and the snapshot's last record
+    /// (D7), as a submission's is.
+    ///
+    /// # Errors
+    ///
+    /// `Refused` with `Invalid` for a claim outside the rules, or a command that is no claim;
+    /// `Unavailable` if the ledger failed.
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime.
+    pub async fn claimable(
+        &self,
+        claim: &Command,
+        clock: &(dyn Clock + Sync),
+    ) -> Result<Option<Duration>, ReadError> {
+        let pairs = ironflowx_execution::claim_pairs(claim).map_err(ReadError::Refused)?;
+        let progress = self.progress.clone();
+        let (due, last) = self
+            .query(move |v| {
+                let due = v.earliest_due(&pairs).map_err(Error::Store)?;
+                // The fold moves it holding the store's lock, which this read holds.
+                Ok((due, progress.borrow().time))
+            })
+            .await?;
+        let clock = clock.now();
+        let now = last.map_or(clock, |t| t.max(clock));
+        Ok(due.map(|due| {
+            if due <= now {
+                return Duration::ZERO;
+            }
+            // Behind the last record, event time stands still until the clock passes it, or a
+            // commit, which wakes the claim, moves it: the distance is the clock's.
+            let millis = due.as_millis().saturating_sub(clock.as_millis());
+            Duration::from_millis(u64::try_from(millis).unwrap_or(0))
+        }))
+    }
+
     /// Runs a query of either rule module once the read store holds every write acknowledged
     /// before this call.
     ///
@@ -479,6 +534,18 @@ impl Ledger {
             wait.is_ok_and(|p| !p.failed)
         };
         if !ready {
+            return Err(ReadError::Unavailable);
+        }
+        self.query(q).await
+    }
+
+    /// Runs a query on the read store as it is, folds still to come or not; `Unavailable` if the
+    /// ledger has failed.
+    async fn query<R: Send + 'static>(
+        &self,
+        q: impl FnOnce(&ReadStore<'_>) -> Result<R, Error<StoreError>> + Send + 'static,
+    ) -> Result<R, ReadError> {
+        if self.progress.borrow().failed {
             return Err(ReadError::Unavailable);
         }
         let store = self.store.clone();
@@ -561,6 +628,28 @@ impl Drop for Ledger {
         self.end_queue();
         self.join();
         self.progress.send_modify(|p| p.closed = true);
+    }
+}
+
+/// A ledger's commits and failure, from [`Ledger::changes`].
+pub struct Changes {
+    rx: watch::Receiver<Progress>,
+    /// The folded position it last told of.
+    seen: u64,
+}
+
+impl Changes {
+    /// Resolves at the first fold it has not told of since it was taken, so a fold tells once, and
+    /// at once from a failure on, which stays; never once the ledger has closed, a close being no
+    /// change.
+    pub async fn changed(&mut self) {
+        let seen = self.seen;
+        let told = self.rx.wait_for(|p| p.failed || p.applied != seen).await;
+        match told.map(|p| (p.failed, p.closed, p.applied)) {
+            Ok((failed, closed, applied)) if failed || !closed => self.seen = applied,
+            // Closed, and not failed: no change comes.
+            _ => std::future::pending::<()>().await,
+        }
     }
 }
 
@@ -750,7 +839,10 @@ impl Writer {
             return;
         };
         match store::apply(&mut conn, offset, Some((id, entries, emitted_by)), false) {
-            Ok(()) => self.progress.send_modify(|p| p.applied = offset + 1),
+            Ok(()) => self.progress.send_modify(|p| {
+                p.applied = offset + 1;
+                p.time = Some(entries.record.time);
+            }),
             Err(_) => fail(&self.progress),
         }
     }
