@@ -243,15 +243,15 @@ async fn a_clock_set_past_a_due_time_is_seen_within_5_s() {
 async fn of_two_claims_that_see_one_run_the_other_waits_on() {
     let clock = Probe::at(T);
     let f = fixture(clock.clone()).await;
-    let readings = clock.tell_others();
-    let claims = [f.spawn_claim(None), f.spawn_claim(None)];
-    // Each one's admission and read.
-    receive(&readings, 4);
-    // The start's decision passes; the first claim's stops.
-    let (at_writer, go) = clock.stop_writer(1);
+    // The run is folded before either claim reads, so neither waits: no 5 s reading comes in.
     let first = f.start().await;
-    // The start's admission, then each claim's read and its admission to submit.
-    receive(&readings, 5);
+    assert_eq!(f.status(&first).await, RunStatus::Queued);
+    let readings = clock.tell_others();
+    // The first claim's decision stops at the writer.
+    let (at_writer, go) = clock.stop_writer(0);
+    let claims = [f.spawn_claim(None), f.spawn_claim(None)];
+    // Each one's admission, its read and its admission to submit.
+    receive(&readings, 6);
     receive(&at_writer, 1);
     go.send(()).unwrap();
     let [mut a, mut b] = claims;
@@ -558,16 +558,16 @@ async fn a_revoked_key_then_a_run_then_a_drain_is_unauthenticated() {
 async fn a_claim_that_loses_its_run_at_the_writer_during_a_drain_waits_again() {
     let clock = Probe::at(T);
     let f = fixture(clock.clone()).await;
-    let readings = clock.tell_others();
-    let claims = [f.spawn_claim(None), f.spawn_claim(None)];
-    // Each one's admission and read.
-    receive(&readings, 4);
-    // The start's decision passes; the first claim's stops.
-    let (at_writer, go) = clock.stop_writer(1);
-    let written = clock.writer_readings();
+    // The run is folded before either claim reads, so neither waits: no 5 s reading comes in.
     let run = f.start().await;
-    // The start's admission, then each claim's read and its admission to submit.
-    receive(&readings, 5);
+    assert_eq!(f.status(&run).await, RunStatus::Queued);
+    let readings = clock.tell_others();
+    // The first claim's decision stops at the writer.
+    let (at_writer, go) = clock.stop_writer(0);
+    let written = clock.writer_readings();
+    let claims = [f.spawn_claim(None), f.spawn_claim(None)];
+    // Each one's admission, its read and its admission to submit.
+    receive(&readings, 6);
     receive(&at_writer, 1);
     f.engine.begin_drain();
     go.send(()).unwrap();
@@ -589,8 +589,8 @@ async fn a_claim_that_loses_its_run_at_the_writer_during_a_drain_waits_again() {
         1,
         "{answers:?}"
     );
-    // The start and the two claims' decisions, and no other.
-    assert_eq!(clock.writer_readings(), written + 3);
+    // The two claims' decisions, and no other.
+    assert_eq!(clock.writer_readings(), written + 2);
     // The loser read once more before it answered.
     assert_eq!(readings.try_iter().count(), 1);
     f.close().await;
