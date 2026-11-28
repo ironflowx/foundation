@@ -1278,7 +1278,7 @@ fn a_file_is_opened_only_if_it_is_this_formats_control_plane_or_empty() {
         }
         assert!(std::fs::read(&path).unwrap() == before, "{case}");
     };
-    for format in ["0", "1", "3", "-1", "65537", "4294967297"] {
+    for format in ["0", "1", "3", "-1", "65538", "4294967298"] {
         drop(ControlPlane::open(&path).unwrap());
         let db = rusqlite::Connection::open(&path).unwrap();
         db.execute_batch(&format!("UPDATE meta SET format = {format}"))
