@@ -785,6 +785,26 @@ fn entries_round_trip() {
     assert_eq!(decode(&mut [0u8].as_slice()), None, "kind 0 is an event's");
 }
 
+/// A claim as a log written before leases holds it (kind 3: the run, the execution, the deadline)
+/// reads back, and its fold gives the run the lease length its deadline was decided with.
+#[test]
+fn a_claim_written_before_leases_reads_back_with_its_length() {
+    let (s, _) = claimed();
+    let run = the_run(&s);
+    let mut bytes = vec![3];
+    bytes.extend_from_slice(&36u32.to_le_bytes());
+    bytes.extend_from_slice(run.id.to_string().as_bytes());
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&(T + 15_000).to_le_bytes());
+    let mut rest = bytes.as_slice();
+    let entry = decode(&mut rest).expect("a claim");
+    assert!(rest.is_empty());
+    let mut s = s;
+    fold(&mut s, &entry, Timestamp::from_millis(T), &key(2)).unwrap();
+    let run = the_run(&s);
+    assert_eq!((run.execution, run.lease_seconds), (2, 15));
+}
+
 /// The Steps rows that fail the run once #224 lands answer `Invalid` here, and append nothing:
 /// `CompleteRun` with fewer steps than were begun, and a begin past 1,000 steps; and `CompleteRun`
 /// with more steps than were begun, the last one recorded.
@@ -1630,18 +1650,29 @@ fn a_heartbeat_renews_each_running_lease_and_refuses_the_rest() {
     let (mut s, current) = claimed();
     let current = current.to_string();
     s.outcome(start(), &key(1)).unwrap();
+    s.outcome(start(), &key(1)).unwrap();
+    let short = claim_10(&mut s, &key(1)).unwrap();
     let released = claim_10(&mut s, &key(1)).unwrap().to_string();
     s.outcome(release(&released), &key(1)).unwrap();
     s.time += 1_000;
     let unknown = "0190b5f0-0000-7000-8000-000000000999.1";
-    let leases = [current.as_str(), released.as_str(), unknown, "not-a-lease"];
+    let short_text = short.to_string();
+    let leases = [
+        current.as_str(),
+        released.as_str(),
+        unknown,
+        "not-a-lease",
+        short_text.as_str(),
+    ];
     let (outcome, entries, _) = s.run_cmd(heartbeat(&leases), &key(1)).unwrap().into_parts();
     let Outcome::Renewed(results) = outcome else {
         panic!("renewals: {outcome:?}");
     };
+    // Each to now plus its own length, in input order.
     let until = Timestamp::from_millis(s.time + 60_000);
-    assert_eq!(results[0], Ok(until));
-    let refused: Vec<_> = results[1..]
+    let short_until = Timestamp::from_millis(s.time + 10_000);
+    assert_eq!((&results[0], &results[4]), (&Ok(until), &Ok(short_until)));
+    let refused: Vec<_> = results[1..4]
         .iter()
         .map(|r| kind_and_hint(r.as_ref().unwrap_err()))
         .collect();
@@ -1653,11 +1684,26 @@ fn a_heartbeat_renews_each_running_lease_and_refuses_the_rest() {
             (ErrorKind::NotFound, None),
         ]
     );
-    assert!(matches!(
-        entries.as_slice(),
-        [Entry::LeaseRenewed { lease_until, .. }] if *lease_until == until
-    ));
+    let first = the_run(&s).id;
+    assert_eq!(
+        entries,
+        [
+            Entry::LeaseRenewed {
+                run: first,
+                lease_until: until
+            },
+            Entry::LeaseRenewed {
+                run: short.run,
+                lease_until: short_until
+            },
+        ],
+        "both renewals, in one record"
+    );
     assert_eq!(the_run(&s).lease_until, Some(until));
+    assert_eq!(
+        s.runs[&short.run.to_string()].lease_until,
+        Some(short_until)
+    );
     // Another key's heartbeat renews nothing, and appends nothing.
     let (outcome, entries, _) = s
         .run_cmd(heartbeat(&[&current]), &key(2))

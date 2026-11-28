@@ -742,7 +742,6 @@ fn execution_entries(run: ironflowx_core::RunId) -> Vec<ironflowx_execution::Sto
             run,
             execution: 3,
             lease_until: Timestamp::from_millis(-1),
-            lease_seconds: u32::MAX,
         },
         Entry::LeaseRenewed {
             run,
@@ -2270,7 +2269,6 @@ fn the_claim_query_takes_a_queued_run_by_its_due_time_and_a_running_one_by_its_d
             run: *run,
             execution: 1,
             lease_until: Timestamp::from_millis(T + 1_000),
-            lease_seconds: 1,
         });
     }
     let entries = Entries {
@@ -2306,6 +2304,34 @@ fn the_claim_query_takes_a_queued_run_by_its_due_time_and_a_running_one_by_its_d
     };
     assert_eq!(at(T + 999), []);
     assert_eq!(at(T + 1_000), [ids[0]]);
+    drop(conn);
+    drop(ledger);
+}
+
+/// The claim's query reads through its indexes, one per branch, whatever the ended runs: SQLite's
+/// plan for it scans no table, for one pair and for two.
+#[test]
+fn the_claim_query_scans_no_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open_blocking(dir.path(), new_env_ref(), clock()).unwrap();
+    let conn = ledger.store.lock().unwrap();
+    for pairs in [1, 2] {
+        let sql = crate::store::claim_sql(pairs);
+        let mut plan = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let mut values: Vec<rusqlite::types::Value> = vec![T.into(), 10.into()];
+        values.extend((0..pairs * 2).map(|i| format!("p{i}").into()));
+        let steps: Vec<String> = plan
+            .query_map(rusqlite::params_from_iter(values), |r| r.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let steps = steps.join("; ");
+        assert!(!steps.contains("SCAN runs"), "{steps}");
+        assert!(
+            steps.contains("runs_due") && steps.contains("runs_lapse"),
+            "{steps}"
+        );
+    }
     drop(conn);
     drop(ledger);
 }
@@ -2538,7 +2564,6 @@ fn the_fold_refuses_an_entry_the_store_does_not_follow() {
             run: unknown,
             execution: 1,
             lease_until: Timestamp::from_millis(T),
-            lease_seconds: 60,
         },
         Entry::StepCompleted {
             run,

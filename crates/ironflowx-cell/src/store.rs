@@ -112,8 +112,9 @@ CREATE TABLE runs (
     error_message TEXT,
     ended_at INTEGER
 );
--- The claim's query: a pair, queued by due time or running by lease deadline, then creation order.
+-- The claim's query, one branch each: a pair queued by due time, and running by lease deadline.
 CREATE INDEX runs_due ON runs (function, code, status, due_at, sequence);
+CREATE INDEX runs_lapse ON runs (function, code, status, lease_until, sequence);
 CREATE TABLE steps (
     run_id TEXT NOT NULL,
     position INTEGER NOT NULL,
@@ -512,6 +513,23 @@ impl ExecutionTables for Tables<'_> {
     }
 }
 
+/// The claim's query of `pairs` pairs: ?1 is the time, ?2 the limit, and the pairs take ?3 on.
+/// One branch per index, so neither reads ended runs: a queued run is due at its due time, a
+/// running one at its deadline. `due` follows the columns `row_run` reads.
+pub(crate) fn claim_sql(pairs: usize) -> String {
+    let pair = |i: usize| format!("(function = ?{} AND code = ?{})", 2 * i + 3, 2 * i + 4);
+    let pairs: Vec<_> = (0..pairs).map(pair).collect();
+    let pairs = pairs.join(" OR ");
+    format!(
+        "SELECT {RUN_FIELDS}, due_at AS due FROM runs
+         WHERE status = 'queued' AND due_at <= ?1 AND ({pairs})
+         UNION ALL
+         SELECT {RUN_FIELDS}, lease_until AS due FROM runs
+         WHERE status = 'running' AND lease_until <= ?1 AND ({pairs})
+         ORDER BY due, sequence LIMIT ?2"
+    )
+}
+
 const FUNCTION_COLUMNS: &str = "name, code, max_attempts, first_delay_seconds, \
     max_delay_seconds, put_at, put_by FROM functions";
 
@@ -682,16 +700,7 @@ impl ExecutionView for ReadStore<'_> {
         if pairs.is_empty() {
             return Ok(Vec::new());
         }
-        // ?1 is the time and ?2 the limit, so the pairs take ?3 on.
-        let pair = |i: usize| format!("(function = ?{} AND code = ?{})", 2 * i + 3, 2 * i + 4);
-        let pairs_sql: Vec<_> = (0..pairs.len()).map(pair).collect();
-        // A queued run has a due time and no deadline, a running one the reverse.
-        let sql = format!(
-            "SELECT {RUN_COLUMNS} WHERE ((status = 'queued' AND due_at <= ?1)
-             OR (status = 'running' AND lease_until <= ?1)) AND ({})
-             ORDER BY COALESCE(due_at, lease_until), sequence LIMIT ?2",
-            pairs_sql.join(" OR ")
-        );
+        let sql = claim_sql(pairs.len());
         let millis = now.as_millis();
         let mut values: Vec<&dyn ToSql> = vec![&millis, &limit];
         for (name, code) in pairs {

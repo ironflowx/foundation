@@ -783,9 +783,10 @@ async fn claims_pair(w: &mut Runs, pair: String) {
 async fn claim_empty(w: &mut Runs) {
     let claim = w.claim.as_ref().expect("a claim");
     assert_eq!(claim, &Ok(None));
-    // Nothing was taken: no claim raised the execution number.
-    let before = w.before.as_ref().expect("the run before the claim");
-    assert_eq!(w.run().await.execution, before.execution);
+    // Nothing changed, unless the claim failed the run (EXE-035, whose next step reads it).
+    if let Some(before) = w.before.as_ref() {
+        assert_eq!(&w.run().await, before);
+    }
 }
 
 #[given(regex = r#"^a run of "charge" was started and the executor claimed it$"#)]
@@ -1006,8 +1007,10 @@ async fn claimed_one_released_two(w: &mut Runs) {
     w.release(&w.executor(), &released).await.unwrap();
 }
 
+/// A second passes first, so a renewal moves the deadline.
 #[when("it heartbeats both")]
 async fn heartbeats_both(w: &mut Runs) {
+    w.clock.step(1_000);
     let req = HeartbeatRequest {
         leases: w.leases.clone(),
     };
@@ -1021,7 +1024,9 @@ async fn renewed_and_conflict(w: &mut Runs) {
     let [renewed, refused] = beat.results.as_slice() else {
         panic!("two results: {beat:?}");
     };
-    assert_eq!(renewed, &Ok(run.lease_until.expect("running")));
+    // The Given claims with 10 second leases.
+    let until = Timestamp::from_millis(w.clock.now().as_millis() + 10_000);
+    assert_eq!((renewed, run.lease_until), (&Ok(until), Some(until)));
     let e = refused.as_ref().unwrap_err();
     let over = (ErrorKind::Conflict, Some("this execution is over"));
     assert_eq!((e.kind, e.hint.as_deref()), over);
@@ -1045,17 +1050,24 @@ async fn lost_nine(w: &mut Runs) {
 #[when("the tenth lapses and an executor claims without waiting")]
 async fn tenth_lapses(w: &mut Runs) {
     w.clock.step(10_000);
-    w.before = Some(w.run().await);
+    w.before = None;
     w.claim = Some(w.claim(&w.executor(), &["charge@v1"]).await);
 }
 
-#[then(regex = r#"^the run reads as failed with "([^"]+)"$"#)]
-async fn reads_failed(w: &mut Runs, code: String) {
+#[then(r#"the run reads as failed with "ironflowx.executor_lost""#)]
+async fn failed_executor_lost(w: &mut Runs) {
     let run = w.run().await;
-    assert_eq!(run.status, RunStatus::Failed);
-    assert_eq!(run.error.map(|e| e.code), Some(code));
-    assert_eq!((run.lost_leases, run.lease_until), (10, None));
-    assert!(run.ended_at.is_some());
+    let code = run.error.map(|e| e.code);
+    assert_eq!(
+        (run.status, code.as_deref()),
+        (RunStatus::Failed, Some("ironflowx.executor_lost"))
+    );
+    // Its count reads 10, its execution number is unchanged, and it ended at the claim.
+    assert_eq!(
+        (run.lost_leases, run.execution, run.lease_until),
+        (10, 10, None)
+    );
+    assert_eq!(run.ended_at, Some(w.clock.now()));
 }
 
 #[when("30 seconds pass and it completes step 1 with output 1")]

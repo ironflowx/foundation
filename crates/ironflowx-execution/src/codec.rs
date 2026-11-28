@@ -50,13 +50,11 @@ pub fn encode(Stored(entry): &Stored, out: &mut Vec<u8>) {
             run,
             execution,
             lease_until,
-            lease_seconds,
         } => {
             e.byte(CLAIMED);
             e.run(*run);
             e.u32(*execution);
             e.time(*lease_until);
-            e.u32(*lease_seconds);
         }
         Entry::LeaseRenewed { run, lease_until } => {
             e.byte(LEASE_RENEWED);
@@ -193,7 +191,6 @@ pub fn decode(bytes: &mut &[u8]) -> Option<Stored> {
             run: d.run()?,
             execution: d.u32()?,
             lease_until: d.time()?,
-            lease_seconds: d.u32()?,
         },
         LEASE_RENEWED => Entry::LeaseRenewed {
             run: d.run()?,

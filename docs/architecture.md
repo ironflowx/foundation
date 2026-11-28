@@ -340,7 +340,7 @@ fn decide<V: ExecutionView>(view: &V, cmd: &Command, by: &Emitter, now: Sequence
 //       | Complete { lease, steps, output } | Heartbeat { leases } | Release { lease }   // a lease and a name@code pair stay text
 // Decision::into_parts() -> (Outcome, Vec<Entry>, Vec<EngineEmit>)   // the ledger sequences the events into the same record
 // Entry FunctionPut(Definition) | RunCreated { run, sequence, function, code, input }
-//     | Claimed { run, execution, lease_until, lease_seconds } | LeaseRenewed { run, lease_until }
+//     | Claimed { run, execution, lease_until } | LeaseRenewed { run, lease_until }   // fold: length = deadline - time
 //     | LeaseLost { run, lost_leases } | Released { run }
 //     | StepBegan { run, position, name, once, input, execution } | StepCompleted { run, position, output }
 //     | RunCompleted(RunCompleted) | RunFailed(RunFailed)   // private fields: only decide makes one, with its end event (RUN-2)
@@ -471,7 +471,7 @@ A step's name, `once` and input are those of its first begin. A begin of a step 
 | Key ID | The key's UUIDv7. Not a secret |
 | Stored | The `KeyDigest` of the whole key text, and the environment ID and token current when the key was made. The secret is never stored, logged or returned after creation |
 | Valid | Parses; a record exists for the engine's environment ID and token; digests match, compared in constant time; not revoked; not expired: `now < expires_at` when an expiry is set, by the clock the engine was opened with, and `expiry_recorded` unset |
-| Scopes | A non-empty set of `read`, `write`, `admin`, `execute`, none implying another (D27, D107). The bootstrap, seed and recovered keys hold all four. A key holding `execute` alone can ask `whoami` and work on runs: claim one, and call `begin_step`, `complete_step` and `complete_run` on its lease |
+| Scopes | A non-empty set of `read`, `write`, `admin`, `execute`, none implying another (D27, D107). The bootstrap, seed and recovered keys hold all four. A key holding `execute` alone can ask `whoami` and work on runs: claim one, and call `begin_step`, `complete_step`, `complete_run`, `heartbeat` and `release_run` on its lease |
 | Created | By a key holding `admin`, or by an embedder's call (D121), which holds every scope and never expires. Scopes default to `{read}` when none are asked for, and must be a subset of the creator's. The expiry must be after now and no later than the creator's; no expiry only when the creator has none (D28). A label is 0–128 bytes of UTF-8 with no control character (Unicode Cc). At most 1,000 created keys per environment hold a slot: a key holds one until it is revoked or its expiry is recorded, whatever the clock reads. All checked inside the transaction, with now read after the write lock, the creator's record read again there |
 | Origin | `Minted` for a bootstrap key the engine minted; `Seed` for a key the host supplied; `Recovered` for one recovered from the data directory, which is labelled `recovered`; none of these has a creator or holds a slot. `Created` keys name their creator in `created_by` (D35): the creating key, or the embedder whose call created it (D121) |
 | Status | `Revoked` when `revoked_at` is set, whatever the expiry; otherwise `Expired` from `now ≥ expires_at`, by the clock, or once its expiry is recorded (`KeyRecord::expired`, as admission decides it); otherwise `Active` |
@@ -492,7 +492,7 @@ A step's name, `once` and input are those of its first begin. A begin of a step 
 | `get_event`, `list_events`, `list_environments`, `get_function`, `list_functions`, `get_run` | `read` |
 | `whoami` | any valid key |
 | `create_key`, `list_keys`, `revoke_key` | `admin` |
-| `claim_run`, `begin_step`, `complete_step`, `complete_run` | `execute` |
+| `claim_run`, `begin_step`, `complete_step`, `complete_run`, `heartbeat`, `release_run` | `execute` |
 
 An embedder's call holds every scope, so every operation admits it (D121).
 
@@ -712,7 +712,7 @@ A ledger's directory, `<dir>`:
 |---|---|
 | `<dir>/ledger.lock` | File used for exclusive ownership of the ledger directory, including during read-store rebuild |
 | `<dir>/log/` (segment log) | Position 0: the genesis record, with the ledger's own format version, 3 (a format-1 directory from 0.1, or a format-2 one from 0.2 or 0.3, answers `Format`). Then one record per submit that appends: its envelope (format version, incarnation token, record ID, emitter, event-clock time), then its ordered entries, each with its kind (D112). The record ID is a UUIDv7 the writer draws at the append and replay copies: a copy of a directory keeps the IDs of the records it copied, and what each copy appends next has its own (D117). A record ID that is not a UUIDv7 in its canonical text form does not decode. Kind 0 is an event: its sequence, ID, name, version, key, metadata and data. Kinds 1 to 10 are execution rules' entries, which `ironflowx-execution` encodes: a function put, a run created, a claim, a step begun, a step completed, a run completed, a lease renewed, a lease lost, a run released, a run failed. A record writes its events first, and reads the two kinds in any order. Binary and length-prefixed; data, metadata, inputs and outputs are the bytes as sent |
-| `<dir>/read.db` (SQLite) | `events` keyed by sequence, unique by ID, each with its `emitted_by` · `idempotency` key → event ID · `functions` by name, with their policy fields and `put_at`, `put_by`, and `triggers` (function, event name) · `runs` by ID, unique by sequence, with status, input, creation, due time, execution, lease deadline, length and claimant, leases lost in a row, steps begun, the open step, output, error and end, indexed by pair, status, due time and sequence for the claim · `steps` by run and position, with name, `once`, input, the execution that began it and its output · `meta`: applied position, the last applied record's ID (none while only the genesis record is applied), environment ID, incarnation token, format version. Open rebuilds a store whose tables do not prepare |
+| `<dir>/read.db` (SQLite) | `events` keyed by sequence, unique by ID, each with its `emitted_by` · `idempotency` key → event ID · `functions` by name, with their policy fields and `put_at`, `put_by`, and `triggers` (function, event name) · `runs` by ID, unique by sequence, with status, input, creation, due time, execution, lease deadline, length and claimant, leases lost in a row, steps begun, the open step, output, error and end, indexed for the claim by pair, status, due time and sequence, and again by pair, status, lease deadline and sequence, one index per branch of its query, so it reads no ended run · `steps` by run and position, with name, `once`, input, the execution that began it and its output · `meta`: applied position, the last applied record's ID (none while only the genesis record is applied), environment ID, incarnation token, format version. Open rebuilds a store whose tables do not prepare |
 
 A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 4 MiB of data and metadata, under 4.1 MiB.
 

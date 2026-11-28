@@ -55,7 +55,6 @@ impl core::marker::StructuralPartialEq for ironflowx_execution::Command
 pub enum ironflowx_execution::Entry
 pub ironflowx_execution::Entry::Claimed
 pub ironflowx_execution::Entry::Claimed::execution: u32
-pub ironflowx_execution::Entry::Claimed::lease_seconds: u32
 pub ironflowx_execution::Entry::Claimed::lease_until: ironflowx_core::time::Timestamp
 pub ironflowx_execution::Entry::Claimed::run: ironflowx_core::id::RunId
 pub ironflowx_execution::Entry::FunctionPut(ironflowx_execution::Definition)

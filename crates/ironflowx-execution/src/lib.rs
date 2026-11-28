@@ -226,13 +226,12 @@ pub enum Entry {
         code: String,
         input: Vec<u8>,
     },
-    /// The run is running under `execution`, held by the record's attribution, for a lease of
-    /// `lease_seconds`.
+    /// The run is running under `execution` until `lease_until`, held by the record's
+    /// attribution; the lease's length is the deadline less the record's time.
     Claimed {
         run: RunId,
         execution: u32,
         lease_until: Timestamp,
-        lease_seconds: u32,
     },
     /// The current execution's lease runs until `lease_until`.
     LeaseRenewed {
@@ -677,7 +676,6 @@ fn claim<V: ExecutionView>(
             run: run.id,
             execution,
             lease_until,
-            lease_seconds,
         });
         return Ok(Decision {
             outcome: Outcome::Claimed(Some(claim)),
@@ -1179,8 +1177,13 @@ pub fn fold<T: ExecutionTables>(
             run,
             execution,
             lease_until,
-            lease_seconds,
-        } => tables.claim(*run, *execution, *lease_until, *lease_seconds, by),
+        } => {
+            // `decide` set the deadline to the record's time plus the length, in whole seconds,
+            // so a log written before the length was kept reads the same.
+            let millis = lease_until.as_millis().saturating_sub(time.as_millis()) / 1_000;
+            let lease_seconds = u32::try_from(millis).unwrap_or(u32::MAX);
+            tables.claim(*run, *execution, *lease_until, lease_seconds, by)
+        }
         Entry::LeaseRenewed { run, lease_until } => tables.renew(*run, *lease_until),
         Entry::LeaseLost { run, lost_leases } => tables.lose_lease(*run, *lost_leases),
         Entry::Released { run } => tables.release(*run, time),
