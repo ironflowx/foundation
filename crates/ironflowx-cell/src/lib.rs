@@ -24,7 +24,8 @@ pub use ironflowx_events::{
 };
 /// The execution types this crate's API names, so a caller needs no `ironflowx-execution`.
 pub use ironflowx_execution::{
-    Begun, Claim, Command, Definition, Function, Outcome as ExecutionOutcome, Run, RunEnd, Status,
+    Begun, Claim, Command, Definition, Function, FunctionPage, Outcome as ExecutionOutcome, Run,
+    RunEnd, Status,
 };
 pub use ledger::{
     Changes, Committed, Fault, Ledger, LedgerState, OpenError, Outcome, ReadError, Submission,

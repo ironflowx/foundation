@@ -10,16 +10,17 @@ use std::time::Duration;
 
 use common::{
     CREATED, DATA, KEY, KINDS, METADATA, batch, begun, claim, created, emitted, environments,
-    event, event_page, function, key_page, put, run, run_end, serve, serving, started, step_output,
-    whoami,
+    event, event_page, function, function_page, key_page, put, run, run_end, serve, serving,
+    started, step_output, whoami,
 };
 use ironflowx_core::{Address, ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_doors::Slot;
 use ironflowx_proto::{
     BeginStepRequest, Call, ClaimRunRequest, Client, CompleteRunRequest, CompleteStepRequest,
     CreateKeyRequest, EmitBatchRequest, EmitRequest, GetEventRequest, GetFunctionRequest,
-    GetRunRequest, ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation,
-    Operations, PutFunctionRequest, RevokeKeyRequest, StartRunRequest, Whoami, WhoamiRequest,
+    GetRunRequest, ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest,
+    ListKeysRequest, OpError, Operation, Operations, PutFunctionRequest, RevokeKeyRequest,
+    StartRunRequest, Whoami, WhoamiRequest,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
@@ -159,6 +160,14 @@ async fn ask_one(client: &Client, cx: &Call, op: Operation) -> Result<String, Op
             let answer = client.get_function(cx, request).await;
             answer.map(|a| format!("{a:?}"))
         }
+        Operation::ListFunctions => {
+            let request = ListFunctionsRequest {
+                limit: NonZeroU32::new(2),
+                cursor: Some("c".into()),
+            };
+            let answer = client.list_functions(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
         Operation::StartRun => {
             let request = StartRunRequest {
                 function: "f".into(),
@@ -232,6 +241,7 @@ async fn each_operation_crosses_to_the_engine_and_back() {
         "()".to_owned(),
         format!("{:?}", put()),
         format!("{:?}", function()),
+        format!("{:?}", function_page()),
         format!("{:?}", started()),
         format!("{:?}", run()),
         format!("{:?}", claim()),
@@ -259,6 +269,7 @@ async fn each_operation_crosses_to_the_engine_and_back() {
         r#"RevokeKeyRequest { key_id: "no ID" }"#.to_owned(),
         r#"PutFunctionRequest { name: "charge", code: "v1", triggers: ["a", "b"], max_attempts: Some(0), first_delay_seconds: Some(4294967295), max_delay_seconds: None }"#.to_owned(),
         r#"GetFunctionRequest { name: "f" }"#.to_owned(),
+        r#"ListFunctionsRequest { limit: Some(2), cursor: Some("c") }"#.to_owned(),
         r#"StartRunRequest { function: "f" }"#.to_owned(),
         r#"GetRunRequest { run_id: "no ID" }"#.to_owned(),
         r#"ClaimRunRequest { functions: ["f@v1"], lease_seconds: Some(10), wait_seconds: Some(0) }"#.to_owned(),
@@ -598,6 +609,7 @@ fn unanswered(op: Operation) -> (ErrorKind, Option<&'static str>) {
         | Operation::ListEnvironments
         | Operation::ListKeys
         | Operation::GetFunction
+        | Operation::ListFunctions
         | Operation::GetRun => (ErrorKind::Unavailable, None),
     }
 }
@@ -956,6 +968,7 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
                 Operation::ClaimRun => Some("None"),
                 Operation::ListKeys => Some("KeyPage { keys: [], next: None }"),
                 Operation::ListEvents => Some("EventPage { events: [], next: None }"),
+                Operation::ListFunctions => Some("FunctionPage { functions: [], next: None }"),
                 Operation::ListEnvironments => Some("[]"),
                 _ => None,
             };

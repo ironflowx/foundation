@@ -56,6 +56,7 @@ pub ironflowx_proto::Operation::GetFunction
 pub ironflowx_proto::Operation::GetRun
 pub ironflowx_proto::Operation::ListEnvironments
 pub ironflowx_proto::Operation::ListEvents
+pub ironflowx_proto::Operation::ListFunctions
 pub ironflowx_proto::Operation::ListKeys
 pub ironflowx_proto::Operation::PutFunction
 pub ironflowx_proto::Operation::RevokeKey
@@ -170,6 +171,7 @@ pub async fn ironflowx_proto::Client::get_function(&self, &ironflowx_proto::Call
 pub async fn ironflowx_proto::Client::get_run(&self, &ironflowx_proto::Call, ironflowx_proto::GetRunRequest) -> core::result::Result<ironflowx_proto::Run, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::list_environments(&self, &ironflowx_proto::Call, ironflowx_proto::ListEnvironmentsRequest) -> core::result::Result<alloc::vec::Vec<ironflowx_proto::Environment>, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::list_events(&self, &ironflowx_proto::Call, ironflowx_proto::ListEventsRequest) -> core::result::Result<ironflowx_proto::EventPage, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::list_functions(&self, &ironflowx_proto::Call, ironflowx_proto::ListFunctionsRequest) -> core::result::Result<ironflowx_proto::FunctionPage, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::put_function(&self, &ironflowx_proto::Call, ironflowx_proto::PutFunctionRequest) -> core::result::Result<ironflowx_proto::PutFunctionResponse, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> core::result::Result<(), ironflowx_proto::OpError>
@@ -337,6 +339,18 @@ pub fn ironflowx_proto::Function::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_proto::Function
 pub fn ironflowx_proto::Function::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_proto::Function
+pub struct ironflowx_proto::FunctionPage
+pub ironflowx_proto::FunctionPage::functions: alloc::vec::Vec<ironflowx_proto::Function>
+pub ironflowx_proto::FunctionPage::next: core::option::Option<alloc::string::String>
+impl core::clone::Clone for ironflowx_proto::FunctionPage
+pub fn ironflowx_proto::FunctionPage::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_proto::FunctionPage
+pub fn ironflowx_proto::FunctionPage::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_proto::FunctionPage
+pub fn ironflowx_proto::FunctionPage::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_proto::FunctionPage
+pub fn ironflowx_proto::FunctionPage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_proto::FunctionPage
 pub struct ironflowx_proto::GetEventRequest
 pub ironflowx_proto::GetEventRequest::event_id: alloc::string::String
 impl core::clone::Clone for ironflowx_proto::GetEventRequest
@@ -435,6 +449,20 @@ pub fn ironflowx_proto::ListEventsRequest::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_proto::ListEventsRequest
 pub fn ironflowx_proto::ListEventsRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_proto::ListEventsRequest
+pub struct ironflowx_proto::ListFunctionsRequest
+pub ironflowx_proto::ListFunctionsRequest::cursor: core::option::Option<alloc::string::String>
+pub ironflowx_proto::ListFunctionsRequest::limit: core::option::Option<core::num::nonzero::NonZeroU32>
+impl core::clone::Clone for ironflowx_proto::ListFunctionsRequest
+pub fn ironflowx_proto::ListFunctionsRequest::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_proto::ListFunctionsRequest
+pub fn ironflowx_proto::ListFunctionsRequest::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_proto::ListFunctionsRequest
+pub fn ironflowx_proto::ListFunctionsRequest::eq(&self, &Self) -> bool
+impl core::default::Default for ironflowx_proto::ListFunctionsRequest
+pub fn ironflowx_proto::ListFunctionsRequest::default() -> Self
+impl core::fmt::Debug for ironflowx_proto::ListFunctionsRequest
+pub fn ironflowx_proto::ListFunctionsRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_proto::ListFunctionsRequest
 pub struct ironflowx_proto::ListKeysRequest
 pub ironflowx_proto::ListKeysRequest::cursor: core::option::Option<alloc::string::String>
 pub ironflowx_proto::ListKeysRequest::limit: core::option::Option<core::num::nonzero::NonZeroU32>
@@ -603,6 +631,7 @@ pub fn ironflowx_proto::Operations::get_function(&self, &ironflowx_proto::Call, 
 pub fn ironflowx_proto::Operations::get_run(&self, &ironflowx_proto::Call, ironflowx_proto::GetRunRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::Run, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::list_environments(&self, &ironflowx_proto::Call, ironflowx_proto::ListEnvironmentsRequest) -> impl core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<ironflowx_proto::Environment>, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::list_events(&self, &ironflowx_proto::Call, ironflowx_proto::ListEventsRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::EventPage, ironflowx_proto::OpError>> + core::marker::Send
+pub fn ironflowx_proto::Operations::list_functions(&self, &ironflowx_proto::Call, ironflowx_proto::ListFunctionsRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::FunctionPage, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::put_function(&self, &ironflowx_proto::Call, ironflowx_proto::PutFunctionRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::PutFunctionResponse, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> impl core::future::future::Future<Output = core::result::Result<(), ironflowx_proto::OpError>> + core::marker::Send
@@ -621,6 +650,7 @@ pub async fn ironflowx_proto::Client::get_function(&self, &ironflowx_proto::Call
 pub async fn ironflowx_proto::Client::get_run(&self, &ironflowx_proto::Call, ironflowx_proto::GetRunRequest) -> core::result::Result<ironflowx_proto::Run, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::list_environments(&self, &ironflowx_proto::Call, ironflowx_proto::ListEnvironmentsRequest) -> core::result::Result<alloc::vec::Vec<ironflowx_proto::Environment>, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::list_events(&self, &ironflowx_proto::Call, ironflowx_proto::ListEventsRequest) -> core::result::Result<ironflowx_proto::EventPage, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::list_functions(&self, &ironflowx_proto::Call, ironflowx_proto::ListFunctionsRequest) -> core::result::Result<ironflowx_proto::FunctionPage, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::put_function(&self, &ironflowx_proto::Call, ironflowx_proto::PutFunctionRequest) -> core::result::Result<ironflowx_proto::PutFunctionResponse, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> core::result::Result<(), ironflowx_proto::OpError>

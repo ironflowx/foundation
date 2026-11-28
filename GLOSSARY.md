@@ -153,6 +153,12 @@ A named definition: a code label, the events that trigger it, and a retry policy
 **Code label**:
 Text the builder chooses to name one version of a function's code (`v1`, a commit hash). A run keeps the label it was created with.
 
+**Trigger**:
+An exact event name a function lists; at most 10 per function, and at most 20 functions per name. A put that leaves a name out frees its place.
+
+**Retry policy**:
+A function's `max_attempts`, `first_delay_seconds` and `max_delay_seconds`, each held only if it was put; a default is applied when the policy is used.
+
 **Run**:
 One durable invocation of a function. Its status is `queued`, `running`, `completed` or `failed`, and changes only when a record commits.
 

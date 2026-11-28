@@ -60,8 +60,8 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 
 | Module | Does | Interface | Crate |
 |---|---|---|---|
-| Ledger | Commits a submission of either rule module as one record of ordered entries; answers reads that see every acknowledged commit; mints event and run IDs and stamps event time; signals each commit; tells a waiting claim when a run of its pairs is due, by the event clock; reports whether it has failed, and signals a ledger fault | `open`, `open_blocking`, `open_existing_blocking`, `submit` (`Submission::{Events, Execution}`), `get_event`, `list_events`, `get_function`, `get_run`, `changes`, `claimable`, `state`, `faulted`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
-| Execution rules | Decides what a function may be, which run a claim takes, who may work on a run (the fence), and what a step call answers; makes the engine's events a run's end needs. Pure | `decide`, `fold`, `get_function`, `get_run`, `claim_pairs`, `encode`, `decode` | `ironflowx-execution` |
+| Ledger | Commits a submission of either rule module as one record of ordered entries; answers reads that see every acknowledged commit; mints event and run IDs and stamps event time; signals each commit; tells a waiting claim when a run of its pairs is due, by the event clock; reports whether it has failed, and signals a ledger fault | `open`, `open_blocking`, `open_existing_blocking`, `submit` (`Submission::{Events, Execution}`), `get_event`, `list_events`, `get_function`, `list_functions`, `get_run`, `changes`, `claimable`, `state`, `faulted`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
+| Execution rules | Decides what a function may be, which run a claim takes, who may work on a run (the fence), and what a step call answers; makes the engine's events a run's end needs. Pure | `decide`, `fold`, `get_function`, `list_functions`, `get_run`, `claim_pairs`, `encode`, `decode` | `ironflowx-execution` |
 | Event rules | Decides what an event is and when an emit is refused; makes and sequences the engine's own events, which it refuses from a client; a refusal may carry a hint. Pure | `decide`, `check_emit`, `engine_event`, `sequence`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types, which the wire maps onto (D53) | `Operations` trait and messages | `ironflowx-proto` |
 | Proto | Defines an operation once, on the wire (D49) | `proto/ironflowx/v1/*.proto`: services, messages, the method options `cli`, `summary` and `example`, the field option `json_text` | `ironflowx-proto` (the `.proto` files; compiled, `wire::FILE_DESCRIPTOR_SET`) |
@@ -280,7 +280,7 @@ impl ControlPlane {
 
 // ironflowx-cell (tokio). Re-exports Emit, Event, EventPage, ItemOutcome, Refusal and events' Submission as
 // EventSubmission, the event types its API names (D83), and Command, Definition, Function, Run, Status, Claim,
-// Begun, RunEnd and execution's Outcome as ExecutionOutcome, the execution types it names
+// Begun, RunEnd, FunctionPage and execution's Outcome as ExecutionOutcome, the execution types it names
 // Submission Events(EventSubmission) | Execution(Command)
 impl Ledger {
     // open, get_event, list_events and close panic outside a tokio runtime; open and close also on one that has shut down, and close drops the ledger then
@@ -294,6 +294,7 @@ impl Ledger {
     async fn get_event(&self, id: &str) -> Result<Event, ReadError>;   // Refused(NotFound) for an unknown or malformed ID
     async fn list_events(&self, limit: Option<NonZeroU32>, cursor: Option<&str>) -> Result<EventPage, ReadError>;   // this ledger's token checks the cursor
     async fn get_function(&self, name: &str) -> Result<Function, ReadError>;   // Refused(NotFound) for an unknown name
+    async fn list_functions(&self, limit: Option<NonZeroU32>, cursor: Option<&str>) -> Result<FunctionPage, ReadError>;   // as list_events
     async fn get_run(&self, id: &str) -> Result<Run, ReadError>;   // Refused(NotFound) for an unknown or malformed ID
     fn changes(&self) -> Changes;   // changed() resolves once each commit is folded and from a failure on, never after a close; taken before a read, it misses nothing after that read's snapshot
     // When a run `claim` may take is due, in the read store as it is (it waits for no fold): Some(ZERO) now, Some(d) in d, None when no run of its pairs is queued.
@@ -323,7 +324,8 @@ fn engine_event(event: EngineEvent) -> EngineEmit;   // EngineEmit is opaque: no
 fn sequence<V: EventsView>(view: &V, emits: Vec<EngineEmit>,
           fresh: &mut impl Iterator<Item = EventId>) -> Result<Vec<NewEvent>, Error<V::Error>>;   // after every stored event, in order
 // Refusal: kind(), message(), hint() -> Option<&str>, with_hint(hint) -> Refusal; made by invalid(m), not_found(m),
-// conflict(m): no constructor takes an ErrorKind, so a rule cannot answer a ledger's or admission's kind
+// conflict(m), resource_exhausted(m): no constructor takes an ErrorKind, so a rule cannot answer a ledger's or
+// admission's kind
 fn check_name(name: &str) -> Result<(), Refusal>;   // an event name's rules, which execution rules apply to a trigger
 fn check_value(what: &str, value: &[u8], max: usize) -> Result<(), Refusal>;   // event data's JSON rules under another name and limit
 fn fold<T: EventTables>(tx: &mut T, record: &Record, emitted_by: &Emitter) -> Result<(), T::Error>;
@@ -349,12 +351,14 @@ fn decide<V: ExecutionView>(view: &V, cmd: &Command, by: &Emitter, now: Sequence
 // Stored: an entry as a record holds it; From<Entry>, compared with an Entry, and nothing turns one back
 fn fold<T: ExecutionTables>(tables: &mut T, entry: &Stored, time: Timestamp, by: &Emitter) -> Result<(), T::Error>;
 fn get_function<V: ExecutionView>(view: &V, name: &str) -> Result<Function, Error<V::Error>>;
+fn list_functions<V: ExecutionView>(view: &V, token: IncarnationToken, limit: Option<NonZeroU32>,
+          cursor: Option<&str>) -> Result<FunctionPage, Error<V::Error>>;   // FunctionPage { functions, next }
 fn get_run<V: ExecutionView>(view: &V, id: &str) -> Result<Run, Error<V::Error>>;
 fn claim_pairs(claim: &Command) -> Result<Vec<(String, String)>, Refusal>;   // a claim's pairs, checked as decide checks the claim
 fn encode(entry: &Stored, out: &mut Vec<u8>);   // led by its kind, 1 to 6
 fn decode(bytes: &mut &[u8]) -> Option<Stored>;   // a decoded RunCompleted joins no decision
-// ExecutionView: function, run, step (one the run counts: none is the store's failure), last_run_sequence,
-// claimable(pairs, now)
+// ExecutionView: function, triggered_by(event, other_than), function_count, functions_after(after, limit), run,
+// step (one the run counts: none is the store's failure), last_run_sequence, claimable(pairs, now)
 // ExecutionTables: put_function, create_run, claim, begin_step, complete_step, complete_run
 ```
 
@@ -401,12 +405,13 @@ A page holds 20 events unless asked otherwise, at most 200, and stops before its
 
 ## Execution rules
 
-A function is a definition in the ledger; a run is one durable invocation of it; an executor claims a run and asks the engine about each step. What #219 builds of it, the tracer, and #226, the waiting claim, are below; the rest of 0.4's design lands with later tickets of [#209](https://github.com/ironflowx/foundation/issues/209).
+A function is a definition in the ledger; a run is one durable invocation of it; an executor claims a run and asks the engine about each step. What #219 (the tracer), #220 (definitions) and #226 (the waiting claim) build of it is below; the rest of 0.4's design lands with later tickets of [#209](https://github.com/ironflowx/foundation/issues/209).
 
 | Operation | Scope | Does |
 |---|---|---|
-| `PutFunction` | `write` | Puts a definition: a name and a code label, each 1–128 bytes of `[A-Za-z0-9._-]`, so `name@code` splits one way; at most 10 triggers, each a valid event name the engine does not own (event rules' `check_name`), none repeated, kept in name order; the three policy fields as put, `None` when not (D99). It replaces the whole definition; an identical one appends nothing and answers `changed: false` |
+| `PutFunction` | `write` | Puts a definition by the rules of [Functions](#functions). It replaces the whole definition; an identical one appends nothing and answers `changed: false`, whatever the caps say |
 | `GetFunction` | `read` | The function as put, with `put_at` and `put_by`, the record's time and attribution. An unknown name is `NotFound`, `function not found` |
+| `ListFunctions` | `read` | A page of functions in name order, each as `GetFunction` reads it: 20 when no limit is asked, at most 200. Its cursor is `<incarnation token>.<last name>`, an encoding, not a signature, of the events cursor's form: an events cursor reads as a functions cursor after the name that is its sequence, and a functions cursor as an events cursor only when its name is a sequence as an events cursor writes it; it is checked as an events cursor is: one that does not decode, or names another incarnation, is `Invalid`, `invalid cursor`. It stays valid across a reopen and a rebuilt `read.db`, and a page goes on after its name whatever is put since. Only the last page lacks `next`, also when it is full |
 | `StartRun` | `write` | Creates a run of the function: `queued`, due at once, with the function's code label at that moment (D88), the next run sequence, and a `null` input. It takes `function` only; an input and an idempotency key arrive later, so it answers `duplicate: false`. An unknown function is `NotFound` |
 | `GetRun` | `read` | The run: status, input, creation, due time while queued, execution number, lease deadline while running, steps begun and the open one's name, output and end once completed. An unknown or malformed ID is `NotFound`, `run not found` |
 | `ClaimRun` | `execute` | Names 1–100 different `name@code` pairs and takes at most one `queued` run of them that is due, the earliest due first, then the first created (RUN-7). The execution number goes up by one, the status becomes `running`, and the lease runs `lease_seconds` (10–900, 60 when absent), held by the calling key. It waits up to `wait_seconds` (0–20, 20 when absent) for one to be due (below). Nothing due by the end: no claim, and nothing appended |
@@ -415,6 +420,20 @@ A function is a definition in the ledger; a run is one durable invocation of it;
 | `CompleteRun` | `execute` | Completes the run with its output, `ironflowx.run.completed` in the same record (RUN-2, D103). `steps`, the positions this execution reached, above the steps begun, or equal with the last open, is `Invalid` |
 
 **Waiting** (D90, D96, D113). The wait is measured by a monotonic clock. Admitted, and then `Unavailable` if the engine drains, the engine reads, at the event clock, when a run the claim may take is due (`Ledger::claimable`, which checks the request as `decide` does, so a claim outside the rules is `Invalid` at once), and submits only if one is due now, so an idle claim appends nothing and takes no place at the writer. When none is, it waits for the first of: a commit, the earliest time one of its runs becomes due, 5 seconds, the end of the wait, a ledger fault, a drain; then it reads again. It takes `Ledger::changes` before each read, which wakes it once a commit is folded, so a fold after the read's snapshot still wakes it (RUN-16). The read waits for no fold, so no fold that does not come holds up the end of the wait or a drain. Behind the last record event time stands still until the clock passes it, so the time to a due run is measured by the clock, and a claim does not spin. The 5 seconds bound how late it sees a clock that was set. When several happen at once: a claimable run first, then a fault or a drain, which end it as `Unavailable`, then the end of the wait, where it is empty. It ends empty, or `Unavailable`, only from a read that began once its wait was over, or the drain or the fault had begun; otherwise it reads once more, and a run claimable by then (folded, or come due by the clock) is taken. A run on a ledger that failed cannot be read or taken, so a run and a fault together are `Unavailable`. A key revoked during the wait, then a run made claimable, then a drain: the read after the drain finds the run, admission refuses the key, and the claim is `Unauthenticated`, the run still queued. Known and accepted: a waiting claim may take a run that became claimable after the drain began, and its answer then travels during the stop; the order above was kept over a drain that wins at once. It admits the key again before every submission, and that admission is the boundary, as for an emit (D43): a key revoked or expired before it takes no run (the claim is `Unauthenticated`), and one revoked between it and the commit may. Two claims that see one run both submit; one takes it and the other goes back to waiting. There is no timer, sweep or background task: due times are absolute and read at each claim. `Engine::begin_drain`, which the host calls first as it stops, ends every claim, waiting or new, as `Unavailable` (`the engine is stopping`, hint `claim again once the engine is back`) at once, for good; every other operation is served as before. "At once", on a drain or a fault, means after at most one read: a saturated blocking pool, or a fold or a decision holding the read store, stretches that read as it stretches every other operation, and `Engine::close` waits on the same two. A claim already submitted to the writer is not ended by a drain: it is an in-flight call (D72) and answers as the writer decides; its answer is never dropped. A claim that waits needs the runtime's timer.
+
+### Functions
+
+| Rule | Limit |
+|---|---|
+| Function name, code label | 1–128 bytes of `[A-Za-z0-9._-]` each, else `Invalid`; so `name@code` splits one way |
+| Triggers | At most 10 exact event names, each a valid event name the engine does not own (event rules' `check_name`), none repeated, else `Invalid` |
+| Functions per event name | At most 20, else `ResourceExhausted`, `an event name triggers at most 20 functions`, with a hint that names the event, quoted and escaped as Rust's `Debug` prints it, how many other functions it triggers, and how many of them to put without it: `"order.placed" triggers 20 other functions already: put 1 of them without it first` (D100) |
+| Functions per environment | At most 1,000, else `ResourceExhausted`, `an environment holds at most 1000 functions`, no hint |
+| `max_attempts` | 1–100, else `Invalid` |
+| `first_delay_seconds` | 1–3,600, else `Invalid` |
+| `max_delay_seconds` | 1–86,400, and not below the first delay when both are put, else `Invalid` |
+
+A put checks the name, the code label, the triggers and the policy, in that order, each `Invalid`; then whether it is identical to the stored definition, which answers `changed: false` even past a cap; then the environment's cap, for a new function; then the cap of each trigger, in name order. So a new function past both caps is refused by the environment's, with no hint. Triggers are a set, kept and listed in name order. A function counts once against the cap of each name it triggers, however often it is put, and a function already stored does not count against the environment's again; a put with no triggers frees its places. A policy field holds what was put, `None` when not: a default is applied when the policy is used, never stored or checked (D99). There is no delete. The caps hold after every put this rule decides on a store within them, so an emit never meets more triggers than they allow (RUN-12); the writer decides one command at a time, so no put commits between a put's counts and its append. `fold` checks no cap: a log written by a build before the caps (format 3 is unreleased) keeps the functions it holds when it is replayed, and a put that would leave a name over its cap, one of those already over it included, is refused, its hint counting the other functions the event triggers; a put that touches no such name, and that the other rules and the environment's cap take, leaves them as they are. An environment already over its cap takes no new function, and a put of one it holds is taken, which leaves it over.
 
 **The fence** (RUN-1, D95). Every call that names a lease is checked, in the decision that writes, in this order, and the first failure answers: what the request alone shows (`Invalid`: a position of 0, a step name that is not 1–256 bytes without a control character, an input or output outside its rules), then the lease parses and its run exists (`NotFound`, `run not found`), then its execution number is the run's current one (`Conflict`, hint `this execution was superseded: stop working on this run`; a run never claimed is at execution 0, which no lease names), then the call's key is the one that claimed it (`Conflict`, hint `another key holds this lease`). One function, `fence`, returns the run the rules then need, in a type whose field is private to the module that holds only the fence, so no rule of an execution call reaches a run without it. A refusal appends nothing. A step the run counts that the read store lacks is the store's failure, which fails the ledger, not a refusal.
 
@@ -463,7 +482,7 @@ A step's name, `once` and input are those of its first begin. Until a run can be
 | Operation | Scope |
 |---|---|
 | `emit`, `emit_batch`, `put_function`, `start_run` | `write` |
-| `get_event`, `list_events`, `list_environments`, `get_function`, `get_run` | `read` |
+| `get_event`, `list_events`, `list_environments`, `get_function`, `list_functions`, `get_run` | `read` |
 | `whoami` | any valid key |
 | `create_key`, `list_keys`, `revoke_key` | `admin` |
 | `claim_run`, `begin_step`, `complete_step`, `complete_run` | `execute` |
@@ -476,7 +495,7 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 
 | Kind | When | Retry |
 |---|---|---|
-| `Invalid` | A rule refused the request, or one batch item; or `create_key` with more scopes than the creator, an expiry not after now or later than the creator's, or a bad label; or `list_keys` with a cursor that does not decode or names another incarnation | No: the same request is refused the same way, unless it names an expiry that a clock set back makes valid |
+| `Invalid` | A rule refused the request, or one batch item; or `create_key` with more scopes than the creator, an expiry not after now or later than the creator's, or a bad label; or `list_keys` or `list_functions` with a cursor that does not decode or names another incarnation | No: the same request is refused the same way, unless it names an expiry that a clock set back makes valid |
 | `Invalid` | Through a door, before the key is read and whether or not the engine is open: a request the wire cannot carry ([Proto](#proto)). From the proto client, before it sends anything: the same, an expiry outside years 0001–9999, or data or metadata that is not UTF-8, on any item of a batch | No |
 | `Invalid` | Event data or metadata whose JSON object repeats a key, at any depth or after unescaping: `event data is invalid: repeated key at line L column C`, or `event metadata is invalid: …` | No |
 | `NotFound` | No event has that ID, or the ID does not parse | No |
@@ -496,6 +515,7 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 | `Unauthenticated` | An unknown key ID, a wrong secret, a revoked or expired key, or a key of another environment or incarnation: `invalid API key`, the same answer for each, with no hint, whether or not recording an expiry failed (D29, D30). Also a key change whose calling key was revoked or expired before its transaction (D43) | No |
 | `PermissionDenied` | The key lacks the operation's scope: `missing scope: <scope>`, with `hint` saying to create or use a key with that scope (D31) | No |
 | `ResourceExhausted` | `create_key` when 1,000 created keys hold a slot: `key limit reached`, with `hint` saying to revoke keys, expired ones first (D44) | After a revoke, or once an expiry is recorded |
+| `ResourceExhausted` | `put_function` past a cap of [Functions](#functions): 20 functions an event name triggers, with a hint that names the event, or 1,000 an environment holds | After a put of one of the 20 without that trigger; the environment's cap stays |
 | `ResourceExhausted` | From the proto client: a request over 16 MiB, which it does not send; or `resource_exhausted` without the engine's own error ([Wire](#wire), rule 4). No hint | No: a request too large stays so |
 | `Invalid` | From the proto client: `invalid_argument` or `out_of_range` without the engine's own error ([Wire](#wire), rule 4) | No |
 | `Internal` | From the proto client: `unimplemented` without the engine's own error ([Wire](#wire), rule 4), with the hint `the engine is older than this client` | No |
@@ -699,7 +719,7 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 | `environment.proto` | `EnvironmentService`: `ListEnvironments`, likewise, and `Environment` |
 | `event.proto` | `EventService`: `Emit`, `EmitBatch`, `GetEvent` and `ListEvents`, likewise, `Event`, which is `GetEvent`'s answer, and `EmitBatchItem` |
 | `key.proto` | `KeyService`: `CreateKey`, `ListKeys` and `RevokeKey`, likewise, and `KeyInfo` |
-| `function.proto` | `FunctionService`: `PutFunction` and `GetFunction`, likewise, and `Function` |
+| `function.proto` | `FunctionService`: `PutFunction`, `GetFunction` and `ListFunctions`, likewise, and `Function` |
 | `run.proto` | `RunService`: `StartRun` and `GetRun`, likewise, `Run` and `RunEnd` |
 | `execution.proto` | `ExecutionService`: `ClaimRun`, `BeginStep`, `CompleteStep` and `CompleteRun`, likewise, `Claim`, and the answers' shapes |
 | `options.proto` | The custom options, which the generator reads |

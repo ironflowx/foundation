@@ -13,10 +13,10 @@ use ironflowx_proto::{
     BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, Client, CompleteRunRequest,
     CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
     EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
-    GetEventRequest, GetFunctionRequest, GetRunRequest, KeyPage, ListEnvironmentsRequest,
-    ListEventsRequest, ListKeysRequest, OpError, Operations, PutFunctionRequest,
-    PutFunctionResponse, RevokeKeyRequest, Run, RunEnd, StartRunRequest, StartRunResponse, Whoami,
-    WhoamiRequest,
+    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, KeyPage,
+    ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest, ListKeysRequest, OpError,
+    Operations, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd,
+    StartRunRequest, StartRunResponse, Whoami, WhoamiRequest,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -57,7 +57,7 @@ impl Adapter {
         Self::served_on(data_dir, HostClock).await
     }
 
-    /// As `served`, on `clock`.
+    /// As [`Self::served`], on `clock`.
     pub async fn served_on(
         data_dir: &Path,
         clock: impl Clock + Clone + Send + Sync + 'static,
@@ -129,6 +129,7 @@ either! {
     revoke_key(RevokeKeyRequest) -> ();
     put_function(PutFunctionRequest) -> PutFunctionResponse;
     get_function(GetFunctionRequest) -> Function;
+    list_functions(ListFunctionsRequest) -> FunctionPage;
     start_run(StartRunRequest) -> StartRunResponse;
     get_run(GetRunRequest) -> Run;
     claim_run(ClaimRunRequest) -> Option<Claim>;

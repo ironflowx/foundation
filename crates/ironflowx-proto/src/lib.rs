@@ -118,6 +118,13 @@ pub trait Operations: Send + Sync {
         req: GetFunctionRequest,
     ) -> impl Future<Output = Result<Function, OpError>> + Send;
 
+    /// Lists a page of functions, by name.
+    fn list_functions(
+        &self,
+        cx: &Call,
+        req: ListFunctionsRequest,
+    ) -> impl Future<Output = Result<FunctionPage, OpError>> + Send;
+
     /// Starts a run of a function, queued and due at once.
     fn start_run(
         &self,
@@ -176,6 +183,7 @@ pub enum Operation {
     RevokeKey,
     PutFunction,
     GetFunction,
+    ListFunctions,
     StartRun,
     GetRun,
     ClaimRun,
@@ -198,6 +206,7 @@ impl Operation {
         Self::RevokeKey,
         Self::PutFunction,
         Self::GetFunction,
+        Self::ListFunctions,
         Self::StartRun,
         Self::GetRun,
         Self::ClaimRun,
@@ -220,6 +229,7 @@ impl Operation {
             Self::RevokeKey => "ironflowx.v1.KeyService/RevokeKey",
             Self::PutFunction => "ironflowx.v1.FunctionService/PutFunction",
             Self::GetFunction => "ironflowx.v1.FunctionService/GetFunction",
+            Self::ListFunctions => "ironflowx.v1.FunctionService/ListFunctions",
             Self::StartRun => "ironflowx.v1.RunService/StartRun",
             Self::GetRun => "ironflowx.v1.RunService/GetRun",
             Self::ClaimRun => "ironflowx.v1.ExecutionService/ClaimRun",
@@ -249,6 +259,7 @@ impl Operation {
             | Self::ListEnvironments
             | Self::ListKeys
             | Self::GetFunction
+            | Self::ListFunctions
             | Self::GetRun => false,
         }
     }
@@ -265,6 +276,7 @@ pub const fn required_scope(op: Operation) -> Option<Scope> {
         | Operation::ListEvents
         | Operation::ListEnvironments
         | Operation::GetFunction
+        | Operation::ListFunctions
         | Operation::GetRun => Some(Scope::Read),
         Operation::Whoami => None,
         Operation::CreateKey | Operation::ListKeys | Operation::RevokeKey => Some(Scope::Admin),
@@ -566,6 +578,24 @@ pub struct PutFunctionResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetFunctionRequest {
     pub name: String,
+}
+
+/// Which page of functions to list.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListFunctionsRequest {
+    /// `None` takes execution rules' default; zero cannot be expressed.
+    pub limit: Option<NonZeroU32>,
+    /// The `next` of the previous page; `None` starts at the first name.
+    pub cursor: Option<String>,
+}
+
+/// A page of functions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionPage {
+    /// In name order.
+    pub functions: Vec<Function>,
+    /// The cursor for the next page; `None` on the last page.
+    pub next: Option<String>,
 }
 
 /// A function as put. A policy field is `None` when it was not put.

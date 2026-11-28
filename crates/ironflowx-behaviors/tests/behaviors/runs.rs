@@ -10,13 +10,14 @@ use std::time::Duration;
 
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
-use ironflowx_cell::{HostClock, ManualClock};
+use ironflowx_cell::ManualClock;
 use ironflowx_core::{Clock, ErrorKind, Lease, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
     BeginStepRequest, Call, Claim, ClaimRunRequest, CompleteRunRequest, CompleteStepRequest,
-    CreateKeyRequest, GetFunctionRequest, GetRunRequest, OpError, Operations, PutFunctionRequest,
-    PutFunctionResponse, Run, RunStatus, StartRunRequest, WhoamiRequest,
+    CreateKeyRequest, EmitRequest, GetFunctionRequest, GetRunRequest, ListFunctionsRequest,
+    OpError, Operations, PutFunctionRequest, PutFunctionResponse, Run, RunStatus, StartRunRequest,
+    WhoamiRequest,
 };
 use tempfile::TempDir;
 
@@ -24,10 +25,10 @@ use super::adapter::{Adapter, SERVED, runs_remotely};
 
 /// How many cases of each file pass on the engine, and through the door, an outline once per
 /// example; and how many are pending, on the engine and through the door.
-pub const FUNCTION_RUNS: (usize, usize) = (9, 9);
-pub const FUNCTION_PENDING: (usize, usize) = (37, 37);
-pub const EXECUTION_RUNS: (usize, usize) = (14, 14);
-pub const EXECUTION_PENDING: (usize, usize) = (68, 54);
+pub const FUNCTION_RUNS: (usize, usize) = (27, 27);
+pub const FUNCTION_PENDING: (usize, usize) = (19, 19);
+pub const EXECUTION_RUNS: (usize, usize) = (15, 15);
+pub const EXECUTION_PENDING: (usize, usize) = (67, 53);
 
 const T: i64 = 1_800_000_000_000;
 
@@ -36,6 +37,8 @@ const T: i64 = 1_800_000_000_000;
 pub struct Runs {
     /// Whether the engine is served through the door.
     remote: bool,
+    /// The engine's clock, under either adapter, so a step can move it.
+    clock: ManualClock,
     // Before `dir`: the engine must close before its directory goes.
     ops: Option<Adapter>,
     dir: TempDir,
@@ -47,6 +50,13 @@ pub struct Runs {
     another: Option<String>,
     key: Option<String>,
     put: Option<Result<PutFunctionResponse, OpError>>,
+    /// The first put of a scenario that puts twice.
+    first_put: Option<PutFunctionResponse>,
+    /// The names on each page of a listing, in order.
+    pages: Vec<Vec<String>>,
+    /// The scenario's other run, and the claims of a step that claims more than once.
+    other_run: Option<String>,
+    claims: Vec<Option<Claim>>,
     /// The run a scenario is about, and the lease of its claim.
     run_id: Option<String>,
     /// The runs a scenario started, in order.
@@ -118,6 +128,7 @@ impl Runs {
     fn new() -> Self {
         Self {
             remote: false,
+            clock: ManualClock::new(Timestamp::from_millis(T)),
             ops: None,
             dir: tempfile::tempdir().unwrap(),
             bootstrap: None,
@@ -126,6 +137,10 @@ impl Runs {
             another: None,
             key: None,
             put: None,
+            first_put: None,
+            pages: Vec::new(),
+            other_run: None,
+            claims: Vec::new(),
             run_id: None,
             started: Vec::new(),
             took: None,
@@ -199,6 +214,25 @@ impl Runs {
         self.lease = Some(claim.lease.to_string());
     }
 
+    async fn put_def(&mut self, req: PutFunctionRequest) -> Result<PutFunctionResponse, OpError> {
+        let builder = self.builder().await;
+        self.ops().put_function(&builder, req).await
+    }
+
+    async fn get(&mut self, name: &str) -> ironflowx_proto::Function {
+        let builder = self.builder().await;
+        let req = GetFunctionRequest { name: name.into() };
+        self.ops().get_function(&builder, req).await.unwrap()
+    }
+
+    /// An executor's claim of `pairs`, made with a key of its own if the scenario has none.
+    async fn executor_claims(&mut self, pairs: &[&str]) -> Option<Claim> {
+        if self.executor.is_none() {
+            self.executor = Some(self.create(scopes("execute")).await);
+        }
+        self.claim(&self.executor(), pairs).await.unwrap()
+    }
+
     fn refused(&self, kind: ErrorKind) -> &OpError {
         match self.outcome.as_ref().expect("a call") {
             Err(e) if e.kind == kind => e,
@@ -212,13 +246,14 @@ impl Runs {
 #[given("a fresh engine")]
 async fn fresh(w: &mut Runs) {
     if w.remote {
-        let clock = Told::new(HostClock, &w.told);
-        let (served, key) = Adapter::served_on(&w.dir.path().join("data"), clock).await;
+        let data = w.dir.path().join("data");
+        let clock = Told::new(w.clock.clone(), &w.told);
+        let (served, key) = Adapter::served_on(&data, clock).await;
         w.bootstrap = Some(key);
         w.ops = Some(served);
         return;
     }
-    let clock = Told::new(ManualClock::new(Timestamp::from_millis(T)), &w.told);
+    let clock = Told::new(w.clock.clone(), &w.told);
     let opened = Engine::open(w.dir.path(), clock, None).await.unwrap();
     w.bootstrap = Some(
         opened
@@ -268,6 +303,20 @@ async fn put_charge(w: &mut Runs) {
     w.put = Some(w.ops().put_function(&builder, req).await);
 }
 
+/// As the step above, and it took: "charge" reads back as that definition.
+#[given(
+    regex = r#"^the builder put function "charge" with code "v1", trigger "order.placed" and 5 attempts$"#
+)]
+async fn charge_was_put(w: &mut Runs) {
+    put_charge(w).await;
+    assert!(w.put.take().expect("a put").unwrap().changed);
+    let f = w.get("charge").await;
+    assert_eq!(
+        (f.code.as_str(), f.triggers.as_slice(), f.max_attempts),
+        ("v1", ["order.placed".to_owned()].as_slice(), Some(5))
+    );
+}
+
 #[then("the put reports a change")]
 fn put_changed(w: &mut Runs) {
     let put = w.put.as_ref().expect("a put").as_ref().unwrap();
@@ -299,6 +348,236 @@ async fn got_charge(w: &mut Runs) {
     );
 }
 
+#[given(regex = r#"^the builder put function "charge" with code "v1" and trigger "order.placed"$"#)]
+async fn put_charge_once(w: &mut Runs) {
+    let req = PutFunctionRequest {
+        name: "charge".into(),
+        code: "v1".into(),
+        triggers: vec!["order.placed".into()],
+        ..PutFunctionRequest::default()
+    };
+    w.first_put = Some(w.put_def(req).await.unwrap());
+}
+
+#[when("the builder puts the same definition again")]
+async fn put_again(w: &mut Runs) {
+    // A put that appended would be stamped later than the first.
+    w.clock.step(1_000);
+    let first = &w.first_put.as_ref().expect("a first put").function;
+    let req = PutFunctionRequest {
+        name: first.name.clone(),
+        code: first.code.clone(),
+        triggers: first.triggers.clone(),
+        ..PutFunctionRequest::default()
+    };
+    w.put = Some(w.put_def(req).await);
+}
+
+#[then("the put reports no change")]
+fn put_unchanged(w: &mut Runs) {
+    let put = w.put.as_ref().expect("a put").as_ref().unwrap();
+    assert!(!put.changed);
+    assert_eq!(
+        Some(&put.function),
+        w.first_put.as_ref().map(|p| &p.function)
+    );
+}
+
+#[then(r#"getting "charge" shows the first put's time"#)]
+async fn first_time(w: &mut Runs) {
+    let f = w.get("charge").await;
+    let first = w.first_put.as_ref().unwrap().function.put_at;
+    assert_eq!(f.put_at, first);
+}
+
+#[when(regex = r#"^the builder puts function "charge" with code "v2" and no trigger$"#)]
+async fn put_v2(w: &mut Runs) {
+    let req = PutFunctionRequest {
+        name: "charge".into(),
+        code: "v2".into(),
+        ..PutFunctionRequest::default()
+    };
+    w.put = Some(w.put_def(req).await);
+}
+
+#[when(regex = r#"^a client emits "([^"]+)"$"#)]
+async fn emits(w: &mut Runs, name: String) {
+    let builder = w.builder().await;
+    let req = EmitRequest {
+        name,
+        data: None,
+        metadata: None,
+        version: None,
+        idempotency_key: None,
+    };
+    w.ops().emit(&builder, req).await.unwrap();
+}
+
+#[then(regex = r#"^getting "charge" shows code "v2", no trigger and no number of attempts$"#)]
+async fn got_v2(w: &mut Runs) {
+    let f = w.get("charge").await;
+    assert_eq!(f.code, "v2");
+    assert_eq!(f.triggers, Vec::<String>::new());
+    assert_eq!(
+        (f.max_attempts, f.first_delay_seconds, f.max_delay_seconds),
+        (None, None, None)
+    );
+}
+
+/// No run of either label is due. It cannot fail before events create runs (#221).
+#[then(regex = r#"^"charge" has no run$"#)]
+async fn no_run(w: &mut Runs) {
+    assert_eq!(w.executor_claims(&["charge@v1", "charge@v2"]).await, None);
+}
+
+#[when(regex = r"^the builder puts a function with (.+)$")]
+async fn put_with(w: &mut Runs, what: String) {
+    let base = PutFunctionRequest {
+        name: "charge".into(),
+        code: "v1".into(),
+        ..PutFunctionRequest::default()
+    };
+    let trigger = what
+        .strip_prefix("the trigger \"")
+        .and_then(|t| t.strip_suffix('"'))
+        .filter(|t| !t.contains('"'));
+    let req = match what.as_str() {
+        "an empty name" => PutFunctionRequest {
+            name: String::new(),
+            ..base
+        },
+        "a name of 129 bytes" => PutFunctionRequest {
+            name: "x".repeat(129),
+            ..base
+        },
+        r#"the name "a@b""# => PutFunctionRequest {
+            name: "a@b".into(),
+            ..base
+        },
+        "an empty code label" => PutFunctionRequest {
+            code: String::new(),
+            ..base
+        },
+        "11 triggers" => PutFunctionRequest {
+            triggers: (0..11).map(|i| format!("order.e{i}")).collect(),
+            ..base
+        },
+        r#"the trigger "order.placed" twice"# => PutFunctionRequest {
+            triggers: vec!["order.placed".into(), "order.placed".into()],
+            ..base
+        },
+        "0 attempts" => PutFunctionRequest {
+            max_attempts: Some(0),
+            ..base
+        },
+        "101 attempts" => PutFunctionRequest {
+            max_attempts: Some(101),
+            ..base
+        },
+        "a first delay above its longest delay" => PutFunctionRequest {
+            first_delay_seconds: Some(61),
+            max_delay_seconds: Some(60),
+            ..base
+        },
+        other => match trigger {
+            Some(t) => PutFunctionRequest {
+                triggers: vec![t.into()],
+                ..base
+            },
+            None => panic!("no such definition: {other}"),
+        },
+    };
+    w.outcome = Some(w.put_def(req).await.map(drop));
+}
+
+#[then("it is refused as invalid")]
+fn invalid(w: &mut Runs) {
+    w.refused(ErrorKind::Invalid);
+}
+
+#[given(regex = r#"^20 functions are triggered by "order.placed"$"#)]
+async fn twenty(w: &mut Runs) {
+    for i in 1..=20 {
+        let req = PutFunctionRequest {
+            name: format!("f{i:02}"),
+            code: "v1".into(),
+            triggers: vec!["order.placed".into()],
+            ..PutFunctionRequest::default()
+        };
+        w.put_def(req).await.unwrap();
+    }
+}
+
+#[when(regex = r#"^the builder puts another function triggered by "order.placed"$"#)]
+async fn another(w: &mut Runs) {
+    let req = PutFunctionRequest {
+        name: "late".into(),
+        code: "v1".into(),
+        triggers: vec!["order.placed".into()],
+        ..PutFunctionRequest::default()
+    };
+    w.outcome = Some(w.put_def(req).await.map(drop));
+}
+
+#[then(regex = r#"^it is refused as resource exhausted, with a hint that names "([^"]+)"$"#)]
+fn exhausted(w: &mut Runs, event: String) {
+    let e = w.refused(ErrorKind::ResourceExhausted);
+    assert_eq!(e.message, "an event name triggers at most 20 functions");
+    let hint =
+        format!("{event:?} triggers 20 other functions already: put 1 of them without it first");
+    assert_eq!(e.hint, Some(hint));
+}
+
+#[then("putting one of the 20 again with new code succeeds")]
+async fn one_again(w: &mut Runs) {
+    let req = PutFunctionRequest {
+        name: "f07".into(),
+        code: "v2".into(),
+        triggers: vec!["order.placed".into()],
+        ..PutFunctionRequest::default()
+    };
+    let put = w.put_def(req).await.unwrap();
+    assert!(put.changed);
+    assert_eq!(w.get("f07").await.code, "v2");
+}
+
+#[given(regex = r#"^functions "c", "a" and "b" were put$"#)]
+async fn three(w: &mut Runs) {
+    for name in ["c", "a", "b"] {
+        let req = PutFunctionRequest {
+            name: name.into(),
+            code: "v1".into(),
+            ..PutFunctionRequest::default()
+        };
+        w.put_def(req).await.unwrap();
+    }
+}
+
+#[when(regex = r"^the builder lists functions 2 at a time$")]
+async fn lists(w: &mut Runs) {
+    let builder = w.builder().await;
+    let mut cursor = None;
+    loop {
+        let req = ListFunctionsRequest {
+            limit: std::num::NonZeroU32::new(2),
+            cursor,
+        };
+        let page = w.ops().list_functions(&builder, req).await.unwrap();
+        w.pages
+            .push(page.functions.into_iter().map(|f| f.name).collect());
+        cursor = page.next;
+        if cursor.is_none() {
+            break;
+        }
+        assert!(w.pages.len() < 10, "the pages end");
+    }
+}
+
+#[then(regex = r#"^the pages are "a", "b" and then "c", with no page after it$"#)]
+fn pages(w: &mut Runs) {
+    assert_eq!(w.pages, [vec!["a", "b"], vec!["c"]]);
+}
+
 #[given(regex = r#"^a key with every scope but "(\w+)"$"#)]
 async fn every_scope_but(w: &mut Runs, but: String) {
     let but: Scope = but.parse().unwrap();
@@ -327,6 +606,10 @@ async fn key_calls(w: &mut Runs, operation: String) {
                 name: "charge".into(),
             };
             ops.get_function(&cx, req).await.map(drop)
+        }
+        "list functions" => {
+            let req = ListFunctionsRequest::default();
+            ops.list_functions(&cx, req).await.map(drop)
         }
         "start a run" => {
             let req = StartRunRequest {
@@ -422,6 +705,51 @@ async fn reads_completed(w: &mut Runs, output: String) {
     assert_eq!((run.steps, run.execution), (0, 1));
     assert!(run.ended_at.is_some_and(|t| t >= run.created_at));
     assert_eq!((run.lease_until, run.due_at), (None, None));
+}
+
+#[given(regex = r#"^the builder put "charge" with code "v2" and started another run$"#)]
+async fn v2_and_another(w: &mut Runs) {
+    let req = PutFunctionRequest {
+        name: "charge".into(),
+        code: "v2".into(),
+        ..PutFunctionRequest::default()
+    };
+    assert!(w.put_def(req).await.unwrap().changed);
+    let builder = w.builder().await;
+    let req = StartRunRequest {
+        function: "charge".into(),
+    };
+    let started = w.ops().start_run(&builder, req).await.unwrap();
+    w.other_run = Some(started.run_id.to_string());
+}
+
+#[when(regex = r#"^an executor of "charge@v2" claims without waiting, twice$"#)]
+async fn claims_v2_twice(w: &mut Runs) {
+    for _ in 0..2 {
+        let claim = w.executor_claims(&["charge@v2"]).await;
+        w.claims.push(claim);
+    }
+}
+
+#[then("the first claim is the second run, and the second claim is empty")]
+fn first_is_second(w: &mut Runs) {
+    let [first, second] = w.claims.as_slice() else {
+        panic!("two claims: {:?}", w.claims);
+    };
+    let first = first.as_ref().expect("a claim");
+    assert_eq!(Some(first.lease.run.to_string()), w.other_run);
+    assert_eq!(
+        (first.function.as_str(), first.code.as_str()),
+        ("charge", "v2")
+    );
+    assert_eq!(second, &None);
+}
+
+#[then(regex = r#"^an executor of "charge@v1" claims the first run$"#)]
+async fn v1_claims_first(w: &mut Runs) {
+    let claim = w.executor_claims(&["charge@v1"]).await.expect("a claim");
+    assert_eq!(Some(claim.lease.run.to_string()), w.run_id);
+    assert_eq!(claim.code, "v1");
 }
 
 #[when(regex = r#"^the executor claims "([^"]+)" without waiting$"#)]
@@ -547,11 +875,6 @@ async fn claims_with(w: &mut Runs, what: String) {
         other => panic!("no such claim: {other}"),
     }
     w.outcome = Some(w.ops().claim_run(&w.executor(), req).await.map(drop));
-}
-
-#[then("it is refused as invalid")]
-fn invalid(w: &mut Runs) {
-    w.refused(ErrorKind::Invalid);
 }
 
 // ---- Leases and the fence ----

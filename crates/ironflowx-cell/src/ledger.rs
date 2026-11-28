@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use ironflowx_core::{Clock, Emitter, EnvRef, EventId, RunId, SequencedTime, SubmitAs, Timestamp};
 use ironflowx_events::{Error, Event, EventPage, ItemOutcome, Record, Refusal};
-use ironflowx_execution::{Command, Draws, Function, Run};
+use ironflowx_execution::{Command, Draws, Function, FunctionPage, Run};
 use rusqlite::Connection;
 use segment_log_core::{
     AppendError, CommitError, ExpectedRevision, NewRecord, Options, SegmentLog, Submit,
@@ -407,6 +407,28 @@ impl Ledger {
     pub async fn get_function(&self, name: &str) -> Result<Function, ReadError> {
         let name = name.to_owned();
         self.read(move |v| ironflowx_execution::get_function(v, &name))
+            .await
+    }
+
+    /// A page of functions, in name order, once the read store holds every write acknowledged
+    /// before this call. `limit` is 20 when `None` and at most 200; `cursor` is a page's `next`
+    /// from this ledger.
+    ///
+    /// # Errors
+    ///
+    /// `Refused` with `Invalid` for a cursor that does not decode or names another incarnation;
+    /// `Unavailable` if the ledger failed.
+    ///
+    /// # Panics
+    ///
+    /// Outside a tokio runtime.
+    pub async fn list_functions(
+        &self,
+        limit: Option<NonZeroU32>,
+        cursor: Option<&str>,
+    ) -> Result<FunctionPage, ReadError> {
+        let (token, cursor) = (self.env.token(), cursor.map(str::to_owned));
+        self.read(move |v| ironflowx_execution::list_functions(v, token, limit, cursor.as_deref()))
             .await
     }
 

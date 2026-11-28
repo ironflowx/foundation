@@ -27,7 +27,7 @@ Feature: Running a function step by step
     Then its claim is empty
     And the run reads as running with a lease deadline
 
-  @EXE-003 @release-0.4 @pending
+  @EXE-003 @release-0.4
   Scenario: A run stays on the code it was created with
     Given a run of "charge" was started
     And the builder put "charge" with code "v2" and started another run

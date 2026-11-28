@@ -2536,3 +2536,177 @@ async fn changes_resolve_at_a_commit_and_a_failure_and_never_after_a_close() {
     ledger.close().await;
     assert!(!ready(std::pin::pin!(changes.changed())), "a close");
 }
+
+fn listed(page: &crate::FunctionPage) -> Vec<&str> {
+    page.functions
+        .iter()
+        .map(|f| f.definition.name.as_str())
+        .collect()
+}
+
+/// Functions list by name from the read store, page by page; a cursor stays valid across a reopen
+/// and a rebuilt read store, another incarnation's is refused, and a stored definition holds only
+/// the policy fields that were put.
+#[tokio::test]
+async fn functions_list_by_name_across_reopen_and_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    let empty = ledger.list_functions(None, None).await.unwrap();
+    assert_eq!((empty.functions.len(), empty.next), (0, None));
+    for name in ["c", "a", "b"] {
+        execute(&ledger, put(name, "v1", &[])).await.unwrap();
+    }
+    let attempts = ironflowx_execution::Command::PutFunction(ironflowx_execution::Definition {
+        max_attempts: Some(3),
+        ..definition("b")
+    });
+    execute(&ledger, attempts).await.unwrap();
+    let first = ledger
+        .list_functions(2.try_into().ok(), None)
+        .await
+        .unwrap();
+    assert_eq!(listed(&first), ["a", "b"]);
+    assert_eq!(first.next, Some(format!("{}.b", env.token())));
+    let b = &first.functions[1].definition;
+    assert_eq!(
+        (b.max_attempts, b.first_delay_seconds, b.max_delay_seconds),
+        (Some(3), None, None)
+    );
+    ledger.close().await;
+    std::fs::remove_file(dir.path().join("read.db")).unwrap();
+    let ledger = open(dir.path(), env).await;
+    let rest = ledger
+        .list_functions(2.try_into().ok(), first.next.as_deref())
+        .await
+        .unwrap();
+    assert_eq!((listed(&rest), rest.next.clone()), (vec!["c"], None));
+    let all = ledger.list_functions(None, None).await.unwrap();
+    assert_eq!(
+        &all.functions[..2],
+        first.functions.as_slice(),
+        "rebuilt alike"
+    );
+    ledger.close().await;
+
+    let other = tempfile::tempdir().unwrap();
+    let ledger = open(other.path(), new_env_ref()).await;
+    let Err(ReadError::Refused(r)) = ledger.list_functions(None, first.next.as_deref()).await
+    else {
+        panic!("another incarnation's cursor was accepted");
+    };
+    assert_eq!(
+        (r.kind(), r.message()),
+        (ErrorKind::Invalid, "invalid cursor")
+    );
+    ledger.close().await;
+}
+
+fn definition(name: &str) -> ironflowx_execution::Definition {
+    let ironflowx_execution::Command::PutFunction(d) = put(name, "v1", &[]) else {
+        unreachable!()
+    };
+    d
+}
+
+/// The cap per event name counts on the read store the functions triggered by that name, but the
+/// one being put: a 21st is refused, one of the 20 is put again, and other names count apart.
+#[tokio::test]
+async fn the_read_store_counts_the_functions_an_event_name_triggers() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = open(dir.path(), new_env_ref()).await;
+    for i in 0..20 {
+        let name = format!("f{i:02}");
+        execute(&ledger, put(&name, "v1", &["order.placed", "order.paid"]))
+            .await
+            .unwrap();
+    }
+    let Err(SubmitError::Refused(r)) = execute(&ledger, put("late", "v1", &["order.placed"])).await
+    else {
+        panic!("a 21st function of one event name was put");
+    };
+    assert_eq!(
+        (r.kind(), r.hint()),
+        (
+            ErrorKind::ResourceExhausted,
+            Some(
+                "\"order.placed\" triggers 20 other functions already: put 1 of them without it first"
+            )
+        )
+    );
+    // Another name is not "order.placed"'s.
+    execute(&ledger, put("late", "v1", &["order.shipped"]))
+        .await
+        .unwrap();
+    let again = execute(&ledger, put("f07", "v2", &["order.placed", "order.paid"])).await;
+    assert!(
+        matches!(
+            again,
+            Ok(ironflowx_execution::Outcome::FunctionPut { changed: true, .. })
+        ),
+        "{again:?}"
+    );
+    ledger.close().await;
+}
+
+/// The cap per environment counts every function on the read store: with 999 there, a new one is
+/// put, the next refused, and one of the 1,000 is still put again.
+#[tokio::test]
+async fn the_read_store_counts_the_functions_of_an_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    execute(&ledger, put("seed", "v1", &[])).await.unwrap();
+    ledger.close().await;
+    // 998 more rows, written where `decide` reads them: 1,000 puts through an engine take tens of
+    // seconds in a debug build (reviewers' runs); execution rules' test of the cap puts 1,000.
+    let conn = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
+    conn.execute_batch(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 998)
+         INSERT INTO functions SELECT 'f' || i, 'v1', NULL, NULL, NULL, 0, put_by
+             FROM n, (SELECT put_by FROM functions WHERE name = 'seed');",
+    )
+    .unwrap();
+    drop(conn);
+    let ledger = open(dir.path(), env).await;
+    execute(&ledger, put("new", "v1", &[])).await.unwrap();
+    let Err(SubmitError::Refused(r)) = execute(&ledger, put("newer", "v1", &[])).await else {
+        panic!("a 1,001st function was put");
+    };
+    assert_eq!(
+        (r.kind(), r.message()),
+        (
+            ErrorKind::ResourceExhausted,
+            "an environment holds at most 1000 functions"
+        )
+    );
+    execute(&ledger, put("new", "v2", &[])).await.unwrap();
+    ledger.close().await;
+}
+
+/// A stored function the read store cannot read fails the list, and the ledger, rather than drop
+/// out of a page.
+#[tokio::test]
+async fn a_function_the_read_store_cannot_read_fails_the_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    execute(&ledger, put("a", "v1", &[])).await.unwrap();
+    execute(&ledger, put("b", "v1", &[])).await.unwrap();
+    ledger.close().await;
+    let conn = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
+    conn.execute(
+        "UPDATE functions SET put_by = 'nobody' WHERE name = 'b'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(
+        ledger.list_functions(None, None).await,
+        Err(ReadError::Unavailable)
+    );
+    // The ledger has failed: a read of a readable function is refused too.
+    assert_eq!(ledger.get_function("a").await, Err(ReadError::Unavailable));
+    ledger.close().await;
+}

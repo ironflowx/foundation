@@ -32,10 +32,10 @@ use ironflowx_proto::{
     BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, CompleteRunRequest,
     CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
     EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
-    GetEventRequest, GetFunctionRequest, GetRunRequest, KeyInfo, KeyPage, KeyStatus,
-    ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation, Operations,
-    PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd, StartRunRequest,
-    StartRunResponse, Whoami, WhoamiRequest,
+    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, KeyInfo, KeyPage, KeyStatus,
+    ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest, ListKeysRequest, OpError,
+    Operation, Operations, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd,
+    StartRunRequest, StartRunResponse, Whoami, WhoamiRequest,
 };
 use ironflowx_store::{ControlPlane, EnvironmentRecord, KeyChangeError, KeyRow, NewKey};
 use tokio::sync::watch;
@@ -490,6 +490,33 @@ impl Operations for Engine {
             .await
             .map(execution::function)
             .map_err(events::read_error)
+    }
+
+    /// Lists a page of the key's environment's functions, by name.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::whoami`]; `PermissionDenied` without `read`; `Invalid` for a bad cursor;
+    /// `Unavailable` if the ledger failed.
+    async fn list_functions(
+        &self,
+        cx: &Call,
+        req: ListFunctionsRequest,
+    ) -> Result<FunctionPage, OpError> {
+        let a = self.admit(cx, Operation::ListFunctions).await?;
+        let page = self
+            .ledger(&a)
+            .list_functions(req.limit, req.cursor.as_deref())
+            .await
+            .map_err(events::read_error)?;
+        Ok(FunctionPage {
+            functions: page
+                .functions
+                .into_iter()
+                .map(execution::function)
+                .collect(),
+            next: page.next,
+        })
     }
 
     /// Starts a run of a function, attributed to the calling key: queued, due at once, with the
