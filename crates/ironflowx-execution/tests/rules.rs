@@ -1278,7 +1278,7 @@ fn a_store_already_over_a_cap_takes_no_put_that_leaves_it_over() {
         code: "v2".into(),
         ..named_fn("f00", &["order.placed"])
     };
-    // The hint counts what the name holds, and how many must go for one more.
+    // The hint counts the other functions the event triggers, and how many of them must go.
     let r = put_def(&mut s, changed).unwrap_err();
     let hint =
         "\"order.placed\" triggers 20 other functions already: put 1 of them without it first";
