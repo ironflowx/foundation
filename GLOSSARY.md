@@ -157,4 +157,4 @@ A named place in the commit, recovery, bootstrap, seed or key-change path, such 
 _Avoid_: Kill point
 
 **App ref**:
-The `ironflowx/ironflow` branch that foundation's `conformance` job builds and runs against a change: the one line of `ci/app-ref`, `main` unless a change the app must follow names the app's matching branch (D122).
+The `ironflowx/ironflow` branch that foundation's `conformance` job builds and runs against a change that is not only `docs/` and Markdown: the one line of `ci/app-ref`, `main` unless a change the app must follow names the app's matching branch (D122).

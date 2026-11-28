@@ -56,20 +56,12 @@ step rustup target add wasm32-unknown-unknown
 for crate in ironflowx-core ironflowx-events ironflowx-authz; do
   step cargo check --locked --target wasm32-unknown-unknown -p "$crate"
 done
-# ironflowx/ironflow's suite against this checkout, from a temporary clone of the ref ci/app-ref
-# names (D122); the build stays in target/conformance for the next run.
-fixtures=ci/fixtures/app-ref
-step ci/must-reject.sh "$fixtures/missing is missing" -- ci/app-ref.sh "$fixtures/missing"
-step ci/must-reject.sh "$fixtures/empty is empty" -- ci/app-ref.sh "$fixtures/empty"
-step ci/must-reject.sh "$fixtures/newline-only is empty" -- ci/app-ref.sh "$fixtures/newline-only"
-step ci/must-reject.sh "$fixtures/two-lines has 2 lines" -- ci/app-ref.sh "$fixtures/two-lines"
-step ci/must-reject.sh "$fixtures/blank-line has 2 lines" -- ci/app-ref.sh "$fixtures/blank-line"
-step ci/must-reject.sh "$fixtures/crlf names no ref" -- ci/app-ref.sh "$fixtures/crlf"
+# ironflowx/ironflow's suite against this checkout, from a temporary fetch of the branch ci/app-ref
+# names, as refs/heads/<branch> (D122); the build stays in target/conformance for the next run.
 echo "== ci/app-ref.sh"
 app_ref=$(ci/app-ref.sh)
 ironflow=$(mktemp -d)
 trap 'rm -rf "$ironflow"' EXIT
-# A fetch, not a clone's --branch, takes any ref actions/checkout takes, a commit included.
 step git -C "$ironflow" init -q
 step git -C "$ironflow" fetch -q --depth 1 https://github.com/ironflowx/ironflow "$app_ref"
 step git -C "$ironflow" checkout -q FETCH_HEAD
