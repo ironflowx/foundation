@@ -2497,8 +2497,10 @@ async fn changes_resolve_at_a_commit_and_a_failure_and_never_after_a_close() {
     let ledger = open(dir.path(), new_env_ref()).await;
     let mut changes = ledger.changes();
     assert!(!ready(std::pin::pin!(changes.changed())));
-    emit(&ledger, named("a")).await.unwrap();
+    let a = emit(&ledger, named("a")).await.unwrap();
     assert!(ready(std::pin::pin!(changes.changed())), "a commit");
+    // Folded, by a read, so the hold below holds b's fold, not a's.
+    get(&ledger, a).await.unwrap();
     // Taken once b is committed, and before its fold fails.
     ledger.hold_fold();
     ledger.fail_next_fold();

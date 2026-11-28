@@ -283,26 +283,32 @@ async fn a_run_due_at_the_last_record_is_due_with_the_clock_set_back() {
     f.close().await;
 }
 
-/// A fault comes before the end of the wait: a claim whose wait is over when the ledger fails
-/// after its last read is `Unavailable`, not empty.
+/// A fault or a drain comes before the end of the wait: a claim whose wait is over when the ledger
+/// fails, or the engine drains, after its last read is `Unavailable`, not empty.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fault_after_the_last_read_is_no_empty_claim() {
-    let clock = Probe::at(T);
-    let f = fixture(clock.clone()).await;
-    // Past its admission, at its read's reading, after the snapshot.
-    let (read, go) = clock.stop_other(1);
-    let claim = f.spawn_claim(Some(0));
-    receive(&read, 1);
-    f.fail_next_start().await;
-    let req = StartRunRequest {
-        function: "charge".into(),
-    };
-    f.engine.start_run(&f.admin, req).await.unwrap();
-    f.engine.faulted().await;
-    go.send(()).unwrap();
-    let (claimed, _) = claim.await.unwrap();
-    assert!(unavailable(&claimed), "{claimed:?}");
-    f.close().await;
+async fn a_fault_or_a_drain_after_the_last_read_is_no_empty_claim() {
+    for fault in [true, false] {
+        let clock = Probe::at(T);
+        let f = fixture(clock.clone()).await;
+        // Past its admission, at its read's reading, after the snapshot.
+        let (read, go) = clock.stop_other(1);
+        let claim = f.spawn_claim(Some(0));
+        receive(&read, 1);
+        if fault {
+            f.fail_next_start().await;
+            let req = StartRunRequest {
+                function: "charge".into(),
+            };
+            f.engine.start_run(&f.admin, req).await.unwrap();
+            f.engine.faulted().await;
+        } else {
+            f.engine.begin_drain();
+        }
+        go.send(()).unwrap();
+        let (claimed, _) = claim.await.unwrap();
+        assert!(unavailable(&claimed), "fault: {fault}: {claimed:?}");
+        f.close().await;
+    }
 }
 
 /// With the clock behind the last record, event time stands still until the clock passes it: a run
