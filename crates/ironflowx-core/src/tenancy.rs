@@ -13,11 +13,6 @@ pub enum Scope {
     Admin,
 }
 
-impl Scope {
-    /// Every scope: what a bootstrap key and an embedder's call hold.
-    pub const ALL: [Self; 3] = [Self::Read, Self::Write, Self::Admin];
-}
-
 impl FromStr for Scope {
     type Err = ParseError;
     fn from_str(s: &str) -> Result<Self, ParseError> {

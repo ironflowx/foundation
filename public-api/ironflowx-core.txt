@@ -55,8 +55,6 @@ pub enum ironflowx_core::Scope
 pub ironflowx_core::Scope::Admin
 pub ironflowx_core::Scope::Read
 pub ironflowx_core::Scope::Write
-impl ironflowx_core::Scope
-pub const ironflowx_core::Scope::ALL: [Self; 3]
 impl core::clone::Clone for ironflowx_core::Scope
 pub fn ironflowx_core::Scope::clone(&self) -> Self
 impl core::clone::TrivialClone for ironflowx_core::Scope

@@ -54,7 +54,8 @@ impl Authorized {
     pub(crate) fn scopes(&self) -> BTreeSet<Scope> {
         match &self.caller {
             Caller::Key(grant) => grant.scopes().clone(),
-            Caller::Embedder(..) => BTreeSet::from(Scope::ALL),
+            // What a bootstrap key holds; tests/embedder.rs holds the two equal.
+            Caller::Embedder(..) => BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]),
         }
     }
 

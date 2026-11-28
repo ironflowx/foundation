@@ -306,7 +306,10 @@ fn a_key_has_expired_from_its_expiry_on_or_once_one_is_recorded() {
 /// would (D121).
 #[test]
 fn the_embedder_creates_as_an_unexpiring_key_with_every_scope() {
-    let every = grant(&BTreeSet::from(Scope::ALL), None);
+    let every = grant(
+        &BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]),
+        None,
+    );
     for scopes in every_scope_set() {
         for expires_at in [None, Some(at(T - 1)), Some(at(T)), Some(at(T + HOUR))] {
             for label in [None, Some("agent-7"), Some("a\nb")] {

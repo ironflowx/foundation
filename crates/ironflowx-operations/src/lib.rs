@@ -236,7 +236,7 @@ impl Operations for Engine {
         }])
     }
 
-    /// Emits one event, attributed to the calling key.
+    /// Emits one event, attributed to the calling key, or to the embedder of an embedder's call.
     ///
     /// # Errors
     ///
@@ -251,8 +251,8 @@ impl Operations for Engine {
         events::response(outcome)
     }
 
-    /// Emits a batch, every event attributed to the calling key; one result per item, in
-    /// order.
+    /// Emits a batch, every event attributed to the calling key, or to the embedder of an
+    /// embedder's call; one result per item, in order.
     ///
     /// # Errors
     ///

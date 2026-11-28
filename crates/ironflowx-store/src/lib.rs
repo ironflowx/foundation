@@ -949,7 +949,7 @@ fn insert_admin(
     label: Option<&str>,
     now: Timestamp,
 ) -> Result<(), Error> {
-    let every = BTreeSet::from(Scope::ALL);
+    let every = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]);
     conn.execute(
         "INSERT INTO keys (id, environment_id, environment_token, scopes, digest, origin, \
          label, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",

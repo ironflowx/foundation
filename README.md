@@ -31,7 +31,7 @@ An app that needs no keys opens a ledger directly.
 
 ## Architecture
 
-The engine is a library: a host opens it on a data directory, and every call to it carries a key. An embedder that needs no keys opens a ledger in a directory instead. The `ironflowx` binary in [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow) is the first host. Event rules, credentials and core are pure; only the ledger, the control plane, the engine and a host touch disk, the clock and randomness.
+The engine is a library: a host opens it on a data directory, and every call to it carries a key, but the embedding process's own call (`Engine::embedder_call`), which no door carries. An embedder that needs no engine opens a ledger in a directory instead. The `ironflowx` binary in [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow) is the first host. Event rules, credentials and core are pure; only the ledger, the control plane, the engine and a host touch disk, the clock and randomness.
 
 A write is acknowledged once its record is fsynced, and a read sees every write acknowledged before it arrived, whoever made it:
 

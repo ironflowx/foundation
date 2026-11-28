@@ -203,7 +203,7 @@ fn an_embedder_changes_keys_with_no_record() {
     cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
     let app: Emitter = "embedder:app".parse().unwrap();
     let by = app.clone();
-    let new = new_key(40, &Scope::ALL, None, None);
+    let new = new_key(40, &[Scope::Read, Scope::Write, Scope::Admin], None, None);
     let id = new.id;
     let row = cp.insert_key(&env(1), new, &by, &Fixed(T), CAP).unwrap();
     assert_eq!(row.created_by.as_ref(), Some(&app));

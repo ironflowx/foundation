@@ -138,7 +138,8 @@ async fn whoami_shows_every_scope_and_no_key() {
     let me = engine.whoami(&app_call, WhoamiRequest {}).await.unwrap();
     let admin_me = engine.whoami(&admin, WhoamiRequest {}).await.unwrap();
     assert_eq!(me.key_id, None);
-    assert_eq!(me.scopes, BTreeSet::from(Scope::ALL));
+    // Every scope: what the bootstrap key holds.
+    assert_eq!(me.scopes, admin_me.scopes);
     assert_eq!(me.environment, admin_me.environment);
     assert_eq!(me.expires_at, None);
 }
@@ -159,7 +160,7 @@ async fn create_key_records_the_embedder_as_creator() {
     let dir = tempfile::tempdir().unwrap();
     let (engine, _, app_call) = open(dir.path()).await;
     let req = CreateKeyRequest {
-        scopes: BTreeSet::from(Scope::ALL),
+        scopes: BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]),
         label: Some("worker".into()),
         ..CreateKeyRequest::default()
     };
