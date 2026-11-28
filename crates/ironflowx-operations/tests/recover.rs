@@ -54,9 +54,9 @@ fn not_ready(got: Result<Secret, RecoverError>) {
     }
 }
 
-/// Whether `key` is accepted, and then as a key of all three scopes; if not, as an invalid one.
+/// Whether `key` is accepted, and then as a key of all four scopes; if not, as an invalid one.
 async fn admits(engine: &Engine, key: &str) -> bool {
-    let every = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]);
+    let every = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin, Scope::Execute]);
     let cx = Call::with_key(secret(key));
     match engine.whoami(&cx, WhoamiRequest {}).await {
         Ok(me) => {
@@ -112,7 +112,7 @@ fn died(root: &Path, seed: &str) -> EnvRef {
 }
 
 /// The last admin key, its own included, may be revoked: a key recovered beside the engine is
-/// accepted on its next call, with all three scopes. Again after a restart.
+/// accepted on its next call, with all four scopes. Again after a restart.
 #[tokio::test]
 async fn a_key_recovered_beside_an_engine_works_on_its_next_call() {
     let dir = tempfile::tempdir().unwrap();
@@ -189,13 +189,14 @@ async fn a_root_no_open_finished_is_not_ready_and_gains_no_file() {
     assert_eq!(keys(&unmarked), after);
 }
 
-/// A control plane in another format, or that is none, is an error, and not "not ready".
+/// A control plane in another format, 0.3's included, or that is none, is an error, and not "not
+/// ready".
 #[tokio::test]
 async fn a_control_plane_that_cannot_be_read_is_a_store_error() {
     let dir = tempfile::tempdir().unwrap();
     open(dir.path(), None).await.engine.close().await;
     let db = rusqlite::Connection::open(control(dir.path())).unwrap();
-    db.execute_batch("UPDATE meta SET format = 2").unwrap();
+    db.execute_batch("UPDATE meta SET format = 1").unwrap();
     drop(db);
     let err = recover(dir.path()).err().expect("another format");
     let format = matches!(err, RecoverError::Store(StoreError::Format));

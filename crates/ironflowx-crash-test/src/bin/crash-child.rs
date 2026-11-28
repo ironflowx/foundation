@@ -290,7 +290,12 @@ fn main() {
                         };
                         let expiry = (expiry != "-").then(|| expiry.parse().expect("an expiry"));
                         let req = CreateKeyRequest {
-                            scopes: BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]),
+                            scopes: BTreeSet::from([
+                                Scope::Read,
+                                Scope::Write,
+                                Scope::Admin,
+                                Scope::Execute,
+                            ]),
                             expires_at: expiry.map(Timestamp::from_millis),
                             label: None,
                         };

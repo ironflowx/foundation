@@ -34,7 +34,7 @@ service KeyService {
 }
 
 message CreateKeyRequest {
-  // "read", "write", "admin". None: "read".
+  // "read", "write", "admin", "execute". None: "read".
   repeated string scopes = 1;
   // In whole milliseconds. Absent: no expiry, which a key with none may ask for.
   optional google.protobuf.Timestamp expires_at = 2 [json_name = "expires_at"];
@@ -51,7 +51,7 @@ message CreateKeyResponse {
 message KeyInfo {
   string key_id = 1 [json_name = "key_id"];
   optional string label = 2;
-  // "read", "write", "admin".
+  // "read", "write", "admin", "execute".
   repeated string scopes = 3;
   // "minted", "seed", "recovered", "created".
   string origin = 4;

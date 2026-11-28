@@ -15,11 +15,12 @@ fn scopes_have_one_text_form_each() {
         (Scope::Read, "read"),
         (Scope::Write, "write"),
         (Scope::Admin, "admin"),
+        (Scope::Execute, "execute"),
     ] {
         assert_eq!(scope.to_string(), text);
         assert_eq!(text.parse::<Scope>(), Ok(scope));
     }
-    for bad in ["", "Read", "READ", "admin ", "all"] {
+    for bad in ["", "Read", "READ", "admin ", "all", "Execute", "exec"] {
         assert!(bad.parse::<Scope>().is_err(), "accepted {bad:?}");
     }
 }
@@ -36,6 +37,7 @@ fn each_kind_has_its_exit_code_and_only_unavailable_is_retryable() {
         (ErrorKind::Unknown, false, 6),
         (ErrorKind::ResourceExhausted, false, 7),
         (ErrorKind::Unavailable, true, 8),
+        (ErrorKind::Conflict, false, 9),
     ] {
         assert_eq!(kind.retryable(), retryable, "{kind:?}");
         assert_eq!(kind.exit_code(), exit, "{kind:?}");

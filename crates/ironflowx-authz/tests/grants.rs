@@ -46,10 +46,10 @@ fn grant(scopes: &BTreeSet<Scope>, expires_at: Option<Timestamp>) -> Grant {
 
 /// Every set of scopes, the empty one first.
 fn every_scope_set() -> Vec<BTreeSet<Scope>> {
-    let all = [Scope::Read, Scope::Write, Scope::Admin];
-    (0..8_u8)
+    let all = [Scope::Read, Scope::Write, Scope::Admin, Scope::Execute];
+    (0..16_u8)
         .map(|bits| {
-            (0..3)
+            (0..4)
                 .filter(|i| bits & (1 << i) != 0)
                 .map(|i| all[i])
                 .collect()
@@ -141,7 +141,7 @@ fn a_grant_admits_only_the_scopes_it_holds() {
     for held in every_scope_set().into_iter().skip(1) {
         let g = grant(&held, None);
         assert_eq!(admit(&g, None), Ok(()), "any valid key: {held:?}");
-        for scope in [Scope::Read, Scope::Write, Scope::Admin] {
+        for scope in [Scope::Read, Scope::Write, Scope::Admin, Scope::Execute] {
             let admitted = admit(&g, Some(scope));
             if held.contains(&scope) {
                 assert_eq!(admitted, Ok(()), "{held:?} {scope}");
@@ -204,7 +204,7 @@ fn no_created_key_exceeds_its_creator_at_any_time() {
             2 => Some(at(base.saturating_add(step()))),
             _ => Some(at(base.saturating_sub(step()))),
         };
-        let mut set = || &sets[usize::try_from(random() % 8).unwrap()];
+        let mut set = || &sets[usize::try_from(random() % 16).unwrap()];
         let (creator_scopes, scopes) = (set(), set());
         let held = record(creator_scopes, creator_expiry);
         // At the last millisecond there is, no expiry is after now.
@@ -280,8 +280,8 @@ fn no_created_key_exceeds_its_creator() {
             }
         }
     }
-    // 7 creator scope sets × 19 creator and request expiry pairs × 8 requested sets × 8 labels.
-    assert_eq!(checked, 7 * 19 * 8 * 8);
+    // 15 creator scope sets × 19 creator and request expiry pairs × 16 requested sets × 8 labels.
+    assert_eq!(checked, 15 * 19 * 16 * 8);
 }
 
 #[test]
@@ -307,7 +307,7 @@ fn a_key_has_expired_from_its_expiry_on_or_once_one_is_recorded() {
 #[test]
 fn the_embedder_creates_as_an_unexpiring_key_with_every_scope() {
     let every = grant(
-        &BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]),
+        &BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin, Scope::Execute]),
         None,
     );
     for scopes in every_scope_set() {

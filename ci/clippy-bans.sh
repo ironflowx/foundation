@@ -1,8 +1,20 @@
 #!/usr/bin/env bash
 # Usage: ci/clippy-bans.sh <repo-root>
-# Fails if a clippy.toml under <repo-root> lacks a crate-wide ban it must carry. Clippy configs
-# cannot include one another, so each ban is copied into the root file and every crate's own
-# file, and the must-reject fixtures exercise only the root one (D17, D36, TEN-4).
+# Fails if a clippy.toml or .clippy.toml under <repo-root> lacks a crate-wide ban it must carry,
+# outside a comment, whole-line or trailing. Clippy configs cannot include one another, so each
+# ban is copied into the root file and every crate's own file, and the must-reject fixtures
+# exercise only the root one (D17, D36, TEN-4, RUN-14).
+# Not caught: an #[allow(clippy::disallowed_methods)] gets past every ban in a crate whose root
+# does not forbid the lint, and in any integration test; a by-name grep backs each ban up
+# (ci/no-event-clock-outside-ledger.sh, no-key-attribution.sh, no-digest-codec.sh,
+# no-engine-event.sh). This repo's only suppressions are the event-rules test helpers that stand
+# in for the ledger and for execution rules (crates/ironflowx-events/tests/rules.rs). Nor is a
+# ban under another key than disallowed-methods, which a line-by-line read cannot tell; every
+# file here lists it under disallowed-methods. Nor is a clippy.toml outside the root and crates/*
+# (examples/embed has none, and takes the root's), or a manifest's [lints.clippy] allowing the
+# lint (the one [lints] here, ironflowx-cell's, only warns of two casts; the by-name greps catch
+# what it lets through). Wrongly refused: a ban that does not open its line as an entry; every
+# ban here opens its line.
 set -euo pipefail
 root=$1
 # <path>|<crate exempt from it>
@@ -12,15 +24,26 @@ bans=(
   "ironflowx_authz::Grant::submit_as|ironflowx-operations"
   "ironflowx_authz::KeyDigest::to_stored|ironflowx-store"
   "ironflowx_authz::KeyDigest::from_stored|ironflowx-store"
+  # ironflowx-events carries this one too, through core's file: its library cannot call
+  # engine_event, and its tests' one helper expects the lint.
+  "ironflowx_events::engine_event|ironflowx-execution"
 )
 missing=0
-for config in "$root/clippy.toml" "$root"/crates/*/clippy.toml; do
+for config in "$root"/{,.}clippy.toml "$root"/crates/*/{,.}clippy.toml; do
   [ -e "$config" ] || continue
   crate=$(basename "$(dirname "$config")")
   for ban in "${bans[@]}"; do
     path=${ban%|*} exempt=${ban#*|}
     [ "$crate" = "$exempt" ] && continue
-    if ! grep -qF "path = \"$path\"" "$config"; then
+    # A line counts when its ban opens it, as an entry ({ path = "..."): no comment can, whatever
+    # strings precede it. It must also survive a cut at the first # outside a basic string, and
+    # one outside a basic or a literal ('...') string, as before.
+    if ! BAN=$path perl -ne '
+        my $ban = qr/\bpath\s*=\s*"\Q$ENV{BAN}\E"/;
+        (my $basic = $_) =~ s/^((?:[^"#]|"(?:[^"\\]|\\.)*")*)#.*/$1/;
+        (my $both = $_) =~ s/^((?:[^"#\x27]|"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27)*)#.*/$1/;
+        $found = 1 if $basic =~ $ban && $both =~ $ban && /^\s*\{\s*$ban/;
+        END { exit !$found }' "$config"; then
       echo "$config: missing the $path ban"
       missing=1
     fi

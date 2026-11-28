@@ -487,7 +487,7 @@ impl Root {
             Ok(me) => {
                 assert!(self.works(text), "{id} is accepted");
                 assert_eq!(me.key_id, Some(id));
-                let every = [Scope::Read, Scope::Write, Scope::Admin];
+                let every = [Scope::Read, Scope::Write, Scope::Admin, Scope::Execute];
                 assert_eq!(me.scopes, every.into(), "{id} is an admin key");
                 true
             }

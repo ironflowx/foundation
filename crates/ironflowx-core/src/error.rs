@@ -28,6 +28,9 @@ pub enum ErrorKind {
     /// A fault of the server, not of the request; or, from the proto client, an engine too old to
     /// have the operation.
     Internal,
+    /// The state the call relies on no longer holds: an executor that lost its run must stop
+    /// (D106). No operation answers it yet.
+    Conflict,
 }
 
 impl ErrorKind {
@@ -42,6 +45,7 @@ impl ErrorKind {
             Self::PermissionDenied => "permission_denied",
             Self::ResourceExhausted => "resource_exhausted",
             Self::Internal => "internal",
+            Self::Conflict => "conflict",
         }
     }
 
@@ -68,6 +72,7 @@ impl ErrorKind {
             Self::Unknown => 6,
             Self::ResourceExhausted => 7,
             Self::Unavailable => 8,
+            Self::Conflict => 9,
         }
     }
 }

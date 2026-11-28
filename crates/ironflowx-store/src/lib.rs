@@ -30,8 +30,8 @@ use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 
-/// The control plane's format. A change refuses older files at open.
-const FORMAT: u16 = 1;
+/// The control plane's format. A change refuses older files at open. 2: keys may hold `execute`.
+const FORMAT: u16 = 2;
 /// What bootstrap names the default tenant, project and environment.
 const DEFAULT: &str = "default";
 const MINTED: &str = "minted";
@@ -935,7 +935,7 @@ fn revoke_all(
     )?)
 }
 
-/// Inserts an admin key no key created: every scope, no expiry.
+/// Inserts an admin key no key created: all four scopes, no expiry.
 fn insert_admin(
     conn: &Connection,
     key: &KeyParts,
@@ -944,7 +944,7 @@ fn insert_admin(
     label: Option<&str>,
     now: Timestamp,
 ) -> Result<(), Error> {
-    let every = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]);
+    let every = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin, Scope::Execute]);
     conn.execute(
         "INSERT INTO keys (id, environment_id, environment_token, scopes, digest, origin, \
          label, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",

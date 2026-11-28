@@ -55,7 +55,9 @@ impl Authorized {
         match &self.caller {
             Caller::Key(grant) => grant.scopes().clone(),
             // What a bootstrap key holds; tests/embedder.rs holds the two equal.
-            Caller::Embedder(..) => BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]),
+            Caller::Embedder(..) => {
+                BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin, Scope::Execute])
+            }
         }
     }
 

@@ -2,11 +2,12 @@
 # Usage: ci/purity.sh
 # LED-15, D17 and D36: the pure crates' dependency allowlists, the SequencedTime constructor
 # outside the ledger, SubmitAs::key outside the credentials crate, Grant::submit_as outside the
-# engine, the key digest codec outside the control plane (TEN-4), every crate-wide ban in every
-# clippy.toml; the doors' engine crates (SRV-1); what the generator refuses (SRV-2, SRV-12); the
-# crash test's fault points in no published build; ci/red.sh, which records test checks landing
-# red; ci/app-ref.sh, which reads the app branch conformance tests (D122); and each check
-# rejecting its fixture. The clippy job enforces the call bans on the real crates.
+# engine, engine_event outside event and execution rules (RUN-14), the key digest codec outside
+# the control plane (TEN-4), every crate-wide ban in every clippy.toml; the doors' engine crates
+# (SRV-1); what the generator refuses (SRV-2, SRV-12); the crash test's fault points in no
+# published build; ci/red.sh, which records test checks landing red; ci/app-ref.sh, which reads
+# the app branch conformance tests (D122); and each check rejecting its fixture. The clippy job
+# enforces the call bans on the real crates.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,6 +18,7 @@ ci/no-event-clock-outside-ledger.sh crates
 ci/no-key-attribution.sh crates
 ci/clippy-bans.sh .
 ci/no-digest-codec.sh crates
+ci/no-engine-event.sh .
 # Comments may name the constructor.
 ci/no-key-attribution.sh ci/fixtures/key-attribution-in-comment
 ci/no-engine-deps.sh crates/ironflowx-doors/Cargo.toml crates/ironflowx-proto/Cargo.toml
@@ -84,8 +86,29 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "ci/fixtures/sequenced-time-outside-ledger/escaped/aliased.rs:6:" \
     "ci/fixtures/sequenced-time-outside-ledger/escaped/aliased.rs:11:" -- \
     ci/no-event-clock-outside-ledger.sh ci/fixtures/sequenced-time-outside-ledger
+  # Short messages put each finding's place and lint in one line.
+  ci/must-reject.sh \
+    'src/lib.rs:9:5: error: use of a disallowed method `ironflowx_events::engine_event`' \
+    'src/lib.rs:13:5: error: use of a disallowed method `ironflowx_events::engine_event`' \
+    'src/lib.rs:17:28: error: use of a disallowed method `ironflowx_events::engine_event`' -- \
+    cargo clippy --locked --message-format=short \
+    --manifest-path ci/fixtures/engine-event-outside-execution/Cargo.toml -- -D warnings
+  ci/must-reject.sh \
+    "engine-event-outside-execution/src/lib.rs:5:" \
+    "engine-event-outside-execution/src/lib.rs:9:" \
+    "engine-event-outside-execution/src/lib.rs:17:" \
+    "engine-event-outside-execution/src/lib.rs:23:" \
+    "engine-event-outside-execution/src/lib.rs:29:" \
+    "engine-event-outside-execution/included.rs:2:" \
+    "engine-event-outside-execution/included.md:4:" -- \
+    ci/no-engine-event.sh ci/fixtures/engine-event-outside-execution
   ci/must-reject.sh \
     "crates/ironflowx-core/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
+    "crates/ironflowx-cell/clippy.toml: missing the ironflowx_events::engine_event ban" \
+    "crates/ironflowx-store/.clippy.toml: missing the ironflowx_events::engine_event ban" \
+    "crates/ironflowx-operations/clippy.toml: missing the ironflowx_events::engine_event ban" \
+    "crates/ironflowx-doors/clippy.toml: missing the ironflowx_events::engine_event ban" \
+    "crates/ironflowx-proto/clippy.toml: missing the ironflowx_events::engine_event ban" \
     "crates/ironflowx-cell/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
     "crates/ironflowx-events/clippy.toml: missing the ironflowx_core::SequencedTime::from_event_clock ban" \
     "crates/ironflowx-authz/clippy.toml: its bans differ" -- \
@@ -111,6 +134,22 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "target-only/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" -- \
     ci/no-fault-points.sh ci/fixtures/fault-points
 }
+
+# ci/no-engine-event.sh matches the name alone: the fixture's longer one passes.
+# Captured first: under pipefail the check's own failure would hide the match.
+events=$(ci/no-engine-event.sh ci/fixtures/engine-event-outside-execution || true)
+if grep -qF count_engine_events <<<"$events"; then
+  echo "purity: ci/no-engine-event.sh refuses a longer name, count_engine_events"
+  exit 1
+fi
+# ci/clippy-bans.sh counts a ban written path="..." whose reason holds a #: the operations fixture
+# carries every other ban so.
+bans=$(ci/clippy-bans.sh ci/fixtures/missing-ban || true)
+if grep -F "ironflowx-operations/clippy.toml" <<<"$bans" | grep -vqF "ironflowx_events::engine_event"; then
+  echo "$bans"
+  echo "purity: ci/clippy-bans.sh misses a ban in ci/fixtures/missing-ban/crates/ironflowx-operations"
+  exit 1
+fi
 
 # ci/must-reject.sh takes a pattern in one line of the output, no fewer, no more and no other's.
 ci/must-reject.sh "with 'BadType' in 0 lines" -- \

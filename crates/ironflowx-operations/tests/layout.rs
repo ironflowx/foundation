@@ -96,10 +96,15 @@ type Row = (&'static str, fn(&Path), fn(&EngineError) -> bool);
 const ORPHANED: fn(&EngineError) -> bool = |e| matches!(e, EngineError::Orphaned);
 const LEDGER_MISSING: fn(&EngineError) -> bool = |e| matches!(e, EngineError::LedgerMissing);
 
-const ROWS: [Row; 13] = [
+const ROWS: [Row; 14] = [
+    (
+        "a control plane of format 1, as 0.2 and 0.3 left it (D47)",
+        |root| set_format(root, "1"),
+        |e| matches!(e, EngineError::Format),
+    ),
     (
         "a control plane of a later format",
-        |root| set_format(root, "2"),
+        |root| set_format(root, "3"),
         |e| matches!(e, EngineError::Format),
     ),
     (

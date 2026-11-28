@@ -32,7 +32,7 @@ A credential bound to one environment, holding a set of scopes.
 Any key holding the `admin` scope.
 
 **Bootstrap key**:
-The admin key bootstrap makes, holding all three scopes: the seed if one is given, else a minted key.
+The admin key bootstrap makes, holding all four scopes: the seed if one is given, else a minted key.
 
 **Seed**:
 A key the host supplies: bootstrap uses it instead of minting one, and an open after it can rotate to it.
@@ -41,7 +41,7 @@ A key the host supplies: bootstrap uses it instead of minting one, and an open a
 The admin key a host makes from the data directory alone, when no admin key's secret is left.
 
 **Scope**:
-What a key may do: `read`, `write`, `admin`. A set, not a ladder.
+What a key may do: `read`, `write`, `admin`, `execute`. A set, not a ladder.
 
 **Emitter**:
 Who made a change, as stored on every event: `key:<key-id>`, or `embedder:<name>` for an embedder that calls the ledger without keys, or the engine with its own call. A created key's `created_by` names its creator too, but writes a key as its bare key ID, in `control.db` and on the wire.
@@ -131,6 +131,16 @@ What a ledger's writer stamps records with: the clock the ledger was opened with
 
 **Idempotency key**:
 An optional client value on an emit. A second emit with a key already used in the environment returns the original event's ID, marked a duplicate, instead of storing another.
+
+**Run ID** (`RunId`):
+A run's identity: an opaque UUIDv7, as an event ID is. No run exists yet; an engine event names one.
+
+**Engine event**:
+An event the engine appends itself, under a name it owns: `ironflowx.run.completed` or `ironflowx.run.failed`. No client can emit one.
+_Avoid_: system event
+
+**Hint**:
+What a refusal says the caller can do about it, beside its kind and message (`OpError::hint`, `Refusal::hint`). Optional.
 
 **Size limit**:
 The most a caller may send: the bytes of an event's name, data, metadata and idempotency key, a batch's events and their data and metadata together, a key's label, an embedder's name; and a message on the wire. Each is a constant in `ironflowx_core::limits`. **Checking an emit** (`check_emit`) runs event rules' checks of one emit without submitting it, so a payload is sized before it is sent.

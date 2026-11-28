@@ -151,7 +151,7 @@ impl Host {
     }
 }
 
-/// Every operation with `key`, a key of all three scopes if it `works`, every answer printed and
+/// Every operation with `key`, a key of all four scopes if it `works`, every answer printed and
 /// as expected.
 async fn every_call(engine: &Engine, key: &str, works: bool) {
     let cx = || Call::with_key(Secret::new(key.to_owned()));
@@ -226,10 +226,10 @@ async fn every_call(engine: &Engine, key: &str, works: bool) {
     assert_eq!(answers, expected);
 }
 
-/// A key of all three scopes that `by` creates, expiring at `expires_at`.
+/// A key of all four scopes that `by` creates, expiring at `expires_at`.
 async fn create(host: &mut Host, engine: &Engine, by: &str, expires_at: Option<i64>) -> String {
     let req = CreateKeyRequest {
-        scopes: BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]),
+        scopes: BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin, Scope::Execute]),
         expires_at: expires_at.map(at),
         label: Some("agent-7".into()),
     };

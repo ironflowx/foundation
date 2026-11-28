@@ -623,10 +623,7 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
             ),
         ),
         // A code that is not as a server of Connect's sends it.
-        (
-            status(503),
-            json("503 x", r#"{"code":"failed_precondition"}"#),
-        ),
+        (status(503), json("503 x", r#"{"code":"out_of_range"}"#)),
         (status(429), json("429 x", r#"{"code":"unimplemented"}"#)),
         (status(400), json("400 x", r#"["invalid_argument","",[]]"#)),
         (status(400), http("400 x", "text/html", refusal)),
@@ -918,11 +915,11 @@ async fn a_code_of_the_library_is_the_kind_it_means() {
     let codes = [
         ("invalid_argument", 400, invalid),
         ("out_of_range", 400, invalid),
-        ("failed_precondition", 400, invalid),
         ("resource_exhausted", 429, full),
         ("unimplemented", 404, internal),
         ("unimplemented", 501, internal),
         // The engine's own always come with its error, so these are no word of its.
+        ("failed_precondition", 400, None),
         ("unauthenticated", 401, None),
         ("permission_denied", 403, None),
         ("not_found", 404, None),

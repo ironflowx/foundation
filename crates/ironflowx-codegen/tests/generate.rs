@@ -402,3 +402,40 @@ fn what_is_no_descriptor_set_and_where_nothing_can_be_written_are_refused() {
     let refused = ironflowx_codegen::generate(&set, &out.path().join("none")).unwrap_err();
     assert!(refused.to_string().contains("none/cli.rs: "), "{refused}");
 }
+
+/// Every schema that names a key's scopes lists all four, `execute` included (D107), and no other
+/// schema has an enum: the input of `CreateKey`, a `KeyInfo` in the output of `CreateKey` and
+/// `ListKeys`, and `Whoami`'s output.
+#[test]
+fn a_schema_of_scopes_names_all_four() {
+    let set = protox::Compiler::new([Path::new(PROTO)])
+        .unwrap()
+        .include_imports(true)
+        .open_files(["ironflowx/v1/key.proto", "ironflowx/v1/identity.proto"])
+        .unwrap()
+        .encode_file_descriptor_set();
+    let out = tempfile::tempdir().unwrap();
+    ironflowx_codegen::generate(&set, out.path()).unwrap();
+    let cli = std::fs::read_to_string(out.path().join("cli.rs")).unwrap();
+    let scopes = r#"\"scopes\":{\"items\":{\"enum\":[\"read\",\"write\",\"admin\",\"execute\"],\"type\":\"string\"},\"type\":\"array\"}"#;
+    // Each command is one line: its input schema, then its output schema, then its example.
+    let counts = |path: &str| {
+        let line = cli
+            .lines()
+            .find(|l| l.contains(&format!("Command {{ path: \"{path}\"")))
+            .unwrap_or_else(|| panic!("{path}: {cli}"));
+        let input = &line[line.find(", input: ").unwrap()..line.find(", output: ").unwrap()];
+        let output = &line[line.find(", output: ").unwrap()..line.find(", example: ").unwrap()];
+        let enums = |s: &str| s.matches(r#"\"enum\""#).count();
+        (
+            input.matches(scopes).count(),
+            enums(input),
+            output.matches(scopes).count(),
+            enums(output),
+        )
+    };
+    assert_eq!(counts("keys create"), (1, 1, 1, 1));
+    assert_eq!(counts("keys list"), (0, 0, 1, 1));
+    assert_eq!(counts("keys revoke"), (0, 0, 0, 0));
+    assert_eq!(counts("whoami"), (0, 0, 1, 1));
+}

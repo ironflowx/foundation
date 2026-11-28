@@ -429,7 +429,8 @@ where
     };
     if let Some(Instead::Refusal) = instead {
         match e.code {
-            ErrorCode::InvalidArgument | ErrorCode::OutOfRange | ErrorCode::FailedPrecondition => {
+            // Not `failed_precondition`: the engine's `Conflict` always carries its error.
+            ErrorCode::InvalidArgument | ErrorCode::OutOfRange => {
                 return Err(refused(ErrorKind::Invalid, None));
             }
             ErrorCode::ResourceExhausted => {

@@ -160,7 +160,7 @@ async fn create_key_records_the_embedder_as_creator() {
     let dir = tempfile::tempdir().unwrap();
     let (engine, _, app_call) = open(dir.path()).await;
     let req = CreateKeyRequest {
-        scopes: BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]),
+        scopes: BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin, Scope::Execute]),
         label: Some("worker".into()),
         ..CreateKeyRequest::default()
     };
