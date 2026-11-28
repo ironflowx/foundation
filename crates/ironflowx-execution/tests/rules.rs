@@ -992,9 +992,9 @@ fn a_put_stores_only_the_policy_it_was_given_and_replaces_the_rest() {
     assert_eq!(stored.put_by, key(2));
 }
 
-/// At most 20 functions per event name: the 21st is refused with a hint that names the event, and
-/// nothing is appended; one of the 20 put again with new code, or another function triggered by
-/// another name, is taken. A function counts once however it is put.
+/// At most 20 functions per event name: the 21st is refused with a hint that names the event; one
+/// of the 20 put again with new code, or another function triggered by another name, is taken. A
+/// function counts once however it is put.
 #[test]
 fn an_event_name_triggers_at_most_20_functions() {
     let mut s = Store::default();
@@ -1035,8 +1035,8 @@ fn an_event_name_triggers_at_most_20_functions() {
     assert_eq!(s.triggered_by("order.placed", "").unwrap(), 20);
 }
 
-/// At most 1,000 functions per environment: the 1,001st is refused and nothing is appended; one
-/// of the 1,000 is still put again, changed.
+/// At most 1,000 functions per environment: the 1,001st is refused; one of the 1,000 is still put
+/// again, changed.
 #[test]
 fn an_environment_holds_at_most_1000_functions() {
     let mut s = Store::default();
@@ -1295,6 +1295,31 @@ fn a_store_already_over_a_cap_takes_no_put_that_leaves_it_over() {
     assert!(matches!(same, Outcome::FunctionPut { changed: false, .. }));
     let freed = put_def(&mut s, named_fn("f00", &[])).unwrap();
     assert!(matches!(freed, Outcome::FunctionPut { changed: true, .. }));
+    // Over the environment's cap too: no new function, while one already there still changes.
+    for i in 0..980 {
+        let d = named_fn(&format!("g{i:03}"), &[]);
+        let f = Function {
+            definition: d,
+            put_at: Timestamp::from_millis(T),
+            put_by: key(1),
+        };
+        s.functions.insert(f.definition.name.clone(), f);
+    }
+    assert_eq!(s.functions.len(), 1_001);
+    let r = put_def(&mut s, named_fn("new", &[])).unwrap_err();
+    assert_eq!(
+        (r.kind(), r.message()),
+        (
+            ErrorKind::ResourceExhausted,
+            "an environment holds at most 1000 functions"
+        )
+    );
+    let changed = Definition {
+        code: "v2".into(),
+        ..named_fn("g000", &[])
+    };
+    let put = put_def(&mut s, changed).unwrap();
+    assert!(matches!(put, Outcome::FunctionPut { changed: true, .. }));
 }
 
 /// The hint names the event that is full, as sent: another name than the usual one, with a quote,

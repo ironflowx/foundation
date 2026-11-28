@@ -279,7 +279,7 @@ impl ControlPlane {
 
 // ironflowx-cell (tokio). Re-exports Emit, Event, EventPage, ItemOutcome, Refusal and events' Submission as
 // EventSubmission, the event types its API names (D83), and Command, Definition, Function, Run, Status, Claim,
-// Begun, RunEnd and execution's Outcome as ExecutionOutcome, the execution types it names
+// Begun, RunEnd, FunctionPage and execution's Outcome as ExecutionOutcome, the execution types it names
 // Submission Events(EventSubmission) | Execution(Command)
 impl Ledger {
     // open, get_event, list_events and close panic outside a tokio runtime; open and close also on one that has shut down, and close drops the ledger then
