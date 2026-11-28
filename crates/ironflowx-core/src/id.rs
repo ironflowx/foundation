@@ -18,7 +18,8 @@ pub struct EventId(Uuid7);
 pub struct RunId(Uuid7);
 
 /// An execution's hold on its run: the run, and the execution's number, from 1. Text form:
-/// `<run-id>.<execution>`, the number in decimal with no sign and no leading zero.
+/// `<run-id>.<execution>`, the number in decimal with no sign and no leading zero. A lease built
+/// with execution 0, which no claim gives, prints text that does not parse back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Lease {
     pub run: RunId,
