@@ -1259,11 +1259,12 @@ fn a_failed_read_of_the_caps_or_a_page_is_the_stores_error() {
     assert_eq!(page, Err(Error::Store("functions_after failed".into())));
 }
 
-/// A store already over a cap, as a log written before the caps replays: a put that leaves the name
-/// over it is refused, one of those already there included, while an identical put, or one that
-/// lets the name go, is taken.
+/// A store already over a cap, as a log written before the caps replays. Over a name's cap: a put
+/// that leaves the name over it is refused, one of those already there included, while an
+/// identical put, or one that lets the name go, is taken. Over the environment's cap: no new
+/// function is taken, while one already there still changes, which leaves it over the cap.
 #[test]
-fn a_store_already_over_a_cap_takes_no_put_that_leaves_it_over() {
+fn a_store_already_over_a_cap_takes_no_put_that_adds_to_it() {
     let mut s = Store::default();
     for i in 0..21 {
         let d = named_fn(&format!("f{i:02}"), &["order.placed"]);
@@ -1297,6 +1298,7 @@ fn a_store_already_over_a_cap_takes_no_put_that_leaves_it_over() {
     assert!(matches!(same, Outcome::FunctionPut { changed: false, .. }));
     let freed = put_def(&mut s, named_fn("f00", &[])).unwrap();
     assert!(matches!(freed, Outcome::FunctionPut { changed: true, .. }));
+    assert_eq!(s.functions["f00"].definition.triggers, Vec::<String>::new());
     // Over the environment's cap too: no new function, while one already there still changes.
     for i in 0..980 {
         let d = named_fn(&format!("g{i:03}"), &[]);
@@ -1322,6 +1324,7 @@ fn a_store_already_over_a_cap_takes_no_put_that_leaves_it_over() {
     };
     let put = put_def(&mut s, changed).unwrap();
     assert!(matches!(put, Outcome::FunctionPut { changed: true, .. }));
+    assert_eq!(s.functions["g000"].definition.code, "v2");
 }
 
 /// The hint names the event that is full, as sent: another name than the usual one, with a quote,

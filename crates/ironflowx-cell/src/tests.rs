@@ -2561,8 +2561,8 @@ async fn the_read_store_counts_the_functions_of_an_environment() {
     let ledger = open(dir.path(), env).await;
     execute(&ledger, put("seed", "v1", &[])).await.unwrap();
     ledger.close().await;
-    // 998 more rows, written where `decide` reads them: 1,000 puts through an engine take seconds
-    // in a debug build (reviewers' runs); execution rules' test of the cap puts 1,000.
+    // 998 more rows, written where `decide` reads them: 1,000 puts through an engine take tens of
+    // seconds in a debug build (reviewers' runs); execution rules' test of the cap puts 1,000.
     let conn = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
     conn.execute_batch(
         "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 998)
