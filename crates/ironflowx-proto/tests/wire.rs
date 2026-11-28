@@ -860,3 +860,43 @@ fn a_run_answer_that_disagrees_with_itself_does_not_decode() {
         );
     }
 }
+
+fn function(name: &str) -> ironflowx_proto::Function {
+    ironflowx_proto::Function {
+        name: name.into(),
+        code: "v1".into(),
+        triggers: vec!["order.placed".into()],
+        max_attempts: Some(5),
+        first_delay_seconds: None,
+        max_delay_seconds: None,
+        put_at: Timestamp::from_millis(1_800_000_000_000),
+        put_by: format!("key:{ID}").parse().unwrap(),
+    }
+}
+
+/// A page of functions crosses whole, and one function that does not decode spoils the page: none
+/// is left out.
+#[test]
+fn a_page_of_functions_crosses_whole_or_does_not_decode() {
+    let page = ironflowx_proto::FunctionPage {
+        functions: vec![function("a"), function("b")],
+        next: Some("t.b".into()),
+    };
+    let sent = wire::ListFunctionsResponse::from(page.clone());
+    assert_eq!(ironflowx_proto::FunctionPage::try_from(sent), Ok(page));
+    let changes: [fn(&mut wire::Function); 3] = [
+        |f| f.put_at = None.into(),
+        |f| f.put_by.clear(),
+        |f| f.put_by = ID.into(),
+    ];
+    for (i, change) in changes.into_iter().enumerate() {
+        let mut bad = wire::Function::from(function("b"));
+        change(&mut bad);
+        let page = wire::ListFunctionsResponse {
+            functions: vec![wire::Function::from(function("a")), bad],
+            ..Default::default()
+        };
+        let got = ironflowx_proto::FunctionPage::try_from(page);
+        assert_eq!(got, Err(Undecodable), "{i}");
+    }
+}

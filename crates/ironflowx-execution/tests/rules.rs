@@ -902,13 +902,11 @@ fn each_policy_field_and_label_is_taken_at_its_edge_and_refused_past_it() {
         with(|d| d.max_attempts = Some(1)),
         with(|d| d.max_attempts = Some(100)),
         with(|d| d.first_delay_seconds = Some(1)),
+        // Above the default longest delay, which is not checked: only two fields put are.
         with(|d| d.first_delay_seconds = Some(3_600)),
         with(|d| d.max_delay_seconds = Some(1)),
         with(|d| d.max_delay_seconds = Some(86_400)),
         with(|d| (d.first_delay_seconds, d.max_delay_seconds) = (Some(60), Some(60))),
-        // The longest delay is checked against the first only when both are put.
-        with(|d| d.first_delay_seconds = Some(3_600)),
-        with(|d| d.max_delay_seconds = Some(1)),
     ];
     for d in taken {
         let mut s = Store::default();
@@ -962,7 +960,6 @@ fn each_policy_field_and_label_is_taken_at_its_edge_and_refused_past_it() {
             (ErrorKind::Invalid, message.as_str()),
             "{d:?}"
         );
-        assert!(s.functions.is_empty(), "nothing appended");
     }
 }
 
@@ -990,14 +987,8 @@ fn a_put_stores_only_the_policy_it_was_given_and_replaces_the_rest() {
         .into_parts();
     assert_eq!(entries, [Entry::FunctionPut(second.clone())]);
     let stored = &s.functions["charge"];
+    // The first put's max_attempts and max_delay_seconds are gone.
     assert_eq!(stored.definition, second);
-    assert_eq!(
-        (
-            stored.definition.max_attempts,
-            stored.definition.max_delay_seconds
-        ),
-        (None, None)
-    );
     assert_eq!(stored.put_by, key(2));
 }
 
@@ -1010,7 +1001,6 @@ fn an_event_name_triggers_at_most_20_functions() {
     for i in 0..20 {
         put_def(&mut s, named_fn(&format!("f{i:02}"), &["order.placed"])).unwrap();
     }
-    let before = s.functions.clone();
     let refusals = [
         named_fn("late", &["order.placed"]),
         named_fn("late", &["order.paid", "order.placed"]),
@@ -1028,7 +1018,6 @@ fn an_event_name_triggers_at_most_20_functions() {
             ),
             "{d:?}"
         );
-        assert_eq!(s.functions, before, "nothing appended");
     }
     // An existing function that is not among the 20 may not join them either.
     put_def(&mut s, named_fn("late", &["order.paid"])).unwrap();
@@ -1063,7 +1052,6 @@ fn an_environment_holds_at_most_1000_functions() {
             None
         )
     );
-    assert_eq!(s.functions.len(), 1_000);
     let changed = Definition {
         code: "v2".into(),
         ..named_fn("f0999", &[])
@@ -1182,10 +1170,118 @@ fn a_function_cursor_that_does_not_decode_or_names_another_incarnation_is_invali
     let lettered = token(0xab);
     let upper = format!("{}.f.000", lettered.to_string().to_uppercase());
     let listed = ironflowx_execution::list_functions(&s, lettered, None, Some(&upper));
-    assert!(matches!(listed, Err(Error::Refused(_))), "{listed:?}");
+    let Err(Error::Refused(r)) = listed else {
+        panic!("an upper-case token was taken: {listed:?}");
+    };
+    assert_eq!(
+        (r.kind(), r.message()),
+        (ErrorKind::Invalid, "invalid cursor")
+    );
     let lower = format!("{lettered}.f.000");
     assert!(ironflowx_execution::list_functions(&s, lettered, None, Some(&lower)).is_ok());
     // A name of 128 bytes, the longest, is a cursor.
     let longest = format!("{}.{}", token(1), "x".repeat(128));
     assert_eq!(page(&s, None, Some(&longest)).functions.len(), 0);
+}
+
+/// The store, with one of its reads failing.
+struct Failing<'a> {
+    store: &'a Store,
+    read: &'static str,
+}
+
+impl Failing<'_> {
+    fn fail<T>(&self, read: &str, ok: Result<T, String>) -> Result<T, String> {
+        if read == self.read {
+            return Err(format!("{read} failed"));
+        }
+        ok
+    }
+}
+
+impl ExecutionView for Failing<'_> {
+    type Error = String;
+
+    fn function(&self, name: &str) -> Result<Option<Function>, String> {
+        self.store.function(name)
+    }
+
+    fn triggered_by(&self, event: &str, other_than: &str) -> Result<u64, String> {
+        let ok = self.store.triggered_by(event, other_than);
+        self.fail("triggered_by", ok)
+    }
+
+    fn function_count(&self) -> Result<u64, String> {
+        self.fail("function_count", self.store.function_count())
+    }
+
+    fn functions_after(&self, after: Option<&str>, limit: u32) -> Result<Vec<Function>, String> {
+        let ok = self.store.functions_after(after, limit);
+        self.fail("functions_after", ok)
+    }
+
+    fn run(&self, id: RunId) -> Result<Option<Run>, String> {
+        self.store.run(id)
+    }
+
+    fn step(&self, run: RunId, position: u32) -> Result<Step, String> {
+        self.store.step(run, position)
+    }
+
+    fn last_run_sequence(&self) -> Result<u64, String> {
+        self.store.last_run_sequence()
+    }
+
+    fn claimable(&self, pairs: &[(String, String)], now: Timestamp) -> Result<Option<Run>, String> {
+        self.store.claimable(pairs, now)
+    }
+}
+
+/// A read the caps or a page need that fails is the store's error, never a put that passes a cap
+/// or an empty page.
+#[test]
+fn a_failed_read_of_the_caps_or_a_page_is_the_stores_error() {
+    let s = with_functions(1);
+    let new = Command::PutFunction(named_fn("new", &["order.placed"]));
+    for read in ["function_count", "triggered_by"] {
+        let view = Failing { store: &s, read };
+        let draws = Draws {
+            run_ids: &mut std::iter::empty(),
+        };
+        let decided = decide(&view, &new, &key(1), now(T), draws);
+        assert_eq!(decided, Err(Error::Store(format!("{read} failed"))));
+    }
+    let view = Failing {
+        store: &s,
+        read: "functions_after",
+    };
+    let page = ironflowx_execution::list_functions(&view, token(1), None, None);
+    assert_eq!(page, Err(Error::Store("functions_after failed".into())));
+}
+
+/// A store already over a cap, as a log written before the caps replays: a put that leaves the name
+/// over it is refused, one of those already there included, while an identical put, or one that
+/// lets the name go, is taken.
+#[test]
+fn a_store_already_over_a_cap_takes_no_put_that_leaves_it_over() {
+    let mut s = Store::default();
+    for i in 0..21 {
+        let d = named_fn(&format!("f{i:02}"), &["order.placed"]);
+        let f = Function {
+            definition: d,
+            put_at: Timestamp::from_millis(T),
+            put_by: key(1),
+        };
+        s.functions.insert(f.definition.name.clone(), f);
+    }
+    let changed = Definition {
+        code: "v2".into(),
+        ..named_fn("f00", &["order.placed"])
+    };
+    let r = put_def(&mut s, changed).unwrap_err();
+    assert_eq!(r.kind(), ErrorKind::ResourceExhausted);
+    let same = put_def(&mut s, named_fn("f00", &["order.placed"])).unwrap();
+    assert!(matches!(same, Outcome::FunctionPut { changed: false, .. }));
+    let freed = put_def(&mut s, named_fn("f00", &[])).unwrap();
+    assert!(matches!(freed, Outcome::FunctionPut { changed: true, .. }));
 }

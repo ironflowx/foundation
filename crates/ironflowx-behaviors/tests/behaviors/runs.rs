@@ -49,7 +49,7 @@ pub struct Runs {
     put: Option<Result<PutFunctionResponse, OpError>>,
     /// The first put of a scenario that puts twice.
     first_put: Option<PutFunctionResponse>,
-    /// The names of each page of a listing, and the last page's `next`.
+    /// The names on each page of a listing, in order.
     pages: Vec<Vec<String>>,
     /// The scenario's other run, and the claims of a step that claims more than once.
     other_run: Option<String>,
@@ -241,9 +241,6 @@ async fn charge(w: &mut Runs) {
 
 // ---- Definitions ----
 
-#[given(
-    regex = r#"^the builder put function "charge" with code "v1", trigger "order.placed" and 5 attempts$"#
-)]
 #[when(
     regex = r#"^the builder puts function "charge" with code "v1", trigger "order.placed" and 5 attempts$"#
 )]
@@ -257,6 +254,20 @@ async fn put_charge(w: &mut Runs) {
         ..PutFunctionRequest::default()
     };
     w.put = Some(w.ops().put_function(&builder, req).await);
+}
+
+/// As the step above, and it took: "charge" reads back as that definition.
+#[given(
+    regex = r#"^the builder put function "charge" with code "v1", trigger "order.placed" and 5 attempts$"#
+)]
+async fn charge_was_put(w: &mut Runs) {
+    put_charge(w).await;
+    assert!(w.put.take().expect("a put").unwrap().changed);
+    let f = w.get("charge").await;
+    assert_eq!(
+        (f.code.as_str(), f.triggers.as_slice(), f.max_attempts),
+        ("v1", ["order.placed".to_owned()].as_slice(), Some(5))
+    );
 }
 
 #[then("the put reports a change")]

@@ -20,8 +20,8 @@ use connectrpc::{ErrorCode, Protocol};
 use ironflowx_core::{ErrorKind, Scope, Timestamp};
 use ironflowx_doors::{Slot, WaitingOn};
 use ironflowx_proto::wire::{
-    self, EnvironmentServiceClient, EventServiceClient, IdentityServiceClient, KeyServiceClient,
-    WhoamiRequest, WhoamiResponse,
+    self, EnvironmentServiceClient, EventServiceClient, FunctionServiceClient,
+    IdentityServiceClient, KeyServiceClient, WhoamiRequest, WhoamiResponse,
 };
 use ironflowx_proto::{
     CreatedKey, EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage,
@@ -69,6 +69,11 @@ fn keys_of(protocol: &str, addr: SocketAddr) -> KeyServiceClient<HttpClient> {
 fn events_of(protocol: &str, addr: SocketAddr) -> EventServiceClient<HttpClient> {
     let (http, config) = transport(protocol, addr);
     EventServiceClient::new(http, config)
+}
+
+fn functions_of(protocol: &str, addr: SocketAddr) -> FunctionServiceClient<HttpClient> {
+    let (http, config) = transport(protocol, addr);
+    FunctionServiceClient::new(http, config)
 }
 
 /// Sends one HTTP/1.0 request, whose answer is not chunked, and reads the answer to its end: its
@@ -437,6 +442,17 @@ async fn a_request_the_wire_cannot_carry_is_invalid_before_its_key_is_read() {
             };
             let e = events_of(protocol, addr)
                 .list_events_with_options(request, bearer())
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(wire::op_error(&e), Some(refused.clone()), "{protocol}");
+            assert_eq!(e.code, ErrorCode::InvalidArgument, "{protocol}");
+            let request = wire::ListFunctionsRequest {
+                limit: Some(0),
+                ..Default::default()
+            };
+            let e = functions_of(protocol, addr)
+                .list_functions_with_options(request, bearer())
                 .await
                 .err()
                 .unwrap();

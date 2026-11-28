@@ -8,8 +8,8 @@ use ironflowx_core::{ErrorKind, Lease, Scope, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
     BeginStepRequest, Call, ClaimRunRequest, CompleteRunRequest, CompleteStepRequest,
-    CreateKeyRequest, GetRunRequest, ListEventsRequest, OpError, Operations, PutFunctionRequest,
-    Run, RunStatus, StartRunRequest, WhoamiRequest,
+    CreateKeyRequest, GetRunRequest, ListEventsRequest, ListFunctionsRequest, OpError, Operations,
+    PutFunctionRequest, Run, RunStatus, StartRunRequest, WhoamiRequest,
 };
 
 const T: i64 = 1_800_000_000_000;
@@ -278,4 +278,52 @@ async fn a_started_run_reads_back_queued() {
         );
     }
     f.engine.close().await;
+}
+
+/// The Errors row: `list_functions` with a cursor that does not decode, or that another
+/// incarnation issued, is `Invalid`; this engine's own continues the list.
+#[tokio::test]
+async fn a_function_cursor_that_does_not_decode_or_is_another_incarnations_is_invalid() {
+    let f = fixture().await;
+    let other = fixture().await;
+    for (fx, name) in [(&f, "refund"), (&other, "refund")] {
+        let put = PutFunctionRequest {
+            name: name.into(),
+            code: "v1".into(),
+            ..PutFunctionRequest::default()
+        };
+        fx.engine.put_function(&fx.admin, put).await.unwrap();
+    }
+    let page = page_of(&f, None).await.unwrap();
+    let names = |p: &ironflowx_proto::FunctionPage| {
+        p.functions
+            .iter()
+            .map(|f| f.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&page), ["charge"]);
+    let rest = page_of(&f, page.next.clone()).await.unwrap();
+    assert_eq!((names(&rest), rest.next), (vec!["refund".to_owned()], None));
+    let foreign = page_of(&other, None).await.unwrap().next.unwrap();
+    for cursor in ["not-a-token".to_owned(), foreign] {
+        let err = page_of(&f, Some(cursor.clone())).await.unwrap_err();
+        assert_eq!(
+            (err.kind, err.message.as_str()),
+            (ErrorKind::Invalid, "invalid cursor"),
+            "{cursor}"
+        );
+    }
+    f.engine.close().await;
+    other.engine.close().await;
+}
+
+async fn page_of(
+    fx: &Fixture,
+    cursor: Option<String>,
+) -> Result<ironflowx_proto::FunctionPage, OpError> {
+    let req = ListFunctionsRequest {
+        limit: std::num::NonZeroU32::new(1),
+        cursor,
+    };
+    fx.engine.list_functions(&fx.admin, req).await
 }
