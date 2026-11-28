@@ -314,13 +314,39 @@ impl std::error::Error for CreateRefusal {}
 /// Decides whether `creator` may create a key holding `scopes` until `expires_at`, labelled
 /// `label`, at `now`. The new key holds no scope its creator lacks and outlives it in no way
 /// (D28, TEN-5); its expiry is after now; its label is 0 to [`MAX_KEY_LABEL_BYTES`] bytes with
-/// no control character. A `creator` of `None` is the embedding process (D121), which holds every
-/// scope and never expires.
+/// no control character.
 ///
 /// # Errors
 ///
 /// [`CreateRefusal`], saying which rule the request breaks.
 pub fn may_create(
+    creator: &Grant,
+    scopes: &BTreeSet<Scope>,
+    expires_at: Option<Timestamp>,
+    label: Option<&str>,
+    now: Timestamp,
+) -> Result<(), CreateRefusal> {
+    rules(Some(creator), scopes, expires_at, label, now)
+}
+
+/// Decides whether the embedding process may create a key holding `scopes` until `expires_at`,
+/// labelled `label`, at `now`: by [`may_create`]'s rules for a creator that holds every scope and
+/// never expires, which the embedding process does (D121). No grant backs it, so none is asked.
+///
+/// # Errors
+///
+/// [`CreateRefusal`], saying which rule the request breaks.
+pub fn may_create_as_embedder(
+    scopes: &BTreeSet<Scope>,
+    expires_at: Option<Timestamp>,
+    label: Option<&str>,
+    now: Timestamp,
+) -> Result<(), CreateRefusal> {
+    rules(None, scopes, expires_at, label, now)
+}
+
+/// The rules of a created key; a `creator` of `None` sets no limit of its own.
+fn rules(
     creator: Option<&Grant>,
     scopes: &BTreeSet<Scope>,
     expires_at: Option<Timestamp>,

@@ -3,7 +3,10 @@
 
 use std::collections::BTreeSet;
 
-use ironflowx_authz::{Grant, KeyRecord, Refused, admit, may_create, mint, parse, recheck, verify};
+use ironflowx_authz::{
+    Grant, KeyRecord, Refused, admit, may_create, may_create_as_embedder, mint, parse, recheck,
+    verify,
+};
 use ironflowx_core::{EnvRef, KeyId, Scope, Timestamp};
 
 const T: i64 = 1_800_000_000_000;
@@ -208,7 +211,7 @@ fn no_created_key_exceeds_its_creator_at_any_time() {
         let Ok(creator) = recheck(&held, &env(), at(now)) else {
             continue;
         };
-        let allowed = may_create(Some(&creator), scopes, expires_at, None, at(now));
+        let allowed = may_create(&creator, scopes, expires_at, None, at(now));
         let expected = within(
             (creator_scopes, creator_expiry),
             scopes,
@@ -262,7 +265,7 @@ fn no_created_key_exceeds_its_creator() {
             for scopes in every_scope_set() {
                 for &expires_at in &expiries {
                     for (label, label_ok) in labels {
-                        let allowed = may_create(Some(&creator), &scopes, expires_at, label, at(T));
+                        let allowed = may_create(&creator, &scopes, expires_at, label, at(T));
                         let made = (&creator_scopes, creator_expiry);
                         let within = within(made, &scopes, expires_at, at(T));
                         assert_eq!(
@@ -308,8 +311,8 @@ fn the_embedder_creates_as_an_unexpiring_key_with_every_scope() {
         for expires_at in [None, Some(at(T - 1)), Some(at(T)), Some(at(T + HOUR))] {
             for label in [None, Some("agent-7"), Some("a\nb")] {
                 assert_eq!(
-                    may_create(None, &scopes, expires_at, label, at(T)),
-                    may_create(Some(&every), &scopes, expires_at, label, at(T)),
+                    may_create_as_embedder(&scopes, expires_at, label, at(T)),
+                    may_create(&every, &scopes, expires_at, label, at(T)),
                     "{scopes:?} until {expires_at:?}, label {label:?}"
                 );
             }

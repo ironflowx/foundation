@@ -9,7 +9,6 @@ use std::collections::BTreeSet;
 use ironflowx_authz::{Grant, admit, parse, verify};
 use ironflowx_core::{EnvRef, ErrorKind, KeyId, Scope, SubmitAs, Timestamp};
 use ironflowx_proto::{Call, OpError, Operation, required_scope};
-use ironflowx_store::Changer;
 
 use crate::{Engine, blocking};
 
@@ -79,14 +78,6 @@ impl Authorized {
         match &self.caller {
             Caller::Key(grant) => grant.submit_as(),
             Caller::Embedder(by, _) => by.clone(),
-        }
-    }
-
-    /// Who a key change of this call is made by.
-    pub(crate) fn changer(&self) -> Changer {
-        match &self.caller {
-            Caller::Key(grant) => Changer::Key(grant.key_id()),
-            Caller::Embedder(by, _) => Changer::Embedder(by.clone().into()),
         }
     }
 }

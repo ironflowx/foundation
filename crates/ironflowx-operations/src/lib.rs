@@ -18,8 +18,8 @@ use std::sync::Arc;
 
 use ironflowx_cell::Ledger;
 use ironflowx_core::{
-    Address, Clock, EnvRef, ErrorKind, IncarnationToken, ParseError, Scope, Secret, SubmitAs,
-    Timestamp,
+    Address, Clock, Emitter, EnvRef, ErrorKind, IncarnationToken, ParseError, Scope, Secret,
+    SubmitAs, Timestamp,
 };
 use ironflowx_events::{ItemOutcome, Submission};
 use ironflowx_proto::{
@@ -320,7 +320,7 @@ impl Operations for Engine {
     /// If the OS random source fails.
     async fn create_key(&self, cx: &Call, req: CreateKeyRequest) -> Result<CreatedKey, OpError> {
         let a = self.admit(cx, Operation::CreateKey).await?;
-        let creator = a.changer();
+        let creator = Emitter::from(a.submit_as());
         let scopes = if req.scopes.is_empty() {
             BTreeSet::from([Scope::Read])
         } else {
@@ -401,7 +401,7 @@ impl Operations for Engine {
     async fn revoke_key(&self, cx: &Call, req: RevokeKeyRequest) -> Result<(), OpError> {
         let a = self.admit(cx, Operation::RevokeKey).await?;
         let id = req.key_id.parse().map_err(|_| key_not_found())?;
-        let by = a.changer();
+        let by = Emitter::from(a.submit_as());
         let (keys, env, clock) = (self.keys(&a), self.env, self.clock.clone());
         key_change(move || keys.revoke_key(&env, id, &by, &*clock)).await
     }

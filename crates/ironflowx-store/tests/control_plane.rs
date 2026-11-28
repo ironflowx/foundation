@@ -14,8 +14,8 @@ use ironflowx_core::{
 use rusqlite::types::Value;
 
 use ironflowx_store::{
-    Bootstrap, BootstrapState, Changer, ControlPlane, KeyChangeError, NewKey, RecoverError,
-    SeedError, StoreError,
+    Bootstrap, BootstrapState, ControlPlane, KeyChangeError, NewKey, RecoverError, SeedError,
+    StoreError,
 };
 
 const T: i64 = 1_800_000_000_000;
@@ -180,7 +180,7 @@ fn a_created_key_is_stored_with_its_scopes_expiry_and_label() {
     let new = new_key(40, &[Scope::Read], Some(T + HOUR), Some("agent-7"));
     let id = new.id;
     let row = cp
-        .insert_key(&env(1), new, &Changer::Key(admin.id), &Fixed(T + 5), CAP)
+        .insert_key(&env(1), new, &Emitter::from(admin.id), &Fixed(T + 5), CAP)
         .unwrap();
     assert_eq!(row.label.as_deref(), Some("agent-7"));
     assert_eq!(row.created_at, Timestamp::from_millis(T + 5));
@@ -193,15 +193,16 @@ fn a_created_key_is_stored_with_its_scopes_expiry_and_label() {
 
 /// The embedding process creates and revokes with no record to read again, as a creator with
 /// every scope and no expiry, and is recorded as its `embedder:<name>`, read back after a reopen;
-/// a stored creator that is neither a key ID nor an embedder fails the read (D121).
+/// a creating key is recorded by its bare ID, as since 0.2, however it is named; a stored creator
+/// that is neither a key ID nor an embedder fails the read (D121).
 #[test]
 fn an_embedder_changes_keys_with_no_record() {
     let dir = tempfile::tempdir().unwrap();
     let cp = ControlPlane::open(&path(dir.path())).unwrap();
-    let (b, _) = bootstrap(env(1), 0);
+    let (b, admin) = bootstrap(env(1), 0);
     cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
     let app: Emitter = "embedder:app".parse().unwrap();
-    let by = Changer::Embedder(app.clone());
+    let by = app.clone();
     let new = new_key(40, &Scope::ALL, None, None);
     let id = new.id;
     let row = cp.insert_key(&env(1), new, &by, &Fixed(T), CAP).unwrap();
@@ -213,15 +214,24 @@ fn an_embedder_changes_keys_with_no_record() {
         "{refused:?}"
     );
     cp.revoke_key(&env(1), id, &by, &Fixed(T + 1)).unwrap();
+    let admin_by: Emitter = format!("key:{}", admin.id).parse().unwrap();
+    let made = new_key(42, &[Scope::Read], None, None);
+    let made_id = made.id;
+    cp.insert_key(&env(1), made, &admin_by, &Fixed(T), CAP)
+        .unwrap();
     drop(cp);
     let cp = ControlPlane::open(&path(dir.path())).unwrap();
     let rows = cp.list_keys(&env(1), None, 10).unwrap();
     assert_eq!(
         (rows[0].record.id, rows[0].created_by.as_ref()),
+        (made_id, Some(&admin_by))
+    );
+    assert_eq!(
+        (rows[1].record.id, rows[1].created_by.as_ref()),
         (id, Some(&app))
     );
     assert_eq!(
-        rows[0].record.revoked_at,
+        rows[1].record.revoked_at,
         Some(Timestamp::from_millis(T + 1))
     );
     let db = rusqlite::Connection::open(path(dir.path())).unwrap();
@@ -249,12 +259,12 @@ fn the_creator_is_checked_inside_the_transaction() {
     cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
     let creator = new_key(41, &[Scope::Read, Scope::Admin], Some(T + HOUR), None);
     let creator_id = creator.id;
-    cp.insert_key(&env(1), creator, &Changer::Key(admin.id), &Fixed(T), CAP)
+    cp.insert_key(&env(1), creator, &Emitter::from(admin.id), &Fixed(T), CAP)
         .unwrap();
 
     let expiring = new_key(49, &[Scope::Read, Scope::Admin], Some(T + HOUR), None);
     let expiring_id = expiring.id;
-    cp.insert_key(&env(1), expiring, &Changer::Key(admin.id), &Fixed(T), CAP)
+    cp.insert_key(&env(1), expiring, &Emitter::from(admin.id), &Fixed(T), CAP)
         .unwrap();
 
     let cases = [
@@ -287,7 +297,7 @@ fn the_creator_is_checked_inside_the_transaction() {
             "by an expired creator" => expiring_id,
             _ => creator_id,
         };
-        let refused = cp.insert_key(&env(1), new, &Changer::Key(by), &Fixed(now), CAP);
+        let refused = cp.insert_key(&env(1), new, &Emitter::from(by), &Fixed(now), CAP);
         let creator_refused = case.starts_with("by an");
         assert!(
             matches!(
@@ -302,7 +312,7 @@ fn the_creator_is_checked_inside_the_transaction() {
     cp.insert_key(
         &env(1),
         fine,
-        &Changer::Key(creator_id),
+        &Emitter::from(creator_id),
         &Fixed(T + HOUR - 1),
         CAP,
     )
@@ -321,7 +331,7 @@ fn keys_list_newest_first_even_within_one_millisecond() {
     for n in 50..53 {
         let new = new_key(n, &[Scope::Read], None, Some("same ms"));
         made.push(new.id);
-        cp.insert_key(&env(1), new, &Changer::Key(admin.id), &Fixed(T), CAP)
+        cp.insert_key(&env(1), new, &Emitter::from(admin.id), &Fixed(T), CAP)
             .unwrap();
     }
     made.reverse();
@@ -365,61 +375,66 @@ fn a_revoke_keeps_the_row_and_checks_the_revoker_inside_the_transaction() {
     cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
     let target = new_key(60, &[Scope::Read], None, None);
     let target_id = target.id;
-    cp.insert_key(&env(1), target, &Changer::Key(admin.id), &Fixed(T), CAP)
+    cp.insert_key(&env(1), target, &Emitter::from(admin.id), &Fixed(T), CAP)
         .unwrap();
     let revoker = new_key(61, &[Scope::Admin], Some(T + HOUR), None);
     let revoker_id = revoker.id;
-    cp.insert_key(&env(1), revoker, &Changer::Key(admin.id), &Fixed(T), CAP)
+    cp.insert_key(&env(1), revoker, &Emitter::from(admin.id), &Fixed(T), CAP)
         .unwrap();
 
     let revoked_at = |id| found(&cp, id, &env(1)).unwrap().revoked_at;
     // An expired revoker revokes nothing.
     let expiring = new_key(64, &[Scope::Admin], Some(T + HOUR), None);
     let expiring_id = expiring.id;
-    cp.insert_key(&env(1), expiring, &Changer::Key(admin.id), &Fixed(T), CAP)
+    cp.insert_key(&env(1), expiring, &Emitter::from(admin.id), &Fixed(T), CAP)
         .unwrap();
     let late = cp.revoke_key(
         &env(1),
         target_id,
-        &Changer::Key(expiring_id),
+        &Emitter::from(expiring_id),
         &Fixed(T + HOUR),
     );
     assert!(matches!(late, Err(KeyChangeError::Caller)), "{late:?}");
     assert_eq!(revoked_at(target_id), None);
 
-    cp.revoke_key(&env(1), target_id, &Changer::Key(revoker_id), &Fixed(T + 5))
-        .unwrap();
+    cp.revoke_key(
+        &env(1),
+        target_id,
+        &Emitter::from(revoker_id),
+        &Fixed(T + 5),
+    )
+    .unwrap();
     assert_eq!(revoked_at(target_id), Some(Timestamp::from_millis(T + 5)));
     // Again: it succeeds and keeps the first time.
-    cp.revoke_key(&env(1), target_id, &Changer::Key(admin.id), &Fixed(T + 9))
+    cp.revoke_key(&env(1), target_id, &Emitter::from(admin.id), &Fixed(T + 9))
         .unwrap();
     assert_eq!(revoked_at(target_id), Some(Timestamp::from_millis(T + 5)));
 
     let unknown: KeyId = uuid(62).parse().unwrap();
     let other_token: EnvRef = format!("{}.{:032x}", env(1).id(), 8).parse().unwrap();
-    let found = cp.revoke_key(&env(1), unknown, &Changer::Key(admin.id), &Fixed(T));
+    let found = cp.revoke_key(&env(1), unknown, &Emitter::from(admin.id), &Fixed(T));
     assert!(matches!(found, Err(KeyChangeError::NotFound)), "{found:?}");
     // In another incarnation the revoker is unknown too, so it is refused before the lookup.
-    let found = cp.revoke_key(&other_token, target_id, &Changer::Key(admin.id), &Fixed(T));
+    let found = cp.revoke_key(&other_token, target_id, &Emitter::from(admin.id), &Fixed(T));
     assert!(matches!(found, Err(KeyChangeError::Caller)), "{found:?}");
 
     // A revoked key changes no key: neither creates nor revokes.
     cp.revoke_key(
         &env(1),
         revoker_id,
-        &Changer::Key(revoker_id),
+        &Emitter::from(revoker_id),
         &Fixed(T + 6),
     )
     .unwrap();
     let create = cp.insert_key(
         &env(1),
         new_key(63, &[Scope::Admin], Some(T + 1), None),
-        &Changer::Key(revoker_id),
+        &Emitter::from(revoker_id),
         &Fixed(T + 7),
         CAP,
     );
     assert!(matches!(create, Err(KeyChangeError::Caller)), "{create:?}");
-    let revoke = cp.revoke_key(&env(1), admin.id, &Changer::Key(revoker_id), &Fixed(T + 7));
+    let revoke = cp.revoke_key(&env(1), admin.id, &Emitter::from(revoker_id), &Fixed(T + 7));
     assert!(matches!(revoke, Err(KeyChangeError::Caller)), "{revoke:?}");
     assert_eq!(revoked_at(admin.id), None);
 }
@@ -449,10 +464,10 @@ fn recording_an_expiry_marks_that_key_only_and_survives_reopen() {
     for n in 70..73 {
         let new = new_key(n, &[Scope::Read], Some(T + HOUR), None);
         ids.push(new.id);
-        cp.insert_key(&env(1), new, &Changer::Key(admin.id), &Fixed(T), CAP)
+        cp.insert_key(&env(1), new, &Emitter::from(admin.id), &Fixed(T), CAP)
             .unwrap();
     }
-    cp.revoke_key(&env(1), ids[1], &Changer::Key(admin.id), &Fixed(T))
+    cp.revoke_key(&env(1), ids[1], &Emitter::from(admin.id), &Fixed(T))
         .unwrap();
     let mut expected = BTreeMap::from([
         (admin.id.to_string(), (false, None)),
@@ -503,11 +518,11 @@ fn a_change_by_a_newly_expired_caller_records_only_its_expiry() {
     for n in 80..84 {
         let new = new_key(n, &[Scope::Admin], Some(T + HOUR), None);
         callers.push(new.id);
-        cp.insert_key(&env(1), new, &Changer::Key(admin.id), &Fixed(T), CAP)
+        cp.insert_key(&env(1), new, &Emitter::from(admin.id), &Fixed(T), CAP)
             .unwrap();
     }
     for id in &callers[2..] {
-        cp.revoke_key(&env(1), *id, &Changer::Key(admin.id), &Fixed(T))
+        cp.revoke_key(&env(1), *id, &Emitter::from(admin.id), &Fixed(T))
             .unwrap();
     }
     let late = Fixed(T + HOUR);
@@ -516,10 +531,10 @@ fn a_change_by_a_newly_expired_caller_records_only_its_expiry() {
         expected.get_mut(&by.to_string()).unwrap().0 = i < 2;
         let refused = if i % 2 == 0 {
             let new = new_key(90, &[Scope::Admin], Some(T + 2 * HOUR), None);
-            cp.insert_key(&env(1), new, &Changer::Key(by), &late, CAP)
+            cp.insert_key(&env(1), new, &Emitter::from(by), &late, CAP)
                 .map(drop)
         } else {
-            cp.revoke_key(&env(1), admin.id, &Changer::Key(by), &late)
+            cp.revoke_key(&env(1), admin.id, &Emitter::from(by), &late)
         };
         assert!(
             matches!(refused, Err(KeyChangeError::Caller)),
@@ -528,7 +543,7 @@ fn a_change_by_a_newly_expired_caller_records_only_its_expiry() {
         assert_eq!(marks(&cp), expected, "{i}");
     }
     // Recorded, so the clock set back does not bring it back.
-    let back = cp.revoke_key(&env(1), admin.id, &Changer::Key(callers[0]), &Fixed(T));
+    let back = cp.revoke_key(&env(1), admin.id, &Emitter::from(callers[0]), &Fixed(T));
     assert!(matches!(back, Err(KeyChangeError::Caller)), "{back:?}");
 }
 
@@ -545,7 +560,7 @@ fn a_slot_is_held_until_a_revoke_or_a_recorded_expiry() {
         n += 1;
         let new = new_key(n, &[Scope::Read], Some(now + HOUR), None);
         let id = new.id;
-        cp.insert_key(&env(1), new, &Changer::Key(admin.id), &Fixed(now), 3)
+        cp.insert_key(&env(1), new, &Emitter::from(admin.id), &Fixed(now), 3)
             .map(|_| id)
     };
     let full = |r: Result<KeyId, KeyChangeError>, case: &str| {
@@ -558,17 +573,17 @@ fn a_slot_is_held_until_a_revoke_or_a_recorded_expiry() {
     full(create(T + HOUR), "expired by the clock only");
     // A request that breaks a rule is refused for that, cap or no cap.
     let bad = new_key(99, &[], None, None);
-    let bad = cp.insert_key(&env(1), bad, &Changer::Key(admin.id), &Fixed(T), 3);
+    let bad = cp.insert_key(&env(1), bad, &Emitter::from(admin.id), &Fixed(T), 3);
     assert!(matches!(bad, Err(KeyChangeError::Refused(_))), "{bad:?}");
 
-    cp.revoke_key(&env(1), a, &Changer::Key(admin.id), &Fixed(T))
+    cp.revoke_key(&env(1), a, &Emitter::from(admin.id), &Fixed(T))
         .unwrap();
     create(T).expect("after a revoke");
     full(create(T), "one slot freed, one taken");
     cp.record_expiry(&env(1), b).unwrap();
     let last = create(T).expect("after a recorded expiry");
     full(create(T), "one slot freed, one taken");
-    cp.revoke_key(&env(1), b, &Changer::Key(admin.id), &Fixed(T))
+    cp.revoke_key(&env(1), b, &Emitter::from(admin.id), &Fixed(T))
         .unwrap();
     full(create(T), "a recorded expiry's slot is freed once");
 
@@ -582,7 +597,7 @@ fn a_slot_is_held_until_a_revoke_or_a_recorded_expiry() {
         set("origin", origin);
         let made = create(T).expect(origin);
         full(create(T), origin);
-        cp.revoke_key(&env(1), made, &Changer::Key(admin.id), &Fixed(T))
+        cp.revoke_key(&env(1), made, &Emitter::from(admin.id), &Fixed(T))
             .unwrap();
         set("origin", "created");
         full(create(T), "a created key again");
@@ -597,7 +612,7 @@ fn a_slot_is_held_until_a_revoke_or_a_recorded_expiry() {
         set(column, &other);
         let made = create(T).expect(column);
         full(create(T), column);
-        cp.revoke_key(&env(1), made, &Changer::Key(admin.id), &Fixed(T))
+        cp.revoke_key(&env(1), made, &Emitter::from(admin.id), &Fixed(T))
             .unwrap();
         set(column, &own);
         full(create(T), "a key of this environment again");
@@ -699,7 +714,7 @@ fn a_new_seed_rotates_the_current_one_and_an_old_one_stays_revoked() {
     cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
     let made = new_key(111, &[Scope::Admin], None, None);
     let made_id = made.id;
-    cp.insert_key(&env(1), made, &Changer::Key(minted.id), &Fixed(T), CAP)
+    cp.insert_key(&env(1), made, &Emitter::from(minted.id), &Fixed(T), CAP)
         .unwrap();
     let (a, b) = (seed(112, 1), seed(113, 1));
     let apply = |s: &KeyParts, now: i64| cp.apply_seed(&env(1), s, &Fixed(now)).unwrap();
@@ -741,7 +756,7 @@ fn a_new_seed_rotates_the_current_one_and_an_old_one_stays_revoked() {
     assert_eq!(whole_rows(dir.path()), before, "a revoked seed");
 
     // With no current seed left, a new one revokes nothing, and `a` keeps its first time.
-    cp.revoke_key(&env(1), b.id, &Changer::Key(made_id), &Fixed(T + 5))
+    cp.revoke_key(&env(1), b.id, &Emitter::from(made_id), &Fixed(T + 5))
         .unwrap();
     let before = whole_rows(dir.path());
     let c = seed(114, 1);
@@ -765,7 +780,7 @@ fn a_seed_whose_key_id_is_another_key_is_a_conflict() {
         id: made.id,
         digest: made.digest.clone(),
     };
-    cp.insert_key(&env(1), made, &Changer::Key(minted.id), &Fixed(T), CAP)
+    cp.insert_key(&env(1), made, &Emitter::from(minted.id), &Fixed(T), CAP)
         .unwrap();
     let (a, old) = (seed(116, 1), seed(117, 1));
     for s in [&old, &a] {
@@ -845,7 +860,7 @@ fn a_seed_holds_no_slot() {
     cp.ensure_bootstrap(&b, &Fixed(T)).unwrap();
     let create = |n: u8| {
         let new = new_key(n, &[Scope::Read], None, None);
-        cp.insert_key(&env(1), new, &Changer::Key(admin.id), &Fixed(T), 2)
+        cp.insert_key(&env(1), new, &Emitter::from(admin.id), &Fixed(T), 2)
     };
     cp.apply_seed(&env(1), &seed(120, 1), &Fixed(T)).unwrap();
     create(121).expect("the first slot");
@@ -1136,7 +1151,7 @@ fn finishing_revokes_no_key_of_another_origin_or_environment() {
     ] {
         let new = new_key(n, &[Scope::Admin], None, None);
         let id = new.id.to_string();
-        cp.insert_key(&env(1), new, &Changer::Key(minted.id), &Fixed(T), CAP)
+        cp.insert_key(&env(1), new, &Emitter::from(minted.id), &Fixed(T), CAP)
             .unwrap();
         db.execute(
             "UPDATE keys SET origin = ?1, environment_id = ?2, environment_token = ?3 \
@@ -1175,7 +1190,7 @@ fn a_recovered_key_is_a_labelled_admin_key_and_changes_no_other_row() {
     // A key of every origin, the second recovery finding a recovered one.
     cp.apply_seed(&env(1), &seed(178, 1), &Fixed(T)).unwrap();
     let new = new_key(179, &[Scope::Read], None, None);
-    cp.insert_key(&env(1), new, &Changer::Key(admin.id), &Fixed(T), CAP)
+    cp.insert_key(&env(1), new, &Emitter::from(admin.id), &Fixed(T), CAP)
         .unwrap();
     for (seq, n) in [(4, 180), (5, 181)] {
         let mut expected = whole_rows(dir.path());
@@ -1304,12 +1319,12 @@ fn a_key_is_created_and_revoked_at_a_now_read_after_the_write_lock() {
     let admin = bootstrap(env(1), 0).1.id;
     let created = under_a_held_lock(true, |cp, told| {
         let new = new_key(196, &[Scope::Read], None, None);
-        cp.insert_key(&env(1), new, &Changer::Key(admin), &told, CAP)
+        cp.insert_key(&env(1), new, &Emitter::from(admin), &told, CAP)
             .map(drop)
     });
     created.unwrap();
     let revoked = under_a_held_lock(true, |cp, told| {
-        cp.revoke_key(&env(1), admin, &Changer::Key(admin), &told)
+        cp.revoke_key(&env(1), admin, &Emitter::from(admin), &told)
     });
     revoked.unwrap();
     // Refused, the file being bootstrapped, but not before it read the clock.
@@ -1331,7 +1346,7 @@ fn a_recovered_key_holds_no_slot() {
     cp.mark_ledger_created(&env(1), &Fixed(T)).unwrap();
     let create = |n: u8| {
         let new = new_key(n, &[Scope::Read], None, None);
-        cp.insert_key(&env(1), new, &Changer::Key(admin.id), &Fixed(T), 2)
+        cp.insert_key(&env(1), new, &Emitter::from(admin.id), &Fixed(T), 2)
     };
     cp.insert_recovered(&seed(190, 1), &Fixed(T)).unwrap();
     create(191).expect("the first slot");

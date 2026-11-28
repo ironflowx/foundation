@@ -121,7 +121,8 @@ pub fn ironflowx_authz::SeedConflict::fmt(&self, &mut core::fmt::Formatter<'_>) 
 impl core::marker::Copy for ironflowx_authz::SeedConflict
 impl core::marker::StructuralPartialEq for ironflowx_authz::SeedConflict
 pub fn ironflowx_authz::admit(&ironflowx_authz::Grant, core::option::Option<ironflowx_core::tenancy::Scope>) -> core::result::Result<(), ironflowx_authz::MissingScope>
-pub fn ironflowx_authz::may_create(core::option::Option<&ironflowx_authz::Grant>, &alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>, core::option::Option<ironflowx_core::time::Timestamp>, core::option::Option<&str>, ironflowx_core::time::Timestamp) -> core::result::Result<(), ironflowx_authz::CreateRefusal>
+pub fn ironflowx_authz::may_create(&ironflowx_authz::Grant, &alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>, core::option::Option<ironflowx_core::time::Timestamp>, core::option::Option<&str>, ironflowx_core::time::Timestamp) -> core::result::Result<(), ironflowx_authz::CreateRefusal>
+pub fn ironflowx_authz::may_create_as_embedder(&alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>, core::option::Option<ironflowx_core::time::Timestamp>, core::option::Option<&str>, ironflowx_core::time::Timestamp) -> core::result::Result<(), ironflowx_authz::CreateRefusal>
 pub fn ironflowx_authz::mint(ironflowx_core::id::KeyId, [u8; 32]) -> (ironflowx_core::secret::Secret, ironflowx_authz::KeyDigest)
 pub fn ironflowx_authz::parse(&ironflowx_core::secret::Secret) -> core::result::Result<ironflowx_authz::KeyParts, ironflowx_authz::Malformed>
 pub fn ironflowx_authz::recheck(&ironflowx_authz::KeyRecord, &ironflowx_core::id::EnvRef, ironflowx_core::time::Timestamp) -> core::result::Result<ironflowx_authz::Grant, ironflowx_authz::Refused>
