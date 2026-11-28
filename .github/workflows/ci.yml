@@ -22,6 +22,8 @@ concurrency:
 
 # Job names are the required status checks of the `main` ruleset. The toolchain comes from
 # rust-toolchain.toml; only public-api uses the nightly pinned in ci/tools.env (D21).
+# Build caches (Swatinem/rust-cache) are saved by main only and restored by PRs, so PR runs do
+# not evict each other from the repository's cache quota.
 jobs:
   fmt:
     runs-on: ubuntu-latest
@@ -43,6 +45,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # SRV-14: protox compiles the proto; nothing calls protoc or buf.
       - run: ci/no-protoc.sh cargo build --workspace --all-targets --locked
@@ -60,6 +65,9 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
@@ -72,6 +80,9 @@ jobs:
       CRASH_KILLS: 100
     steps:
       - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --workspace --locked
       # Isolate the facade from the features the rest of the workspace switches on.
       - run: cargo test -p ironflowx --locked --test features
@@ -126,6 +137,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # One crate a run, so no other crate's features build it.
       - run: |
           for crate in ironflowx-core ironflowx-events ironflowx-authz; do
@@ -140,17 +154,36 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      # Its code runs here: no token left in either checkout.
+      # Its code runs here: no token left in either checkout. Depth 2 keeps the PR merge commit's
+      # first parent, the base, for the diff below.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
+          fetch-depth: 2
+      # A PR that changes only docs/ and Markdown passes without the suite. The steps are skipped,
+      # not the job: a skipped job would pass every PR, and check-required.sh rejects one.
+      - id: scope
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ] ||
+            git diff --name-only HEAD^1 HEAD | awk '!/^docs\// && !/\.md$/ { n++ } END { exit !n }'; then
+            echo "run=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "conformance: the PR changes only docs/ and Markdown; the suite is skipped"
+          fi
+      - if: steps.scope.outputs.run == 'true'
+        uses: actions/checkout@v7
         with:
           repository: ironflowx/ironflow
           ref: main
           path: ironflow
           persist-credentials: false
-      - run: ironflow/ci/conformance.sh "$GITHUB_WORKSPACE"
+      - if: steps.scope.outputs.run == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ironflow -> target/conformance
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - if: steps.scope.outputs.run == 'true'
+        run: ironflow/ci/conformance.sh "$GITHUB_WORKSPACE"
 
   # The PRD's last "Done when": a crate outside the workspace, on `ironflowx` and `tokio` only,
   # bootstraps an engine, emits, reads with a `read` key and sees its emit refused. Its
@@ -165,6 +198,10 @@ jobs:
         working-directory: examples/embed
     steps:
       - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/embed
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --check
       - run: cargo clippy --locked -- -D warnings
       - run: cargo run --locked
@@ -178,6 +215,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-public-api@${{ env.CARGO_PUBLIC_API }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: ci/public-api.sh
 
   # D16: docs name only the segment-log version Cargo.toml pins.
