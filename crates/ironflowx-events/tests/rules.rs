@@ -1461,7 +1461,8 @@ fn a_client_emit_of_an_engine_events_name_is_refused_as_any_owned_name() {
         let batch = Submission::Batch(vec![named(name), named("order.placed")]);
         let outcome = env.submit(batch).expect("decided");
         assert!(
-            matches!(&outcome[0], ItemOutcome::Refused(r) if r.message() == message),
+            matches!(&outcome[0], ItemOutcome::Refused(r)
+                if (r.kind(), r.message(), r.hint()) == (ErrorKind::Invalid, message.as_str(), None)),
             "{outcome:?}"
         );
         assert_eq!(env.stored(), ["order.placed"]);

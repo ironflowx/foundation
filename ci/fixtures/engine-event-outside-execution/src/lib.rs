@@ -28,3 +28,13 @@ pub fn in_a_doctest() {}
 pub fn behind_a_feature(event: EngineEvent) -> EngineEmit {
     ironflowx_events::engine_event(event)
 }
+
+#[cfg(feature = "off")]
+include!("../included.rs");
+
+#[cfg(feature = "off")]
+#[doc = include_str!("../included.md")]
+pub fn documented_by_markdown() {}
+
+/// A longer name is another function's, and passes: count_engine_events.
+pub fn unrelated() {}

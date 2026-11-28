@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Usage: ci/clippy-bans.sh <repo-root>
 # Fails if a clippy.toml or .clippy.toml under <repo-root> lacks a crate-wide ban it must carry,
-# in a line that is not a comment. Clippy configs cannot include one another, so each ban is
-# copied into the root file and every crate's own file, and the must-reject fixtures exercise
-# only the root one (D17, D36, TEN-4, RUN-14).
+# outside a comment, whole-line or trailing. Clippy configs cannot include one another, so each
+# ban is copied into the root file and every crate's own file, and the must-reject fixtures
+# exercise only the root one (D17, D36, TEN-4, RUN-14).
 # Not caught: an #[allow(clippy::disallowed_methods)] gets past every ban in a crate whose root
 # does not forbid the lint, and in any integration test; a by-name grep backs each ban up
 # (ci/no-event-clock-outside-ledger.sh, no-key-attribution.sh, no-digest-codec.sh,
 # no-engine-event.sh). This repo's only suppressions are the event-rules test helpers that stand
-# in for the ledger and for execution rules (crates/ironflowx-events/tests/rules.rs).
+# in for the ledger and for execution rules (crates/ironflowx-events/tests/rules.rs). Nor is a
+# ban under another key than disallowed-methods, which a line-by-line read cannot tell; every
+# file here lists it under disallowed-methods.
 set -euo pipefail
 root=$1
 # <path>|<crate exempt from it>
@@ -29,7 +31,10 @@ for config in "$root"/{,.}clippy.toml "$root"/crates/*/{,.}clippy.toml; do
   for ban in "${bans[@]}"; do
     path=${ban%|*} exempt=${ban#*|}
     [ "$crate" = "$exempt" ] && continue
-    if ! grep -v '^[[:space:]]*#' "$config" | grep -qF "path = \"$path\""; then
+    if ! BAN=$path perl -ne '
+        s/^((?:[^"#]|"(?:[^"\\]|\\.)*")*)#.*/$1/;   # cut at the first # outside a string
+        $found = 1 if /\bpath\s*=\s*"\Q$ENV{BAN}\E"/;
+        END { exit !$found }' "$config"; then
       echo "$config: missing the $path ban"
       missing=1
     fi

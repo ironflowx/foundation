@@ -18,7 +18,7 @@ ci/no-event-clock-outside-ledger.sh crates
 ci/no-key-attribution.sh crates
 ci/clippy-bans.sh .
 ci/no-digest-codec.sh crates
-ci/no-engine-event.sh crates examples
+ci/no-engine-event.sh .
 # Comments may name the constructor.
 ci/no-key-attribution.sh ci/fixtures/key-attribution-in-comment
 ci/no-engine-deps.sh crates/ironflowx-doors/Cargo.toml crates/ironflowx-proto/Cargo.toml
@@ -98,12 +98,15 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "engine-event-outside-execution/src/lib.rs:9:" \
     "engine-event-outside-execution/src/lib.rs:17:" \
     "engine-event-outside-execution/src/lib.rs:23:" \
-    "engine-event-outside-execution/src/lib.rs:29:" -- \
+    "engine-event-outside-execution/src/lib.rs:29:" \
+    "engine-event-outside-execution/included.rs:2:" \
+    "engine-event-outside-execution/included.md:4:" -- \
     ci/no-engine-event.sh ci/fixtures/engine-event-outside-execution
   ci/must-reject.sh \
     "crates/ironflowx-core/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
     "crates/ironflowx-cell/clippy.toml: missing the ironflowx_events::engine_event ban" \
     "crates/ironflowx-store/.clippy.toml: missing the ironflowx_events::engine_event ban" \
+    "crates/ironflowx-operations/clippy.toml: missing the ironflowx_events::engine_event ban" \
     "crates/ironflowx-cell/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
     "crates/ironflowx-events/clippy.toml: missing the ironflowx_core::SequencedTime::from_event_clock ban" \
     "crates/ironflowx-authz/clippy.toml: its bans differ" -- \
@@ -129,6 +132,21 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "target-only/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" -- \
     ci/no-fault-points.sh ci/fixtures/fault-points
 }
+
+# ci/no-engine-event.sh matches the name alone: the fixture's longer one passes.
+if ci/no-engine-event.sh ci/fixtures/engine-event-outside-execution | grep -qF count_engine_events
+then
+  echo "purity: ci/no-engine-event.sh refuses a longer name, count_engine_events"
+  exit 1
+fi
+# ci/clippy-bans.sh counts a ban written path="..." whose reason holds a #: the operations fixture
+# carries every other ban so.
+bans=$(ci/clippy-bans.sh ci/fixtures/missing-ban || true)
+if grep -F "ironflowx-operations/clippy.toml" <<<"$bans" | grep -vqF "ironflowx_events::engine_event"; then
+  echo "$bans"
+  echo "purity: ci/clippy-bans.sh misses a ban in ci/fixtures/missing-ban/crates/ironflowx-operations"
+  exit 1
+fi
 
 # ci/must-reject.sh takes a pattern in one line of the output, no fewer, no more and no other's.
 ci/must-reject.sh "with 'BadType' in 0 lines" -- \

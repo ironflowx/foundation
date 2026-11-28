@@ -484,9 +484,8 @@ pub fn engine_event(event: EngineEvent) -> EngineEmit {
 
 /// Sequences engine events after every stored event, in order, one ID from `fresh` each: the
 /// sequences a client's events take, never refused for their names (D118). Their data meets
-/// event data's rules, or all are refused as an emit of it would be (a NUL or an oversized value,
-/// which execution rules refuse first). Neither the last sequence nor `fresh` is read for none,
-/// or for a refusal of data.
+/// event data's rules, or all are refused as an emit of it would be: a NUL or an oversized value.
+/// Neither the last sequence nor `fresh` is read for none, or for a refusal of data.
 ///
 /// # Panics
 ///
