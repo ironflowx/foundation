@@ -146,8 +146,9 @@ jobs:
             cargo check --locked --target wasm32-unknown-unknown -p "$crate"
           done
 
-  # ironflowx/ironflow's suite (its binary and CLI) against this checkout, through the [patch] its
-  # ci/conformance.sh writes: a change here that breaks the app fails before it merges.
+  # ironflowx/ironflow's suite (its binary and CLI), at the ref ci/app-ref names, against this
+  # checkout, through the [patch] its ci/conformance.sh writes: a change here that breaks the app
+  # fails before it merges.
   conformance:
     strategy:
       matrix:
@@ -170,11 +171,24 @@ jobs:
           else
             echo "conformance: the PR changes only docs/ and Markdown; the suite is skipped"
           fi
+      # D122: the app ref is the one line of ci/app-ref, main unless a PR pairs with an app branch.
+      - if: steps.scope.outputs.run == 'true'
+        id: app
+        run: |
+          fixtures=ci/fixtures/app-ref
+          ci/must-reject.sh "$fixtures/missing is missing" -- ci/app-ref.sh "$fixtures/missing"
+          ci/must-reject.sh "$fixtures/empty is empty" -- ci/app-ref.sh "$fixtures/empty"
+          ci/must-reject.sh "$fixtures/newline-only is empty" -- ci/app-ref.sh "$fixtures/newline-only"
+          ci/must-reject.sh "$fixtures/two-lines has 2 lines" -- ci/app-ref.sh "$fixtures/two-lines"
+          ci/must-reject.sh "$fixtures/blank-line has 2 lines" -- ci/app-ref.sh "$fixtures/blank-line"
+          ci/must-reject.sh "$fixtures/crlf names no ref" -- ci/app-ref.sh "$fixtures/crlf"
+          ref=$(ci/app-ref.sh)
+          echo "ref=$ref" >>"$GITHUB_OUTPUT"
       - if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@v7
         with:
           repository: ironflowx/ironflow
-          ref: main
+          ref: ${{ steps.app.outputs.ref }}
           path: ironflow
           persist-credentials: false
       - if: steps.scope.outputs.run == 'true'

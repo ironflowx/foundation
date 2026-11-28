@@ -659,7 +659,7 @@ With `client-tls`, `Client` calls an `https` URL as it does an `http` one. It tr
 
 ## Host and CLI
 
-The `ironflowx` binary, `ironflowx serve` with its settings, data directory, `admin.key`, exit codes and server crash test, and the CLI it carries, are built and documented in [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow) (D85). It depends on these crates at one commit until they are on crates.io at 0.4.0.
+The `ironflowx` binary, `ironflowx serve` with its settings, data directory, `admin.key`, exit codes and server crash test, and the CLI it carries, are built and documented in [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow) (D85). It depends on these crates at one commit until they are on crates.io at 0.4.0. Foundation's `conformance` job builds and runs its suite against each foundation change, at the app ref `ci/app-ref` names: `main`, or, for a change the app must follow, such as a new operation, scope or error kind, the app's matching branch, until the next foundation change sets it back (D122; `ci/README.md`).
 
 ## Depends on
 

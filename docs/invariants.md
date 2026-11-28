@@ -136,4 +136,4 @@ A kill keeps the operating system's page cache, so this test proves crash durabi
 
 ### Server crash test
 
-The server crash test kills the real `ironflowx` binary under load and around key publication and recovery, then checks what survives. It is [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow)'s, with the binary; foundation's `conformance` job runs it against each foundation PR (D85).
+The server crash test kills the real `ironflowx` binary under load and around key publication and recovery, then checks what survives. It is [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow)'s, with the binary; foundation's `conformance` job runs it against each foundation PR, at the app ref `ci/app-ref` names (D85, D122).
