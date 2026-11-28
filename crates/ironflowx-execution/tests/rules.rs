@@ -1013,7 +1013,7 @@ fn an_event_name_triggers_at_most_20_functions() {
                 ErrorKind::ResourceExhausted,
                 "an event name triggers at most 20 functions",
                 Some(
-                    "\"order.placed\" triggers 20 functions already: put 1 of them without it first"
+                    "\"order.placed\" triggers 20 other functions already: put 1 of them without it first"
                 )
             ),
             "{d:?}"
@@ -1280,13 +1280,15 @@ fn a_store_already_over_a_cap_takes_no_put_that_leaves_it_over() {
     };
     // The hint counts what the name holds, and how many must go for one more.
     let r = put_def(&mut s, changed).unwrap_err();
-    let hint = "\"order.placed\" triggers 20 functions already: put 1 of them without it first";
+    let hint =
+        "\"order.placed\" triggers 20 other functions already: put 1 of them without it first";
     assert_eq!(
         (r.kind(), r.hint()),
         (ErrorKind::ResourceExhausted, Some(hint))
     );
     let late = put_def(&mut s, named_fn("late", &["order.placed"])).unwrap_err();
-    let hint = "\"order.placed\" triggers 21 functions already: put 2 of them without it first";
+    let hint =
+        "\"order.placed\" triggers 21 other functions already: put 2 of them without it first";
     assert_eq!(
         (late.kind(), late.hint()),
         (ErrorKind::ResourceExhausted, Some(hint))
@@ -1332,9 +1334,8 @@ fn the_hint_names_the_full_event_whatever_it_is() {
         put_def(&mut s, named_fn(&format!("f{i:02}"), &[event])).unwrap();
     }
     let r = put_def(&mut s, named_fn("late", &[event])).unwrap_err();
-    let hint = format!("{event:?} triggers 20 functions already: put 1 of them without it first");
-    assert_eq!(r.hint(), Some(hint.as_str()));
-    assert!(hint.starts_with(r#""commande.\"passée\\""#), "{hint}");
+    let hint = r#""commande.\"passée\\" triggers 20 other functions already: put 1 of them without it first"#;
+    assert_eq!(r.hint(), Some(hint));
 }
 
 /// Which cap answers when more than one would: the environment's first, with no hint; then the
@@ -1349,7 +1350,7 @@ fn the_environments_cap_answers_first_then_the_first_full_name() {
     }
     let both = named_fn("late", &["b.full", "a.full"]);
     let r = put_def(&mut s, both.clone()).unwrap_err();
-    let hint = "\"a.full\" triggers 20 functions already: put 1 of them without it first";
+    let hint = "\"a.full\" triggers 20 other functions already: put 1 of them without it first";
     assert_eq!(r.hint(), Some(hint));
     for i in 0..960 {
         put_def(&mut s, named_fn(&format!("g{i:03}"), &[])).unwrap();

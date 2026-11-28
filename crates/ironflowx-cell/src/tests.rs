@@ -2532,7 +2532,9 @@ async fn the_read_store_counts_the_functions_an_event_name_triggers() {
         (r.kind(), r.hint()),
         (
             ErrorKind::ResourceExhausted,
-            Some("\"order.placed\" triggers 20 functions already: put 1 of them without it first")
+            Some(
+                "\"order.placed\" triggers 20 other functions already: put 1 of them without it first"
+            )
         )
     );
     // Another name is not "order.placed"'s.
@@ -2607,5 +2609,7 @@ async fn a_function_the_read_store_cannot_read_fails_the_list() {
         ledger.list_functions(None, None).await,
         Err(ReadError::Unavailable)
     );
+    // The ledger has failed: a read of a readable function is refused too.
+    assert_eq!(ledger.get_function("a").await, Err(ReadError::Unavailable));
     ledger.close().await;
 }

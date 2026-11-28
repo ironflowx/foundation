@@ -592,7 +592,7 @@ fn put_function<V: ExecutionView>(
                 "an event name triggers at most {MAX_PER_EVENT} functions"
             ))
             .with_hint(format!(
-                "{trigger:?} triggers {others} functions already: put {free} of them without it first"
+                "{trigger:?} triggers {others} other functions already: put {free} of them without it first"
             ));
             return Err(refused(r));
         }
