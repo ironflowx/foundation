@@ -165,4 +165,7 @@ ci/must-reject.sh "$app/dots is not a name git takes for a branch: 'main..other'
   echo "purity: ci/app-ref.sh does not read $app/pair-branch as refs/heads/pair/Runs-214_a.b"
   exit 1
 }
-ci/app-ref.sh >/dev/null
+[ "$(ci/app-ref.sh)" = "refs/heads/$(cat ci/app-ref)" ] || {
+  echo "purity: ci/app-ref.sh does not read ci/app-ref"
+  exit 1
+}
