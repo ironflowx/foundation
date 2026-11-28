@@ -108,6 +108,7 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "crates/ironflowx-store/.clippy.toml: missing the ironflowx_events::engine_event ban" \
     "crates/ironflowx-operations/clippy.toml: missing the ironflowx_events::engine_event ban" \
     "crates/ironflowx-doors/clippy.toml: missing the ironflowx_events::engine_event ban" \
+    "crates/ironflowx-proto/clippy.toml: missing the ironflowx_events::engine_event ban" \
     "crates/ironflowx-cell/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
     "crates/ironflowx-events/clippy.toml: missing the ironflowx_core::SequencedTime::from_event_clock ban" \
     "crates/ironflowx-authz/clippy.toml: its bans differ" -- \

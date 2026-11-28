@@ -13,9 +13,8 @@
 # file here lists it under disallowed-methods. Nor is a clippy.toml outside the root and crates/*
 # (examples/embed has none, and takes the root's), or a manifest's [lints.clippy] allowing the
 # lint (the one [lints] here, ironflowx-cell's, only warns of two casts; the by-name greps catch
-# what it lets through). Wrongly refused: a ban after a literal string that
-# holds a # on its line, or one split over lines, or in a multi-line string; no file here has
-# one.
+# what it lets through). Wrongly refused: a ban that does not open its line as an entry; every
+# ban here opens its line.
 set -euo pipefail
 root=$1
 # <path>|<crate exempt from it>
@@ -36,13 +35,14 @@ for config in "$root"/{,.}clippy.toml "$root"/crates/*/{,.}clippy.toml; do
   for ban in "${bans[@]}"; do
     path=${ban%|*} exempt=${ban#*|}
     [ "$crate" = "$exempt" ] && continue
-    # A line counts when the ban survives a cut at the first # outside a basic string, and again
-    # outside a basic or a literal ('...') string.
+    # A line counts when its ban opens it, as an entry ({ path = "..."): no comment can, whatever
+    # strings precede it. It must also survive a cut at the first # outside a basic string, and
+    # one outside a basic or a literal ('...') string, as before.
     if ! BAN=$path perl -ne '
         my $ban = qr/\bpath\s*=\s*"\Q$ENV{BAN}\E"/;
         (my $basic = $_) =~ s/^((?:[^"#]|"(?:[^"\\]|\\.)*")*)#.*/$1/;
         (my $both = $_) =~ s/^((?:[^"#\x27]|"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27)*)#.*/$1/;
-        $found = 1 if $basic =~ $ban && $both =~ $ban;
+        $found = 1 if $basic =~ $ban && $both =~ $ban && /^\s*\{\s*$ban/;
         END { exit !$found }' "$config"; then
       echo "$config: missing the $path ban"
       missing=1
