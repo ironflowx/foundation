@@ -45,7 +45,8 @@ async fn an_admin_key_creates_a_key_that_works_until_its_expiry() {
         .whoami(&admin, WhoamiRequest {})
         .await
         .unwrap()
-        .key_id;
+        .key_id
+        .unwrap();
 
     clock.set(at(T + 5));
     let created = engine
@@ -67,8 +68,8 @@ async fn an_admin_key_creates_a_key_that_works_until_its_expiry() {
     );
     assert_eq!(info.label.as_deref(), Some("agent-7"));
     assert_eq!(
-        (info.origin, info.created_by, info.status),
-        (KeyOrigin::Created, Some(admin_id), KeyStatus::Active)
+        (info.origin, info.created_by.clone(), info.status),
+        (KeyOrigin::Created, Some(admin_id.into()), KeyStatus::Active)
     );
     assert_eq!(
         (info.created_at, info.expires_at),
@@ -80,7 +81,7 @@ async fn an_admin_key_creates_a_key_that_works_until_its_expiry() {
     let me = engine.whoami(&key, WhoamiRequest {}).await.unwrap();
     assert_eq!(
         (me.key_id, me.expires_at),
-        (info.key_id, Some(at(T + HOUR)))
+        (Some(info.key_id), Some(at(T + HOUR)))
     );
     clock.set(at(T + HOUR - 1));
     engine

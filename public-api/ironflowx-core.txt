@@ -95,12 +95,16 @@ impl core::hash::Hash for ironflowx_core::Address
 pub fn ironflowx_core::Address::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::StructuralPartialEq for ironflowx_core::Address
 pub struct ironflowx_core::Emitter(_)
+impl ironflowx_core::Emitter
+pub fn ironflowx_core::Emitter::key_id(&self) -> core::option::Option<ironflowx_core::KeyId>
 impl core::clone::Clone for ironflowx_core::Emitter
 pub fn ironflowx_core::Emitter::clone(&self) -> Self
 impl core::cmp::Eq for ironflowx_core::Emitter
 pub fn ironflowx_core::Emitter::assert_fields_are_eq(&self)
 impl core::cmp::PartialEq for ironflowx_core::Emitter
 pub fn ironflowx_core::Emitter::eq(&self, &Self) -> bool
+impl core::convert::From<ironflowx_core::KeyId> for ironflowx_core::Emitter
+pub fn ironflowx_core::Emitter::from(ironflowx_core::KeyId) -> Self
 impl core::convert::From<ironflowx_core::SubmitAs> for ironflowx_core::Emitter
 pub fn ironflowx_core::Emitter::from(ironflowx_core::SubmitAs) -> Self
 impl core::fmt::Debug for ironflowx_core::Emitter
@@ -200,6 +204,8 @@ impl core::cmp::Eq for ironflowx_core::KeyId
 pub fn ironflowx_core::KeyId::assert_fields_are_eq(&self)
 impl core::cmp::PartialEq for ironflowx_core::KeyId
 pub fn ironflowx_core::KeyId::eq(&self, &Self) -> bool
+impl core::convert::From<ironflowx_core::KeyId> for ironflowx_core::Emitter
+pub fn ironflowx_core::Emitter::from(ironflowx_core::KeyId) -> Self
 impl core::fmt::Debug for ironflowx_core::KeyId
 pub fn ironflowx_core::KeyId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for ironflowx_core::KeyId

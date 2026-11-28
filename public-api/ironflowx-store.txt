@@ -74,14 +74,14 @@ pub fn ironflowx_store::ControlPlane::check_seed(&std::path::Path, &ironflowx_co
 pub fn ironflowx_store::ControlPlane::ensure_bootstrap(&self, &ironflowx_store::Bootstrap, &dyn ironflowx_core::time::Clock) -> core::result::Result<(), ironflowx_store::StoreError>
 pub fn ironflowx_store::ControlPlane::environment(&self, &ironflowx_core::id::EnvRef) -> core::result::Result<ironflowx_store::EnvironmentRecord, ironflowx_store::StoreError>
 pub fn ironflowx_store::ControlPlane::finish_bootstrap(&self, &ironflowx_core::id::EnvRef, core::option::Option<&ironflowx_authz::KeyParts>, &dyn ironflowx_core::time::Clock) -> core::result::Result<bool, ironflowx_store::StoreError>
-pub fn ironflowx_store::ControlPlane::insert_key(&self, &ironflowx_core::id::EnvRef, ironflowx_store::NewKey, ironflowx_core::id::KeyId, &dyn ironflowx_core::time::Clock, u32) -> core::result::Result<ironflowx_store::KeyRow, ironflowx_store::KeyChangeError>
+pub fn ironflowx_store::ControlPlane::insert_key(&self, &ironflowx_core::id::EnvRef, ironflowx_store::NewKey, &ironflowx_core::who::Emitter, &dyn ironflowx_core::time::Clock, u32) -> core::result::Result<ironflowx_store::KeyRow, ironflowx_store::KeyChangeError>
 pub fn ironflowx_store::ControlPlane::insert_recovered(&self, &ironflowx_authz::KeyParts, &dyn ironflowx_core::time::Clock) -> core::result::Result<(), ironflowx_store::RecoverError>
 pub fn ironflowx_store::ControlPlane::list_keys(&self, &ironflowx_core::id::EnvRef, core::option::Option<u64>, u32) -> core::result::Result<alloc::vec::Vec<ironflowx_store::KeyRow>, ironflowx_store::StoreError>
 pub fn ironflowx_store::ControlPlane::lookup_key(&self, ironflowx_core::id::KeyId, &ironflowx_core::id::EnvRef, &dyn ironflowx_core::time::Clock) -> core::result::Result<(core::option::Option<ironflowx_authz::KeyRecord>, ironflowx_core::time::Timestamp), ironflowx_store::StoreError>
 pub fn ironflowx_store::ControlPlane::mark_ledger_created(&self, &ironflowx_core::id::EnvRef, &dyn ironflowx_core::time::Clock) -> core::result::Result<(), ironflowx_store::StoreError>
 pub fn ironflowx_store::ControlPlane::open(&std::path::Path) -> core::result::Result<Self, ironflowx_store::StoreError>
 pub fn ironflowx_store::ControlPlane::record_expiry(&self, &ironflowx_core::id::EnvRef, ironflowx_core::id::KeyId) -> core::result::Result<(), ironflowx_store::StoreError>
-pub fn ironflowx_store::ControlPlane::revoke_key(&self, &ironflowx_core::id::EnvRef, ironflowx_core::id::KeyId, ironflowx_core::id::KeyId, &dyn ironflowx_core::time::Clock) -> core::result::Result<(), ironflowx_store::KeyChangeError>
+pub fn ironflowx_store::ControlPlane::revoke_key(&self, &ironflowx_core::id::EnvRef, ironflowx_core::id::KeyId, &ironflowx_core::who::Emitter, &dyn ironflowx_core::time::Clock) -> core::result::Result<(), ironflowx_store::KeyChangeError>
 pub fn ironflowx_store::ControlPlane::undo_bootstrap(&self, &ironflowx_core::id::EnvRef) -> core::result::Result<(), ironflowx_store::StoreError>
 pub struct ironflowx_store::EnvironmentRecord
 pub ironflowx_store::EnvironmentRecord::created_at: ironflowx_core::time::Timestamp
@@ -101,7 +101,7 @@ pub fn ironflowx_store::EnvironmentRecord::fmt(&self, &mut core::fmt::Formatter<
 impl core::marker::StructuralPartialEq for ironflowx_store::EnvironmentRecord
 pub struct ironflowx_store::KeyRow
 pub ironflowx_store::KeyRow::created_at: ironflowx_core::time::Timestamp
-pub ironflowx_store::KeyRow::created_by: core::option::Option<ironflowx_core::id::KeyId>
+pub ironflowx_store::KeyRow::created_by: core::option::Option<ironflowx_core::who::Emitter>
 pub ironflowx_store::KeyRow::label: core::option::Option<alloc::string::String>
 pub ironflowx_store::KeyRow::origin: ironflowx_core::tenancy::KeyOrigin
 pub ironflowx_store::KeyRow::record: ironflowx_authz::KeyRecord

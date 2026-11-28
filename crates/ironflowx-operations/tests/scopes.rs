@@ -210,7 +210,7 @@ async fn a_key_holds_execute_alone() {
         .unwrap()
         .keys
         .into_iter()
-        .find(|k| k.key_id == me.key_id);
+        .find(|k| Some(k.key_id) == me.key_id);
     assert_eq!(row.expect("listed").scopes, only);
 
     // A key without `execute` cannot give it, even an admin one.

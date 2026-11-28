@@ -439,3 +439,47 @@ fn a_schema_of_scopes_names_all_four() {
     assert_eq!(counts("keys revoke"), (0, 0, 0, 0));
     assert_eq!(counts("whoami"), (0, 0, 1, 1));
 }
+
+/// What a door sends of the embedder's call (D121): `Whoami`'s output still requires `key_id`,
+/// as a door's answer always holds one, and a key's `created_by` is a key ID or an embedder.
+#[test]
+fn a_creator_is_a_key_or_an_embedder_and_whoami_names_its_key() {
+    let set = protox::Compiler::new([Path::new(PROTO)])
+        .unwrap()
+        .include_imports(true)
+        .open_files(["ironflowx/v1/key.proto", "ironflowx/v1/identity.proto"])
+        .unwrap()
+        .encode_file_descriptor_set();
+    let out = tempfile::tempdir().unwrap();
+    ironflowx_codegen::generate(&set, out.path()).unwrap();
+    let cli = std::fs::read_to_string(out.path().join("cli.rs")).unwrap();
+    let output = |path: &str| -> serde_json::Value {
+        let line = cli
+            .lines()
+            .find(|l| l.contains(&format!("Command {{ path: \"{path}\"")))
+            .unwrap_or_else(|| panic!("{path}: {cli}"));
+        let start = line.find(", output: ").unwrap() + ", output: ".len();
+        let literal = &line[start..line.find(", example: ").unwrap()];
+        // The schema is a Rust string literal, whose escapes here are JSON's.
+        let text: String = serde_json::from_str(literal).unwrap();
+        serde_json::from_str(&text).unwrap()
+    };
+    let whoami = output("whoami");
+    assert_eq!(
+        whoami["required"],
+        serde_json::json!(["key_id", "scopes", "environment"])
+    );
+    let keys = output("keys list");
+    let created_by = &keys["properties"]["keys"]["items"]["properties"]["created_by"];
+    let valid = |text: &str| jsonschema::is_valid(created_by, &serde_json::json!(text));
+    let key = "0190b5f0-0000-7000-8000-000000000001";
+    for (text, ok) in [
+        (key.to_owned(), true),
+        ("embedder:app é".to_owned(), true),
+        (format!("key:{key}"), false),
+        ("embedder:".to_owned(), false),
+        ("app".to_owned(), false),
+    ] {
+        assert_eq!(valid(&text), ok, "{text}");
+    }
+}
