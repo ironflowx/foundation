@@ -234,7 +234,8 @@ impl RunCompleted {
 
 /// An entry as a record holds it: what [`encode`] writes, [`decode`] reads and [`fold`] applies.
 /// An [`Entry`] becomes one; nothing turns one back into an entry, so a decoded `RunCompleted`
-/// joins no other decision or record (RUN-2).
+/// joins no decision (RUN-2). `encode` takes any `Stored`: only the ledger's writer appends what it
+/// encodes, and only what `decide` decided.
 ///
 /// ```compile_fail,E0616
 /// fn out(s: ironflowx_execution::Stored) -> ironflowx_execution::Entry { s.0 }

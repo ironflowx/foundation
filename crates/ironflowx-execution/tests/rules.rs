@@ -802,3 +802,32 @@ fn the_edges_of_a_put_a_claim_and_a_step_input() {
         Some(MAX_STEP_INPUT_BYTES)
     );
 }
+
+/// Past the last run sequence, or the last execution number, a start and a claim are refused, and
+/// nothing is drawn or appended.
+#[test]
+fn sequences_and_execution_numbers_run_out_refused() {
+    let mut s = Store {
+        time: T,
+        ..Store::default()
+    };
+    s.outcome(Command::PutFunction(definition()), &key(1))
+        .unwrap();
+    s.outcome(start(), &key(1)).unwrap();
+    let run = s.runs.values_mut().next().unwrap();
+    run.sequence = u64::MAX;
+    run.execution = u32::MAX;
+    let drawn = s.drawn;
+    let refused = s.outcome(start(), &key(1)).unwrap_err();
+    assert_eq!(
+        (refused.kind(), refused.message()),
+        (ErrorKind::Invalid, "run sequences are used up")
+    );
+    assert_eq!(s.drawn, drawn);
+    let refused = s.outcome(claim(&["charge@v1"]), &key(1)).unwrap_err();
+    assert_eq!(
+        (refused.kind(), refused.message()),
+        (ErrorKind::Invalid, "execution numbers are used up")
+    );
+    assert_eq!(s.runs.values().next().unwrap().status, Status::Queued);
+}

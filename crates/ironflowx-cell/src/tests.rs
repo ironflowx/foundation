@@ -2399,3 +2399,41 @@ fn the_fold_refuses_an_entry_the_store_does_not_follow() {
     drop(conn);
     drop(ledger);
 }
+
+/// RUN-10 at the read store: a queued run is claimable once its due time is reached, not a
+/// millisecond before.
+#[test]
+fn a_run_is_claimable_from_its_due_time() {
+    use ironflowx_execution::{Entry, ExecutionView};
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open_blocking(dir.path(), new_env_ref(), clock()).unwrap();
+    let run: ironflowx_core::RunId = "0190b5f0-0000-7000-8000-000000000123".parse().unwrap();
+    let mut conn = ledger.store.lock().unwrap();
+    let applied = crate::store::applied(&conn).unwrap();
+    let created = Entry::RunCreated {
+        run,
+        sequence: 1,
+        function: "charge".into(),
+        code: "v1".into(),
+        input: b"null".to_vec(),
+    };
+    // A run created at T + 1,000 is due then.
+    let entries = Entries {
+        record: ironflowx_events::Record {
+            time: Timestamp::from_millis(T + 1_000),
+            events: vec![],
+        },
+        execution: vec![created.into()],
+    };
+    let record = Some((uuid::Uuid::now_v7(), &entries, &emitter()));
+    crate::store::apply(&mut conn, applied, record, false).unwrap();
+    let pairs = [("charge".to_owned(), "v1".to_owned())];
+    let at = |millis| {
+        let taken = ReadStore(&conn).claimable(&pairs, Timestamp::from_millis(millis));
+        taken.unwrap().map(|r| r.id)
+    };
+    assert_eq!(at(T + 999), None);
+    assert_eq!(at(T + 1_000), Some(run));
+    drop(conn);
+    drop(ledger);
+}

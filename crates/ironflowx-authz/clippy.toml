@@ -64,6 +64,7 @@ disallowed-methods = [
   { path = "std::env::temp_dir", reason = "pure crates read no ambient state" },
   { path = "std::env::home_dir", reason = "pure crates read no ambient state" },
   { path = "std::env::current_exe", reason = "pure crates read no ambient state" },
+  { path = "std::process::id", reason = "pure crates read no ambient state" },
   { path = "std::io::stdin", reason = "pure crates do no I/O" },
   { path = "std::io::stdout", reason = "pure crates do no I/O" },
   { path = "std::io::stderr", reason = "pure crates do no I/O" },

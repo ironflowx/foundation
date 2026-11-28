@@ -426,7 +426,7 @@ A step's name, `once` and input are those of its first begin. Until a run can be
 
 **Values.** A step's input is JSON of at most 65,536 bytes (`limits::MAX_STEP_INPUT_BYTES`), a step's or a run's output at most 524,288 (`limits::MAX_DATA_BYTES`); each meets event data's JSON rules through event rules' `check_value`, with its own name in the message (`step output exceeds 524288 bytes`, `run output is invalid: …`). An absent output stores `null`.
 
-**Entries.** Each command that changes something appends one record of execution entries (D112), which carry every value `decide` computed; `fold` writes them and reads no policy, so a rebuilt `read.db` answers the same (RUN-11). No run entry but `RunCreated` carries a code label (RUN-7); `FunctionPut` carries the function's. A record's entries read back as `Stored`, which `fold` applies and from which no `Entry` comes out, so a decoded `RunCompleted` joins no other record. A run's attribution is its record's: its creator, its claimant, and its end event's emitter come from the verified grant (TEN-6).
+**Entries.** Each command that changes something appends one record of execution entries (D112), which carry every value `decide` computed; `fold` writes them and reads no policy, so a rebuilt `read.db` answers the same (RUN-11). No run entry but `RunCreated` carries a code label (RUN-7); `FunctionPut` carries the function's. A record's entries read back as `Stored`, which `fold` applies and from which no `Entry` comes out, so a decoded `RunCompleted` joins no decision. A run's attribution is its record's: its creator, its claimant, and its end event's emitter come from the verified grant (TEN-6).
 
 ## Keys
 

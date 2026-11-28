@@ -483,9 +483,9 @@ const RUN_COLUMNS: &str = "id, sequence, function, code, status, input, created_
 const STEP_COLUMNS: &str = "position, name, once, input, execution, output FROM steps";
 
 /// A status as stored, which only `Status::as_str` writes.
-struct Stored(Status);
+struct StoredStatus(Status);
 
-impl FromSql for Stored {
+impl FromSql for StoredStatus {
     fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
         Status::from_name(value.as_str()?)
             .map(Self)
@@ -499,7 +499,7 @@ fn row_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         sequence: r.get(1)?,
         function: r.get(2)?,
         code: r.get(3)?,
-        status: r.get::<_, Stored>(4)?.0,
+        status: r.get::<_, StoredStatus>(4)?.0,
         input: r.get(5)?,
         created_at: r.get::<_, Millis>(6)?.0,
         created_by: r.get::<_, Text<Emitter>>(7)?.0,
