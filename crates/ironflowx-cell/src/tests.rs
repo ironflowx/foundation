@@ -2363,6 +2363,8 @@ fn the_fold_refuses_an_entry_the_store_does_not_follow() {
             output: Some(b"1".to_vec()),
         };
         execute(&ledger, complete).await.unwrap();
+        // A read waits for the fold of every acknowledged record, so the output is there.
+        ledger.get_run(&run.to_string()).await.unwrap();
         run
     });
     let unknown = "0190b5f0-0000-7000-8000-000000000999".parse().unwrap();
