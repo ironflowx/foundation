@@ -666,6 +666,22 @@ fn records_round_trip() {
     };
     unknown[record::events(env.token(), id, &emitter(), &empty).len()] = 0xFF;
     assert_eq!(record::decode(&unknown), None);
+    // A record ID that is not a UUIDv7 in its canonical text form, put in place of a good one.
+    let good = record::events(env.token(), id, &emitter(), &empty);
+    let at = good
+        .windows(36)
+        .position(|w| w == id.to_string().as_bytes());
+    let at = at.unwrap();
+    for bad in [
+        "00000000-0000-0000-0000-000000000000",
+        "019a8f3c-7e21-4b4a-9c3d-5e6f7a8b9c0d",
+        "019a8f3c-7e21-7b4a-cc3d-5e6f7a8b9c0d",
+        "019A8F3C-7E21-7B4A-9C3D-5E6F7A8B9C0D",
+    ] {
+        let mut bytes = good.clone();
+        bytes[at..at + 36].copy_from_slice(bad.as_bytes());
+        assert_eq!(record::decode(&bytes), None, "{bad}");
+    }
 }
 
 fn append(log: &SegmentLog, expected: ExpectedRevision, payload: Vec<u8>) {
@@ -1052,6 +1068,10 @@ async fn two_copies_of_a_directory_never_share_a_record_id() {
     assert_eq!((mine.len(), theirs.len()), (2, 2));
     assert_eq!(mine[0], theirs[0], "the copied record keeps its ID");
     assert_ne!(mine[1], theirs[1]);
+    for id in mine.iter().chain(&theirs) {
+        assert_eq!(id.get_version(), Some(uuid::Version::SortRand), "{id}");
+        assert_eq!(id.get_variant(), uuid::Variant::RFC4122, "{id}");
+    }
 }
 
 /// Open compares the last applied record's ID with the log's record at that position (D117,
@@ -1075,6 +1095,7 @@ async fn a_read_store_of_a_copy_diverged_by_a_record_without_events_is_rebuilt()
     let ours = record_ids(dir.path());
     assert_ne!(ours[1], record_ids(other.path())[1]);
     let (_, watermark) = log_records(dir.path());
+    let db = dir.path().join("read.db");
     for open_ in ["rebuilds", "reopens"] {
         let ledger = open(dir.path(), env).await;
         assert_eq!(names(&ledger).await, ["a"], "{open_}");
@@ -1086,6 +1107,43 @@ async fn a_read_store_of_a_copy_diverged_by_a_record_without_events_is_rebuilt()
             watermark,
             "{open_}: open appended"
         );
+        // A rebuild would drop a table the fold knows nothing of: the reopen keeps it.
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let sentinel = "SELECT count(*) FROM sqlite_master WHERE name = 'sentinel'";
+        let kept: u64 = conn.query_row(sentinel, [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, u64::from(open_ == "reopens"), "{open_}");
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS sentinel (x)")
+            .unwrap();
+    }
+}
+
+/// A read store whose record ID matches the log's record at its applied position is kept, a
+/// matching store being one the writer's own fold left; one without an ID there is rebuilt (D117).
+#[tokio::test]
+async fn a_read_store_is_kept_only_when_its_record_id_matches() {
+    for (damage, kept) in [("", true), ("UPDATE meta SET record_id = NULL", false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let env = new_env_ref();
+        let ledger = open(dir.path(), env).await;
+        emit(&ledger, named("a")).await.unwrap();
+        ledger.close().await;
+        let db = dir.path().join("read.db");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        // A row the log does not hold: a rebuild would put "a" back.
+        conn.execute_batch(&format!("UPDATE events SET name = 'kept'; {damage}"))
+            .unwrap();
+        drop(conn);
+        let ledger = open(dir.path(), env).await;
+        let expected = if kept { "kept" } else { "a" };
+        assert_eq!(names(&ledger).await, [expected], "{damage}");
+        ledger.close().await;
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let sql = "SELECT applied, record_id FROM meta";
+        let meta: (u64, Option<String>) = conn
+            .query_row(sql, [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        let id = record_ids(dir.path())[0].to_string();
+        assert_eq!(meta, (2, Some(id)), "{damage}");
     }
 }
 

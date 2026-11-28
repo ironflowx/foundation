@@ -160,7 +160,7 @@ pub(crate) fn last_record(conn: &Connection) -> rusqlite::Result<Option<Uuid>> {
     let id: Option<String> = conn.query_row("SELECT record_id FROM meta", [], |r| r.get(0))?;
     id.map(|id| {
         id.parse().map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
         })
     })
     .transpose()

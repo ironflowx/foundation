@@ -46,3 +46,4 @@ The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It 
 | Users, roles, policies, audit, a key's last use, more than one environment | 0.9 |
 | A key in a live-stream handshake | 0.15 |
 | Restart durability as a scenario | A property: the crash test proves it (`../invariants.md`) |
+| A restart finds its read store whole or rebuilds it: the log's format version, a read store ahead of or diverged from its log, whatever its last record holds | LED-8 and LED-12: the deterministic tests and the crash test (`../invariants.md`) |

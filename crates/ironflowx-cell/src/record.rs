@@ -23,7 +23,8 @@ pub(crate) enum Decoded {
     Events {
         format: u16,
         token: IncarnationToken,
-        /// Drawn by the writer at the append, so two copies of a directory never share one (D117).
+        /// Drawn by the writer at the append: a copy of a directory keeps the IDs of the records it
+        /// copied, and what each copy appends next has its own (D117).
         id: Uuid,
         emitted_by: Emitter,
         record: Record,
@@ -97,7 +98,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Decoded> {
         },
         EVENTS => {
             let token = d.text()?.parse().ok()?;
-            let id = d.text()?.parse().ok()?;
+            let id = record_id(d.text()?)?;
             let emitted_by = d.text()?.parse().ok()?;
             let time = Timestamp::from_millis(i64::from_le_bytes(d.take()?));
             let count = u32::from_le_bytes(d.take()?);
@@ -131,6 +132,15 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Decoded> {
         _ => return None,
     };
     d.0.is_empty().then_some(record)
+}
+
+/// A UUIDv7 in its canonical text form, as `ironflowx-core` parses its IDs; the writer draws
+/// nothing else.
+fn record_id(text: &str) -> Option<Uuid> {
+    let id = Uuid::try_parse(text).ok()?;
+    let v7 = id.get_version() == Some(uuid::Version::SortRand)
+        && id.get_variant() == uuid::Variant::RFC4122;
+    (v7 && id.hyphenated().to_string() == text).then_some(id)
 }
 
 struct Dec<'a>(&'a [u8]);

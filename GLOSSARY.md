@@ -103,7 +103,7 @@ The head of every record after the genesis record: format version, incarnation t
 One change inside a record, of one kind: so far, always an event. A record's entries are ordered.
 
 **Record ID**:
-A record's own UUIDv7, drawn by the writer at the append and copied by replay, so two copies of a directory never share one. `read.db` keeps the last applied record's, and open compares it with the log's record at that position.
+A record's own UUIDv7, drawn by the writer at the append and copied by replay. A copy of a directory keeps the IDs of the records it copied, and what each copy appends next has its own. `read.db` keeps the last applied record's, and open compares it with the log's record at that position.
 
 **Genesis record**:
 The first record of a ledger's log, carrying the ledger's identity: format version, environment ID and incarnation token.
