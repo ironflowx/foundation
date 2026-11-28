@@ -514,13 +514,17 @@ fn row_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
     })
 }
 
-impl ExecutionView for ReadStore<'_> {
-    type Error = StoreError;
-
-    fn function(&self, name: &str) -> Result<Option<Function>, StoreError> {
-        store_err((|| {
-            let sql = format!("SELECT {FUNCTION_COLUMNS} WHERE name = ?1");
-            let row = self.0.query_row(&sql, [name], |r| {
+impl ReadStore<'_> {
+    /// The functions `tail` selects, in its order, each with its triggers in name order.
+    fn functions(
+        &self,
+        tail: &str,
+        values: impl rusqlite::Params,
+    ) -> rusqlite::Result<Vec<Function>> {
+        let sql = format!("SELECT {FUNCTION_COLUMNS} {tail}");
+        let mut rows = self.0.prepare(&sql)?;
+        let rows = rows
+            .query_map(values, |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
@@ -530,29 +534,62 @@ impl ExecutionView for ReadStore<'_> {
                     r.get::<_, Millis>(5)?.0,
                     r.get::<_, Text<Emitter>>(6)?.0,
                 ))
-            });
-            let Some((name, code, attempts, first, max, put_at, put_by)) = row.optional()? else {
-                return Ok(None);
-            };
-            let mut triggers = self.0.prepare(
-                "SELECT event_name FROM triggers WHERE function = ?1 ORDER BY event_name",
-            )?;
-            let triggers = triggers
-                .query_map([&name], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?;
-            Ok(Some(Function {
-                definition: Definition {
-                    name,
-                    code,
-                    triggers,
-                    max_attempts: attempts,
-                    first_delay_seconds: first,
-                    max_delay_seconds: max,
-                },
-                put_at,
-                put_by,
-            }))
-        })())
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut triggers = self
+            .0
+            .prepare("SELECT event_name FROM triggers WHERE function = ?1 ORDER BY event_name")?;
+        rows.into_iter()
+            .map(|(name, code, attempts, first, max, put_at, put_by)| {
+                let triggers = triggers
+                    .query_map([&name], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(Function {
+                    definition: Definition {
+                        name,
+                        code,
+                        triggers,
+                        max_attempts: attempts,
+                        first_delay_seconds: first,
+                        max_delay_seconds: max,
+                    },
+                    put_at,
+                    put_by,
+                })
+            })
+            .collect()
+    }
+}
+
+impl ExecutionView for ReadStore<'_> {
+    type Error = StoreError;
+
+    fn function(&self, name: &str) -> Result<Option<Function>, StoreError> {
+        let functions = self.functions("WHERE name = ?1", params![name]);
+        store_err(functions.map(|f| f.into_iter().next()))
+    }
+
+    fn triggered_by(&self, event: &str, other_than: &str) -> Result<u64, StoreError> {
+        let sql = "SELECT COUNT(*) FROM triggers WHERE event_name = ?1 AND function <> ?2";
+        store_err(self.0.query_row(sql, [event, other_than], |r| r.get(0)))
+    }
+
+    fn function_count(&self) -> Result<u64, StoreError> {
+        store_err(
+            self.0
+                .query_row("SELECT COUNT(*) FROM functions", [], |r| r.get(0)),
+        )
+    }
+
+    fn functions_after(
+        &self,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Function>, StoreError> {
+        // No name is empty, so "" stands for "from the first".
+        let after = after.unwrap_or_default();
+        let tail = "WHERE name > ?1 ORDER BY name LIMIT ?2";
+        store_err(self.functions(tail, params![after, limit]))
     }
 
     fn run(&self, id: RunId) -> Result<Option<Run>, StoreError> {

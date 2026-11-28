@@ -14,10 +14,10 @@ use ironflowx_proto::{
     BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, CompleteRunRequest,
     CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
     EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
-    GetEventRequest, GetFunctionRequest, GetRunRequest, KeyInfo, KeyPage, KeyStatus,
-    ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation, Operations,
-    PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd, RunStatus,
-    StartRunRequest, StartRunResponse, Whoami, WhoamiRequest, required_scope,
+    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, KeyInfo, KeyPage, KeyStatus,
+    ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest, ListKeysRequest, OpError,
+    Operation, Operations, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd,
+    RunStatus, StartRunRequest, StartRunResponse, Whoami, WhoamiRequest, required_scope,
 };
 
 const KEY: &str =
@@ -115,6 +115,17 @@ impl Operations for Fixed {
 
     async fn get_function(&self, _cx: &Call, req: GetFunctionRequest) -> Result<Function, OpError> {
         Ok(function(&req.name))
+    }
+
+    async fn list_functions(
+        &self,
+        _cx: &Call,
+        req: ListFunctionsRequest,
+    ) -> Result<FunctionPage, OpError> {
+        Ok(FunctionPage {
+            functions: vec![function("charge")],
+            next: req.cursor,
+        })
     }
 
     async fn start_run(
@@ -295,6 +306,15 @@ impl Operations for Recording {
         Fixed.get_function(cx, req).await
     }
 
+    async fn list_functions(
+        &self,
+        cx: &Call,
+        req: ListFunctionsRequest,
+    ) -> Result<FunctionPage, OpError> {
+        self.record(Operation::ListFunctions);
+        Fixed.list_functions(cx, req).await
+    }
+
     async fn start_run(
         &self,
         cx: &Call,
@@ -441,6 +461,8 @@ fn drive<O: Operations>(ops: &O) {
         },
     );
     assert_eq!(ready(assert_send(got)).unwrap().name, "charge");
+    let listed = ops.list_functions(&cx, ListFunctionsRequest::default());
+    assert_eq!(ready(assert_send(listed)).unwrap().functions.len(), 1);
     let started = ops.start_run(
         &cx,
         StartRunRequest {
@@ -505,6 +527,7 @@ fn each_operation_requires_its_scope() {
         (Operation::RevokeKey, Some(Scope::Admin)),
         (Operation::PutFunction, Some(Scope::Write)),
         (Operation::GetFunction, Some(Scope::Read)),
+        (Operation::ListFunctions, Some(Scope::Read)),
         (Operation::StartRun, Some(Scope::Write)),
         (Operation::GetRun, Some(Scope::Read)),
         (Operation::ClaimRun, Some(Scope::Execute)),
@@ -553,6 +576,10 @@ fn each_operation_has_its_rpc() {
             (
                 Operation::GetFunction,
                 "ironflowx.v1.FunctionService/GetFunction"
+            ),
+            (
+                Operation::ListFunctions,
+                "ironflowx.v1.FunctionService/ListFunctions"
             ),
             (Operation::StartRun, "ironflowx.v1.RunService/StartRun"),
             (Operation::GetRun, "ironflowx.v1.RunService/GetRun"),

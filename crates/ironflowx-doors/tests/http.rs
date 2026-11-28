@@ -114,6 +114,7 @@ async fn an_operation_is_served_at_its_rpc() {
         r#"RevokeKeyRequest { key_id: "" }"#.to_owned(),
         r#"PutFunctionRequest { name: "", code: "", triggers: [], max_attempts: None, first_delay_seconds: None, max_delay_seconds: None }"#.to_owned(),
         r#"GetFunctionRequest { name: "" }"#.to_owned(),
+        "ListFunctionsRequest { limit: None, cursor: None }".to_owned(),
         r#"StartRunRequest { function: "" }"#.to_owned(),
         r#"GetRunRequest { run_id: "" }"#.to_owned(),
         "ClaimRunRequest { functions: [], lease_seconds: None, wait_seconds: None }".to_owned(),

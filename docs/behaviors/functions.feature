@@ -17,14 +17,14 @@ Feature: Functions and triggers
     Then the put reports a change
     And getting "charge" shows code "v1", trigger "order.placed", 5 attempts, no delays, and the builder's key as who put it
 
-  @FUN-002 @release-0.4 @pending
+  @FUN-002 @release-0.4
   Scenario: Putting the same definition again changes nothing
     Given the builder put function "charge" with code "v1" and trigger "order.placed"
     When the builder puts the same definition again
     Then the put reports no change
     And getting "charge" shows the first put's time
 
-  @FUN-003 @release-0.4 @pending
+  @FUN-003 @release-0.4
   Scenario: A put replaces the whole definition
     Given the builder put function "charge" with code "v1", trigger "order.placed" and 5 attempts
     When the builder puts function "charge" with code "v2" and no trigger
@@ -32,7 +32,7 @@ Feature: Functions and triggers
     Then getting "charge" shows code "v2", no trigger and no number of attempts
     And "charge" has no run
 
-  @FUN-004 @release-0.4 @pending
+  @FUN-004 @release-0.4
   Scenario Outline: A definition outside the rules is refused
     When the builder puts a function with <what>
     Then it is refused as invalid
@@ -50,7 +50,7 @@ Feature: Functions and triggers
       | 101 attempts                          |
       | a first delay above its longest delay |
 
-  @FUN-005 @release-0.4 @pending
+  @FUN-005 @release-0.4
   Scenario Outline: The engine's own events trigger nothing
     When the builder puts a function with the trigger "<event>"
     Then it is refused as invalid
@@ -61,14 +61,14 @@ Feature: Functions and triggers
       | ironflowx.run.completed |
       | $system.anything        |
 
-  @FUN-006 @release-0.4 @pending
+  @FUN-006 @release-0.4
   Scenario: At most 20 functions wait for one event
     Given 20 functions are triggered by "order.placed"
     When the builder puts another function triggered by "order.placed"
     Then it is refused as resource exhausted, with a hint that names "order.placed"
     And putting one of the 20 again with new code succeeds
 
-  @FUN-007 @release-0.4 @pending
+  @FUN-007 @release-0.4
   Scenario: Functions list by name, page by page
     Given functions "c", "a" and "b" were put
     When the builder lists functions 2 at a time
@@ -90,11 +90,11 @@ Feature: Functions and triggers
       | begin a step    | execute |
       | complete a step | execute |
       | complete a run  | execute |
+      | list functions  | read    |
 
     @pending
     Examples:
       | operation       | scope   |
-      | list functions  | read    |
       | list runs       | read    |
       | heartbeat       | execute |
       | release a run   | execute |
