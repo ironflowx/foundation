@@ -56,11 +56,15 @@ step rustup target add wasm32-unknown-unknown
 for crate in ironflowx-core ironflowx-events ironflowx-authz; do
   step cargo check --locked --target wasm32-unknown-unknown -p "$crate"
 done
-# ironflowx/ironflow's suite against this checkout, from a temporary clone of its main; the build
-# stays in target/conformance for the next run.
+# ironflowx/ironflow's suite against this checkout, from a temporary fetch of the branch ci/app-ref
+# names, as refs/heads/<branch> (D122); the build stays in target/conformance for the next run.
+echo "== ci/app-ref.sh"
+app_ref=$(ci/app-ref.sh)
 ironflow=$(mktemp -d)
 trap 'rm -rf "$ironflow"' EXIT
-step git clone -q --depth 1 https://github.com/ironflowx/ironflow "$ironflow"
+step git -C "$ironflow" init -q
+step git -C "$ironflow" fetch -q --depth 1 https://github.com/ironflowx/ironflow "$app_ref"
+step git -C "$ironflow" checkout -q FETCH_HEAD
 step env CARGO_TARGET_DIR="$PWD/target/conformance" "$ironflow/ci/conformance.sh" .
 step sh -c 'cd examples/embed && cargo fmt --check && cargo clippy --locked -- -D warnings && cargo run --locked'
 step ci/public-api.sh

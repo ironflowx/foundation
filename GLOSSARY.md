@@ -158,3 +158,6 @@ An embedder that opens an engine on a data directory and serves it through a doo
 **Fault point**:
 A named place in the commit, recovery, bootstrap, seed or key-change path, such as after fsync and before the acknowledgment, where the crash test stops the process, or another test fails the writer (`__fault-points`).
 _Avoid_: Kill point
+
+**App ref**:
+The `ironflowx/ironflow` branch that foundation's `conformance` job builds and runs against a change that is not only `docs/` and Markdown: the one line of `ci/app-ref`, `main` unless a change the app must follow names the app's matching branch (D122).

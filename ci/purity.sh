@@ -5,8 +5,8 @@
 # engine, the key digest codec outside the control plane (TEN-4), every crate-wide ban in every
 # clippy.toml; the doors' engine crates (SRV-1); what the generator refuses (SRV-2, SRV-12); the
 # crash test's fault points in no published build; ci/red.sh, which records test checks landing
-# red; and each check rejecting its fixture. The clippy job enforces the call bans on the real
-# crates.
+# red; ci/app-ref.sh, which reads the app branch conformance tests (D122); and each check
+# rejecting its fixture. The clippy job enforces the call bans on the real crates.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -143,5 +143,38 @@ ci/must-reject.sh "fails without the defect" -- \
   ci/red.sh "$red/value.txt" 's/ok/no/' x -- sh -c 'echo x; exit 1'
 grep -qx ok "$red/value.txt" || {
   echo "purity: ci/red.sh did not restore $red/value.txt"
+  exit 1
+}
+
+# ci/app-ref.sh: one fixture per refusal, and a branch read as its full ref (D122).
+app=ci/fixtures/app-ref
+ci/must-reject.sh "$app/missing is missing" -- ci/app-ref.sh "$app/missing"
+for case in empty newline-only; do
+  ci/must-reject.sh "$app/$case is empty" -- ci/app-ref.sh "$app/$case"
+done
+for case in two-lines two-lines-no-newline blank-line; do
+  ci/must-reject.sh "$app/$case has 2 lines" -- ci/app-ref.sh "$app/$case"
+done
+for case in crlf trailing-space bom nul latin1; do
+  ci/must-reject.sh "$app/$case holds a byte other than" -- ci/app-ref.sh "$app/$case"
+done
+ci/must-reject.sh "$app/dots is not a name git takes for a branch: 'main..other'" -- ci/app-ref.sh "$app/dots"
+# The full ref, of a branch that is not main and holds every kind of byte allowed; the real file
+# may name any branch (a paired PR's).
+# Assigned first, so the reader's exit status counts.
+read_ref=$(ci/app-ref.sh "$app/pair-branch") || {
+  echo "purity: ci/app-ref.sh failed on $app/pair-branch"
+  exit 1
+}
+[ "$read_ref" = refs/heads/pair/Runs-214_a.b ] || {
+  echo "purity: ci/app-ref.sh does not read $app/pair-branch as refs/heads/pair/Runs-214_a.b"
+  exit 1
+}
+read_ref=$(ci/app-ref.sh) || {
+  echo "purity: ci/app-ref.sh failed on ci/app-ref"
+  exit 1
+}
+[ "$read_ref" = "refs/heads/$(cat ci/app-ref)" ] || {
+  echo "purity: ci/app-ref.sh does not read ci/app-ref"
   exit 1
 }
