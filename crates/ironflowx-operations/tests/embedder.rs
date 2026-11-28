@@ -13,8 +13,8 @@ use ironflowx_proto::{
     BeginStepRequest, BeginStepResponse, Call, ClaimRunRequest, CompleteRunRequest,
     CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, EmitBatchRequest, EmitRequest,
     GetEventRequest, GetFunctionRequest, GetRunRequest, ListEnvironmentsRequest, ListEventsRequest,
-    ListKeysRequest, OpError, Operation, Operations, PutFunctionRequest, RevokeKeyRequest,
-    RunStatus, StartRunRequest, WhoamiRequest,
+    ListFunctionsRequest, ListKeysRequest, OpError, Operation, Operations, PutFunctionRequest,
+    RevokeKeyRequest, RunStatus, StartRunRequest, WhoamiRequest,
 };
 
 /// The test of each operation, by its function, so a new operation fails to compile here until
@@ -32,6 +32,7 @@ fn tested(op: Operation) -> fn() {
         Operation::RevokeKey => revoke_key_revokes_any_key,
         Operation::PutFunction => put_function_is_attributed_to_the_embedder,
         Operation::GetFunction => get_function_reads_any_function,
+        Operation::ListFunctions => list_functions_lists_every_function,
         Operation::StartRun => a_run_started_is_created_by_the_embedder,
         Operation::GetRun => get_run_reads_any_run,
         Operation::ClaimRun => a_claim_is_held_by_the_embedder,
@@ -336,6 +337,19 @@ async fn get_function_reads_any_function() {
     let f = engine.get_function(&app_call, req).await.unwrap();
     let by = format!("key:{}", key_id(&engine, &admin).await);
     assert_eq!(f.put_by.to_string(), by);
+}
+
+#[tokio::test]
+async fn list_functions_lists_every_function() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, admin, app_call) = open(dir.path()).await;
+    engine.put_function(&admin, charge()).await.unwrap();
+    let page = engine
+        .list_functions(&app_call, ListFunctionsRequest::default())
+        .await
+        .unwrap();
+    let names: Vec<_> = page.functions.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!((names, page.next), (vec!["charge"], None));
 }
 
 /// TEN-6, extended: a run's creator comes from the call's grant.

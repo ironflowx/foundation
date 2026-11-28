@@ -486,8 +486,13 @@ fn the_whole_proto_generates() {
         complete.contains(r#"\"oneOf\":[{\"required\":[\"completed\"]}]"#),
         "{complete}"
     );
-    // One command per method of the proto: 9 of 0.3, and 8 of runs.
-    assert_eq!(cli.matches("    Command { path: ").count(), 17);
+    // A page's limit is at least 1, as the wire mapping reads it.
+    for list in ["events list", "keys list", "functions list"] {
+        let limit = r#"\"limit\":{\"maximum\":4294967295,\"minimum\":1,\"type\":\"integer\"}"#;
+        assert!(line(list).contains(limit), "{list}: {}", line(list));
+    }
+    // One command per method of the proto: 9 of 0.3, and 9 of runs.
+    assert_eq!(cli.matches("    Command { path: ").count(), 18);
 }
 
 /// What a door sends of the embedder's call (D121): `Whoami`'s output still requires `key_id`,

@@ -3,9 +3,10 @@
 //!
 //! [`decide`] checks a [`Command`] against the current state and returns what to append: entries,
 //! and the engine's own events, which the ledger sequences with event rules; [`fold`] applies an
-//! appended entry to the read store; [`get_function`] and [`get_run`] read back. Nothing here does
-//! I/O, reads a clock or draws randomness (LED-15): state comes through [`ExecutionView`], goes out
-//! through [`ExecutionTables`], and run IDs come from the caller's [`Draws`].
+//! appended entry to the read store; [`get_function`], [`list_functions`] and [`get_run`] read
+//! back. Nothing here does I/O, reads a clock or draws randomness (LED-15): state comes through
+//! [`ExecutionView`], goes out through [`ExecutionTables`], and run IDs come from the caller's
+//! [`Draws`].
 
 // Purity (LED-15): forbid, so an inner #[allow] cannot switch these off.
 #![forbid(unsafe_code)]
@@ -15,11 +16,13 @@
 mod codec;
 
 use std::collections::BTreeSet;
+use std::num::NonZeroU32;
+use std::ops::RangeInclusive;
 
 use ironflowx_core::limits::{
     MAX_DATA_BYTES, MAX_FUNCTION_NAME_BYTES, MAX_STEP_INPUT_BYTES, MAX_STEP_NAME_BYTES,
 };
-use ironflowx_core::{Emitter, Lease, RunId, SequencedTime, Timestamp};
+use ironflowx_core::{Emitter, IncarnationToken, Lease, RunId, SequencedTime, Timestamp};
 /// The types this crate's API names from event rules, so a caller needs no `ironflowx-events`.
 pub use ironflowx_events::{EngineEmit, Error, Refusal};
 use ironflowx_events::{EngineEvent, check_name, check_value, engine_event};
@@ -28,13 +31,23 @@ pub use codec::{decode, encode};
 
 /// The most triggers a function holds.
 const MAX_TRIGGERS: usize = 10;
+/// The most functions one event name triggers (D100).
+const MAX_PER_EVENT: u64 = 20;
+/// The most functions an environment holds.
+const MAX_FUNCTIONS: u64 = 1_000;
+const MAX_ATTEMPTS: RangeInclusive<u32> = 1..=100;
+const FIRST_DELAY_SECONDS: RangeInclusive<u32> = 1..=3_600;
+const MAX_DELAY_SECONDS: RangeInclusive<u32> = 1..=86_400;
+/// A page of functions: 20 when no limit is asked, at most 200.
+const DEFAULT_PAGE: u32 = 20;
+const MAX_PAGE: u32 = 200;
 /// The most `name@code` pairs a claim names.
 const MAX_PAIRS: usize = 100;
 /// The most steps a run begins.
 const MAX_STEPS: u32 = 1_000;
-const LEASE_SECONDS: std::ops::RangeInclusive<u32> = 10..=900;
+const LEASE_SECONDS: RangeInclusive<u32> = 10..=900;
 const DEFAULT_LEASE_SECONDS: u32 = 60;
-const WAIT_SECONDS: std::ops::RangeInclusive<u32> = 0..=20;
+const WAIT_SECONDS: RangeInclusive<u32> = 0..=20;
 /// A run's input until `StartRun` takes one (#222), and an absent output: JSON `null`.
 const NULL: &[u8] = b"null";
 
@@ -334,6 +347,17 @@ pub struct Draws<'a> {
 pub trait ExecutionView {
     type Error;
     fn function(&self, name: &str) -> Result<Option<Function>, Self::Error>;
+    /// How many functions but `other_than` have `event` among their triggers.
+    fn triggered_by(&self, event: &str, other_than: &str) -> Result<u64, Self::Error>;
+    /// How many functions there are.
+    fn function_count(&self) -> Result<u64, Self::Error>;
+    /// Up to `limit` functions, in name order, each named after `after`, or from the first when
+    /// `None`.
+    fn functions_after(
+        &self,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Function>, Self::Error>;
     fn run(&self, id: RunId) -> Result<Option<Run>, Self::Error>;
     /// A step the run counts among those begun: a store that lacks it has failed.
     fn step(&self, run: RunId, position: u32) -> Result<Step, Self::Error>;
@@ -536,18 +560,42 @@ fn put_function<V: ExecutionView>(
             return Err(invalid(format!("the trigger {trigger:?} is repeated")));
         }
     }
-    // shortcut: the policy ranges, and the caps per event name and per environment, are #220's.
+    policy(definition)?;
     let definition = Definition {
         triggers: triggers.into_iter().collect(),
         ..definition.clone()
     };
     let current = view.function(&definition.name).map_err(Error::Store)?;
-    if let Some(function) = current.filter(|f| f.definition == definition) {
+    if let Some(function) = current.as_ref().filter(|f| f.definition == definition) {
         let outcome = Outcome::FunctionPut {
-            function,
+            function: function.clone(),
             changed: false,
         };
         return answer(outcome, Vec::new());
+    }
+    // The caps hold after every put, so no emit meets more triggers than they allow (RUN-12). The
+    // writer decides one command at a time, so no put lands between these reads and the append.
+    if current.is_none() && view.function_count().map_err(Error::Store)? >= MAX_FUNCTIONS {
+        let r = Refusal::resource_exhausted(format!(
+            "an environment holds at most {MAX_FUNCTIONS} functions"
+        ));
+        return Err(refused(r));
+    }
+    for trigger in &definition.triggers {
+        let others = view
+            .triggered_by(trigger, &definition.name)
+            .map_err(Error::Store)?;
+        if others >= MAX_PER_EVENT {
+            // More than one to free only in a store already over the cap (a log from before it).
+            let free = others - MAX_PER_EVENT + 1;
+            let r = Refusal::resource_exhausted(format!(
+                "an event name triggers at most {MAX_PER_EVENT} functions"
+            ))
+            .with_hint(format!(
+                "{trigger:?} triggers {others} other functions already: put {free} of them without it first"
+            ));
+            return Err(refused(r));
+        }
     }
     let function = Function {
         definition: definition.clone(),
@@ -561,19 +609,53 @@ fn put_function<V: ExecutionView>(
     answer(outcome, vec![Entry::FunctionPut(definition)])
 }
 
+/// The retry policy's ranges, each field as put; a default is never checked, as it is never
+/// stored (D99).
+fn policy<E>(d: &Definition) -> Result<(), Error<E>> {
+    let fields = [
+        ("max_attempts", d.max_attempts, MAX_ATTEMPTS),
+        (
+            "first_delay_seconds",
+            d.first_delay_seconds,
+            FIRST_DELAY_SECONDS,
+        ),
+        ("max_delay_seconds", d.max_delay_seconds, MAX_DELAY_SECONDS),
+    ];
+    for (what, value, range) in fields {
+        if value.is_some_and(|v| !range.contains(&v)) {
+            return Err(invalid(format!(
+                "{what} is {} to {}",
+                range.start(),
+                range.end()
+            )));
+        }
+    }
+    if let (Some(first), Some(max)) = (d.first_delay_seconds, d.max_delay_seconds)
+        && max < first
+    {
+        return Err(invalid(
+            "max_delay_seconds may not be below first_delay_seconds",
+        ));
+    }
+    Ok(())
+}
+
 /// A function name or a code label: 1 to [`MAX_FUNCTION_NAME_BYTES`] bytes of `[A-Za-z0-9._-]`,
 /// so `name@code` splits one way.
 fn label<E>(what: &str, text: &str) -> Result<(), Error<E>> {
-    let ok = (1..=MAX_FUNCTION_NAME_BYTES).contains(&text.len())
-        && text
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
-    if ok {
+    if is_label(text) {
         return Ok(());
     }
     Err(invalid(format!(
         "{what} is 1 to {MAX_FUNCTION_NAME_BYTES} bytes of letters, digits, '.', '_' and '-'"
     )))
+}
+
+fn is_label(text: &str) -> bool {
+    (1..=MAX_FUNCTION_NAME_BYTES).contains(&text.len())
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 /// A claim's `name@code` pairs: 1 to [`MAX_PAIRS`], none repeated.
@@ -908,6 +990,51 @@ pub fn get_function<V: ExecutionView>(view: &V, name: &str) -> Result<Function, 
     view.function(name)
         .map_err(Error::Store)?
         .ok_or_else(|| refused(Refusal::not_found("function not found")))
+}
+
+/// One page of functions, in name order. `next` continues after the last one; `None` on the last
+/// page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionPage {
+    pub functions: Vec<Function>,
+    pub next: Option<String>,
+}
+
+/// Lists functions in name order. `limit` is 20 when `None` and at most 200. A cursor that does
+/// not decode, or names an incarnation other than `token`, is `Invalid`, as an events cursor is.
+///
+/// # Errors
+///
+/// `Invalid` for a bad cursor, or the view's error.
+pub fn list_functions<V: ExecutionView>(
+    view: &V,
+    token: IncarnationToken,
+    limit: Option<NonZeroU32>,
+    cursor: Option<&str>,
+) -> Result<FunctionPage, Error<V::Error>> {
+    let after = cursor
+        .map(|cursor| decode_cursor(cursor, token).ok_or_else(|| invalid("invalid cursor")))
+        .transpose()?;
+    let limit = limit.map_or(DEFAULT_PAGE, |l| l.get().min(MAX_PAGE));
+    // One more than the page holds tells whether a page follows, so a full last page carries no
+    // cursor.
+    let mut functions = view
+        .functions_after(after, limit + 1)
+        .map_err(Error::Store)?;
+    let more = functions.len() > limit as usize;
+    functions.truncate(limit as usize);
+    let last = functions.last().filter(|_| more);
+    let next = last.map(|f| format!("{token}.{}", f.definition.name));
+    Ok(FunctionPage { functions, next })
+}
+
+/// A cursor is `<incarnation token>.<last function name returned>`: an encoding, not a
+/// signature. The token holds no `.`; a name may.
+fn decode_cursor(cursor: &str, token: IncarnationToken) -> Option<&str> {
+    let (t, name) = cursor.split_once('.')?;
+    // Only the form this module writes: this incarnation's token as it prints, and a name a put
+    // takes.
+    (is_label(name) && t == token.to_string()).then_some(name)
 }
 
 /// Reads one run by ID. An unknown ID, or one that does not parse, is `NotFound`.

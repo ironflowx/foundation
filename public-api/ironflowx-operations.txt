@@ -65,6 +65,7 @@ pub async fn ironflowx_operations::Engine::get_function(&self, &ironflowx_proto:
 pub async fn ironflowx_operations::Engine::get_run(&self, &ironflowx_proto::Call, ironflowx_proto::GetRunRequest) -> core::result::Result<ironflowx_proto::Run, ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::list_environments(&self, &ironflowx_proto::Call, ironflowx_proto::ListEnvironmentsRequest) -> core::result::Result<alloc::vec::Vec<ironflowx_proto::Environment>, ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::list_events(&self, &ironflowx_proto::Call, ironflowx_proto::ListEventsRequest) -> core::result::Result<ironflowx_proto::EventPage, ironflowx_proto::OpError>
+pub async fn ironflowx_operations::Engine::list_functions(&self, &ironflowx_proto::Call, ironflowx_proto::ListFunctionsRequest) -> core::result::Result<ironflowx_proto::FunctionPage, ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::put_function(&self, &ironflowx_proto::Call, ironflowx_proto::PutFunctionRequest) -> core::result::Result<ironflowx_proto::PutFunctionResponse, ironflowx_proto::OpError>
 pub async fn ironflowx_operations::Engine::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> core::result::Result<(), ironflowx_proto::OpError>

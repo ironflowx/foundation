@@ -27,6 +27,25 @@ impl ExecutionView for Store {
         Ok(self.functions.get(name).cloned())
     }
 
+    fn triggered_by(&self, event: &str, other_than: &str) -> Result<u64, String> {
+        let triggered = self.functions.values().filter(|f| {
+            f.definition.name != other_than && f.definition.triggers.iter().any(|t| t == event)
+        });
+        Ok(triggered.count() as u64)
+    }
+
+    fn function_count(&self) -> Result<u64, String> {
+        Ok(self.functions.len() as u64)
+    }
+
+    fn functions_after(&self, after: Option<&str>, limit: u32) -> Result<Vec<Function>, String> {
+        let after = after.map_or(std::ops::Bound::Unbounded, |a| {
+            std::ops::Bound::Excluded(a.to_owned())
+        });
+        let page = self.functions.range((after, std::ops::Bound::Unbounded));
+        Ok(page.take(limit as usize).map(|(_, f)| f.clone()).collect())
+    }
+
     fn run(&self, id: RunId) -> Result<Option<Run>, String> {
         Ok(self.runs.get(&id.to_string()).cloned())
     }
@@ -853,4 +872,500 @@ fn a_claim_takes_no_run_before_it_is_due() {
     s.time = T + 1_000;
     let taken = s.outcome(claim(&["charge@v1"]), &key(1)).unwrap();
     assert!(matches!(taken, Outcome::Claimed(Some(_))), "{taken:?}");
+}
+
+// ---- Definitions: every rule, replace, list ----
+
+fn put_def(s: &mut Store, d: Definition) -> Result<Outcome, Refusal> {
+    s.outcome(Command::PutFunction(d), &key(1))
+}
+
+fn named_fn(name: &str, triggers: &[&str]) -> Definition {
+    Definition {
+        name: name.into(),
+        triggers: triggers.iter().map(|t| (*t).to_owned()).collect(),
+        ..definition()
+    }
+}
+
+/// Each limit of the Functions table at its edge, taken, and one past it, refused with a message
+/// that names the rule.
+#[test]
+fn each_policy_field_and_label_is_taken_at_its_edge_and_refused_past_it() {
+    let with = |f: fn(&mut Definition)| {
+        let mut d = definition();
+        f(&mut d);
+        d
+    };
+    let taken = [
+        with(|d| d.code = "x".repeat(128)),
+        with(|d| d.max_attempts = Some(1)),
+        with(|d| d.max_attempts = Some(100)),
+        with(|d| d.first_delay_seconds = Some(1)),
+        // Above the default longest delay, which is not checked: only two fields put are.
+        with(|d| d.first_delay_seconds = Some(3_600)),
+        with(|d| d.max_delay_seconds = Some(1)),
+        with(|d| d.max_delay_seconds = Some(86_400)),
+        with(|d| (d.first_delay_seconds, d.max_delay_seconds) = (Some(60), Some(60))),
+    ];
+    for d in taken {
+        let mut s = Store::default();
+        let put = put_def(&mut s, d.clone());
+        assert!(
+            matches!(put, Ok(Outcome::FunctionPut { changed: true, .. })),
+            "{d:?}: {put:?}"
+        );
+        assert_eq!(s.functions["charge"].definition, d, "stored as put");
+    }
+    let labels = "is 1 to 128 bytes of letters, digits, '.', '_' and '-'";
+    let refused = [
+        (
+            with(|d| d.code = "x".repeat(129)),
+            format!("a code label {labels}"),
+        ),
+        (
+            with(|d| d.max_attempts = Some(0)),
+            "max_attempts is 1 to 100".into(),
+        ),
+        (
+            with(|d| d.max_attempts = Some(101)),
+            "max_attempts is 1 to 100".into(),
+        ),
+        (
+            with(|d| d.first_delay_seconds = Some(0)),
+            "first_delay_seconds is 1 to 3600".into(),
+        ),
+        (
+            with(|d| d.first_delay_seconds = Some(3_601)),
+            "first_delay_seconds is 1 to 3600".into(),
+        ),
+        (
+            with(|d| d.max_delay_seconds = Some(0)),
+            "max_delay_seconds is 1 to 86400".into(),
+        ),
+        (
+            with(|d| d.max_delay_seconds = Some(86_401)),
+            "max_delay_seconds is 1 to 86400".into(),
+        ),
+        (
+            with(|d| (d.first_delay_seconds, d.max_delay_seconds) = (Some(60), Some(59))),
+            "max_delay_seconds may not be below first_delay_seconds".into(),
+        ),
+    ];
+    for (d, message) in refused {
+        let mut s = Store::default();
+        let r = put_def(&mut s, d.clone()).unwrap_err();
+        assert_eq!(
+            (r.kind(), r.message()),
+            (ErrorKind::Invalid, message.as_str()),
+            "{d:?}"
+        );
+    }
+}
+
+/// A stored definition holds only the policy fields that were put (D99), and a put replaces the
+/// whole definition: a field left out of the second put is gone.
+#[test]
+fn a_put_stores_only_the_policy_it_was_given_and_replaces_the_rest() {
+    let mut s = Store::default();
+    let first = Definition {
+        triggers: vec!["order.placed".into()],
+        max_attempts: Some(5),
+        first_delay_seconds: Some(2),
+        max_delay_seconds: Some(30),
+        ..definition()
+    };
+    put_def(&mut s, first).unwrap();
+    let second = Definition {
+        code: "v2".into(),
+        first_delay_seconds: Some(7),
+        ..definition()
+    };
+    let (_, entries, _) = s
+        .run_cmd(Command::PutFunction(second.clone()), &key(2))
+        .unwrap()
+        .into_parts();
+    assert_eq!(entries, [Entry::FunctionPut(second.clone())]);
+    let stored = &s.functions["charge"];
+    // The first put's max_attempts and max_delay_seconds are gone.
+    assert_eq!(stored.definition, second);
+    assert_eq!(stored.put_by, key(2));
+}
+
+/// At most 20 functions per event name: the 21st is refused with a hint that names the event; one
+/// of the 20 put again with new code, or another function triggered by another name, is taken. A
+/// function counts once however it is put.
+#[test]
+fn an_event_name_triggers_at_most_20_functions() {
+    let mut s = Store::default();
+    for i in 0..20 {
+        put_def(&mut s, named_fn(&format!("f{i:02}"), &["order.placed"])).unwrap();
+    }
+    let refusals = [
+        named_fn("late", &["order.placed"]),
+        named_fn("late", &["order.paid", "order.placed"]),
+    ];
+    for d in refusals {
+        let r = put_def(&mut s, d.clone()).unwrap_err();
+        assert_eq!(
+            (r.kind(), r.message(), r.hint()),
+            (
+                ErrorKind::ResourceExhausted,
+                "an event name triggers at most 20 functions",
+                Some(
+                    "\"order.placed\" triggers 20 other functions already: put 1 of them without it first"
+                )
+            ),
+            "{d:?}"
+        );
+    }
+    // An existing function that is not among the 20 may not join them either.
+    put_def(&mut s, named_fn("late", &["order.paid"])).unwrap();
+    let r = put_def(&mut s, named_fn("late", &["order.placed"])).unwrap_err();
+    assert_eq!(r.kind(), ErrorKind::ResourceExhausted);
+    let again = Definition {
+        code: "v2".into(),
+        ..named_fn("f07", &["order.placed"])
+    };
+    let put = put_def(&mut s, again).unwrap();
+    assert!(matches!(put, Outcome::FunctionPut { changed: true, .. }));
+    // One of the 20 leaves, and another takes its place.
+    put_def(&mut s, named_fn("f00", &[])).unwrap();
+    put_def(&mut s, named_fn("late", &["order.placed"])).unwrap();
+    assert_eq!(s.triggered_by("order.placed", "").unwrap(), 20);
+}
+
+/// At most 1,000 functions per environment: the 1,001st is refused; one of the 1,000 is still put
+/// again, changed.
+#[test]
+fn an_environment_holds_at_most_1000_functions() {
+    let mut s = Store::default();
+    for i in 0..1_000 {
+        put_def(&mut s, named_fn(&format!("f{i:04}"), &[])).unwrap();
+    }
+    let r = put_def(&mut s, named_fn("one-more", &[])).unwrap_err();
+    assert_eq!(
+        (r.kind(), r.message(), r.hint()),
+        (
+            ErrorKind::ResourceExhausted,
+            "an environment holds at most 1000 functions",
+            None
+        )
+    );
+    let changed = Definition {
+        code: "v2".into(),
+        ..named_fn("f0999", &[])
+    };
+    let put = put_def(&mut s, changed).unwrap();
+    assert!(matches!(put, Outcome::FunctionPut { changed: true, .. }));
+    assert_eq!(s.functions["f0999"].definition.code, "v2");
+}
+
+fn token(n: u8) -> ironflowx_core::IncarnationToken {
+    format!("{n:032x}").parse().unwrap()
+}
+
+fn names(page: &ironflowx_execution::FunctionPage) -> Vec<&str> {
+    let names = page.functions.iter().map(|f| f.definition.name.as_str());
+    names.collect()
+}
+
+fn with_functions(n: usize) -> Store {
+    let mut s = Store::default();
+    for i in 0..n {
+        put_def(&mut s, named_fn(&format!("f.{i:03}"), &[])).unwrap();
+    }
+    s
+}
+
+fn page(s: &Store, limit: Option<u32>, cursor: Option<&str>) -> ironflowx_execution::FunctionPage {
+    let limit = limit.map(|l| std::num::NonZeroU32::new(l).unwrap());
+    ironflowx_execution::list_functions(s, token(1), limit, cursor).unwrap()
+}
+
+/// Functions list by name, page by page; the last page, full or not, has no cursor, and an empty
+/// environment lists none.
+#[test]
+fn functions_list_by_name_page_by_page() {
+    let mut s = Store::default();
+    let empty = page(&s, None, None);
+    assert_eq!((empty.functions.len(), empty.next), (0, None));
+    for name in ["c", "a", "b"] {
+        put_def(&mut s, named_fn(name, &[])).unwrap();
+    }
+    let first = page(&s, Some(2), None);
+    assert_eq!(names(&first), ["a", "b"]);
+    assert_eq!(first.next, Some(format!("{}.b", token(1))));
+    let second = page(&s, Some(2), first.next.as_deref());
+    assert_eq!((names(&second), second.next.clone()), (vec!["c"], None));
+    let full = page(&s, Some(3), None);
+    assert_eq!(
+        (names(&full), full.next.clone()),
+        (vec!["a", "b", "c"], None)
+    );
+    // A page holds each function as stored.
+    assert_eq!(first.functions[0], s.functions["a"]);
+}
+
+#[test]
+fn the_function_page_limit_defaults_to_20_and_clamps_at_200() {
+    let s = with_functions(250);
+    assert_eq!(page(&s, None, None).functions.len(), 20);
+    assert_eq!(page(&s, Some(200), None).functions.len(), 200);
+    assert_eq!(page(&s, Some(201), None).functions.len(), 200);
+    assert_eq!(page(&s, Some(500), None).functions.len(), 200);
+    assert_eq!(page(&s, Some(1), None).functions.len(), 1);
+}
+
+/// A cursor names the last function returned, so a page goes on after it whatever is put since:
+/// a name before it is not listed, one after it is.
+#[test]
+fn a_function_cursor_is_stable_while_functions_are_put() {
+    let mut s = with_functions(4);
+    let first = page(&s, Some(2), None);
+    assert_eq!(names(&first), ["f.000", "f.001"]);
+    put_def(&mut s, named_fn("f.0005", &[])).unwrap();
+    put_def(&mut s, named_fn("f.004", &[])).unwrap();
+    let second = page(&s, Some(2), first.next.as_deref());
+    assert_eq!(names(&second), ["f.002", "f.003"]);
+    let third = page(&s, Some(2), second.next.as_deref());
+    assert_eq!((names(&third), third.next.clone()), (vec!["f.004"], None));
+    // A cursor past every name lists nothing.
+    let past = format!("{}.zzz", token(1));
+    assert_eq!(page(&s, None, Some(&past)).functions.len(), 0);
+}
+
+#[test]
+fn a_function_cursor_that_does_not_decode_or_names_another_incarnation_is_invalid() {
+    let s = with_functions(3);
+    let next = page(&s, Some(1), None).next.expect("more pages");
+    let other =
+        ironflowx_execution::list_functions(&s, token(2), std::num::NonZeroU32::new(1), None)
+            .unwrap()
+            .next
+            .expect("more pages");
+    let bad = [
+        String::new(),
+        "not-a-token".into(),
+        format!("{}", token(1)),
+        format!("{}.", token(1)),
+        format!("{}.a@b", token(1)),
+        format!("{}.{}", token(1), "x".repeat(129)),
+        format!("+{next}"),
+        format!("0{next}"),
+        format!("{:031x}.f.000", 1),
+        other,
+    ];
+    for cursor in &bad {
+        match ironflowx_execution::list_functions(&s, token(1), None, Some(cursor)) {
+            Err(Error::Refused(r)) => assert_eq!(
+                (r.kind(), r.message()),
+                (ErrorKind::Invalid, "invalid cursor"),
+                "{cursor:?}"
+            ),
+            other => panic!("expected invalid for {cursor:?}, got {other:?}"),
+        }
+    }
+    // The token as it prints, in lower case, only.
+    let lettered = token(0xab);
+    let upper = format!("{}.f.000", lettered.to_string().to_uppercase());
+    let listed = ironflowx_execution::list_functions(&s, lettered, None, Some(&upper));
+    let Err(Error::Refused(r)) = listed else {
+        panic!("an upper-case token was taken: {listed:?}");
+    };
+    assert_eq!(
+        (r.kind(), r.message()),
+        (ErrorKind::Invalid, "invalid cursor")
+    );
+    let lower = format!("{lettered}.f.000");
+    assert!(ironflowx_execution::list_functions(&s, lettered, None, Some(&lower)).is_ok());
+    // A name of 128 bytes, the longest, is a cursor.
+    let longest = format!("{}.{}", token(1), "x".repeat(128));
+    assert_eq!(page(&s, None, Some(&longest)).functions.len(), 0);
+}
+
+/// The store, with one of its reads failing.
+struct Failing<'a> {
+    store: &'a Store,
+    read: &'static str,
+}
+
+impl Failing<'_> {
+    fn fail<T>(&self, read: &str, ok: Result<T, String>) -> Result<T, String> {
+        if read == self.read {
+            return Err(format!("{read} failed"));
+        }
+        ok
+    }
+}
+
+impl ExecutionView for Failing<'_> {
+    type Error = String;
+
+    fn function(&self, name: &str) -> Result<Option<Function>, String> {
+        self.store.function(name)
+    }
+
+    fn triggered_by(&self, event: &str, other_than: &str) -> Result<u64, String> {
+        let ok = self.store.triggered_by(event, other_than);
+        self.fail("triggered_by", ok)
+    }
+
+    fn function_count(&self) -> Result<u64, String> {
+        self.fail("function_count", self.store.function_count())
+    }
+
+    fn functions_after(&self, after: Option<&str>, limit: u32) -> Result<Vec<Function>, String> {
+        let ok = self.store.functions_after(after, limit);
+        self.fail("functions_after", ok)
+    }
+
+    fn run(&self, id: RunId) -> Result<Option<Run>, String> {
+        self.store.run(id)
+    }
+
+    fn step(&self, run: RunId, position: u32) -> Result<Step, String> {
+        self.store.step(run, position)
+    }
+
+    fn last_run_sequence(&self) -> Result<u64, String> {
+        self.store.last_run_sequence()
+    }
+
+    fn claimable(&self, pairs: &[(String, String)], now: Timestamp) -> Result<Option<Run>, String> {
+        self.store.claimable(pairs, now)
+    }
+}
+
+/// A read the caps or a page need that fails is the store's error, never a put that passes a cap
+/// or an empty page.
+#[test]
+fn a_failed_read_of_the_caps_or_a_page_is_the_stores_error() {
+    let s = with_functions(1);
+    let new = Command::PutFunction(named_fn("new", &["order.placed"]));
+    for read in ["function_count", "triggered_by"] {
+        let view = Failing { store: &s, read };
+        let draws = Draws {
+            run_ids: &mut std::iter::empty(),
+        };
+        let decided = decide(&view, &new, &key(1), now(T), draws);
+        assert_eq!(decided, Err(Error::Store(format!("{read} failed"))));
+    }
+    let view = Failing {
+        store: &s,
+        read: "functions_after",
+    };
+    let page = ironflowx_execution::list_functions(&view, token(1), None, None);
+    assert_eq!(page, Err(Error::Store("functions_after failed".into())));
+}
+
+/// A store already over a cap, as a log written before the caps replays. Over a name's cap: a put
+/// that leaves the name over it is refused, one of those already there included, while an
+/// identical put, or one that lets the name go, is taken. Over the environment's cap: no new
+/// function is taken, while one already there still changes, which leaves it over the cap.
+#[test]
+fn a_store_already_over_a_cap_takes_no_put_that_adds_to_it() {
+    let mut s = Store::default();
+    for i in 0..21 {
+        let d = named_fn(&format!("f{i:02}"), &["order.placed"]);
+        let f = Function {
+            definition: d,
+            put_at: Timestamp::from_millis(T),
+            put_by: key(1),
+        };
+        s.functions.insert(f.definition.name.clone(), f);
+    }
+    let changed = Definition {
+        code: "v2".into(),
+        ..named_fn("f00", &["order.placed"])
+    };
+    // The hint counts the other functions the event triggers, and how many of them must go.
+    let r = put_def(&mut s, changed).unwrap_err();
+    let hint =
+        "\"order.placed\" triggers 20 other functions already: put 1 of them without it first";
+    assert_eq!(
+        (r.kind(), r.hint()),
+        (ErrorKind::ResourceExhausted, Some(hint))
+    );
+    let late = put_def(&mut s, named_fn("late", &["order.placed"])).unwrap_err();
+    let hint =
+        "\"order.placed\" triggers 21 other functions already: put 2 of them without it first";
+    assert_eq!(
+        (late.kind(), late.hint()),
+        (ErrorKind::ResourceExhausted, Some(hint))
+    );
+    let same = put_def(&mut s, named_fn("f00", &["order.placed"])).unwrap();
+    assert!(matches!(same, Outcome::FunctionPut { changed: false, .. }));
+    let freed = put_def(&mut s, named_fn("f00", &[])).unwrap();
+    assert!(matches!(freed, Outcome::FunctionPut { changed: true, .. }));
+    assert_eq!(s.functions["f00"].definition.triggers, Vec::<String>::new());
+    // Over the environment's cap too: no new function, while one already there still changes.
+    for i in 0..980 {
+        let d = named_fn(&format!("g{i:03}"), &[]);
+        let f = Function {
+            definition: d,
+            put_at: Timestamp::from_millis(T),
+            put_by: key(1),
+        };
+        s.functions.insert(f.definition.name.clone(), f);
+    }
+    assert_eq!(s.functions.len(), 1_001);
+    let r = put_def(&mut s, named_fn("new", &[])).unwrap_err();
+    assert_eq!(
+        (r.kind(), r.message()),
+        (
+            ErrorKind::ResourceExhausted,
+            "an environment holds at most 1000 functions"
+        )
+    );
+    let changed = Definition {
+        code: "v2".into(),
+        ..named_fn("g000", &[])
+    };
+    let put = put_def(&mut s, changed).unwrap();
+    assert!(matches!(put, Outcome::FunctionPut { changed: true, .. }));
+    assert_eq!(s.functions["g000"].definition.code, "v2");
+}
+
+/// The hint names the event that is full, as sent: another name than the usual one, with a quote,
+/// a backslash and a letter outside ASCII, quoted and escaped as Rust's `Debug` prints it.
+#[test]
+fn the_hint_names_the_full_event_whatever_it_is() {
+    let event = "commande.\"passée\\";
+    let mut s = Store::default();
+    for i in 0..20 {
+        put_def(&mut s, named_fn(&format!("f{i:02}"), &[event])).unwrap();
+    }
+    let r = put_def(&mut s, named_fn("late", &[event])).unwrap_err();
+    let hint = r#""commande.\"passée\\" triggers 20 other functions already: put 1 of them without it first"#;
+    assert_eq!(r.hint(), Some(hint));
+}
+
+/// Which cap answers when more than one would: the environment's first, with no hint; then the
+/// first full trigger in name order.
+#[test]
+fn the_environments_cap_answers_first_then_the_first_full_name() {
+    let mut s = Store::default();
+    for (i, event) in ["b.full", "a.full"].iter().enumerate() {
+        for j in 0..20 {
+            put_def(&mut s, named_fn(&format!("f{i}{j:02}"), &[event])).unwrap();
+        }
+    }
+    let both = named_fn("late", &["b.full", "a.full"]);
+    let r = put_def(&mut s, both.clone()).unwrap_err();
+    let hint = "\"a.full\" triggers 20 other functions already: put 1 of them without it first";
+    assert_eq!(r.hint(), Some(hint));
+    for i in 0..960 {
+        put_def(&mut s, named_fn(&format!("g{i:03}"), &[])).unwrap();
+    }
+    assert_eq!(s.functions.len(), 1_000);
+    let r = put_def(&mut s, both).unwrap_err();
+    assert_eq!(
+        (r.kind(), r.message(), r.hint()),
+        (
+            ErrorKind::ResourceExhausted,
+            "an environment holds at most 1000 functions",
+            None
+        )
+    );
 }

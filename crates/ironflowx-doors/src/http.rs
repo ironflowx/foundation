@@ -23,10 +23,10 @@ use ironflowx_proto::wire::{
     EventServiceServer, ExecutionService, ExecutionServiceServer, Function, FunctionService,
     FunctionServiceServer, GetEventRequest, GetFunctionRequest, GetRunRequest, IdentityService,
     IdentityServiceServer, KeyService, KeyServiceServer, ListEnvironmentsRequest,
-    ListEnvironmentsResponse, ListEventsRequest, ListEventsResponse, ListKeysRequest,
-    ListKeysResponse, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, RevokeKeyResponse,
-    Run, RunService, RunServiceServer, StartRunRequest, StartRunResponse, WhoamiRequest,
-    WhoamiResponse,
+    ListEnvironmentsResponse, ListEventsRequest, ListEventsResponse, ListFunctionsRequest,
+    ListFunctionsResponse, ListKeysRequest, ListKeysResponse, PutFunctionRequest,
+    PutFunctionResponse, RevokeKeyRequest, RevokeKeyResponse, Run, RunService, RunServiceServer,
+    StartRunRequest, StartRunResponse, WhoamiRequest, WhoamiResponse,
 };
 use ironflowx_proto::{Call, OpError, Operation, Operations};
 
@@ -315,6 +315,7 @@ macro_rules! handlers {
 handlers!(FunctionService {
     put_function(PutFunctionRequest) -> PutFunctionResponse;
     get_function(GetFunctionRequest) -> Function;
+    list_functions(ListFunctionsRequest) -> ListFunctionsResponse;
 });
 
 handlers!(RunService {

@@ -28,10 +28,10 @@ pub use generated::ironflowx::v1::{
     CreateKeyRequest, CreateKeyResponse, EmitBatchItem, EmitBatchRequest, EmitBatchResponse,
     EmitRequest, EmitResponse, Ended, Environment, ErrorInfo, Event, Function, GetEventRequest,
     GetFunctionRequest, GetRunRequest, KeyInfo, ListEnvironmentsRequest, ListEnvironmentsResponse,
-    ListEventsRequest, ListEventsResponse, ListKeysRequest, ListKeysResponse, PutFunctionRequest,
-    PutFunctionResponse, RevokeKeyRequest, RevokeKeyResponse, Run, RunEnd, StartRunRequest,
-    StartRunResponse, StepCompleted, StepRun, WhoamiRequest, WhoamiResponse, begin_step_response,
-    complete_step_response, emit_batch_item,
+    ListEventsRequest, ListEventsResponse, ListFunctionsRequest, ListFunctionsResponse,
+    ListKeysRequest, ListKeysResponse, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest,
+    RevokeKeyResponse, Run, RunEnd, StartRunRequest, StartRunResponse, StepCompleted, StepRun,
+    WhoamiRequest, WhoamiResponse, begin_step_response, complete_step_response, emit_batch_item,
 };
 #[cfg(feature = "server")]
 pub use generated::ironflowx::v1::{
@@ -642,6 +642,51 @@ impl TryFrom<crate::GetFunctionRequest> for GetFunctionRequest {
         Ok(Self {
             name: r.name,
             ..Self::default()
+        })
+    }
+}
+
+impl TryFrom<ListFunctionsRequest> for crate::ListFunctionsRequest {
+    type Error = OpError;
+
+    fn try_from(r: ListFunctionsRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            limit: read_limit(r.limit)?,
+            cursor: r.cursor,
+        })
+    }
+}
+
+impl TryFrom<crate::ListFunctionsRequest> for ListFunctionsRequest {
+    type Error = OpError;
+
+    fn try_from(r: crate::ListFunctionsRequest) -> Result<Self, OpError> {
+        Ok(Self {
+            limit: r.limit.map(NonZeroU32::get),
+            cursor: r.cursor,
+            ..Self::default()
+        })
+    }
+}
+
+impl From<crate::FunctionPage> for ListFunctionsResponse {
+    fn from(a: crate::FunctionPage) -> Self {
+        Self {
+            functions: a.functions.into_iter().map(Function::from).collect(),
+            next: a.next,
+            ..Self::default()
+        }
+    }
+}
+
+impl TryFrom<ListFunctionsResponse> for crate::FunctionPage {
+    type Error = Undecodable;
+
+    fn try_from(a: ListFunctionsResponse) -> Result<Self, Undecodable> {
+        let functions = a.functions.into_iter().map(TryInto::try_into);
+        Ok(Self {
+            functions: functions.collect::<Result<_, _>>()?,
+            next: a.next,
         })
     }
 }

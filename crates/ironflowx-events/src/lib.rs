@@ -137,6 +137,11 @@ impl Refusal {
         Self::of(ErrorKind::Conflict, message.into())
     }
 
+    /// The request would pass a limit of what may be stored.
+    pub fn resource_exhausted(message: impl Into<String>) -> Self {
+        Self::of(ErrorKind::ResourceExhausted, message.into())
+    }
+
     pub const fn kind(&self) -> ErrorKind {
         self.kind
     }

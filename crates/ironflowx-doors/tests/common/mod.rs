@@ -13,9 +13,9 @@ use ironflowx_proto::{
     BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, CompleteRunRequest,
     CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
     EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
-    GetEventRequest, GetFunctionRequest, GetRunRequest, KeyInfo, KeyPage, KeyStatus,
-    ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operations,
-    PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd, RunStatus,
+    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, KeyInfo, KeyPage, KeyStatus,
+    ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest, ListKeysRequest, OpError,
+    Operations, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd, RunStatus,
     StartRunRequest, StartRunResponse, Whoami, WhoamiRequest,
 };
 use tokio::net::TcpListener;
@@ -172,6 +172,21 @@ pub fn function() -> Function {
         max_delay_seconds: Some(0),
         put_at: Timestamp::from_millis(1_700_000_000_002),
         put_by: "embedder:a b".parse().unwrap(),
+    }
+}
+
+/// A page of two functions, one with every policy field absent, and a cursor.
+pub fn function_page() -> FunctionPage {
+    let bare = Function {
+        name: "refund".into(),
+        triggers: Vec::new(),
+        max_attempts: None,
+        max_delay_seconds: None,
+        ..function()
+    };
+    FunctionPage {
+        functions: vec![function(), bare],
+        next: Some("0123456789abcdef0123456789abcdef.refund".into()),
     }
 }
 
@@ -353,6 +368,14 @@ impl Operations for Recording {
 
     async fn get_function(&self, cx: &Call, req: GetFunctionRequest) -> Result<Function, OpError> {
         self.record(cx, req).await.map(|_| function())
+    }
+
+    async fn list_functions(
+        &self,
+        cx: &Call,
+        req: ListFunctionsRequest,
+    ) -> Result<FunctionPage, OpError> {
+        self.record(cx, req).await.map(|_| function_page())
     }
 
     async fn start_run(

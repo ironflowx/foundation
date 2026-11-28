@@ -267,7 +267,9 @@ fn property(field: &FieldDescriptor, shape: Shape) -> Result<Value, CodegenError
 /// Restrictions of the domain types that the wire mapping reads and prints.
 fn domain_property(field: &FieldDescriptor, mut schema: Value) -> Value {
     match field.full_name() {
-        "ironflowx.v1.ListEventsRequest.limit" | "ironflowx.v1.ListKeysRequest.limit" => {
+        "ironflowx.v1.ListEventsRequest.limit"
+        | "ironflowx.v1.ListKeysRequest.limit"
+        | "ironflowx.v1.ListFunctionsRequest.limit" => {
             schema["minimum"] = json!(1);
         }
         "ironflowx.v1.CreateKeyRequest.scopes"

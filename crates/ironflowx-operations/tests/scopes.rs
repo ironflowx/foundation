@@ -10,13 +10,13 @@ use ironflowx_operations::Engine;
 use ironflowx_proto::{
     BeginStepRequest, Call, ClaimRunRequest, CompleteRunRequest, CompleteStepRequest,
     CreateKeyRequest, EmitBatchRequest, EmitRequest, GetEventRequest, GetFunctionRequest,
-    GetRunRequest, ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation,
-    Operations, PutFunctionRequest, RevokeKeyRequest, StartRunRequest, WhoamiRequest,
-    required_scope,
+    GetRunRequest, ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest,
+    ListKeysRequest, OpError, Operation, Operations, PutFunctionRequest, RevokeKeyRequest,
+    StartRunRequest, WhoamiRequest, required_scope,
 };
 
 /// Every operation. A new one fails to compile in `call` until it joins this list too.
-const ALL: [Operation; 17] = [
+const ALL: [Operation; 18] = [
     Operation::Emit,
     Operation::EmitBatch,
     Operation::GetEvent,
@@ -28,6 +28,7 @@ const ALL: [Operation; 17] = [
     Operation::RevokeKey,
     Operation::PutFunction,
     Operation::GetFunction,
+    Operation::ListFunctions,
     Operation::StartRun,
     Operation::GetRun,
     Operation::ClaimRun,
@@ -117,6 +118,10 @@ async fn call(engine: &Engine, op: Operation, cx: &Call, t: &Targets) -> Result<
             };
             engine.get_function(cx, req).await.map(drop)
         }
+        Operation::ListFunctions => engine
+            .list_functions(cx, ListFunctionsRequest::default())
+            .await
+            .map(drop),
         Operation::StartRun => {
             let req = StartRunRequest {
                 function: "charge".into(),

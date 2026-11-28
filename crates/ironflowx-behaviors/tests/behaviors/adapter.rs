@@ -6,16 +6,17 @@ use std::sync::Arc;
 
 use cucumber::gherkin::Scenario;
 use ironflowx_cell::HostClock;
+use ironflowx_core::Clock;
 use ironflowx_doors::{Readiness, Slot, WaitingOn, router};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
     BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, Client, CompleteRunRequest,
     CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
     EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
-    GetEventRequest, GetFunctionRequest, GetRunRequest, KeyPage, ListEnvironmentsRequest,
-    ListEventsRequest, ListKeysRequest, OpError, Operations, PutFunctionRequest,
-    PutFunctionResponse, RevokeKeyRequest, Run, RunEnd, StartRunRequest, StartRunResponse, Whoami,
-    WhoamiRequest,
+    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, KeyPage,
+    ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest, ListKeysRequest, OpError,
+    Operations, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd,
+    StartRunRequest, StartRunResponse, Whoami, WhoamiRequest,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -53,7 +54,15 @@ impl Adapter {
     /// Opens a fresh engine on `data_dir`, on the machine's clock as a host's is, and serves it
     /// through the door: the adapter, and the bootstrap key.
     pub async fn served(data_dir: &Path) -> (Self, String) {
-        let opened = Engine::open(data_dir, HostClock, None).await.unwrap();
+        Self::served_on(data_dir, HostClock).await
+    }
+
+    /// As [`Self::served`], on `clock`.
+    pub async fn served_on(
+        data_dir: &Path,
+        clock: impl Clock + Clone + Send + Sync + 'static,
+    ) -> (Self, String) {
+        let opened = Engine::open(data_dir, clock, None).await.unwrap();
         let key = opened.minted.expect("a fresh engine mints a key");
         let engine = Arc::new(opened.engine);
         let slot = Arc::new(Slot::starting());
@@ -120,6 +129,7 @@ either! {
     revoke_key(RevokeKeyRequest) -> ();
     put_function(PutFunctionRequest) -> PutFunctionResponse;
     get_function(GetFunctionRequest) -> Function;
+    list_functions(ListFunctionsRequest) -> FunctionPage;
     start_run(StartRunRequest) -> StartRunResponse;
     get_run(GetRunRequest) -> Run;
     claim_run(ClaimRunRequest) -> Option<Claim>;

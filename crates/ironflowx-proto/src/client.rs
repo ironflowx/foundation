@@ -31,10 +31,10 @@ use crate::{
     BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, CompleteRunRequest,
     CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
     EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
-    GetEventRequest, GetFunctionRequest, GetRunRequest, KeyPage, ListEnvironmentsRequest,
-    ListEventsRequest, ListKeysRequest, OpError, Operation, Operations, PutFunctionRequest,
-    PutFunctionResponse, RevokeKeyRequest, Run, RunEnd, StartRunRequest, StartRunResponse, Whoami,
-    WhoamiRequest,
+    FunctionPage, GetEventRequest, GetFunctionRequest, GetRunRequest, KeyPage,
+    ListEnvironmentsRequest, ListEventsRequest, ListFunctionsRequest, ListKeysRequest, OpError,
+    Operation, Operations, PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd,
+    StartRunRequest, StartRunResponse, Whoami, WhoamiRequest,
 };
 
 /// [`Operations`] over the network. It holds no key: each call sends its [`Call`]'s as the Bearer
@@ -672,6 +672,24 @@ impl Operations for Client {
             .get_function_with_options(req, self.options(cx));
         let answer = answer.await.map(UnaryResponse::into_owned);
         answered(Operation::GetFunction, None, answer)
+    }
+
+    /// Lists a page of functions, by name.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client`].
+    async fn list_functions(
+        &self,
+        cx: &Call,
+        req: ListFunctionsRequest,
+    ) -> Result<FunctionPage, OpError> {
+        let req = fits(req.try_into()?)?;
+        let answer = self
+            .functions
+            .list_functions_with_options(req, self.options(cx));
+        let answer = answer.await.map(UnaryResponse::into_owned);
+        answered(Operation::ListFunctions, None, answer)
     }
 
     /// Starts a run of a function, queued and due at once.

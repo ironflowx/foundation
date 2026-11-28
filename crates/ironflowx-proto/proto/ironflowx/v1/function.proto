@@ -24,6 +24,14 @@ service FunctionService {
     option (ironflowx.v1.summary) = "Read one function by its name";
     option (ironflowx.v1.example) = "{\"name\": \"refund\"}";
   }
+  // Lists a page of functions, by name.
+  rpc ListFunctions(ListFunctionsRequest) returns (ListFunctionsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (ironflowx.v1.cli) = "functions list";
+    option (ironflowx.v1.summary) =
+      "List a page of functions, by name. Only a page without next is the last";
+    option (ironflowx.v1.example) = "{\"limit\": 20}";
+  }
 }
 
 message PutFunctionRequest {
@@ -48,6 +56,20 @@ message PutFunctionResponse {
 
 message GetFunctionRequest {
   string name = 1;
+}
+
+message ListFunctionsRequest {
+  // At least 1. Absent: 20; above 200: 200.
+  optional uint32 limit = 1;
+  // The `next` of the previous page. Absent: from the first name.
+  optional string cursor = 2;
+}
+
+message ListFunctionsResponse {
+  // In name order.
+  repeated Function functions = 1;
+  // The cursor of the next page. Absent on the last page, and only there.
+  optional string next = 2;
 }
 
 // A function as put.
