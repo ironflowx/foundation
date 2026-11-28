@@ -89,3 +89,9 @@ cargo run --locked -p ironflowx --features client --example whoami -- http://127
 ```
 
 The [example](https://github.com/ironflowx/foundation/blob/main/crates/ironflowx/examples/whoami.rs) asks `whoami` and prints the calling key's ID and scopes.
+
+## MSRV / Rust version policy
+
+All foundation crates share one minimum supported Rust version (MSRV), declared as `rust-version` in the workspace `Cargo.toml` (currently `1.100`) and pinned for CI in `rust-toolchain.toml`.
+
+We keep the MSRV at most one stable release behind the current stable release: the crates must build on the current stable and on the stable release immediately before it. We do not move `rust-version` to the newest stable the day it ships, so an embedder on the previous stable does not have to pin a new toolchain as soon as foundation moves. The MSRV is raised only in a minor release and is recorded in the [changelog](https://github.com/ironflowx/foundation/blob/main/CHANGELOG.md).
