@@ -7,12 +7,15 @@ fn main() {
 
 #[cfg(feature = "__wire")]
 fn wire() {
-    const FILES: [&str; 5] = [
+    const FILES: [&str; 8] = [
         "ironflowx/v1/environment.proto",
         "ironflowx/v1/error.proto",
         "ironflowx/v1/event.proto",
+        "ironflowx/v1/execution.proto",
+        "ironflowx/v1/function.proto",
         "ironflowx/v1/identity.proto",
         "ironflowx/v1/key.proto",
+        "ironflowx/v1/run.proto",
     ];
     println!("cargo::rerun-if-changed=proto");
     let set = protox::Compiler::new(["proto"])

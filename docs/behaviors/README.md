@@ -8,6 +8,8 @@ What a client observes. Invariants that no single example can show are in [`../i
 |---|---|---|
 | [`events.feature`](events.feature) | 41 | Emit EVT-001–009 · gates EVT-010–017, EVT-038–039 · batch EVT-020–025 · idempotency EVT-030–037 · reading EVT-040–055 · read your writes EVT-060–062 |
 | [`tenancy.feature`](tenancy.feature) | 40 | Bootstrap and open ACC-001–018 · authentication ACC-020–024 · scopes ACC-030–032 · creating and listing keys ACC-040–047 · revoking and expiry ACC-050–054 · who emitted ACC-060–061 |
+| [`functions.feature`](functions.feature) | 19 | Definitions FUN-001–008 · triggers FUN-010–014 · starting a run FUN-020–025 |
+| [`execution.feature`](execution.feature) | 50 | Claiming EXE-001–008 · steps and replay EXE-010–019 · failure and retries EXE-020–028 · leases and the fence EXE-030–039 · the end of a run EXE-040–047 · reading runs EXE-050–051 · restarts and clocks EXE-052–054 |
 
 IDs missing from these ranges are unassigned, except EVT-005, which is retired. `serve.feature` and `cli.feature`, the `HOST-nnn` and `CLI-nnn` scenarios of the binary and its CLI, are in [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow) (D85), which also runs these two files against the binary. Foundation's `conformance` job runs that suite against each foundation PR that is not only `docs/` and Markdown, at the app branch `ci/app-ref` names (D122).
 
@@ -20,11 +22,13 @@ The steps call `Operations`, never a URL or a status code:
 | Adapter | Drives | When |
 |---|---|---|
 | The engine (`Engine`) | An engine in the test's process, on a temporary directory, with a `ManualClock` | Every PR: `events.feature`, `tenancy.feature`, whole |
-| Proto client (`Client`) | An `ironflowx-doors` router over an engine in the test's process, opened by each scenario on a fresh directory and served on `127.0.0.1:0` | Every PR: `events.feature` and `tenancy.feature` again, but for what is `@local` |
+| Proto client (`Client`) | An `ironflowx-doors` router over an engine in the test's process, opened by each scenario on a fresh directory and served on `127.0.0.1:0` | Every PR: every file again, but for what is `@local` |
 
 Through the door, "a fresh environment" and "a fresh engine directory" are an engine opened on a fresh directory with the machine's clock, as a host opens it; "the bootstrap key" is the key that open minted; and "now", "in one hour" and "an hour ago" are the machine's clock, read once per scenario, so ACC-010's creation time is checked to lie between that and the answer. "A client" and "another client" call through the scenario's one `Client`. `Client` refuses EVT-016's two rows that are not UTF-8 itself.
 
 The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It runs the files in this folder in place; they are not copied. It fails unless the `.feature` files here are exactly those its `SCENARIOS` table names, each with that many scenario declarations (before outline expansion), so a new scenario updates its count and a new file is added there (`crates/ironflowx-behaviors/tests/behaviors.rs`). Each file runs on its own World: an engine each, or an engine and its door. Every scenario runs on the engine. All scenarios without `@local` run again through the door. The runner checks the number of passing cases, counting each outline example separately. Run the scenarios with `cargo test -p ironflowx-behaviors --locked --test behaviors`.
+
+**Pending.** A 0.4 scenario, or an `Examples` block of one, tagged `@pending` is not built yet. The runner runs the pending cases of a file apart, without failing them on a step it has no definition for or one that fails, prints how many there are, and checks that number; a pending case that passes fails the run, so its tag is dropped once it can be. Built so far: FUN-001, FUN-008's rows for the operations that exist, EXE-001, EXE-004, EXE-031 and EXE-039. EXE-010's replay needs a run claimed twice, which `ReleaseRun` makes possible; until it lands, the runner checks the same replay with one execution, on the engine and through the door, before the scenarios. No 0.4 scenario may stay pending at the release.
 
 ## Conventions
 
@@ -35,6 +39,7 @@ The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It 
 - In `events.feature`, "a fresh environment" is `Engine::open` on a temporary directory, "a client" is a call holding the bootstrap key, and "another client" is a call on the same engine holding a key the bootstrap key created with all four scopes. EVT-055's other incarnation is a bare `Ledger` with the same ID and a new token, written as an embedder (D36).
 - EVT-013's owned names include the engine's own events, `ironflowx.run.completed` and `ironflowx.run.failed` (D118), which only the engine appends. A test in `ironflowx-events` shows each refused as EVT-013's names are (RUN-14); EVT-013's examples stay as they are, since `ironflowx/ironflow` runs this file as vendored.
 - "N days ago", "N hours pass" and "the clock reads" step the `ManualClock`.
+- In `functions.feature` and `execution.feature`, "a fresh engine" is as "a fresh environment"; "a builder" holds `read` and `write`, made by the step that names it or, in `execution.feature`, when the function is put; "an executor" holds `execute` alone, and "an executor with another key" a second such key. "Claims" does not wait. A run's input is JSON `null` until `StartRun` takes one.
 - `@local`: the scenario needs a fixture only the engine adapter has (the clock, a second incarnation, the data directory, what `open` returns), so it does not run through the door.
 - In `tenancy.feature`, "opened", "closed" and "reopened" are `Engine::open` and `close` on the scenario's directory; "the bootstrap key" is the key the first open returned, or the seed it was given; a seed is a well-formed key the step builds; "a client with a `<scope>` key" holds a key the bootstrap key created with exactly those scopes.
 

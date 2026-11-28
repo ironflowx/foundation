@@ -1,0 +1,142 @@
+syntax = "proto3";
+
+package ironflowx.v1;
+
+import "google/protobuf/timestamp.proto";
+import "ironflowx/v1/options.proto";
+import "ironflowx/v1/run.proto";
+
+// The step protocol: an executor claims a run, asks about each step and reports it. A call that
+// names a lease may be sent again: it repeats no work. A claim may not.
+service ExecutionService {
+  // Claims one due run of the functions named, under a lease.
+  rpc ClaimRun(ClaimRunRequest) returns (ClaimRunResponse) {
+    option (ironflowx.v1.cli) = "executions claim";
+    option (ironflowx.v1.summary) =
+      "Claim one due run of the functions named as name@code, under a lease; no claim when none "
+      "is due. Sent again it is a new claim: the run of a lost answer waits for its lease";
+    option (ironflowx.v1.example) = "{\"functions\": [\"charge@v1\"], \"wait_seconds\": 0}";
+  }
+  // Asks about a step of a claimed run.
+  rpc BeginStep(BeginStepRequest) returns (BeginStepResponse) {
+    option (ironflowx.v1.cli) = "executions begin-step";
+    option (ironflowx.v1.summary) =
+      "Ask about a step of a claimed run: run it, its recorded output, or the run has ended. "
+      "Sent again with the same lease it repeats no work";
+    option (ironflowx.v1.example) =
+      "{\"lease\": \"0190b5f0-0000-7000-8000-000000000001.1\", \"position\": 1, "
+      "\"name\": \"reserve\"}";
+  }
+  // Reports a step's output.
+  rpc CompleteStep(CompleteStepRequest) returns (CompleteStepResponse) {
+    option (ironflowx.v1.cli) = "executions complete-step";
+    option (ironflowx.v1.summary) =
+      "Report a step's output; the first one reported stands. Sent again with the same lease it "
+      "repeats no work";
+    option (ironflowx.v1.example) =
+      "{\"lease\": \"0190b5f0-0000-7000-8000-000000000001.1\", \"position\": 1, "
+      "\"output\": \"{\\\"id\\\": 1}\"}";
+  }
+  // Completes a claimed run with its output.
+  rpc CompleteRun(CompleteRunRequest) returns (CompleteRunResponse) {
+    option (ironflowx.v1.cli) = "executions complete";
+    option (ironflowx.v1.summary) =
+      "Complete a claimed run with its output, after the steps this execution reached. Sent "
+      "again with the same lease it repeats no work";
+    option (ironflowx.v1.example) =
+      "{\"lease\": \"0190b5f0-0000-7000-8000-000000000001.1\", \"steps\": 1, "
+      "\"output\": \"{\\\"ok\\\": true}\"}";
+  }
+}
+
+message ClaimRunRequest {
+  // 1 to 100 different name@code pairs.
+  repeated string functions = 1;
+  // 10 to 900. Absent: 60.
+  optional uint32 lease_seconds = 2 [json_name = "lease_seconds"];
+  // 0 to 20. The claim answers at once whatever this says.
+  optional uint32 wait_seconds = 3 [json_name = "wait_seconds"];
+}
+
+message ClaimRunResponse {
+  // Absent: nothing was due.
+  Claim claim = 1;
+}
+
+// A run a claim took.
+message Claim {
+  // "<run ID>.<execution>": what every call about this run sends.
+  string lease = 1;
+  string run_id = 2 [json_name = "run_id"];
+  string function = 3;
+  string code = 4;
+  uint32 execution = 5;
+  // The run's input, JSON text.
+  optional string input = 6 [(ironflowx.v1.json_text) = true];
+  google.protobuf.Timestamp lease_until = 7 [json_name = "lease_until"];
+  // A third of the lease's length.
+  uint32 renew_after_seconds = 8 [json_name = "renew_after_seconds"];
+}
+
+message BeginStepRequest {
+  string lease = 1;
+  // From 1: the executor's count of its step calls.
+  uint32 position = 2;
+  // 1 to 256 bytes, no control character.
+  string name = 3;
+  // No second execution begins a once step.
+  bool once = 4;
+  // JSON text, at most 65,536 bytes.
+  optional string input = 5 [(ironflowx.v1.json_text) = true];
+}
+
+message BeginStepResponse {
+  oneof answer {
+    // Do the work.
+    StepRun run = 1;
+    // The step's recorded output: do not do the work.
+    StepCompleted completed = 2;
+    // The run has ended: stop.
+    Ended ended = 3;
+  }
+}
+
+message StepRun {
+  // The failures reported for the step, plus one.
+  uint32 attempt = 1;
+}
+
+message StepCompleted {
+  // JSON text, byte for byte as it was recorded. Always there.
+  optional string output = 1 [(ironflowx.v1.json_text) = true];
+}
+
+message Ended {
+  RunEnd run = 1;
+}
+
+message CompleteStepRequest {
+  string lease = 1;
+  uint32 position = 2;
+  // JSON text, at most 524,288 bytes. Absent: null.
+  optional string output = 3 [(ironflowx.v1.json_text) = true];
+}
+
+message CompleteStepResponse {
+  oneof answer {
+    // The step's recorded output: this one, or the first one reported.
+    StepCompleted completed = 1;
+  }
+}
+
+message CompleteRunRequest {
+  string lease = 1;
+  // How many step positions this execution reached.
+  uint32 steps = 2;
+  // JSON text, at most 524,288 bytes. Absent: null.
+  optional string output = 3 [(ironflowx.v1.json_text) = true];
+}
+
+message CompleteRunResponse {
+  Ended ended = 1;
+}

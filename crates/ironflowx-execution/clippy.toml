@@ -1,0 +1,99 @@
+# Purity bans for the pure crates (LED-15), plus the SequencedTime constructor ban every crate
+# but ironflowx-cell carries, the SubmitAs::key ban every crate but the credentials crate
+# carries, the key digest codec ban every crate but the control plane carries, and the
+# engine_event ban every crate but execution rules carries (D17, D36, TEN-4, RUN-14).
+# This is ironflowx-execution's copy of ironflowx-core's file, less the engine_event ban: execution
+# rules make the engine's events (RUN-14). ci/clippy-bans.sh checks the copy.
+# Clippy cannot ban a whole module, so each function and type is listed.
+# shortcut: a list is never complete, and an #[allow] in a target without the crate root's
+# #![forbid] (an integration test) gets past it; the dependency allowlist is the backstop.
+# Upgrade when a tool can ban whole std modules.
+
+disallowed-methods = [
+  # Only the ledger stamps event time. Inside core the path does not resolve, so
+  # ci/no-event-clock-outside-ledger.sh covers core.
+  { path = "ironflowx_core::SequencedTime::from_event_clock", reason = "only ironflowx-cell produces event time (D17)", allow-invalid = true },
+  # Likewise for key attribution: ci/no-key-attribution.sh covers core.
+  { path = "ironflowx_core::SubmitAs::key", reason = "only the credentials crate attributes a submission to a key (D36)", allow-invalid = true },
+  # A grant's attribution: core does not depend on authz, hence allow-invalid; a forged grant
+  # (verify's inputs are public) must not reach a ledger submission.
+  { path = "ironflowx_authz::Grant::submit_as", reason = "only the engine attributes a submission to a verified key (D36)", allow-invalid = true },
+  # The key digest's storage codec: core does not depend on authz, hence allow-invalid. In authz's
+  # copy the path resolves, so its own code cannot call the codec either; ci/no-digest-codec.sh
+  # backs this up by name.
+  { path = "ironflowx_authz::KeyDigest::to_stored", reason = "only the control plane stores a key digest (TEN-4)", allow-invalid = true },
+  { path = "ironflowx_authz::KeyDigest::from_stored", reason = "only the control plane stores a key digest (TEN-4)", allow-invalid = true },
+
+  { path = "std::time::SystemTime::now", reason = "pure crates read no ambient clock; take a Timestamp or SequencedTime" },
+  { path = "std::time::Instant::now", reason = "pure crates read no ambient clock" },
+  { path = "std::time::SystemTime::elapsed", reason = "pure crates read no ambient clock" },
+  { path = "std::time::Instant::elapsed", reason = "pure crates read no ambient clock" },
+
+  { path = "std::fs::canonicalize", reason = "pure crates do no I/O" },
+  { path = "std::fs::copy", reason = "pure crates do no I/O" },
+  { path = "std::fs::create_dir", reason = "pure crates do no I/O" },
+  { path = "std::fs::create_dir_all", reason = "pure crates do no I/O" },
+  { path = "std::fs::exists", reason = "pure crates do no I/O" },
+  { path = "std::fs::hard_link", reason = "pure crates do no I/O" },
+  { path = "std::fs::metadata", reason = "pure crates do no I/O" },
+  { path = "std::fs::read", reason = "pure crates do no I/O" },
+  { path = "std::fs::read_dir", reason = "pure crates do no I/O" },
+  { path = "std::fs::read_link", reason = "pure crates do no I/O" },
+  { path = "std::fs::read_to_string", reason = "pure crates do no I/O" },
+  { path = "std::fs::remove_dir", reason = "pure crates do no I/O" },
+  { path = "std::fs::remove_dir_all", reason = "pure crates do no I/O" },
+  { path = "std::fs::remove_file", reason = "pure crates do no I/O" },
+  { path = "std::fs::rename", reason = "pure crates do no I/O" },
+  { path = "std::fs::set_permissions", reason = "pure crates do no I/O" },
+  { path = "std::fs::symlink_metadata", reason = "pure crates do no I/O" },
+  { path = "std::fs::write", reason = "pure crates do no I/O" },
+
+  { path = "std::path::Path::canonicalize", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::exists", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::is_dir", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::is_file", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::is_symlink", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::metadata", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::read_dir", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::read_link", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::symlink_metadata", reason = "pure crates do no I/O" },
+  { path = "std::path::Path::try_exists", reason = "pure crates do no I/O" },
+
+  { path = "std::env::current_dir", reason = "pure crates read no ambient state" },
+  { path = "std::env::var", reason = "pure crates read no ambient state" },
+  { path = "std::env::var_os", reason = "pure crates read no ambient state" },
+  { path = "std::env::vars", reason = "pure crates read no ambient state" },
+  { path = "std::io::stdin", reason = "pure crates do no I/O" },
+  { path = "std::io::stdout", reason = "pure crates do no I/O" },
+  { path = "std::io::stderr", reason = "pure crates do no I/O" },
+
+  { path = "std::net::ToSocketAddrs::to_socket_addrs", reason = "pure crates do no I/O" },
+
+  { path = "std::thread::spawn", reason = "pure crates start no threads" },
+  { path = "std::thread::scope", reason = "pure crates start no threads" },
+  { path = "std::thread::sleep", reason = "pure crates do not block" },
+
+  { path = "getrandom::fill", reason = "pure crates read no OS randomness" },
+  { path = "getrandom::fill_uninit", reason = "pure crates read no OS randomness" },
+  { path = "getrandom::u32", reason = "pure crates read no OS randomness" },
+  { path = "getrandom::u64", reason = "pure crates read no OS randomness" },
+]
+
+disallowed-types = [
+  # Seeded from the OS, and iterate in a different order every run: pure results must not.
+  { path = "std::collections::HashMap", reason = "random seed and order; use BTreeMap" },
+  { path = "std::collections::HashSet", reason = "random seed and order; use BTreeSet" },
+  { path = "std::hash::RandomState", reason = "pure crates read no OS randomness" },
+  { path = "std::fs::File", reason = "pure crates do no I/O" },
+  { path = "std::fs::OpenOptions", reason = "pure crates do no I/O" },
+  { path = "std::fs::DirBuilder", reason = "pure crates do no I/O" },
+  { path = "std::fs::ReadDir", reason = "pure crates do no I/O" },
+  { path = "std::net::TcpListener", reason = "pure crates do no I/O" },
+  { path = "std::net::TcpStream", reason = "pure crates do no I/O" },
+  { path = "std::net::UdpSocket", reason = "pure crates do no I/O" },
+  { path = "std::os::unix::net::UnixDatagram", reason = "pure crates do no I/O" },
+  { path = "std::os::unix::net::UnixListener", reason = "pure crates do no I/O" },
+  { path = "std::os::unix::net::UnixStream", reason = "pure crates do no I/O" },
+  { path = "std::process::Command", reason = "pure crates do no I/O" },
+  { path = "std::thread::Builder", reason = "pure crates start no threads" },
+]

@@ -3,13 +3,16 @@
 use std::fmt;
 use std::path::Path;
 
-use ironflowx_core::{Emitter, EnvRef, EventId, Timestamp};
-use ironflowx_events::{Event, EventTables, EventsView, PageBudget, Record};
+use ironflowx_core::{Emitter, EnvRef, EventId, RunId, Timestamp};
+use ironflowx_events::{Event, EventTables, EventsView, PageBudget};
+use ironflowx_execution::{
+    Definition, ExecutionTables, ExecutionView, Function, Run, Status, Step,
+};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
 use uuid::Uuid;
 
-use crate::record::FORMAT;
+use crate::record::{Entries, FORMAT};
 
 /// The read store failed.
 #[derive(Debug)]
@@ -73,6 +76,50 @@ CREATE TABLE events (
 );
 CREATE TABLE idempotency (key TEXT PRIMARY KEY, event_id TEXT NOT NULL);
 CREATE TABLE meta (applied INTEGER NOT NULL, env_id TEXT NOT NULL, token TEXT NOT NULL, format INTEGER NOT NULL, record_id TEXT);
+CREATE TABLE functions (
+    name TEXT PRIMARY KEY,
+    code TEXT NOT NULL,
+    max_attempts INTEGER,
+    first_delay_seconds INTEGER,
+    max_delay_seconds INTEGER,
+    put_at INTEGER NOT NULL,
+    put_by TEXT NOT NULL
+);
+CREATE TABLE triggers (
+    function TEXT NOT NULL,
+    event_name TEXT NOT NULL,
+    PRIMARY KEY (function, event_name)
+);
+CREATE TABLE runs (
+    id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL UNIQUE,
+    function TEXT NOT NULL,
+    code TEXT NOT NULL,
+    status TEXT NOT NULL,
+    input BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    created_by TEXT NOT NULL,
+    due_at INTEGER,
+    execution INTEGER NOT NULL,
+    lease_until INTEGER,
+    claimed_by TEXT,
+    steps INTEGER NOT NULL,
+    step TEXT,
+    output BLOB,
+    ended_at INTEGER
+);
+-- The claim's query: a pair, queued, by due time, then creation order.
+CREATE INDEX runs_due ON runs (function, code, status, due_at, sequence);
+CREATE TABLE steps (
+    run_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    once INTEGER NOT NULL,
+    input BLOB,
+    execution INTEGER NOT NULL,
+    output BLOB,
+    PRIMARY KEY (run_id, position)
+);
 ";
 
 /// Opens `read.db` if it exists, has `meta`, agrees with the genesis record and is not ahead of
@@ -149,6 +196,10 @@ fn existing(path: &Path, env: EnvRef, watermark: u64) -> Option<Connection> {
     let intact = || -> rusqlite::Result<bool> {
         conn.prepare(&format!("SELECT {EVENT_COLUMNS} LIMIT 0"))?;
         conn.prepare("SELECT key, event_id FROM idempotency LIMIT 0")?;
+        conn.prepare(&format!("SELECT {FUNCTION_COLUMNS} LIMIT 0"))?;
+        conn.prepare("SELECT function, event_name FROM triggers LIMIT 0")?;
+        conn.prepare(&format!("SELECT {RUN_COLUMNS} LIMIT 0"))?;
+        conn.prepare(&format!("SELECT {STEP_COLUMNS} LIMIT 0"))?;
         let check: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
         Ok(check == "ok")
     };
@@ -166,20 +217,23 @@ pub(crate) fn applied(conn: &Connection) -> rusqlite::Result<u64> {
 
 /// Folds the record at `position` and advances the applied position past it, with the record's
 /// ID, in one transaction. A record below the applied position is skipped (LED-12). The genesis
-/// record has no ID and no events: `None`; any other comes with its ID and emitter. `recovering`
+/// record has no ID and no entries: `None`; any other comes with its ID and emitter. `recovering`
 /// when open folds it, for the crash test's fault points.
 pub(crate) fn apply(
     conn: &mut Connection,
     position: u64,
-    record: Option<(Uuid, &Record, &Emitter)>,
+    record: Option<(Uuid, &Entries, &Emitter)>,
     #[cfg_attr(not(feature = "__fault-points"), allow(unused_variables))] recovering: bool,
 ) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     if position < applied(&tx)? {
         return Ok(());
     }
-    if let Some((_, record, emitted_by)) = record {
-        ironflowx_events::fold(&mut Tables(&tx), record, emitted_by)?;
+    if let Some((_, entries, emitted_by)) = record {
+        ironflowx_events::fold(&mut Tables(&tx), &entries.record, emitted_by)?;
+        for entry in &entries.execution {
+            ironflowx_execution::fold(&mut Tables(&tx), entry, entries.record.time, emitted_by)?;
+        }
         #[cfg(feature = "__fault-points")]
         ironflowx_core::reach_fault_point(if recovering {
             ironflowx_core::FaultPoint::DuringOpen
@@ -293,5 +347,264 @@ impl EventsView for ReadStore<'_> {
             }
             Ok(events)
         })())
+    }
+}
+
+/// One row changed, or the fold of an entry met a state it does not follow from.
+fn one(changed: usize) -> rusqlite::Result<()> {
+    match changed {
+        1 => Ok(()),
+        _ => Err(rusqlite::Error::QueryReturnedNoRows),
+    }
+}
+
+impl ExecutionTables for Tables<'_> {
+    type Error = rusqlite::Error;
+
+    fn put_function(&mut self, f: &Function) -> rusqlite::Result<()> {
+        let d = &f.definition;
+        self.0.execute(
+            "INSERT OR REPLACE INTO functions VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                d.name,
+                d.code,
+                d.max_attempts,
+                d.first_delay_seconds,
+                d.max_delay_seconds,
+                Millis(f.put_at),
+                f.put_by.to_string()
+            ],
+        )?;
+        self.0
+            .execute("DELETE FROM triggers WHERE function = ?1", [&d.name])?;
+        for trigger in &d.triggers {
+            self.0.execute(
+                "INSERT INTO triggers VALUES (?1, ?2)",
+                params![d.name, trigger],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn create_run(&mut self, r: &Run) -> rusqlite::Result<()> {
+        self.0.execute(
+            &format!("INSERT INTO runs ({RUN_FIELDS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"),
+            params![
+                r.id.to_string(),
+                r.sequence,
+                r.function,
+                r.code,
+                r.status.as_str(),
+                r.input,
+                Millis(r.created_at),
+                r.created_by.to_string(),
+                r.due_at.map(Millis),
+                r.execution,
+                r.lease_until.map(Millis),
+                r.claimed_by.as_ref().map(ToString::to_string),
+                r.steps,
+                r.step,
+                r.output,
+                r.ended_at.map(Millis)
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn claim(
+        &mut self,
+        run: RunId,
+        execution: u32,
+        lease_until: Timestamp,
+        by: &Emitter,
+    ) -> rusqlite::Result<()> {
+        one(self.0.execute(
+            "UPDATE runs SET status = 'running', execution = ?2, lease_until = ?3, claimed_by = ?4,
+             due_at = NULL WHERE id = ?1",
+            params![
+                run.to_string(),
+                execution,
+                Millis(lease_until),
+                by.to_string()
+            ],
+        )?)
+    }
+
+    fn begin_step(&mut self, run: RunId, s: &Step) -> rusqlite::Result<()> {
+        let id = run.to_string();
+        self.0.execute(
+            "INSERT INTO steps VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                s.position,
+                s.name,
+                s.once,
+                s.input,
+                s.execution,
+                s.output
+            ],
+        )?;
+        one(self.0.execute(
+            "UPDATE runs SET steps = ?2, step = ?3 WHERE id = ?1",
+            params![id, s.position, s.name],
+        )?)
+    }
+
+    fn complete_step(&mut self, run: RunId, position: u32, output: &[u8]) -> rusqlite::Result<()> {
+        let id = run.to_string();
+        one(self.0.execute(
+            "UPDATE steps SET output = ?3 WHERE run_id = ?1 AND position = ?2 AND output IS NULL",
+            params![id, position, output],
+        )?)?;
+        one(self
+            .0
+            .execute("UPDATE runs SET step = NULL WHERE id = ?1", [id])?)
+    }
+
+    fn complete_run(&mut self, run: RunId, output: &[u8], at: Timestamp) -> rusqlite::Result<()> {
+        one(self.0.execute(
+            "UPDATE runs SET status = 'completed', output = ?2, ended_at = ?3, lease_until = NULL
+             WHERE id = ?1",
+            params![run.to_string(), output, Millis(at)],
+        )?)
+    }
+}
+
+const FUNCTION_COLUMNS: &str = "name, code, max_attempts, first_delay_seconds, \
+    max_delay_seconds, put_at, put_by FROM functions";
+
+const RUN_FIELDS: &str = "id, sequence, function, code, status, input, created_at, created_by, \
+    due_at, execution, lease_until, claimed_by, steps, step, output, ended_at";
+
+const RUN_COLUMNS: &str = "id, sequence, function, code, status, input, created_at, created_by, \
+    due_at, execution, lease_until, claimed_by, steps, step, output, ended_at FROM runs";
+
+const STEP_COLUMNS: &str = "position, name, once, input, execution, output FROM steps";
+
+/// A status as stored, which only `Status::as_str` writes.
+struct Stored(Status);
+
+impl FromSql for Stored {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        Status::from_name(value.as_str()?)
+            .map(Self)
+            .ok_or(FromSqlError::InvalidType)
+    }
+}
+
+fn row_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
+    Ok(Run {
+        id: r.get::<_, Text<RunId>>(0)?.0,
+        sequence: r.get(1)?,
+        function: r.get(2)?,
+        code: r.get(3)?,
+        status: r.get::<_, Stored>(4)?.0,
+        input: r.get(5)?,
+        created_at: r.get::<_, Millis>(6)?.0,
+        created_by: r.get::<_, Text<Emitter>>(7)?.0,
+        due_at: r.get::<_, Option<Millis>>(8)?.map(|m| m.0),
+        execution: r.get(9)?,
+        lease_until: r.get::<_, Option<Millis>>(10)?.map(|m| m.0),
+        claimed_by: r.get::<_, Option<Text<Emitter>>>(11)?.map(|e| e.0),
+        steps: r.get(12)?,
+        step: r.get(13)?,
+        output: r.get(14)?,
+        ended_at: r.get::<_, Option<Millis>>(15)?.map(|m| m.0),
+    })
+}
+
+impl ExecutionView for ReadStore<'_> {
+    type Error = StoreError;
+
+    fn function(&self, name: &str) -> Result<Option<Function>, StoreError> {
+        store_err((|| {
+            let sql = format!("SELECT {FUNCTION_COLUMNS} WHERE name = ?1");
+            let row = self.0.query_row(&sql, [name], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get::<_, Millis>(5)?.0,
+                    r.get::<_, Text<Emitter>>(6)?.0,
+                ))
+            });
+            let Some((name, code, attempts, first, max, put_at, put_by)) = row.optional()? else {
+                return Ok(None);
+            };
+            let mut triggers = self.0.prepare(
+                "SELECT event_name FROM triggers WHERE function = ?1 ORDER BY event_name",
+            )?;
+            let triggers = triggers
+                .query_map([&name], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(Some(Function {
+                definition: Definition {
+                    name,
+                    code,
+                    triggers,
+                    max_attempts: attempts,
+                    first_delay_seconds: first,
+                    max_delay_seconds: max,
+                },
+                put_at,
+                put_by,
+            }))
+        })())
+    }
+
+    fn run(&self, id: RunId) -> Result<Option<Run>, StoreError> {
+        let sql = format!("SELECT {RUN_COLUMNS} WHERE id = ?1");
+        store_err(self.0.query_row(&sql, [id.to_string()], row_run).optional())
+    }
+
+    fn step(&self, run: RunId, position: u32) -> Result<Option<Step>, StoreError> {
+        let sql = format!("SELECT {STEP_COLUMNS} WHERE run_id = ?1 AND position = ?2");
+        let step = self
+            .0
+            .query_row(&sql, params![run.to_string(), position], |r| {
+                Ok(Step {
+                    position: r.get(0)?,
+                    name: r.get(1)?,
+                    once: r.get(2)?,
+                    input: r.get(3)?,
+                    execution: r.get(4)?,
+                    output: r.get(5)?,
+                })
+            });
+        store_err(step.optional())
+    }
+
+    fn last_run_sequence(&self) -> Result<u64, StoreError> {
+        let sql = "SELECT COALESCE(MAX(sequence), 0) FROM runs";
+        store_err(self.0.query_row(sql, [], |r| r.get(0)))
+    }
+
+    fn claimable(
+        &self,
+        pairs: &[(String, String)],
+        now: Timestamp,
+    ) -> Result<Option<Run>, StoreError> {
+        if pairs.is_empty() {
+            return Ok(None);
+        }
+        let pair = "(function = ? AND code = ?)";
+        let sql = format!(
+            "SELECT {RUN_COLUMNS} WHERE status = 'queued' AND due_at <= ? AND ({})
+             ORDER BY due_at, sequence LIMIT 1",
+            vec![pair; pairs.len()].join(" OR ")
+        );
+        let millis = now.as_millis();
+        let mut values: Vec<&dyn ToSql> = vec![&millis];
+        for (name, code) in pairs {
+            values.push(name);
+            values.push(code);
+        }
+        store_err(
+            self.0
+                .query_row(&sql, params_from_iter(values), row_run)
+                .optional(),
+        )
     }
 }

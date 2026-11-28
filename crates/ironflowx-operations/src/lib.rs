@@ -9,6 +9,7 @@
 
 mod admission;
 mod events;
+mod execution;
 mod open;
 mod recover;
 
@@ -16,16 +17,20 @@ use std::collections::BTreeSet;
 use std::fs::File;
 use std::sync::Arc;
 
-use ironflowx_cell::Ledger;
+use ironflowx_cell::{Ledger, Outcome, Submission};
 use ironflowx_core::{
     Address, Clock, EnvRef, ErrorKind, IncarnationToken, Scope, Secret, Timestamp,
 };
-use ironflowx_events::{ItemOutcome, Submission};
+use ironflowx_events::{ItemOutcome, Submission as Events};
+use ironflowx_execution::Command;
 use ironflowx_proto::{
-    Call, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
-    EmitResponse, Environment, Event, EventPage, GetEventRequest, KeyInfo, KeyPage, KeyStatus,
+    BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, CompleteRunRequest,
+    CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
+    EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
+    GetEventRequest, GetFunctionRequest, GetRunRequest, KeyInfo, KeyPage, KeyStatus,
     ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation, Operations,
-    RevokeKeyRequest, Whoami, WhoamiRequest,
+    PutFunctionRequest, PutFunctionResponse, RevokeKeyRequest, Run, RunEnd, StartRunRequest,
+    StartRunResponse, Whoami, WhoamiRequest,
 };
 use ironflowx_store::{ControlPlane, EnvironmentRecord, KeyChangeError, KeyRow, NewKey};
 
@@ -158,12 +163,40 @@ impl Engine {
         a: &Authorized,
         sub: Submission,
         if_unknown: &str,
-    ) -> Result<Vec<ItemOutcome>, OpError> {
+    ) -> Result<Outcome, OpError> {
         let by = a.grant().submit_as();
         let committed = self.ledger(a).submit(sub, by).await;
         Ok(committed
             .map_err(|e| events::submit_error(e, if_unknown))?
             .outcome)
+    }
+
+    /// An emit or a batch, submitted: one outcome per item.
+    async fn emits(
+        &self,
+        a: &Authorized,
+        sub: Events,
+        if_unknown: &str,
+    ) -> Result<Vec<ItemOutcome>, OpError> {
+        match self.submit(a, Submission::Events(sub), if_unknown).await? {
+            Outcome::Events(items) => Ok(items),
+            Outcome::Execution(o) => unreachable!("events answer as event rules do: {o:?}"),
+        }
+    }
+
+    /// A command of `op`, admitted and submitted: execution rules' outcome.
+    async fn execute(
+        &self,
+        cx: &Call,
+        op: Operation,
+        cmd: Command,
+        if_unknown: &str,
+    ) -> Result<ironflowx_execution::Outcome, OpError> {
+        let a = self.admit(cx, op).await?;
+        let outcome = self
+            .submit(&a, Submission::Execution(cmd), if_unknown)
+            .await?;
+        Ok(execution::outcome(outcome))
     }
 
     /// The key records, reached only with a proof of admission (TEN-1).
@@ -226,8 +259,8 @@ impl Operations for Engine {
     async fn emit(&self, cx: &Call, req: EmitRequest) -> Result<EmitResponse, OpError> {
         let a = self.admit(cx, Operation::Emit).await?;
         let if_unknown = events::if_unknown(&req);
-        let sub = Submission::Emit(events::emit(req));
-        let outcomes = self.submit(&a, sub, if_unknown).await?;
+        let sub = Events::Emit(events::emit(req));
+        let outcomes = self.emits(&a, sub, if_unknown).await?;
         let [outcome] = <[_; 1]>::try_from(outcomes).expect("one outcome per emit");
         events::response(outcome)
     }
@@ -244,8 +277,8 @@ impl Operations for Engine {
         req: EmitBatchRequest,
     ) -> Result<EmitBatchResponse, OpError> {
         let a = self.admit(cx, Operation::EmitBatch).await?;
-        let sub = Submission::Batch(req.items.into_iter().map(events::emit).collect());
-        let outcomes = self.submit(&a, sub, events::BATCH_IF_UNKNOWN).await?;
+        let sub = Events::Batch(req.items.into_iter().map(events::emit).collect());
+        let outcomes = self.emits(&a, sub, events::BATCH_IF_UNKNOWN).await?;
         Ok(EmitBatchResponse {
             items: outcomes.into_iter().map(events::response).collect(),
         })
@@ -386,6 +419,140 @@ impl Operations for Engine {
         let by = a.grant().key_id();
         let (keys, env, clock) = (self.keys(&a), self.env, self.clock.clone());
         key_change(move || keys.revoke_key(&env, id, by, &*clock)).await
+    }
+
+    /// Puts a function's definition, attributed to the calling key; one identical to the current
+    /// one appends nothing and answers `changed: false`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::whoami`]; `PermissionDenied` without `write`; `Invalid` for a definition
+    /// outside execution rules; `Unknown` if the append's outcome is unknown; `Unavailable` if the
+    /// ledger failed.
+    async fn put_function(
+        &self,
+        cx: &Call,
+        req: PutFunctionRequest,
+    ) -> Result<PutFunctionResponse, OpError> {
+        let cmd = execution::put(req);
+        let op = Operation::PutFunction;
+        let outcome = self.execute(cx, op, cmd, execution::PUT_IF_UNKNOWN).await?;
+        Ok(execution::put_answer(outcome))
+    }
+
+    /// Reads one function of the key's environment by name.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::whoami`]; `PermissionDenied` without `read`; `NotFound` for an unknown name;
+    /// `Unavailable` if the ledger failed.
+    async fn get_function(&self, cx: &Call, req: GetFunctionRequest) -> Result<Function, OpError> {
+        let a = self.admit(cx, Operation::GetFunction).await?;
+        self.ledger(&a)
+            .get_function(&req.name)
+            .await
+            .map(execution::function)
+            .map_err(events::read_error)
+    }
+
+    /// Starts a run of a function, attributed to the calling key: queued, due at once, with the
+    /// function's code label and a `null` input.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::put_function`]; `NotFound` for an unknown function.
+    async fn start_run(
+        &self,
+        cx: &Call,
+        req: StartRunRequest,
+    ) -> Result<StartRunResponse, OpError> {
+        let cmd = execution::start(req);
+        let op = Operation::StartRun;
+        let outcome = self
+            .execute(cx, op, cmd, execution::START_IF_UNKNOWN)
+            .await?;
+        Ok(execution::start_answer(outcome))
+    }
+
+    /// Reads one run of the key's environment by ID.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::get_function`], of a run ID.
+    async fn get_run(&self, cx: &Call, req: GetRunRequest) -> Result<Run, OpError> {
+        let a = self.admit(cx, Operation::GetRun).await?;
+        self.ledger(&a)
+            .get_run(&req.run_id)
+            .await
+            .map(execution::run)
+            .map_err(events::read_error)
+    }
+
+    /// Claims one due run of the pairs named, under a lease held by the calling key. It answers at
+    /// once.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::whoami`]; `PermissionDenied` without `execute`; `Invalid` for a request outside
+    /// execution rules; `Unknown` and `Unavailable` as [`Engine::put_function`].
+    async fn claim_run(&self, cx: &Call, req: ClaimRunRequest) -> Result<Option<Claim>, OpError> {
+        let cmd = execution::claim(req);
+        let op = Operation::ClaimRun;
+        let outcome = self
+            .execute(cx, op, cmd, execution::CLAIM_IF_UNKNOWN)
+            .await?;
+        Ok(execution::claim_answer(outcome))
+    }
+
+    /// Asks about a step of a run the calling key claimed.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::claim_run`]; `NotFound` for a lease that does not parse or names no run;
+    /// `Conflict` for a lease that is not the run's current execution, or that another key holds.
+    async fn begin_step(
+        &self,
+        cx: &Call,
+        req: BeginStepRequest,
+    ) -> Result<BeginStepResponse, OpError> {
+        let cmd = execution::begin(req);
+        let op = Operation::BeginStep;
+        let outcome = self
+            .execute(cx, op, cmd, execution::LEASE_IF_UNKNOWN)
+            .await?;
+        Ok(execution::begin_answer(outcome))
+    }
+
+    /// Reports a step's output.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::begin_step`].
+    async fn complete_step(
+        &self,
+        cx: &Call,
+        req: CompleteStepRequest,
+    ) -> Result<CompleteStepResponse, OpError> {
+        let cmd = execution::complete_step(req);
+        let op = Operation::CompleteStep;
+        let outcome = self
+            .execute(cx, op, cmd, execution::LEASE_IF_UNKNOWN)
+            .await?;
+        Ok(execution::complete_step_answer(outcome))
+    }
+
+    /// Completes a run the calling key claimed, with `ironflowx.run.completed` in the same record.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::begin_step`].
+    async fn complete_run(&self, cx: &Call, req: CompleteRunRequest) -> Result<RunEnd, OpError> {
+        let cmd = execution::complete(req);
+        let op = Operation::CompleteRun;
+        let outcome = self
+            .execute(cx, op, cmd, execution::LEASE_IF_UNKNOWN)
+            .await?;
+        Ok(execution::complete_answer(outcome))
     }
 }
 

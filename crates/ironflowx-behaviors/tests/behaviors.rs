@@ -5,6 +5,10 @@
 
 #[path = "behaviors/adapter.rs"]
 mod adapter;
+#[path = "behaviors/replay.rs"]
+mod replay;
+#[path = "behaviors/runs.rs"]
+mod runs;
 #[path = "behaviors/tenancy.rs"]
 mod tenancy;
 
@@ -16,9 +20,9 @@ use cucumber::feature::Ext as _;
 use cucumber::gherkin::{Feature, GherkinEnv};
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
-use ironflowx_cell::{Ledger, ManualClock, new_env_ref};
+use ironflowx_cell::{EventSubmission, Ledger, ManualClock, Submission, new_env_ref};
 use ironflowx_core::{EnvRef, ErrorKind, EventId, Scope, Secret, SubmitAs, Timestamp};
-use ironflowx_events::{Emit, Submission};
+use ironflowx_events::Emit;
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
     Call, CreateKeyRequest, EmitBatchRequest, EmitBatchResponse, EmitRequest, EmitResponse, Event,
@@ -705,7 +709,7 @@ async fn foreign_cursor(w: &mut Env) {
             ..Emit::default()
         };
         ledger
-            .submit(Submission::Emit(emit), by.clone())
+            .submit(Submission::Events(EventSubmission::Emit(emit)), by.clone())
             .await
             .unwrap();
     }
@@ -794,9 +798,19 @@ const EVENT_RUNS: usize = 95;
 const EVENT_REMOTE_RUNS: usize = 93;
 
 /// Every feature file in `docs/behaviors/` and its scenario declarations.
-const SCENARIOS: &[(&str, usize)] = &[("events.feature", 41), ("tenancy.feature", 40)];
+const SCENARIOS: &[(&str, usize)] = &[
+    ("events.feature", 41),
+    ("tenancy.feature", 40),
+    ("functions.feature", 19),
+    ("execution.feature", 50),
+];
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/behaviors");
+
+/// The path of a feature file in `DIR`, for as long as the run.
+fn path(file: &str) -> &'static str {
+    String::leak(format!("{DIR}/{file}"))
+}
 
 /// The feature files on disk must be exactly the ones `SCENARIOS` names.
 fn discover() {
@@ -850,6 +864,7 @@ async fn main() {
     discover();
     let mut runs = Vec::new();
     for (remote, adapter) in [(false, "the engine"), (true, "the door")] {
+        replay::check(remote).await;
         let count = |engine, door| if remote { door } else { engine };
         let expected = count(EVENT_RUNS, EVENT_REMOTE_RUNS);
         let of = |file| format!("{file}, {adapter}");
@@ -857,6 +872,24 @@ async fn main() {
         let expected = count(tenancy::RUNS, tenancy::REMOTE_RUNS);
         let tenancy = tenancy::run(Unescaped, remote).await;
         runs.push((of("tenancy.feature"), tenancy, expected));
+        for (file, built, pending) in [
+            (
+                "functions.feature",
+                runs::FUNCTION_RUNS,
+                runs::FUNCTION_PENDING,
+            ),
+            (
+                "execution.feature",
+                runs::EXECUTION_RUNS,
+                runs::EXECUTION_PENDING,
+            ),
+        ] {
+            let (failed, passed, not_built) = runs::run(path(file), remote).await;
+            let pending = count(pending.0, pending.1);
+            println!("{}: {not_built} cases pending", of(file));
+            assert_eq!(not_built, pending, "{}: cases pending", of(file));
+            runs.push((of(file), (failed, passed), count(built.0, built.1)));
+        }
     }
     for (file, (failed, passed), expected) in runs {
         assert!(!failed, "{file} failed");

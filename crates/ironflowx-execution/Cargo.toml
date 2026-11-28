@@ -1,0 +1,17 @@
+[package]
+name = "ironflowx-execution"
+description = "Ironflow X execution rules: functions, runs, claims and steps."
+keywords = ["ironflowx", "workflow", "event-driven"]
+readme = "../../README.md"
+documentation = "https://docs.rs/ironflowx-execution"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+ironflowx-core.workspace = true
+ironflowx-events.workspace = true

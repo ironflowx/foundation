@@ -16,7 +16,10 @@ found=$(CRATES=${crates%|} perl -ne '
   my $line = $_;
   if (/^pub (use|extern crate) /
       && !/^pub use ironflowx::(cell|core|operations|proto)$/
-      && !/^pub use ironflowx_cell::(Emit|Event|EventPage|ItemOutcome|Refusal|Submission)$/
+      && !/^pub use ironflowx_cell::(Emit|Event|EventPage|EventSubmission|ItemOutcome|Refusal)$/
+      && !/^pub use ironflowx_cell::(Begun|Claim|Command|Definition|ExecutionOutcome|Function)$/
+      && !/^pub use ironflowx_cell::(Run|RunEnd|Status)$/
+      && !/^pub use ironflowx_execution::(EngineEmit|Error|Refusal)$/
       && !/^pub use ironflowx_operations::(Fault|HostClock|LedgerState|OpenError|RecoverError|SeedState|StoreError)$/
       && !/^pub use ironflowx_proto::limits$/) {
     print "$ARGV:$.: $_";

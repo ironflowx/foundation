@@ -17,6 +17,14 @@ pub struct EventId(Uuid7);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RunId(Uuid7);
 
+/// An execution's hold on its run: the run, and the execution's number, from 1. Text form:
+/// `<run-id>.<execution>`, the number in decimal with no sign and no leading zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Lease {
+    pub run: RunId,
+    pub execution: u32,
+}
+
 /// The identity of a tenant: an opaque UUIDv7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TenantId(Uuid7);
@@ -118,6 +126,29 @@ impl FromStr for RunId {
 impl fmt::Display for RunId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+impl FromStr for Lease {
+    type Err = ParseError;
+    fn from_str(s: &str) -> Result<Self, ParseError> {
+        let err = || ParseError::new("lease");
+        let (run, execution) = s.rsplit_once('.').ok_or_else(err)?;
+        let execution: u32 = execution.parse().map_err(|_| err())?;
+        // Only the form Display writes: from 1, no sign, no leading zero.
+        if execution == 0 || s != format!("{run}.{execution}") {
+            return Err(err());
+        }
+        Ok(Self {
+            run: run.parse().map_err(|_| err())?,
+            execution,
+        })
+    }
+}
+
+impl fmt::Display for Lease {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.run, self.execution)
     }
 }
 

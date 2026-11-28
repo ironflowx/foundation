@@ -5,12 +5,14 @@ use std::path::Path;
 use std::time::Duration;
 
 use ironflowx_core::{Emitter, EnvRef, ErrorKind, EventId, SubmitAs, Timestamp};
-use ironflowx_events::{Emit, Event, ItemOutcome, Submission};
+use ironflowx_events::{Emit, Event, ItemOutcome, Submission as Events};
 use segment_log_core::{ExpectedRevision, NewRecord, Options, SegmentLog, Submit};
 
+use crate::record::Entries;
 use crate::store::ReadStore;
 use crate::{
-    Ledger, LedgerState, ManualClock, OpenError, ReadError, SubmitError, new_env_ref, record,
+    Ledger, LedgerState, ManualClock, OpenError, Outcome, ReadError, Submission, SubmitError,
+    new_env_ref, record,
 };
 
 const T: i64 = 1_800_000_000_000;
@@ -48,9 +50,33 @@ fn keyed(name: &str, key: &str) -> Emit {
     }
 }
 
+/// The outcomes of a submission of events.
+fn items(outcome: Outcome) -> Vec<ItemOutcome> {
+    match outcome {
+        Outcome::Events(items) => items,
+        Outcome::Execution(o) => panic!("events answered {o:?}"),
+    }
+}
+
+/// A record of events and no execution entry, encoded.
+fn events(
+    token: ironflowx_core::IncarnationToken,
+    id: uuid::Uuid,
+    emitted_by: &Emitter,
+    record: &ironflowx_events::Record,
+) -> Vec<u8> {
+    let entries = Entries {
+        record: record.clone(),
+        execution: Vec::new(),
+    };
+    record::entries(token, id, emitted_by, &entries)
+}
+
 async fn outcome(ledger: &Ledger, emit: Emit) -> Result<ItemOutcome, SubmitError> {
-    let committed = ledger.submit(Submission::Emit(emit), embedder()).await?;
-    let [outcome] = <[_; 1]>::try_from(committed.outcome).expect("one outcome per emit");
+    let committed = ledger
+        .submit(Submission::Events(Events::Emit(emit)), embedder())
+        .await?;
+    let [outcome] = <[_; 1]>::try_from(items(committed.outcome)).expect("one outcome per emit");
     Ok(outcome)
 }
 
@@ -129,7 +155,7 @@ async fn event_time_follows_the_clock_and_never_goes_back() {
 async fn every_event_of_one_batch_carries_the_record_time() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = open(dir.path(), new_env_ref()).await;
-    let batch = Submission::Batch(vec![named("a"), named("b")]);
+    let batch = Submission::Events(Events::Batch(vec![named("a"), named("b")]));
     ledger.submit(batch, embedder()).await.unwrap();
     let times: Vec<_> = all(&ledger).await.unwrap().iter().map(|e| e.time).collect();
     assert_eq!(times, [Timestamp::from_millis(T); 2]);
@@ -164,7 +190,12 @@ async fn replaying_folds_each_record_exactly_once() {
                 idempotency_key: None,
             }];
             let id = uuid::Uuid::now_v7();
-            crate::store::apply(&mut conn, offset, Some((id, &record, &emitter())), false).unwrap();
+            let entries = Entries {
+                record: record.clone(),
+                execution: Vec::new(),
+            };
+            let again = Some((id, &entries, &emitter()));
+            crate::store::apply(&mut conn, offset, again, false).unwrap();
             assert_eq!(crate::store::applied(&conn).unwrap(), applied);
         }
     }
@@ -228,7 +259,7 @@ async fn a_later_record_with_another_token_is_refused() {
             time: Timestamp::from_millis(T),
             events: vec![],
         };
-        let foreign = record::events(
+        let foreign = events(
             new_env_ref().token(),
             uuid::Uuid::now_v7(),
             &emitter(),
@@ -269,7 +300,7 @@ async fn a_log_without_a_genesis_record_is_refused() {
         append(
             &log,
             ExpectedRevision::Empty,
-            record::events(env.token(), uuid::Uuid::now_v7(), &emitter(), &record),
+            events(env.token(), uuid::Uuid::now_v7(), &emitter(), &record),
         );
     }
     let err = Ledger::open(dir.path(), env, clock()).await.err();
@@ -619,6 +650,62 @@ fn minted_tokens_are_distinct() {
     assert_eq!(tokens.len(), 10_000);
 }
 
+/// One execution entry of each kind, about `run`. Only execution rules make a `RunCompleted`, so
+/// it comes from a decided `CompleteRun`'s record.
+fn execution_entries(run: ironflowx_core::RunId) -> Vec<ironflowx_execution::Entry> {
+    use ironflowx_execution::{Definition, Entry};
+    let mut completed = vec![6];
+    completed.extend_from_slice(&36u32.to_le_bytes());
+    completed.extend_from_slice(run.to_string().as_bytes());
+    completed.extend_from_slice(&1u32.to_le_bytes());
+    completed.push(b'7');
+    let completed = ironflowx_execution::decode(&mut completed.as_slice()).expect("an entry");
+    vec![
+        Entry::FunctionPut(Definition {
+            name: "charge".into(),
+            code: "v1".into(),
+            triggers: vec!["order.paid".into(), "订单.placed".into()],
+            max_attempts: Some(5),
+            first_delay_seconds: None,
+            max_delay_seconds: Some(u32::MAX),
+        }),
+        Entry::RunCreated {
+            run,
+            sequence: u64::MAX,
+            function: "charge".into(),
+            code: "v1".into(),
+            input: b"null".to_vec(),
+        },
+        Entry::Claimed {
+            run,
+            execution: 3,
+            lease_until: Timestamp::from_millis(-1),
+        },
+        Entry::StepBegan {
+            run,
+            position: 1,
+            name: "réserve".into(),
+            once: true,
+            input: Some(b"{}".to_vec()),
+            execution: 3,
+        },
+        Entry::StepBegan {
+            run,
+            position: 2,
+            name: "pay".into(),
+            once: false,
+            input: None,
+            execution: 3,
+        },
+        Entry::StepCompleted {
+            run,
+            position: 1,
+            output: b"{\"id\":  9007199254740993}".to_vec(),
+        },
+        completed,
+    ]
+}
+
 #[test]
 fn records_round_trip() {
     let env = new_env_ref();
@@ -638,13 +725,16 @@ fn records_round_trip() {
     let id = uuid::Uuid::now_v7();
     for emitted_by in [emitter(), key] {
         assert_eq!(
-            record::decode(&record::events(env.token(), id, &emitted_by, &record)),
-            Some(record::Decoded::Events {
+            record::decode(&events(env.token(), id, &emitted_by, &record)),
+            Some(record::Decoded::Entries {
                 format: record::FORMAT,
                 token: env.token(),
                 id,
                 emitted_by,
-                record: record.clone(),
+                entries: Entries {
+                    record: record.clone(),
+                    execution: Vec::new(),
+                },
             })
         );
     }
@@ -658,19 +748,32 @@ fn records_round_trip() {
     let mut trailing = record::genesis(env);
     trailing.push(0);
     assert_eq!(record::decode(&trailing), None);
+    // Execution entries of every kind, after the events, in their order.
+    let run: ironflowx_core::RunId = "019a8f3c-7e21-7b4a-9c3d-5e6f7a8b9c0e".parse().unwrap();
+    let execution = execution_entries(run);
+    let entries = Entries {
+        record: record.clone(),
+        execution: execution.clone(),
+    };
+    let decoded = record::decode(&record::entries(env.token(), id, &emitter(), &entries));
+    let Some(record::Decoded::Entries { entries: back, .. }) = decoded else {
+        panic!("a record of entries decodes: {decoded:?}");
+    };
+    assert_eq!(back, entries);
     // An entry of a kind this format does not write: its kind follows the envelope and count.
-    let mut unknown = record::events(env.token(), id, &emitter(), &record);
+    // Kinds 1 to 6 are execution entries; 7 is the first that is none.
+    let mut unknown = events(env.token(), id, &emitter(), &record);
     let empty = ironflowx_events::Record {
         events: vec![],
         ..record
     };
-    let kind = record::events(env.token(), id, &emitter(), &empty).len();
-    for byte in [1, 0xFF] {
+    let kind = events(env.token(), id, &emitter(), &empty).len();
+    for byte in [7, 0xFF] {
         unknown[kind] = byte;
         assert_eq!(record::decode(&unknown), None, "kind {byte}");
     }
     // A record ID that is not a UUIDv7 in its canonical text form, put in place of a good one.
-    let good = record::events(env.token(), id, &emitter(), &empty);
+    let good = events(env.token(), id, &emitter(), &empty);
     let at = good
         .windows(36)
         .position(|w| w == id.to_string().as_bytes());
@@ -1022,7 +1125,7 @@ fn log_records(dir: &Path) -> (Vec<record::Decoded>, u64) {
 fn record_ids(dir: &Path) -> Vec<uuid::Uuid> {
     let (records, _) = log_records(dir);
     let id = |r| match r {
-        record::Decoded::Events { id, .. } => Some(id),
+        record::Decoded::Entries { id, .. } => Some(id),
         record::Decoded::Genesis { .. } => None,
     };
     records.into_iter().filter_map(id).collect()
@@ -1048,7 +1151,7 @@ fn append_eventless(dir: &Path, env: EnvRef) {
         time: Timestamp::from_millis(T),
         events: vec![],
     };
-    let payload = record::events(env.token(), uuid::Uuid::now_v7(), &emitter(), &record);
+    let payload = events(env.token(), uuid::Uuid::now_v7(), &emitter(), &record);
     append(&log, ExpectedRevision::At(revision), payload);
 }
 
@@ -1059,7 +1162,7 @@ async fn a_fresh_ledger_writes_format_3() {
     emit(&ledger, named("a")).await.unwrap();
     ledger.close().await;
     let format = |r: &record::Decoded| match *r {
-        record::Decoded::Genesis { format, .. } | record::Decoded::Events { format, .. } => format,
+        record::Decoded::Genesis { format, .. } | record::Decoded::Entries { format, .. } => format,
     };
     let (records, _) = log_records(dir.path());
     assert_eq!(records.iter().map(format).collect::<Vec<_>>(), [3, 3]);
@@ -1273,7 +1376,7 @@ async fn every_event_records_who_emitted_it_across_reopen_and_rebuild() {
     let dir = tempfile::tempdir().unwrap();
     let env = new_env_ref();
     let ledger = open(dir.path(), env).await;
-    let batch = Submission::Batch(["a", "b", "c"].map(named).into());
+    let batch = Submission::Events(Events::Batch(["a", "b", "c"].map(named).into()));
     let app = SubmitAs::embedder("billing app").unwrap();
     let committed = ledger.submit(batch, app.clone()).await.unwrap();
     let solo = emit(&ledger, named("d")).await.unwrap();
@@ -1292,7 +1395,7 @@ async fn every_event_records_who_emitted_it_across_reopen_and_rebuild() {
             .collect()
     };
     assert_eq!(emitters(&ledger).await, expected);
-    let ItemOutcome::New(first) = committed.outcome[0] else {
+    let ItemOutcome::New(first) = items(committed.outcome)[0] else {
         panic!("a new event");
     };
     let read = get(&ledger, first).await.unwrap();
@@ -1891,4 +1994,150 @@ async fn the_ledger_errors_are_rust_errors_that_say_what_failed() {
         shown(&ReadError::Unavailable),
         "the ledger is unavailable until it is reopened"
     );
+}
+
+/// Submits an execution command as the tests' embedder: execution rules' outcome.
+async fn execute(
+    ledger: &Ledger,
+    cmd: ironflowx_execution::Command,
+) -> Result<ironflowx_execution::Outcome, SubmitError> {
+    match ledger
+        .submit(Submission::Execution(cmd), embedder())
+        .await?
+        .outcome
+    {
+        Outcome::Execution(o) => Ok(o),
+        Outcome::Events(items) => panic!("a command answered {items:?}"),
+    }
+}
+
+/// RUN-2: a run's completion and its end event are one record, the event sequenced after every
+/// stored event; RUN-11: a read store rebuilt from the log answers the same.
+#[tokio::test]
+async fn a_runs_end_and_its_event_are_one_record() {
+    use ironflowx_execution::{Command, Definition, Entry, Outcome as Answer};
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    emit(&ledger, named("before")).await.unwrap();
+    let put = Command::PutFunction(Definition {
+        name: "charge".into(),
+        code: "v1".into(),
+        triggers: vec![],
+        max_attempts: None,
+        first_delay_seconds: None,
+        max_delay_seconds: None,
+    });
+    execute(&ledger, put).await.unwrap();
+    let start = Command::StartRun {
+        function: "charge".into(),
+    };
+    let Answer::RunStarted { run, .. } = execute(&ledger, start).await.unwrap() else {
+        panic!("a run");
+    };
+    let claim = Command::Claim {
+        functions: vec!["charge@v1".into()],
+        lease_seconds: None,
+        wait_seconds: None,
+    };
+    let Answer::Claimed(Some(claim)) = execute(&ledger, claim).await.unwrap() else {
+        panic!("a claim");
+    };
+    let complete = Command::Complete {
+        lease: claim.lease.to_string(),
+        steps: 0,
+        output: Some(b"[1]".to_vec()),
+    };
+    let ended = execute(&ledger, complete.clone()).await.unwrap();
+    assert!(matches!(ended, Answer::RunEnded(_)));
+    // Sent again: answered, and nothing appended.
+    let (_, watermark) = {
+        ledger.close().await;
+        log_records(dir.path())
+    };
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(execute(&ledger, complete).await.unwrap(), ended);
+    let read = ledger.get_run(&run.to_string()).await.unwrap();
+    ledger.close().await;
+    let (records, after) = log_records(dir.path());
+    assert_eq!(after, watermark, "a repeated completion appends nothing");
+    let Some(record::Decoded::Entries { entries, .. }) = records.last() else {
+        panic!("a record of entries");
+    };
+    assert!(matches!(entries.execution.as_slice(), [Entry::RunCompleted(c)] if c.run() == run));
+    let [event] = entries.record.events.as_slice() else {
+        panic!("one event: {entries:?}");
+    };
+    assert_eq!(
+        (event.name.as_str(), event.sequence),
+        ("ironflowx.run.completed", 2)
+    );
+    std::fs::remove_file(dir.path().join("read.db")).unwrap();
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(ledger.get_run(&run.to_string()).await.unwrap(), read);
+    assert_eq!(names(&ledger).await, ["ironflowx.run.completed", "before"]);
+    ledger.close().await;
+}
+
+/// A recorded step asked about again is answered its output and appends nothing; so is its
+/// completion sent again.
+#[tokio::test]
+async fn a_replayed_step_appends_nothing() {
+    use ironflowx_execution::{Begun, Command, Definition, Outcome as Answer};
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    let put = Command::PutFunction(Definition {
+        name: "charge".into(),
+        code: "v1".into(),
+        triggers: vec![],
+        max_attempts: None,
+        first_delay_seconds: None,
+        max_delay_seconds: None,
+    });
+    execute(&ledger, put).await.unwrap();
+    let start = Command::StartRun {
+        function: "charge".into(),
+    };
+    execute(&ledger, start).await.unwrap();
+    let claim = Command::Claim {
+        functions: vec!["charge@v1".into()],
+        lease_seconds: None,
+        wait_seconds: None,
+    };
+    let Answer::Claimed(Some(claim)) = execute(&ledger, claim).await.unwrap() else {
+        panic!("a claim");
+    };
+    let lease = claim.lease.to_string();
+    let begin = Command::BeginStep {
+        lease: lease.clone(),
+        position: 1,
+        name: "reserve".into(),
+        once: false,
+        input: None,
+    };
+    let output = br#"{"id":  9007199254740993}"#.to_vec();
+    let complete = Command::CompleteStep {
+        lease,
+        position: 1,
+        output: Some(output.clone()),
+    };
+    execute(&ledger, begin.clone()).await.unwrap();
+    execute(&ledger, complete.clone()).await.unwrap();
+    ledger.close().await;
+    let (_, before) = log_records(dir.path());
+    let ledger = open(dir.path(), env).await;
+    let replayed = execute(&ledger, begin).await.unwrap();
+    assert_eq!(
+        replayed,
+        Answer::StepBegun(Begun::Completed {
+            output: output.clone()
+        })
+    );
+    assert_eq!(
+        execute(&ledger, complete).await.unwrap(),
+        Answer::StepCompleted { output }
+    );
+    ledger.close().await;
+    assert_eq!(log_records(dir.path()).1, before);
 }

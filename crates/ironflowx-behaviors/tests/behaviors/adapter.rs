@@ -9,9 +9,12 @@ use ironflowx_cell::HostClock;
 use ironflowx_doors::{Readiness, Slot, WaitingOn, router};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
-    Call, Client, CreateKeyRequest, CreatedKey, EmitBatchRequest, EmitBatchResponse, EmitRequest,
-    EmitResponse, Environment, Event, EventPage, GetEventRequest, KeyPage, ListEnvironmentsRequest,
-    ListEventsRequest, ListKeysRequest, OpError, Operations, RevokeKeyRequest, Whoami,
+    BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, Client, CompleteRunRequest,
+    CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, CreatedKey, EmitBatchRequest,
+    EmitBatchResponse, EmitRequest, EmitResponse, Environment, Event, EventPage, Function,
+    GetEventRequest, GetFunctionRequest, GetRunRequest, KeyPage, ListEnvironmentsRequest,
+    ListEventsRequest, ListKeysRequest, OpError, Operations, PutFunctionRequest,
+    PutFunctionResponse, RevokeKeyRequest, Run, RunEnd, StartRunRequest, StartRunResponse, Whoami,
     WhoamiRequest,
 };
 use tokio::net::TcpListener;
@@ -115,4 +118,12 @@ either! {
     create_key(CreateKeyRequest) -> CreatedKey;
     list_keys(ListKeysRequest) -> KeyPage;
     revoke_key(RevokeKeyRequest) -> ();
+    put_function(PutFunctionRequest) -> PutFunctionResponse;
+    get_function(GetFunctionRequest) -> Function;
+    start_run(StartRunRequest) -> StartRunResponse;
+    get_run(GetRunRequest) -> Run;
+    claim_run(ClaimRunRequest) -> Option<Claim>;
+    begin_step(BeginStepRequest) -> BeginStepResponse;
+    complete_step(CompleteStepRequest) -> CompleteStepResponse;
+    complete_run(CompleteRunRequest) -> RunEnd;
 }

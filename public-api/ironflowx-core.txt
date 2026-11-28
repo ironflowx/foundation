@@ -5,10 +5,13 @@ pub const ironflowx_core::limits::MAX_BATCH_EVENTS: usize
 pub const ironflowx_core::limits::MAX_DATA_BYTES: usize
 pub const ironflowx_core::limits::MAX_EMBEDDER_NAME_BYTES: usize
 pub const ironflowx_core::limits::MAX_EVENT_NAME_BYTES: usize
+pub const ironflowx_core::limits::MAX_FUNCTION_NAME_BYTES: usize
 pub const ironflowx_core::limits::MAX_IDEMPOTENCY_KEY_BYTES: usize
 pub const ironflowx_core::limits::MAX_KEY_LABEL_BYTES: usize
 pub const ironflowx_core::limits::MAX_MESSAGE_BYTES: usize
 pub const ironflowx_core::limits::MAX_METADATA_BYTES: usize
+pub const ironflowx_core::limits::MAX_STEP_INPUT_BYTES: usize
+pub const ironflowx_core::limits::MAX_STEP_NAME_BYTES: usize
 pub enum ironflowx_core::ErrorKind
 pub ironflowx_core::ErrorKind::Conflict
 pub ironflowx_core::ErrorKind::Internal
@@ -211,6 +214,27 @@ impl core::marker::StructuralPartialEq for ironflowx_core::KeyId
 impl core::str::traits::FromStr for ironflowx_core::KeyId
 pub type ironflowx_core::KeyId::Err = ironflowx_core::ParseError
 pub fn ironflowx_core::KeyId::from_str(&str) -> core::result::Result<Self, ironflowx_core::ParseError>
+pub struct ironflowx_core::Lease
+pub ironflowx_core::Lease::execution: u32
+pub ironflowx_core::Lease::run: ironflowx_core::RunId
+impl core::clone::Clone for ironflowx_core::Lease
+pub fn ironflowx_core::Lease::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_core::Lease
+impl core::cmp::Eq for ironflowx_core::Lease
+pub fn ironflowx_core::Lease::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_core::Lease
+pub fn ironflowx_core::Lease::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_core::Lease
+pub fn ironflowx_core::Lease::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_core::Lease
+pub fn ironflowx_core::Lease::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_core::Lease
+pub fn ironflowx_core::Lease::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for ironflowx_core::Lease
+impl core::marker::StructuralPartialEq for ironflowx_core::Lease
+impl core::str::traits::FromStr for ironflowx_core::Lease
+pub type ironflowx_core::Lease::Err = ironflowx_core::ParseError
+pub fn ironflowx_core::Lease::from_str(&str) -> core::result::Result<Self, ironflowx_core::ParseError>
 pub struct ironflowx_core::ParseError
 impl core::clone::Clone for ironflowx_core::ParseError
 pub fn ironflowx_core::ParseError::clone(&self) -> Self

@@ -12,8 +12,8 @@ cd "$(dirname "$0")/.."
 source ci/tools.env
 rustup toolchain install "$NIGHTLY" --profile minimal --no-self-update >/dev/null
 mkdir -p public-api
-published=(ironflowx-core ironflowx-events ironflowx-proto ironflowx-cell ironflowx-authz
-  ironflowx-store ironflowx-operations ironflowx ironflowx-doors ironflowx-codegen)
+published=(ironflowx-core ironflowx-events ironflowx-execution ironflowx-proto ironflowx-cell
+  ironflowx-authz ironflowx-store ironflowx-operations ironflowx ironflowx-doors ironflowx-codegen)
 for crate in "${published[@]}" ironflowx-behaviors ironflowx-crash-test; do
   # The proto client with the interface; not `wire` or `server`, which name buffa's and connectrpc's
   # types and follow their 0.x versions.

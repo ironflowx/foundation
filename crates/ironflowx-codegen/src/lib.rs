@@ -282,9 +282,17 @@ fn domain_property(field: &FieldDescriptor, mut schema: Value) -> Value {
         | "ironflowx.v1.GetEventRequest.event_id"
         | "ironflowx.v1.Event.event_id"
         | "ironflowx.v1.EmitResponse.event_id"
-        | "ironflowx.v1.Environment.project_id" => {
+        | "ironflowx.v1.Environment.project_id"
+        | "ironflowx.v1.GetRunRequest.run_id"
+        | "ironflowx.v1.StartRunResponse.run_id"
+        | "ironflowx.v1.Run.run_id"
+        | "ironflowx.v1.RunEnd.run_id"
+        | "ironflowx.v1.Claim.run_id" => {
             schema["pattern"] =
                 json!("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
+        }
+        "ironflowx.v1.Run.status" | "ironflowx.v1.RunEnd.status" => {
+            schema["enum"] = json!(["queued", "running", "completed", "failed"]);
         }
         _ => {}
     }
@@ -309,8 +317,16 @@ fn object(message: &MessageDescriptor, shape: Shape) -> Result<Value, CodegenErr
     if !required.is_empty() {
         schema["required"] = json!(required);
     }
-    if shape == Shape::Output && message.full_name() == "ironflowx.v1.EmitBatchItem" {
-        schema["oneOf"] = json!([{"required": ["ok"]}, {"required": ["error"]}]);
+    // An answer of several shapes holds exactly one of them. `optional` makes a oneof of its own,
+    // a synthetic one, which says nothing of the kind.
+    if shape == Shape::Output {
+        for oneof in message.oneofs().filter(|o| !o.is_synthetic()) {
+            let shapes: Vec<_> = oneof
+                .fields()
+                .map(|f| json!({"required": [f.json_name()]}))
+                .collect();
+            schema["oneOf"] = json!(shapes);
+        }
     }
     Ok(schema)
 }
@@ -325,6 +341,13 @@ fn always_printed(field: &FieldDescriptor) -> bool {
                 | "ironflowx.v1.Event.data"
                 | "ironflowx.v1.Event.time"
                 | "ironflowx.v1.KeyInfo.created_at"
+                | "ironflowx.v1.PutFunctionResponse.function"
+                | "ironflowx.v1.Function.put_at"
+                | "ironflowx.v1.Run.created_at"
+                | "ironflowx.v1.Claim.lease_until"
+                | "ironflowx.v1.StepCompleted.output"
+                | "ironflowx.v1.Ended.run"
+                | "ironflowx.v1.CompleteRunResponse.ended"
         )
 }
 

@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package ironflowx.v1;
+
+import "google/protobuf/timestamp.proto";
+import "ironflowx/v1/options.proto";
+
+// The functions of the calling key's environment: named definitions. The engine holds no code.
+service FunctionService {
+  // Puts a function's definition, replacing the whole of one of its name.
+  rpc PutFunction(PutFunctionRequest) returns (PutFunctionResponse) {
+    option (ironflowx.v1.cli) = "functions put";
+    option (ironflowx.v1.summary) =
+      "Put a function: its code label, the events that trigger it and its retry policy. It "
+      "replaces the whole definition; sent again unchanged it changes nothing";
+    option (ironflowx.v1.example) =
+      "{\"name\": \"charge\", \"code\": \"v1\", \"triggers\": [\"order.placed\"], "
+      "\"max_attempts\": 5}";
+  }
+  // Reads one function by name.
+  rpc GetFunction(GetFunctionRequest) returns (Function) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (ironflowx.v1.cli) = "functions get";
+    option (ironflowx.v1.summary) = "Read one function by its name";
+    option (ironflowx.v1.example) = "{\"name\": \"refund\"}";
+  }
+}
+
+message PutFunctionRequest {
+  // 1 to 128 bytes of letters, digits, '.', '_' and '-'.
+  string name = 1;
+  // The code label, likewise: a run keeps the label it was created with.
+  string code = 2;
+  // At most 10 exact event names the engine does not own, none repeated. None: no event starts a
+  // run.
+  repeated string triggers = 3;
+  // Absent: the default, applied when the policy is used.
+  optional uint32 max_attempts = 4 [json_name = "max_attempts"];
+  optional uint32 first_delay_seconds = 5 [json_name = "first_delay_seconds"];
+  optional uint32 max_delay_seconds = 6 [json_name = "max_delay_seconds"];
+}
+
+message PutFunctionResponse {
+  Function function = 1;
+  // False when the definition was already this one: nothing was stored.
+  bool changed = 2;
+}
+
+message GetFunctionRequest {
+  string name = 1;
+}
+
+// A function as put.
+message Function {
+  string name = 1;
+  string code = 2;
+  // In name order.
+  repeated string triggers = 3;
+  // Absent: not put.
+  optional uint32 max_attempts = 4 [json_name = "max_attempts"];
+  optional uint32 first_delay_seconds = 5 [json_name = "first_delay_seconds"];
+  optional uint32 max_delay_seconds = 6 [json_name = "max_delay_seconds"];
+  google.protobuf.Timestamp put_at = 7 [json_name = "put_at"];
+  // "key:<key ID>", or "embedder:<name>".
+  string put_by = 8 [json_name = "put_by"];
+}

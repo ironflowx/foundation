@@ -9,15 +9,17 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 
 use common::{
-    CREATED, DATA, KEY, KINDS, METADATA, batch, created, emitted, environments, event, event_page,
-    key_page, serve, serving, whoami,
+    CREATED, DATA, KEY, KINDS, METADATA, batch, begun, claim, created, emitted, environments,
+    event, event_page, function, key_page, put, run, run_end, serve, serving, started, step_output,
+    whoami,
 };
 use ironflowx_core::{Address, ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_doors::Slot;
 use ironflowx_proto::{
-    Call, Client, CreateKeyRequest, EmitBatchRequest, EmitRequest, GetEventRequest,
-    ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation, Operations,
-    RevokeKeyRequest, Whoami, WhoamiRequest,
+    BeginStepRequest, Call, ClaimRunRequest, Client, CompleteRunRequest, CompleteStepRequest,
+    CreateKeyRequest, EmitBatchRequest, EmitRequest, GetEventRequest, GetFunctionRequest,
+    GetRunRequest, ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation,
+    Operations, PutFunctionRequest, RevokeKeyRequest, StartRunRequest, Whoami, WhoamiRequest,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
@@ -138,6 +140,75 @@ async fn ask_one(client: &Client, cx: &Call, op: Operation) -> Result<String, Op
             let answer = client.list_events(cx, request).await;
             answer.map(|a| format!("{a:?}"))
         }
+        Operation::PutFunction => {
+            let request = PutFunctionRequest {
+                name: "charge".into(),
+                code: "v1".into(),
+                triggers: vec!["a".into(), "b".into()],
+                max_attempts: Some(0),
+                first_delay_seconds: Some(u32::MAX),
+                max_delay_seconds: None,
+            };
+            let answer = client.put_function(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
+        Operation::GetFunction => {
+            let request = GetFunctionRequest { name: "f".into() };
+            let answer = client.get_function(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
+        Operation::StartRun => {
+            let request = StartRunRequest {
+                function: "f".into(),
+            };
+            let answer = client.start_run(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
+        Operation::GetRun => {
+            let request = GetRunRequest {
+                run_id: "no ID".into(),
+            };
+            let answer = client.get_run(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
+        Operation::ClaimRun => {
+            let request = ClaimRunRequest {
+                functions: vec!["f@v1".into()],
+                lease_seconds: Some(10),
+                wait_seconds: Some(0),
+            };
+            let answer = client.claim_run(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
+        Operation::BeginStep => {
+            let request = BeginStepRequest {
+                lease: "l".into(),
+                position: 2,
+                name: "s".into(),
+                once: true,
+                input: Some(DATA.into()),
+            };
+            let answer = client.begin_step(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
+        Operation::CompleteStep => {
+            let request = CompleteStepRequest {
+                lease: "l".into(),
+                position: 2,
+                output: Some(METADATA.into()),
+            };
+            let answer = client.complete_step(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
+        Operation::CompleteRun => {
+            let request = CompleteRunRequest {
+                lease: "l".into(),
+                steps: 3,
+                output: None,
+            };
+            let answer = client.complete_run(cx, request).await;
+            answer.map(|a| format!("{a:?}"))
+        }
     }
 }
 
@@ -157,6 +228,14 @@ async fn each_operation_crosses_to_the_engine_and_back() {
         format!("{CREATED} {:?}", created().info),
         format!("{:?}", key_page()),
         "()".to_owned(),
+        format!("{:?}", put()),
+        format!("{:?}", function()),
+        format!("{:?}", started()),
+        format!("{:?}", run()),
+        format!("{:?}", claim()),
+        format!("{:?}", begun()),
+        format!("{:?}", step_output()),
+        format!("{:?}", run_end()),
     ];
     let mut asked = Vec::new();
     for (op, answer) in Operation::ALL.iter().zip(answers) {
@@ -176,6 +255,14 @@ async fn each_operation_crosses_to_the_engine_and_back() {
         r#"CreateKeyRequest { scopes: {Write}, expires_at: Some(Timestamp { millis: 1800000000001 }), label: Some("clé") }"#.to_owned(),
         r#"ListKeysRequest { limit: Some(7), cursor: Some("c") }"#.to_owned(),
         r#"RevokeKeyRequest { key_id: "no ID" }"#.to_owned(),
+        r#"PutFunctionRequest { name: "charge", code: "v1", triggers: ["a", "b"], max_attempts: Some(0), first_delay_seconds: Some(4294967295), max_delay_seconds: None }"#.to_owned(),
+        r#"GetFunctionRequest { name: "f" }"#.to_owned(),
+        r#"StartRunRequest { function: "f" }"#.to_owned(),
+        r#"GetRunRequest { run_id: "no ID" }"#.to_owned(),
+        r#"ClaimRunRequest { functions: ["f@v1"], lease_seconds: Some(10), wait_seconds: Some(0) }"#.to_owned(),
+        format!(r#"BeginStepRequest {{ lease: "l", position: 2, name: "s", once: true, input: Some({:?}) }}"#, DATA.as_bytes()),
+        format!(r#"CompleteStepRequest {{ lease: "l", position: 2, output: Some({:?}) }}"#, METADATA.as_bytes()),
+        r#"CompleteRunRequest { lease: "l", steps: 3, output: None }"#.to_owned(),
     ];
     assert_eq!(asked, sent);
 
@@ -189,7 +276,7 @@ async fn each_operation_crosses_to_the_engine_and_back() {
         let answer = ask_one(&client, &call(KEY), *op).await;
         assert_eq!(answer, Err(e.clone()), "{op:?}");
     }
-    assert_eq!(operations.take().len(), 9);
+    assert_eq!(operations.take().len(), Operation::ALL.len());
 }
 
 /// While the engine opens.
@@ -461,7 +548,29 @@ fn unanswered(op: Operation) -> (ErrorKind, Option<&'static str>) {
                  else check first what landed",
             ),
         ),
-        _ => (ErrorKind::Unavailable, None),
+        Operation::PutFunction => (
+            ErrorKind::Unknown,
+            Some("retry: the same definition, put again, changes nothing"),
+        ),
+        Operation::StartRun => (
+            ErrorKind::Unknown,
+            Some("check first what landed: a retry starts a second run"),
+        ),
+        Operation::ClaimRun => (
+            ErrorKind::Unknown,
+            Some("claim again: the run of a lost claim waits for its lease's deadline"),
+        ),
+        Operation::BeginStep | Operation::CompleteStep | Operation::CompleteRun => (
+            ErrorKind::Unknown,
+            Some("send the same call again, with the same lease: it repeats no work"),
+        ),
+        Operation::GetEvent
+        | Operation::ListEvents
+        | Operation::Whoami
+        | Operation::ListEnvironments
+        | Operation::ListKeys
+        | Operation::GetFunction
+        | Operation::GetRun => (ErrorKind::Unavailable, None),
     }
 }
 
@@ -816,6 +925,7 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
             }
             let empty = match op {
                 Operation::RevokeKey => Some("()"),
+                Operation::ClaimRun => Some("None"),
                 Operation::ListKeys => Some("KeyPage { keys: [], next: None }"),
                 Operation::ListEvents => Some("EventPage { events: [], next: None }"),
                 Operation::ListEnvironments => Some("[]"),
@@ -831,7 +941,19 @@ async fn a_call_no_engine_answers_says_whether_it_may_have_run() {
             let ended = (e.kind, e.hint.as_deref());
             let why = &answer.0;
             assert_eq!(ended, unanswered(op), "{op:?} {shown:?}");
-            let one = !matches!(op, Operation::EmitBatch) && !op.rpc().contains("/List");
+            // Of an answer whose first field is a message, that field holds no message: the
+            // library refuses it. The empty one decodes, and lacks what the answer needs.
+            let first_is_a_message = matches!(
+                op,
+                Operation::PutFunction
+                    | Operation::ClaimRun
+                    | Operation::BeginStep
+                    | Operation::CompleteStep
+                    | Operation::CompleteRun
+            );
+            let one = !matches!(op, Operation::EmitBatch)
+                && !op.rpc().contains("/List")
+                && !(first_is_a_message && *answer != answers[0]);
             let message = match decoded.contains(&answer) && one {
                 true => "the answer does not decode".to_owned(),
                 false => format!("the engine did not answer: {why}"),

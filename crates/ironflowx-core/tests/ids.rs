@@ -1,6 +1,6 @@
 use ironflowx_core::{
-    Emitter, EnvRef, EnvironmentId, EventId, IncarnationToken, KeyId, ProjectId, RunId, SubmitAs,
-    TenantId,
+    Emitter, EnvRef, EnvironmentId, EventId, IncarnationToken, KeyId, Lease, ProjectId, RunId,
+    SubmitAs, TenantId,
 };
 
 const V7: &str = "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f";
@@ -38,6 +38,33 @@ fn run_id_parses_only_a_uuidv7() {
     assert!(V4.parse::<RunId>().is_err());
     let err = "".parse::<RunId>().unwrap_err();
     assert_eq!(err.to_string(), "invalid run ID");
+}
+
+/// A lease reads back only in the form it prints: a run ID, a dot and an execution from 1.
+#[test]
+fn a_lease_is_a_run_and_its_execution() {
+    let text = format!("{V7}.3");
+    let lease: Lease = text.parse().unwrap();
+    assert_eq!((lease.run, lease.execution), (V7.parse().unwrap(), 3));
+    assert_eq!(lease.to_string(), text);
+    let max = format!("{V7}.{}", u32::MAX);
+    assert_eq!(max.parse::<Lease>().unwrap().execution, u32::MAX);
+    for bad in [
+        format!("{V7}.0"),
+        format!("{V7}.03"),
+        format!("{V7}.+3"),
+        format!("{V7}.-3"),
+        format!("{V7}. 3"),
+        format!("{V7}."),
+        format!("{V7}.{}", u64::from(u32::MAX) + 1),
+        format!("{V4}.3"),
+        V7.to_owned(),
+        "not-a-lease".to_owned(),
+        String::new(),
+    ] {
+        let err = bad.parse::<Lease>().unwrap_err();
+        assert_eq!(err.to_string(), "invalid lease", "{bad:?}");
+    }
 }
 
 #[test]

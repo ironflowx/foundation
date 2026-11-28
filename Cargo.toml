@@ -16,6 +16,7 @@ authors = ["Ironflow X contributors"]
 [workspace.dependencies]
 ironflowx-core = { path = "crates/ironflowx-core", version = "0.3.0" }
 ironflowx-events = { path = "crates/ironflowx-events", version = "0.3.0" }
+ironflowx-execution = { path = "crates/ironflowx-execution", version = "0.3.0" }
 ironflowx-proto = { path = "crates/ironflowx-proto", version = "0.3.0" }
 ironflowx-cell = { path = "crates/ironflowx-cell", version = "0.3.0" }
 ironflowx-authz = { path = "crates/ironflowx-authz", version = "0.3.0" }

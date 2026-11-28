@@ -14,6 +14,7 @@ cd "$(dirname "$0")/.."
 ci/check-deps.sh crates/ironflowx-core/Cargo.toml ci/purity/ironflowx-core.allow
 ci/check-deps.sh crates/ironflowx-events/Cargo.toml ci/purity/ironflowx-events.allow
 ci/check-deps.sh crates/ironflowx-authz/Cargo.toml ci/purity/ironflowx-authz.allow
+ci/check-deps.sh crates/ironflowx-execution/Cargo.toml ci/purity/ironflowx-execution.allow
 ci/no-event-clock-outside-ledger.sh crates
 ci/no-key-attribution.sh crates
 ci/clippy-bans.sh .
@@ -40,6 +41,8 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     ci/check-deps.sh ci/fixtures/forbidden-dep/Cargo.toml ci/purity/ironflowx-core.allow
   ci/must-reject.sh "dependency not allowed: getrandom" -- \
     ci/check-deps.sh ci/fixtures/forbidden-dep/Cargo.toml ci/purity/ironflowx-authz.allow
+  ci/must-reject.sh "dependency not allowed: getrandom" -- \
+    ci/check-deps.sh ci/fixtures/forbidden-dep/Cargo.toml ci/purity/ironflowx-execution.allow
   ci/must-reject.sh \
     'disallowed method `ironflowx_authz::KeyDigest::to_stored`' \
     'disallowed method `ironflowx_authz::KeyDigest::from_stored`' -- \
@@ -58,6 +61,17 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     'disallowed type `std::collections::HashMap`' \
     'use of `println!`' -- \
     cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
+  # The same calls under execution rules' copy of the bans (LED-15, extended).
+  ci/must-reject.sh \
+    'disallowed method `std::time::SystemTime::now`' \
+    'disallowed method `std::fs::read`' \
+    'disallowed method `std::path::Path::exists`' \
+    'disallowed type `std::net::TcpStream`' \
+    'disallowed method `std::thread::spawn`' \
+    'disallowed method `getrandom::u64`' \
+    'disallowed type `std::collections::HashMap`' \
+    'use of `println!`' -- \
+    cargo clippy --locked --manifest-path ci/fixtures/forbidden-call-execution/Cargo.toml -- -D warnings
   ci/must-reject.sh \
     "engine-dep/direct/Cargo.toml: engine crate: 'ironflowx-operations'" \
     "engine-dep/renamed/Cargo.toml: engine crate: 'ironflowx-cell'" \
@@ -111,7 +125,8 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "crates/ironflowx-proto/clippy.toml: missing the ironflowx_events::engine_event ban" \
     "crates/ironflowx-cell/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
     "crates/ironflowx-events/clippy.toml: missing the ironflowx_core::SequencedTime::from_event_clock ban" \
-    "crates/ironflowx-authz/clippy.toml: its bans differ" -- \
+    "crates/ironflowx-authz/clippy.toml: its bans differ" \
+    "crates/ironflowx-execution/clippy.toml: its bans differ" -- \
     ci/clippy-bans.sh ci/fixtures/missing-ban
   ci/must-reject.sh 'disallowed method `ironflowx_core::SubmitAs::key`' -- \
     cargo clippy --locked --manifest-path ci/fixtures/key-attribution-outside-authz/Cargo.toml -- -D warnings

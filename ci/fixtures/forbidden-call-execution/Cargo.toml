@@ -1,0 +1,9 @@
+[package]
+name = "forbidden-call-execution"
+edition = "2024"
+publish = false
+
+[dependencies]
+getrandom = "0.3"
+
+[workspace]

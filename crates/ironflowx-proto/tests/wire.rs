@@ -124,9 +124,10 @@ fn the_protos_methods_are_the_operations() {
     assert_eq!(methods, rpcs);
 }
 
-/// D54: what the generator and a client read as JSON text.
+/// D54: what the generator and a client read as JSON text: event data and metadata, and the
+/// inputs and outputs of runs and steps.
 #[test]
-fn event_data_and_metadata_are_json_text() {
+fn every_json_value_is_json_text() {
     let pool = prost_reflect::DescriptorPool::decode(wire::FILE_DESCRIPTOR_SET).unwrap();
     let option = pool.get_extension_by_name("ironflowx.v1.json_text");
     let option = option.unwrap();
@@ -138,10 +139,17 @@ fn event_data_and_metadata_are_json_text() {
         .collect();
     fields.sort();
     let expected = [
+        "ironflowx.v1.BeginStepRequest.input",
+        "ironflowx.v1.Claim.input",
+        "ironflowx.v1.CompleteRunRequest.output",
+        "ironflowx.v1.CompleteStepRequest.output",
         "ironflowx.v1.EmitRequest.data",
         "ironflowx.v1.EmitRequest.metadata",
         "ironflowx.v1.Event.data",
         "ironflowx.v1.Event.metadata",
+        "ironflowx.v1.Run.input",
+        "ironflowx.v1.Run.output",
+        "ironflowx.v1.StepCompleted.output",
     ];
     assert_eq!(fields, expected.map(|name| (name.to_owned(), true)));
 }
