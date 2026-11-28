@@ -4,14 +4,14 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::limits::MAX_EMBEDDER_NAME_BYTES;
 use crate::{KeyId, ParseError};
-
-const MAX_EMBEDDER_BYTES: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Who {
     Key(KeyId),
-    /// 1–128 bytes, no control, format or line or paragraph separator character.
+    /// 1 to [`MAX_EMBEDDER_NAME_BYTES`] bytes, no control, format or line or paragraph separator
+    /// character.
     Embedder(String),
 }
 
@@ -35,8 +35,8 @@ impl SubmitAs {
     ///
     /// # Errors
     ///
-    /// If `name` is empty, over 128 bytes or holds a control, format or line or paragraph
-    /// separator character.
+    /// If `name` is empty, over [`MAX_EMBEDDER_NAME_BYTES`] bytes or holds a control, format or
+    /// line or paragraph separator character.
     pub fn embedder(name: &str) -> Result<Self, ParseError> {
         embedder(name).map(Self)
     }
@@ -49,7 +49,8 @@ impl SubmitAs {
 }
 
 fn embedder(name: &str) -> Result<Who, ParseError> {
-    let valid = (1..=MAX_EMBEDDER_BYTES).contains(&name.len()) && !name.chars().any(unreadable);
+    let valid =
+        (1..=MAX_EMBEDDER_NAME_BYTES).contains(&name.len()) && !name.chars().any(unreadable);
     valid
         .then(|| Who::Embedder(name.to_owned()))
         .ok_or(ParseError::new("embedder name"))

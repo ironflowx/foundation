@@ -1,8 +1,8 @@
 //! The Ironflow X Operations interface and its request and answer types.
 //!
 //! Types, a trait and each operation's required scope (D37), RPC name and whether it changes
-//! state. An event's defaults, limits and checks belong to event rules (D1), a key's to the engine,
-//! credentials and the control plane.
+//! state. An event's defaults and checks belong to event rules (D1), a key's to the engine,
+//! credentials and the control plane; the size limits they check are in [`limits`] (D120).
 //! No operation takes an environment: it runs on the one its key is bound to (LED-7).
 //!
 //! Features, none on by default: `client` is the proto client, [`Operations`] over the network, and
@@ -31,6 +31,9 @@ use ironflowx_core::{
 
 #[cfg(feature = "client")]
 pub use client::{Client, InvalidUrl};
+
+/// The size limits of what a request sends, so a client sizes it before sending (D120).
+pub use ironflowx_core::limits;
 
 /// Everything a client can do. Every caller, in process or remote, goes through this trait, and
 /// a call is answered only for the key it carries (D36). Callers are generic over it; there is
@@ -334,7 +337,7 @@ pub struct CreateKeyRequest {
     pub scopes: BTreeSet<Scope>,
     /// `None`: no expiry, allowed only when the creator has none.
     pub expires_at: Option<Timestamp>,
-    /// 0–128 bytes of UTF-8, no control character.
+    /// 0 to [`limits::MAX_KEY_LABEL_BYTES`] bytes of UTF-8, no control character.
     pub label: Option<String>,
 }
 

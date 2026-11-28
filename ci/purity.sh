@@ -19,7 +19,7 @@ ci/clippy-bans.sh .
 ci/no-digest-codec.sh crates
 # Comments may name the constructor.
 ci/no-key-attribution.sh ci/fixtures/key-attribution-in-comment
-ci/no-engine-deps.sh crates/ironflowx-doors/Cargo.toml
+ci/no-engine-deps.sh crates/ironflowx-doors/Cargo.toml crates/ironflowx-proto/Cargo.toml
 # A dev-dependency does not ship.
 ci/no-engine-deps.sh ci/fixtures/engine-dep/allowed/Cargo.toml
 ci/no-fault-points.sh crates

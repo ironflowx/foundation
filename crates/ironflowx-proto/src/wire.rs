@@ -42,8 +42,9 @@ pub use generated::ironflowx::v1::{
 #[cfg(feature = "wire")]
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptors.bin"));
 
-/// The most a request body or a message holds, in the door and the client.
-pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
+/// The most a request body or a message holds, in the door and the client:
+/// [`limits::MAX_MESSAGE_BYTES`](crate::limits::MAX_MESSAGE_BYTES).
+pub const MAX_MESSAGE: usize = crate::limits::MAX_MESSAGE_BYTES;
 
 /// Sent for a credential that is no key, so the engine answers it as malformed.
 pub const MALFORMED_KEY: &str = "malformed";

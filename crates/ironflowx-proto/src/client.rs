@@ -35,14 +35,15 @@ use crate::{
 
 /// [`Operations`] over the network. It holds no key: each call sends its [`Call`]'s as the Bearer
 /// key and an anonymous one sends none, so one client serves many keys. It accepts answers up to
-/// 16 MiB. Calls need a tokio runtime.
+/// [`MAX_MESSAGE_BYTES`](crate::limits::MAX_MESSAGE_BYTES). Calls need a tokio runtime.
 ///
 /// # Errors
 ///
 /// Of every call, first match wins (D56):
 ///
-/// - `ResourceExhausted`, with nothing sent, for a request over 16 MiB; `Invalid` for one the wire
-///   does not carry, as the call says.
+/// - `ResourceExhausted`, with nothing sent, for a request over
+///   [`MAX_MESSAGE_BYTES`](crate::limits::MAX_MESSAGE_BYTES); `Invalid` for one the wire does not
+///   carry, as the call says.
 /// - The engine's own error, unchanged, whatever the status and type of the failure it comes with.
 /// - `Unavailable` if the connection never opened: nothing ran.
 /// - What the server's library refused, as a Connect server sends it: `Invalid`,
@@ -368,7 +369,7 @@ fn fits<M: Message>(request: M) -> Result<M, OpError> {
     }
     Err(OpError {
         kind: ErrorKind::ResourceExhausted,
-        message: "the request is over 16 MiB".into(),
+        message: format!("the request is over {} MiB", wire::MAX_MESSAGE >> 20),
         hint: None,
     })
 }

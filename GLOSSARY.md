@@ -123,6 +123,9 @@ What a ledger's writer stamps records with: the clock the ledger was opened with
 **Idempotency key**:
 An optional client value on an emit. A second emit with a key already used in the environment returns the original event's ID, marked a duplicate, instead of storing another.
 
+**Size limit**:
+The most a caller may send: the bytes of an event's name, data, metadata and idempotency key, a batch's events and their data and metadata together, a key's label, an embedder's name; and a message on the wire. Each is a constant in `ironflowx_core::limits`. **Checking an emit** (`check_emit`) runs event rules' checks of one emit without submitting it, so a payload is sized before it is sent.
+
 ### Packaging
 
 **Foundation**:
