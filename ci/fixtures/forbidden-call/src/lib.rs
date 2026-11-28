@@ -40,3 +40,7 @@ pub fn keeps_a_hash_map() -> usize {
 pub fn reads_the_environment() -> usize {
     std::env::vars_os().count()
 }
+
+pub fn reads_the_temporary_directory() -> std::path::PathBuf {
+    std::env::temp_dir()
+}

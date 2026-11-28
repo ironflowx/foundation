@@ -1,8 +1,4 @@
-// Fixture: execution rules' test file with its one helper's call, and a second use beside it.
-fn now() -> SequencedTime {
-    SequencedTime::from_event_clock(NOW)
-}
-
-fn later() -> SequencedTime {
-    SequencedTime::from_event_clock(LATER)
+// Fixture: two uses on one line of the exempt file.
+fn now() -> (SequencedTime, SequencedTime) {
+    (SequencedTime::from_event_clock(NOW), SequencedTime::from_event_clock(LATER))
 }

@@ -199,7 +199,8 @@ fn existing(path: &Path, env: EnvRef, watermark: u64) -> Option<Connection> {
         conn.prepare(&format!("SELECT {FUNCTION_COLUMNS} LIMIT 0"))?;
         conn.prepare("SELECT function, event_name FROM triggers LIMIT 0")?;
         conn.prepare(&format!("SELECT {RUN_COLUMNS} LIMIT 0"))?;
-        conn.prepare(&format!("SELECT {STEP_COLUMNS} LIMIT 0"))?;
+        // `run_id` too, which the step lookup reads beside the columns it returns.
+        conn.prepare(&format!("SELECT run_id, {STEP_COLUMNS} LIMIT 0"))?;
         let check: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
         Ok(check == "ok")
     };

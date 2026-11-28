@@ -84,11 +84,12 @@ A commit or a tag cannot be named.
 `ironflowx-core`, `ironflowx-events`, `ironflowx-authz` and `ironflowx-execution` are pure
 (LED-15). Each has:
 
-- `ci/purity/<crate>.allow`: every crate it may depend on, transitively, with all its features on.
-  A new dependency of a pure crate goes here, with each crate it pulls in; `ci/check-deps.sh`
-  prints what is missing.
-- `clippy.toml`: core's file bans the clock, filesystem, network, threads, the environment, OS
-  randomness and `HashMap`; events links to it; authz copies it less the `SubmitAs::key` ban, and
+- `ci/purity/<crate>.allow`: every crate it may depend on, transitively, with all its features on,
+  on this machine's target and on wasm32. A new dependency of a pure crate goes here, with each
+  crate it pulls in; `ci/check-deps.sh` prints what is missing.
+- `clippy.toml`: core's file bans the clock, filesystem, network, threads, the environment and
+  arguments, OS randomness and `HashMap`; events links to it; authz copies it less the
+  `SubmitAs::key` ban, and
   execution less the `engine_event` ban, since execution rules make the engine's events
   (`ci/clippy-bans.sh` checks each copy). A pure crate uses `BTreeMap`.
 - The `#![forbid(...)]` header at the top of `src/lib.rs`, so an inner `#[allow]` cannot lift a ban.

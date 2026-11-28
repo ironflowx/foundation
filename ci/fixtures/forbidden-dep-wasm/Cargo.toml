@@ -1,0 +1,10 @@
+[package]
+name = "forbidden-dep-wasm"
+edition = "2024"
+publish = false
+
+# Only on wasm32, behind a feature of its own.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", optional = true }
+
+[workspace]

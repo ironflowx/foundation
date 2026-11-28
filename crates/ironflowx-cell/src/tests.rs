@@ -362,11 +362,19 @@ async fn a_read_store_with_damaged_tables_is_rebuilt() {
     }
 }
 
-/// The same of each execution table: a store that lacks one is rebuilt, and answers as before.
+/// The same of each execution table: a store that lacks one, or a column one is read by, is
+/// rebuilt, and answers as before.
 #[tokio::test]
 async fn a_read_store_without_an_execution_table_is_rebuilt() {
     use ironflowx_execution::{Begun, Command, Outcome as Answer};
-    for table in ["functions", "triggers", "runs", "steps"] {
+    for damage in [
+        "DROP TABLE functions",
+        "DROP TABLE triggers",
+        "DROP TABLE runs",
+        "DROP TABLE steps",
+        // A column a lookup reads but does not return.
+        "ALTER TABLE steps RENAME COLUMN run_id TO lost",
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let env = new_env_ref();
         let ledger = open(dir.path(), env).await;
@@ -387,21 +395,25 @@ async fn a_read_store_without_an_execution_table_is_rebuilt() {
         let read = ledger.get_run(&run.to_string()).await.unwrap();
         ledger.close().await;
         let conn = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
-        conn.execute_batch(&format!("DROP TABLE {table}")).unwrap();
+        conn.execute_batch(damage).unwrap();
         drop(conn);
         let ledger = open(dir.path(), env).await;
         assert_eq!(
             ledger.get_function("charge").await.unwrap(),
             function,
-            "{table}"
+            "{damage}"
         );
         assert_eq!(
             ledger.get_run(&run.to_string()).await.unwrap(),
             read,
-            "{table}"
+            "{damage}"
         );
         let open_step = Answer::StepBegun(Begun::Run { attempt: 1 });
-        assert_eq!(execute(&ledger, begin).await.unwrap(), open_step, "{table}");
+        assert_eq!(
+            execute(&ledger, begin).await.unwrap(),
+            open_step,
+            "{damage}"
+        );
         ledger.close().await;
     }
 }
@@ -2298,12 +2310,15 @@ async fn a_lost_step_fails_the_ledger() {
         input: None,
     };
     execute(&ledger, begin.clone()).await.unwrap();
-    ledger
+    // A read waits for the fold of every acknowledged record, so the step is there to delete.
+    assert_eq!(ledger.get_run(&run.to_string()).await.unwrap().steps, 1);
+    let deleted = ledger
         .store
         .lock()
         .unwrap()
         .execute("DELETE FROM steps", [])
         .unwrap();
+    assert_eq!(deleted, 1);
     assert_eq!(
         execute(&ledger, begin.clone()).await,
         Err(SubmitError::Unavailable)

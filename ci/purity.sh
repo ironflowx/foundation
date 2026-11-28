@@ -44,9 +44,12 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
   ci/must-reject.sh "dependency not allowed: getrandom" -- \
     ci/check-deps.sh ci/fixtures/forbidden-dep/Cargo.toml ci/purity/ironflowx-execution.allow
   # A dependency behind a feature counts: a dependent can turn the feature on.
+  # And one of wasm32 only, which the wasm job builds.
   for allow in ci/purity/ironflowx-{core,events,authz,execution}.allow; do
-    ci/must-reject.sh "dependency not allowed: getrandom" -- \
-      ci/check-deps.sh ci/fixtures/forbidden-dep-optional/Cargo.toml "$allow"
+    for fixture in forbidden-dep-optional forbidden-dep-wasm; do
+      ci/must-reject.sh "dependency not allowed: getrandom" -- \
+        ci/check-deps.sh "ci/fixtures/$fixture/Cargo.toml" "$allow"
+    done
   done
   ci/must-reject.sh \
     'disallowed method `ironflowx_authz::KeyDigest::to_stored`' \
@@ -65,7 +68,8 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     'disallowed method `getrandom::u64`' \
     'disallowed type `std::collections::HashMap`' \
     'use of `println!`' \
-    'disallowed method `std::env::vars_os`' -- \
+    'disallowed method `std::env::vars_os`' \
+    'disallowed method `std::env::temp_dir`' -- \
     cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
   # The same calls under execution rules' copy of the bans (LED-15, extended).
   ci/must-reject.sh \
@@ -77,7 +81,8 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     'disallowed method `getrandom::u64`' \
     'disallowed type `std::collections::HashMap`' \
     'use of `println!`' \
-    'disallowed method `std::env::vars_os`' -- \
+    'disallowed method `std::env::vars_os`' \
+    'disallowed method `std::env::temp_dir`' -- \
     cargo clippy --locked --manifest-path ci/fixtures/forbidden-call-execution/Cargo.toml -- -D warnings
   ci/must-reject.sh \
     "engine-dep/direct/Cargo.toml: engine crate: 'ironflowx-operations'" \
