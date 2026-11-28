@@ -96,6 +96,9 @@ pub fn ironflowx_cell::SubmitError::fmt(&self, &mut core::fmt::Formatter<'_>) ->
 impl core::fmt::Display for ironflowx_cell::SubmitError
 pub fn ironflowx_cell::SubmitError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_cell::SubmitError
+pub struct ironflowx_cell::Changes(_)
+impl ironflowx_cell::Changes
+pub async fn ironflowx_cell::Changes::changed(&mut self)
 pub struct ironflowx_cell::Committed
 pub ironflowx_cell::Committed::outcome: ironflowx_cell::Outcome
 impl core::clone::Clone for ironflowx_cell::Committed
@@ -131,6 +134,8 @@ impl ironflowx_core::time::Clock for ironflowx_cell::HostClock
 pub fn ironflowx_cell::HostClock::now(&self) -> ironflowx_core::time::Timestamp
 pub struct ironflowx_cell::Ledger
 impl ironflowx_cell::Ledger
+pub fn ironflowx_cell::Ledger::changes(&self) -> ironflowx_cell::Changes
+pub async fn ironflowx_cell::Ledger::claimable(&self, &ironflowx_execution::Command, &(dyn ironflowx_core::time::Clock + core::marker::Sync)) -> core::result::Result<core::option::Option<core::time::Duration>, ironflowx_cell::ReadError>
 pub async fn ironflowx_cell::Ledger::close(self)
 pub async fn ironflowx_cell::Ledger::close_with_state(self) -> ironflowx_cell::LedgerState
 pub const fn ironflowx_cell::Ledger::env(&self) -> ironflowx_core::id::EnvRef

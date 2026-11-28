@@ -60,7 +60,7 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 
 | Module | Does | Interface | Crate |
 |---|---|---|---|
-| Ledger | Commits a submission of either rule module as one record of ordered entries; answers reads that see every acknowledged commit; mints event and run IDs and stamps event time; reports whether it has failed, and signals a ledger fault | `open`, `open_blocking`, `open_existing_blocking`, `submit` (`Submission::{Events, Execution}`), `get_event`, `list_events`, `get_function`, `get_run`, `state`, `faulted`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
+| Ledger | Commits a submission of either rule module as one record of ordered entries; answers reads that see every acknowledged commit; mints event and run IDs and stamps event time; signals each commit; tells a waiting claim when a run of its pairs is due, by the event clock; reports whether it has failed, and signals a ledger fault | `open`, `open_blocking`, `open_existing_blocking`, `submit` (`Submission::{Events, Execution}`), `get_event`, `list_events`, `get_function`, `get_run`, `changes`, `claimable`, `state`, `faulted`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
 | Execution rules | Decides what a function may be, which run a claim takes, who may work on a run (the fence), and what a step call answers; makes the engine's events a run's end needs. Pure | `decide`, `fold`, `get_function`, `get_run`, `encode`, `decode` | `ironflowx-execution` |
 | Event rules | Decides what an event is and when an emit is refused; makes and sequences the engine's own events, which it refuses from a client; a refusal may carry a hint. Pure | `decide`, `check_emit`, `engine_event`, `sequence`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types, which the wire maps onto (D53) | `Operations` trait and messages | `ironflowx-proto` |
@@ -69,7 +69,7 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 | Proto client | Calls `Operations` over Connect, sending each `Call`'s key | `Client::new(url)`, `with_timeout`, `Operations` | `ironflowx-proto` (`client`; `client-tls` for `https`) |
 | HTTP door | Serves `Operations` over Connect, gRPC and gRPC-Web, with `/health` and `/ready`. Holds no rule | `router(slot)`, `Slot`, `Readiness` | `ironflowx-doors` (`http`) |
 | Generator | Derives a CLI's commands from the proto at build time, and refuses a proto that does not say enough | `generate(descriptor_set, out_dir)`, from `build.rs` | `ironflowx-codegen` |
-| Engine | Reads whether the bootstrap is marked; opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked, or its grant the engine's own embedder grant) before the handler reaches the ledger or the key records; gives the embedding process its own call; reports its health and a ledger fault to the host; checks an emit without a submit | `is_bootstrapped`, `Engine::open`, `embedder_call`, `health`, `faulted`, `close`, `Operations`, `recover_admin_key`, `check_emit` | `ironflowx-operations` |
+| Engine | Reads whether the bootstrap is marked; opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked, or its grant the engine's own embedder grant) before the handler reaches the ledger or the key records; gives the embedding process its own call; lets a claim wait for a due run without appending, and ends waiting claims when the host drains; reports its health and a ledger fault to the host; checks an emit without a submit | `is_bootstrapped`, `Engine::open`, `embedder_call`, `begin_drain`, `health`, `faulted`, `close`, `Operations`, `recover_admin_key`, `check_emit` | `ironflowx-operations` |
 | Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold, from a key or from the embedding process. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create`, `may_create_as_embedder` | `ironflowx-authz` |
 | Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `undo_bootstrap`, `mark_ledger_created`, `finish_bootstrap`, `check_seed`, `apply_seed`, `lookup_key`, `record_expiry`, `insert_key`, `insert_recovered`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
 | Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Scope`, `KeyOrigin`, `Address`, `Secret`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors; the size limits of what a caller sends | Types, `limits` | `ironflowx-core` |
@@ -203,6 +203,7 @@ impl Engine {
         -> Result<Opened, EngineError>;
     async fn health(&self) -> Health;   // reads the control plane once (no key record), then the ledger's state; no key, not an operation
     fn faulted(&self) -> impl Future<Output = Fault> + Send + 'static;   // Ledger::faulted; no key, not an operation
+    fn begin_drain(&self);   // every claim, waiting or new, answers Unavailable at once, for good; no key, not an operation
     async fn close(self);
     async fn close_with_state(self) -> LedgerState;   // ledger state at the start of close
 }
@@ -294,6 +295,10 @@ impl Ledger {
     async fn list_events(&self, limit: Option<NonZeroU32>, cursor: Option<&str>) -> Result<EventPage, ReadError>;   // this ledger's token checks the cursor
     async fn get_function(&self, name: &str) -> Result<Function, ReadError>;   // Refused(NotFound) for an unknown name
     async fn get_run(&self, id: &str) -> Result<Run, ReadError>;   // Refused(NotFound) for an unknown or malformed ID
+    fn changes(&self) -> Changes;   // Changes::changed() resolves at each commit and at a failure; taken before a read, it misses nothing after that read's snapshot
+    // When a run `claim` may take is due: Some(ZERO) now, Some(d) in d of event time, None when no run of its pairs is queued.
+    // execution's earliest_due, then `clock` (the ledger's own) read after the snapshot; now is the later of it and the snapshot's last record (D7)
+    async fn claimable(&self, claim: &Command, clock: &(dyn Clock + Sync)) -> Result<Option<Duration>, ReadError>;   // Refused(Invalid) as a submission's
     fn env(&self) -> EnvRef;
     fn state(&self) -> LedgerState;   // Open | Unavailable
     fn faulted(&self) -> impl Future<Output = Fault> + Send + 'static;   // resolves once, when the ledger fails; a close is no fault
@@ -344,10 +349,11 @@ fn decide<V: ExecutionView>(view: &V, cmd: &Command, by: &Emitter, now: Sequence
 fn fold<T: ExecutionTables>(tables: &mut T, entry: &Stored, time: Timestamp, by: &Emitter) -> Result<(), T::Error>;
 fn get_function<V: ExecutionView>(view: &V, name: &str) -> Result<Function, Error<V::Error>>;
 fn get_run<V: ExecutionView>(view: &V, id: &str) -> Result<Run, Error<V::Error>>;
+fn earliest_due<V: ExecutionView>(view: &V, claim: &Command) -> Result<Option<Timestamp>, Error<V::Error>>;   // checks the claim as decide does
 fn encode(entry: &Stored, out: &mut Vec<u8>);   // led by its kind, 1 to 6
 fn decode(bytes: &mut &[u8]) -> Option<Stored>;   // a decoded RunCompleted joins no decision
 // ExecutionView: function, run, step (one the run counts: none is the store's failure), last_run_sequence,
-// claimable(pairs, now)
+// claimable(pairs, now), earliest_due(pairs): the earliest due time of a queued run of the pairs, due or not
 // ExecutionTables: put_function, create_run, claim, begin_step, complete_step, complete_run
 ```
 
@@ -394,7 +400,7 @@ A page holds 20 events unless asked otherwise, at most 200, and stops before its
 
 ## Execution rules
 
-A function is a definition in the ledger; a run is one durable invocation of it; an executor claims a run and asks the engine about each step. What #219 builds of it, the tracer, is below; the rest of 0.4's design lands with later tickets of [#209](https://github.com/ironflowx/foundation/issues/209).
+A function is a definition in the ledger; a run is one durable invocation of it; an executor claims a run and asks the engine about each step. What #219 builds of it, the tracer, and #226, the waiting claim, are below; the rest of 0.4's design lands with later tickets of [#209](https://github.com/ironflowx/foundation/issues/209).
 
 | Operation | Scope | Does |
 |---|---|---|
@@ -402,10 +408,12 @@ A function is a definition in the ledger; a run is one durable invocation of it;
 | `GetFunction` | `read` | The function as put, with `put_at` and `put_by`, the record's time and attribution. An unknown name is `NotFound`, `function not found` |
 | `StartRun` | `write` | Creates a run of the function: `queued`, due at once, with the function's code label at that moment (D88), the next run sequence, and a `null` input. It takes `function` only; an input and an idempotency key arrive later, so it answers `duplicate: false`. An unknown function is `NotFound` |
 | `GetRun` | `read` | The run: status, input, creation, due time while queued, execution number, lease deadline while running, steps begun and the open one's name, output and end once completed. An unknown or malformed ID is `NotFound`, `run not found` |
-| `ClaimRun` | `execute` | Names 1–100 different `name@code` pairs and takes at most one `queued` run of them that is due, the earliest due first, then the first created (RUN-7). The execution number goes up by one, the status becomes `running`, and the lease runs `lease_seconds` (10–900, 60 when absent), held by the calling key. `wait_seconds` (0–20) is checked, and the claim answers at once whatever it says. Nothing due: no claim, and nothing appended |
+| `ClaimRun` | `execute` | Names 1–100 different `name@code` pairs and takes at most one `queued` run of them that is due, the earliest due first, then the first created (RUN-7). The execution number goes up by one, the status becomes `running`, and the lease runs `lease_seconds` (10–900, 60 when absent), held by the calling key. It waits up to `wait_seconds` (0–20, 20 when absent) for one to be due (below). Nothing due by the end: no claim, and nothing appended |
 | `BeginStep` | `execute` | Asks about step `position` of the claimed run (below) |
 | `CompleteStep` | `execute` | Records the open step's output, begun by this execution; a step that has an output answers it, the first one standing |
 | `CompleteRun` | `execute` | Completes the run with its output, `ironflowx.run.completed` in the same record (RUN-2, D103). `steps`, the positions this execution reached, above the steps begun, or equal with the last open, is `Invalid` |
+
+**Waiting** (D90, D96, D113). The wait is measured by a monotonic clock. Admitted, the engine reads, at the event clock, when a run the claim may take is due (`Ledger::claimable`, which checks the request as `decide` does, so a claim outside the rules is `Invalid` at once), and submits only if one is due now, so an idle claim appends nothing and takes no place at the writer. When none is, it waits for the first of: a commit, the earliest time one of its runs becomes due, 5 seconds, the end of the wait, a ledger fault, a drain; then it reads again. It takes `Ledger::changes` before each read, so a commit after the read's snapshot still wakes it (RUN-16). The 5 seconds bound how late it sees a clock that was set. When several happen at once: a due run first, then a fault or a drain, which end it as `Unavailable`, then the end of the wait, where it is empty; a due run on a failed ledger cannot be read or taken, so that pair is `Unavailable`. It admits the key again before every submission, and that admission is the boundary, as for an emit (D43): a key revoked or expired before it takes no run (the claim is `Unauthenticated`), and one revoked between it and the commit may. Two claims that see one run both submit; one takes it and the other goes back to waiting. There is no timer, sweep or background task: due times are absolute and read at each claim. `Engine::begin_drain`, which the host calls first as it stops, ends every claim, waiting or new, as `Unavailable` (`the engine is stopping`, hint `claim again once the engine is back`) at once, for good; every other operation is served as before. A claim that waits needs the runtime's timer.
 
 **The fence** (RUN-1, D95). Every call that names a lease is checked, in the decision that writes, in this order, and the first failure answers: what the request alone shows (`Invalid`: a position of 0, a step name that is not 1–256 bytes without a control character, an input or output outside its rules), then the lease parses and its run exists (`NotFound`, `run not found`), then its execution number is the run's current one (`Conflict`, hint `this execution was superseded: stop working on this run`; a run never claimed is at execution 0, which no lease names), then the call's key is the one that claimed it (`Conflict`, hint `another key holds this lease`). One function, `fence`, returns the run the rules then need, in a type whose field is private to the module that holds only the fence, so no rule of an execution call reaches a run without it. A refusal appends nothing. A step the run counts that the read store lacks is the store's failure, which fails the ledger, not a refusal.
 
@@ -787,7 +795,7 @@ The `ironflowx` binary, `ironflowx serve` with its settings, data directory, `ad
 | `getrandom` | A caret range (D26) | `new_env_ref`; a key's secret | OS random source |
 | `sha2`, `subtle`, `base64` | Caret ranges | Credentials: the key digest, its constant-time comparison, the key text | Pure: `ci/purity/ironflowx-authz.allow` names everything they pull in, `libc` included (only `cpufeatures`' CPU detection on AArch64 uses it) |
 | `zeroize` | A caret range | `Secret` is zeroed on drop | In `ironflowx-core.allow` |
-| `tokio` | A caret range (D26) | `spawn_blocking` for open, reads, close, admission and control-plane calls; the submission queue; the read gate; the answer to a submission | |
+| `tokio` | A caret range (D26) | `spawn_blocking` for open, reads, close, admission and control-plane calls; the submission queue; the read gate and `Ledger::changes`; the answer to a submission; a claim's wait (`time`) and the drain's signal (`sync`) | |
 | `connectrpc`, `connectrpc-build` | Caret ranges (0.9.x), without default features: no gzip, no zstd | `ironflowx-proto`'s wire features and `ironflowx-doors`: the server and the client; code from a precompiled descriptor set | Connect, gRPC and gRPC-Web on the same handlers (D50) |
 | `buffa`, `buffa-types` | Caret ranges (0.9.x) | `ironflowx-proto`'s wire features: generated messages, `Timestamp` | |
 | `protox` | A caret range (0.10.x) | `ironflowx-proto`'s build, with a wire feature on | Compiles the proto in Rust; `encode_file_descriptor_set()` keeps custom options (D51) |

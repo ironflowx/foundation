@@ -609,4 +609,20 @@ impl ExecutionView for ReadStore<'_> {
                 .optional(),
         )
     }
+
+    fn earliest_due(&self, pairs: &[(String, String)]) -> Result<Option<Timestamp>, StoreError> {
+        if pairs.is_empty() {
+            return Ok(None);
+        }
+        let pair = "(function = ? AND code = ?)";
+        let sql = format!(
+            "SELECT MIN(due_at) FROM runs WHERE status = 'queued' AND ({})",
+            vec![pair; pairs.len()].join(" OR ")
+        );
+        let values = pairs.iter().flat_map(|(name, code)| [name, code]);
+        let due = self.0.query_row(&sql, params_from_iter(values), |r| {
+            r.get::<_, Option<Millis>>(0)
+        });
+        store_err(due).map(|due| due.map(|m| m.0))
+    }
 }

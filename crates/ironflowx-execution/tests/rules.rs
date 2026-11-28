@@ -6,7 +6,8 @@ use ironflowx_core::limits::MAX_DATA_BYTES;
 use ironflowx_core::{Emitter, ErrorKind, Lease, RunId, SequencedTime, Timestamp};
 use ironflowx_execution::{
     Begun, Command, Decision, Definition, Draws, Entry, Error, ExecutionTables, ExecutionView,
-    Function, Outcome, Refusal, Run, RunEnd, Status, Step, decide, decode, encode, fold,
+    Function, Outcome, Refusal, Run, RunEnd, Status, Step, decide, decode, earliest_due, encode,
+    fold,
 };
 
 const T: i64 = 1_800_000_000_000;
@@ -49,6 +50,12 @@ impl ExecutionView for Store {
             .collect();
         due.sort_by_key(|r| (r.due_at, r.sequence));
         Ok(due.first().map(|r| (*r).clone()))
+    }
+
+    fn earliest_due(&self, pairs: &[(String, String)]) -> Result<Option<Timestamp>, String> {
+        let queued = self.runs.values().filter(|r| r.status == Status::Queued);
+        let ours = queued.filter(|r| pairs.contains(&(r.function.clone(), r.code.clone())));
+        Ok(ours.filter_map(|r| r.due_at).min())
     }
 }
 
@@ -583,6 +590,11 @@ fn a_claim_outside_the_rules_is_refused() {
     ] {
         let refused = s.outcome(cmd.clone(), &key(1)).unwrap_err();
         assert_eq!(refused.kind(), ErrorKind::Invalid, "{cmd:?}");
+        // A waiting claim's read checks it the same way.
+        let Err(Error::Refused(refused)) = earliest_due(&s, &cmd) else {
+            panic!("{cmd:?} read")
+        };
+        assert_eq!(refused.kind(), ErrorKind::Invalid, "{cmd:?}");
     }
     let hundred = &many[..100];
     assert_eq!(
@@ -595,8 +607,35 @@ fn a_claim_outside_the_rules_is_refused() {
             lease_seconds: Some(lease),
             wait_seconds: Some(wait),
         };
+        assert_eq!(earliest_due(&s, &cmd), Ok(None));
         assert_eq!(s.outcome(cmd, &key(1)), Ok(Outcome::Claimed(None)));
     }
+}
+
+/// A waiting claim's read: the earliest due time of a queued run of its pairs, whether or not it is
+/// due yet; none for a pair with no queued run; `Invalid` for a command that is no claim.
+#[test]
+fn a_claims_read_finds_the_earliest_due_run_of_its_pairs() {
+    let (mut s, _) = claimed();
+    let pair = claim(&["charge@v1"]);
+    // The one run is claimed: nothing is queued.
+    assert_eq!(earliest_due(&s, &pair), Ok(None));
+    s.outcome(start(), &key(1)).unwrap();
+    s.time = T + 5;
+    s.outcome(start(), &key(1)).unwrap();
+    let mut later: Vec<_> = s.runs.values_mut().filter(|r| r.due_at.is_some()).collect();
+    later.sort_by_key(|r| r.sequence);
+    later[0].due_at = Some(Timestamp::from_millis(T + 9));
+    // Run 3, due at T + 5, comes before run 2, moved to T + 9.
+    assert_eq!(
+        earliest_due(&s, &pair),
+        Ok(Some(Timestamp::from_millis(T + 5)))
+    );
+    assert_eq!(earliest_due(&s, &claim(&["charge@v2"])), Ok(None));
+    let Err(Error::Refused(refused)) = earliest_due(&s, &start()) else {
+        panic!("a start read as a claim")
+    };
+    assert_eq!(refused.kind(), ErrorKind::Invalid);
 }
 
 /// A put follows the function rules this release checks, and an identical one appends nothing.

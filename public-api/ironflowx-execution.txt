@@ -277,12 +277,14 @@ pub fn ironflowx_execution::ExecutionTables::put_function(&mut self, &ironflowx_
 pub trait ironflowx_execution::ExecutionView
 pub type ironflowx_execution::ExecutionView::Error
 pub fn ironflowx_execution::ExecutionView::claimable(&self, &[(alloc::string::String, alloc::string::String)], ironflowx_core::time::Timestamp) -> core::result::Result<core::option::Option<ironflowx_execution::Run>, Self::Error>
+pub fn ironflowx_execution::ExecutionView::earliest_due(&self, &[(alloc::string::String, alloc::string::String)]) -> core::result::Result<core::option::Option<ironflowx_core::time::Timestamp>, Self::Error>
 pub fn ironflowx_execution::ExecutionView::function(&self, &str) -> core::result::Result<core::option::Option<ironflowx_execution::Function>, Self::Error>
 pub fn ironflowx_execution::ExecutionView::last_run_sequence(&self) -> core::result::Result<u64, Self::Error>
 pub fn ironflowx_execution::ExecutionView::run(&self, ironflowx_core::id::RunId) -> core::result::Result<core::option::Option<ironflowx_execution::Run>, Self::Error>
 pub fn ironflowx_execution::ExecutionView::step(&self, ironflowx_core::id::RunId, u32) -> core::result::Result<ironflowx_execution::Step, Self::Error>
 pub fn ironflowx_execution::decide<V: ironflowx_execution::ExecutionView>(&V, &ironflowx_execution::Command, &ironflowx_core::who::Emitter, ironflowx_core::time::SequencedTime, ironflowx_execution::Draws<'_>) -> core::result::Result<ironflowx_execution::Decision, ironflowx_events::Error<<V as ironflowx_execution::ExecutionView>::Error>>
 pub fn ironflowx_execution::decode(&mut &[u8]) -> core::option::Option<ironflowx_execution::Stored>
+pub fn ironflowx_execution::earliest_due<V: ironflowx_execution::ExecutionView>(&V, &ironflowx_execution::Command) -> core::result::Result<core::option::Option<ironflowx_core::time::Timestamp>, ironflowx_events::Error<<V as ironflowx_execution::ExecutionView>::Error>>
 pub fn ironflowx_execution::encode(&ironflowx_execution::Stored, &mut alloc::vec::Vec<u8>)
 pub fn ironflowx_execution::fold<T: ironflowx_execution::ExecutionTables>(&mut T, &ironflowx_execution::Stored, ironflowx_core::time::Timestamp, &ironflowx_core::who::Emitter) -> core::result::Result<(), <T as ironflowx_execution::ExecutionTables>::Error>
 pub fn ironflowx_execution::get_function<V: ironflowx_execution::ExecutionView>(&V, &str) -> core::result::Result<ironflowx_execution::Function, ironflowx_events::Error<<V as ironflowx_execution::ExecutionView>::Error>>

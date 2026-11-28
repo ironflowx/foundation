@@ -4,6 +4,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::time::Duration;
 
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
@@ -23,8 +24,8 @@ use super::adapter::{Adapter, SERVED, runs_remotely};
 /// example; and how many are pending, on the engine and through the door.
 pub const FUNCTION_RUNS: (usize, usize) = (9, 9);
 pub const FUNCTION_PENDING: (usize, usize) = (37, 37);
-pub const EXECUTION_RUNS: (usize, usize) = (5, 5);
-pub const EXECUTION_PENDING: (usize, usize) = (77, 63);
+pub const EXECUTION_RUNS: (usize, usize) = (14, 14);
+pub const EXECUTION_PENDING: (usize, usize) = (68, 54);
 
 const T: i64 = 1_800_000_000_000;
 
@@ -46,8 +47,16 @@ pub struct Runs {
     put: Option<Result<PutFunctionResponse, OpError>>,
     /// The run a scenario is about, and the lease of its claim.
     run_id: Option<String>,
+    /// The runs a scenario started, in order.
+    started: Vec<String>,
+    /// How long the last claim took.
+    took: Option<Duration>,
     lease: Option<String>,
     claim: Option<Result<Option<Claim>, OpError>>,
+    /// The runs of the last claims, in order.
+    claimed: Vec<String>,
+    /// A claim is to wait while the next step starts a run.
+    waiting: bool,
     /// How the last call ended.
     outcome: Option<Result<(), OpError>>,
 }
@@ -86,8 +95,12 @@ impl Runs {
             key: None,
             put: None,
             run_id: None,
+            started: Vec::new(),
+            took: None,
             lease: None,
             claim: None,
+            claimed: Vec::new(),
+            waiting: false,
             outcome: None,
         }
     }
@@ -133,6 +146,7 @@ impl Runs {
         let started = self.ops().start_run(&builder, req).await.unwrap();
         assert!(!started.duplicate);
         self.run_id = Some(started.run_id.to_string());
+        self.started.push(started.run_id.to_string());
     }
 
     async fn claim(&self, cx: &Call, functions: &[&str]) -> Result<Option<Claim>, OpError> {
@@ -385,8 +399,110 @@ async fn claims_pair(w: &mut Runs, pair: String) {
 async fn claim_empty(w: &mut Runs) {
     let claim = w.claim.as_ref().expect("a claim");
     assert_eq!(claim, &Ok(None));
-    // Nothing was taken.
-    assert_eq!(w.run().await.status, RunStatus::Queued);
+    if w.run_id.is_some() {
+        // Nothing was taken.
+        assert_eq!(w.run().await.status, RunStatus::Queued);
+    }
+    if let Some(took) = w.took {
+        // It waited what it asked for, and no longer.
+        let asked = Duration::from_secs(1);
+        assert!(asked <= took && took < asked * 5, "{took:?}");
+    }
+}
+
+#[given(regex = r#"^runs 1, 2 and 3 of "charge" were started in that order$"#)]
+async fn three_started(w: &mut Runs) {
+    for _ in 0..3 {
+        w.start().await;
+    }
+}
+
+#[when("the executor claims three times")]
+async fn claims_three_times(w: &mut Runs) {
+    let mut got = Vec::new();
+    for _ in 0..3 {
+        let claim = w.claim(&w.executor(), &["charge@v1"]).await.unwrap();
+        got.push(claim.expect("a due run").lease.run.to_string());
+    }
+    w.claimed = got;
+}
+
+#[then("it gets runs 1, 2 and 3")]
+fn got_in_order(w: &mut Runs) {
+    assert_eq!(w.claimed, w.started);
+}
+
+#[given(regex = r#"^the executor is waiting on a claim of "charge"$"#)]
+fn waiting(w: &mut Runs) {
+    // The claim is sent with the start, in the next step, so that the two run at once.
+    w.waiting = true;
+}
+
+#[when(regex = r#"^the builder starts "charge"$"#)]
+async fn builder_starts(w: &mut Runs) {
+    assert!(w.waiting, "a waiting claim");
+    let builder = w.builder().await;
+    let (ops, executor) = (w.ops(), w.executor());
+    let req = ClaimRunRequest {
+        functions: vec!["charge@v1".into()],
+        ..ClaimRunRequest::default()
+    };
+    let start = async {
+        // Gives the claim time to find nothing and wait: the run exists only after this.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let req = StartRunRequest {
+            function: "charge".into(),
+        };
+        ops.start_run(&builder, req).await.unwrap()
+    };
+    let (claim, started) = tokio::join!(ops.claim_run(&executor, req), start);
+    w.run_id = Some(started.run_id.to_string());
+    w.claim = Some(claim);
+}
+
+#[then("the claim returns that run")]
+fn claim_returns_it(w: &mut Runs) {
+    let claim = w.claim.as_ref().expect("a claim").as_ref().unwrap();
+    let claim = claim.as_ref().expect("a run");
+    assert_eq!(Some(claim.lease.run.to_string()), w.run_id);
+    assert_eq!(claim.lease.execution, 1);
+}
+
+#[when(regex = r#"^the executor claims "charge" and waits 1 second$"#)]
+async fn claims_waiting_a_second(w: &mut Runs) {
+    let req = ClaimRunRequest {
+        functions: vec!["charge@v1".into()],
+        wait_seconds: Some(1),
+        ..ClaimRunRequest::default()
+    };
+    let at = std::time::Instant::now();
+    w.claim = Some(w.ops().claim_run(&w.executor(), req).await);
+    w.took = Some(at.elapsed());
+}
+
+#[when(regex = r"^the executor claims with (.+)$")]
+async fn claims_with(w: &mut Runs, what: String) {
+    let pair = |n| format!("f{n}@v1");
+    let mut req = ClaimRunRequest {
+        functions: vec!["charge@v1".into()],
+        wait_seconds: Some(0),
+        ..ClaimRunRequest::default()
+    };
+    match what.as_str() {
+        "no function" => req.functions.clear(),
+        "101 functions" => req.functions = (0..101).map(pair).collect(),
+        r#"the function "charge""# => req.functions = vec!["charge".into()],
+        "a lease of 9 seconds" => req.lease_seconds = Some(9),
+        "a lease of 901 seconds" => req.lease_seconds = Some(901),
+        "a wait of 21 seconds" => req.wait_seconds = Some(21),
+        other => panic!("no such claim: {other}"),
+    }
+    w.outcome = Some(w.ops().claim_run(&w.executor(), req).await.map(drop));
+}
+
+#[then("it is refused as invalid")]
+fn invalid(w: &mut Runs) {
+    w.refused(ErrorKind::Invalid);
 }
 
 // ---- Leases and the fence ----

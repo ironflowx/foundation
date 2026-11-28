@@ -2439,3 +2439,52 @@ fn a_run_is_claimable_from_its_due_time() {
     drop(conn);
     drop(ledger);
 }
+
+/// A waiting claim's read at the read store: the earliest due time of a queued run of its pairs,
+/// due or not, and none of another pair's.
+#[test]
+fn the_earliest_due_time_is_of_a_pair_the_claim_names() {
+    use ironflowx_execution::{Entry, ExecutionView};
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open_blocking(dir.path(), new_env_ref(), clock()).unwrap();
+    let mut conn = ledger.store.lock().unwrap();
+    // refund@v1 due at T + 500, then charge@v1 at T + 2,000 and at T + 1,000.
+    for (n, function, due) in [
+        (1, "refund", 500),
+        (2, "charge", 2_000),
+        (3, "charge", 1_000),
+    ] {
+        let applied = crate::store::applied(&conn).unwrap();
+        let created = Entry::RunCreated {
+            run: format!("0190b5f0-0000-7000-8000-00000000012{n}")
+                .parse()
+                .unwrap(),
+            sequence: n,
+            function: function.into(),
+            code: "v1".into(),
+            input: b"null".to_vec(),
+        };
+        let entries = Entries {
+            record: ironflowx_events::Record {
+                time: Timestamp::from_millis(T + due),
+                events: vec![],
+            },
+            execution: vec![created.into()],
+        };
+        let record = Some((uuid::Uuid::now_v7(), &entries, &emitter()));
+        crate::store::apply(&mut conn, applied, record, false).unwrap();
+    }
+    let due = |pairs: &[(&str, &str)]| {
+        let pairs: Vec<_> = pairs
+            .iter()
+            .map(|(n, c)| ((*n).to_owned(), (*c).to_owned()))
+            .collect();
+        ReadStore(&conn).earliest_due(&pairs).unwrap()
+    };
+    let at = |ms| Some(Timestamp::from_millis(T + ms));
+    assert_eq!(due(&[("charge", "v1")]), at(1_000));
+    assert_eq!(due(&[("charge", "v2"), ("refund", "v1")]), at(500));
+    assert_eq!(due(&[("charge", "v2")]), None);
+    drop(conn);
+    drop(ledger);
+}

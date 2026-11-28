@@ -3,9 +3,10 @@
 //!
 //! [`decide`] checks a [`Command`] against the current state and returns what to append: entries,
 //! and the engine's own events, which the ledger sequences with event rules; [`fold`] applies an
-//! appended entry to the read store; [`get_function`] and [`get_run`] read back. Nothing here does
-//! I/O, reads a clock or draws randomness (LED-15): state comes through [`ExecutionView`], goes out
-//! through [`ExecutionTables`], and run IDs come from the caller's [`Draws`].
+//! appended entry to the read store; [`get_function`] and [`get_run`] read back, and
+//! [`earliest_due`] tells a waiting claim when to read again. Nothing here does I/O, reads a clock
+//! or draws randomness (LED-15): state comes through [`ExecutionView`], goes out through
+//! [`ExecutionTables`], and run IDs come from the caller's [`Draws`].
 
 // Purity (LED-15): forbid, so an inner #[allow] cannot switch these off.
 #![forbid(unsafe_code)]
@@ -346,6 +347,8 @@ pub trait ExecutionView {
         pairs: &[(String, String)],
         now: Timestamp,
     ) -> Result<Option<Run>, Self::Error>;
+    /// The earliest due time of a queued run of one of those pairs; `None` when there is none.
+    fn earliest_due(&self, pairs: &[(String, String)]) -> Result<Option<Timestamp>, Self::Error>;
 }
 
 /// The read store, as `fold` writes it.
@@ -432,15 +435,7 @@ pub fn decide<V: ExecutionView>(
             lease_seconds,
             wait_seconds,
         } => {
-            let pairs = pairs(functions)?;
-            let lease_seconds = lease_seconds.unwrap_or(DEFAULT_LEASE_SECONDS);
-            if !LEASE_SECONDS.contains(&lease_seconds) {
-                return Err(invalid("a lease is 10 to 900 seconds"));
-            }
-            // shortcut: accepted, and the claim answers at once; #226 makes it wait.
-            if wait_seconds.is_some_and(|w| !WAIT_SECONDS.contains(&w)) {
-                return Err(invalid("a wait is 0 to 20 seconds"));
-            }
+            let (pairs, lease_seconds) = check_claim(functions, *lease_seconds, *wait_seconds)?;
             let Some(run) = view.claimable(&pairs, now).map_err(Error::Store)? else {
                 return answer(Outcome::Claimed(None), Vec::new());
             };
@@ -577,6 +572,27 @@ fn label<E>(what: &str, text: &str) -> Result<(), Error<E>> {
 }
 
 /// A claim's `name@code` pairs: 1 to [`MAX_PAIRS`], none repeated.
+/// A claim's `(name, code)`.
+type Pair = (String, String);
+
+/// A claim's pairs and lease length, or why the claim is outside the rules. The engine waits; a
+/// wait is only checked here.
+fn check_claim<E>(
+    functions: &[String],
+    lease_seconds: Option<u32>,
+    wait_seconds: Option<u32>,
+) -> Result<(Vec<Pair>, u32), Error<E>> {
+    let pairs = pairs(functions)?;
+    let lease_seconds = lease_seconds.unwrap_or(DEFAULT_LEASE_SECONDS);
+    if !LEASE_SECONDS.contains(&lease_seconds) {
+        return Err(invalid("a lease is 10 to 900 seconds"));
+    }
+    if wait_seconds.is_some_and(|w| !WAIT_SECONDS.contains(&w)) {
+        return Err(invalid("a wait is 0 to 20 seconds"));
+    }
+    Ok((pairs, lease_seconds))
+}
+
 fn pairs<E>(functions: &[String]) -> Result<Vec<(String, String)>, Error<E>> {
     if !(1..=MAX_PAIRS).contains(&functions.len()) {
         return Err(invalid(format!(
@@ -919,4 +935,27 @@ pub fn get_run<V: ExecutionView>(view: &V, id: &str) -> Result<Run, Error<V::Err
     let not_found = || refused(Refusal::not_found("run not found"));
     let id = id.parse().map_err(|_| not_found())?;
     view.run(id).map_err(Error::Store)?.ok_or_else(not_found)
+}
+
+/// The earliest time a run that `claim` may take is due, for a claim that waits (D113): checked
+/// as [`decide`] checks it, and `None` when no queued run is of its pairs. A non-claim command is
+/// `Invalid`.
+///
+/// # Errors
+///
+/// `Invalid`, or the view's error.
+pub fn earliest_due<V: ExecutionView>(
+    view: &V,
+    claim: &Command,
+) -> Result<Option<Timestamp>, Error<V::Error>> {
+    let Command::Claim {
+        functions,
+        lease_seconds,
+        wait_seconds,
+    } = claim
+    else {
+        return Err(invalid("not a claim"));
+    };
+    let (pairs, _) = check_claim(functions, *lease_seconds, *wait_seconds)?;
+    view.earliest_due(&pairs).map_err(Error::Store)
 }
