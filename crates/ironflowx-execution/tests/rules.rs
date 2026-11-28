@@ -1280,6 +1280,8 @@ fn a_store_already_over_a_cap_takes_no_put_that_leaves_it_over() {
     };
     let r = put_def(&mut s, changed).unwrap_err();
     assert_eq!(r.kind(), ErrorKind::ResourceExhausted);
+    let late = put_def(&mut s, named_fn("late", &["order.placed"])).unwrap_err();
+    assert_eq!(late.kind(), ErrorKind::ResourceExhausted);
     let same = put_def(&mut s, named_fn("f00", &["order.placed"])).unwrap();
     assert!(matches!(same, Outcome::FunctionPut { changed: false, .. }));
     let freed = put_def(&mut s, named_fn("f00", &[])).unwrap();
