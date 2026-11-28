@@ -104,6 +104,7 @@ dependencies = [
  "getrandom",
  "ironflowx-core",
  "ironflowx-events",
+ "ironflowx-execution",
  "rusqlite",
  "segment-log-core",
  "tokio",
@@ -125,6 +126,14 @@ dependencies = [
  "ironflowx-core",
  "serde_core",
  "serde_json",
+]
+
+[[package]]
+name = "ironflowx-execution"
+version = "0.3.0"
+dependencies = [
+ "ironflowx-core",
+ "ironflowx-events",
 ]
 
 [[package]]
