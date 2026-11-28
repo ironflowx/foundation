@@ -621,10 +621,12 @@ impl ReadStore<'_> {
         if pairs.is_empty() {
             return Ok(None);
         }
-        let pair = "(function = ? AND code = ?)";
+        // One indexed MIN per pair: an OR of pairs scans every queued run of them.
+        let pair = "SELECT MIN(due_at) AS d FROM runs WHERE function = ? AND code = ? \
+                    AND status = 'queued'";
         let sql = format!(
-            "SELECT MIN(due_at) FROM runs WHERE status = 'queued' AND ({})",
-            vec![pair; pairs.len()].join(" OR ")
+            "SELECT MIN(d) FROM ({})",
+            vec![pair; pairs.len()].join(" UNION ALL ")
         );
         let values = pairs.iter().flat_map(|(name, code)| [name, code]);
         let due = self.0.query_row(&sql, params_from_iter(values), |r| {

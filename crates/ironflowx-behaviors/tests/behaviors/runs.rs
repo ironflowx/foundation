@@ -483,6 +483,7 @@ async fn builder_starts(w: &mut Runs) {
     };
     let (tx, readings) = std::sync::mpsc::channel();
     *w.told.lock().unwrap() = Some(tx);
+    let sent = std::time::Instant::now();
     let (claim, run_id) = {
         let mut claim = std::pin::pin!(ops.claim_run(&executor, req));
         // Its admission and its read, through either adapter: it found nothing and waits.
@@ -501,6 +502,9 @@ async fn builder_starts(w: &mut Runs) {
         let (claim, started) = tokio::join!(claim, ops.start_run(&builder, req));
         (claim, started.unwrap().run_id.to_string())
     };
+    // It returned on the commit, not at a later 5 s reading.
+    let took = sent.elapsed();
+    assert!(took < Duration::from_secs(2), "{took:?}");
     w.run_id = Some(run_id);
     w.claim = Some(claim);
 }

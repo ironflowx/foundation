@@ -425,3 +425,25 @@ async fn a_folded_run_comes_before_a_later_drain() {
     assert_eq!(taken.unwrap().expect("the run").lease.run.to_string(), run);
     f.close().await;
 }
+
+/// RUN-16's order: a run that comes due while the claim naps, by the clock set past its due time,
+/// comes before a drain that follows: the claim, woken by the drain, reads and takes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_run_come_due_comes_before_a_drain() {
+    let clock = Probe::at(T);
+    let f = fixture(clock.clone()).await;
+    let run = f.start().await;
+    f.due_at(&run, T + 60_000).await;
+    let readings = clock.tell_others();
+    let claim = f.spawn_claim(None);
+    // Its admission, and its read: due in a minute, it naps 5 s.
+    receive(&readings, 2);
+    clock.set(T + 60_000);
+    f.engine.begin_drain();
+    let (claimed, _) = claim.await.unwrap();
+    assert_eq!(
+        claimed.unwrap().expect("the run").lease.run.to_string(),
+        run
+    );
+    f.close().await;
+}

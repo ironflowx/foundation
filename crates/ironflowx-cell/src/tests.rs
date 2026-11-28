@@ -2093,7 +2093,7 @@ async fn a_runs_end_and_its_event_are_one_record() {
     let Answer::RunStarted { run, .. } = execute(&ledger, start).await.unwrap() else {
         panic!("a run");
     };
-    let claim = Command::Claim {
+    let claim = ironflowx_execution::Command::Claim {
         functions: vec!["charge@v1".into()],
         lease_seconds: None,
         wait_seconds: None,
@@ -2168,7 +2168,7 @@ async fn a_replayed_step_appends_nothing() {
         function: "charge".into(),
     };
     execute(&ledger, start).await.unwrap();
-    let claim = Command::Claim {
+    let claim = ironflowx_execution::Command::Claim {
         functions: vec!["charge@v1".into()],
         lease_seconds: None,
         wait_seconds: None,
@@ -2519,7 +2519,16 @@ async fn changes_resolve_at_a_commit_and_a_failure_and_never_after_a_close() {
     );
     ledger.release_fold();
     ledger.faulted().await;
+    assert!(at_fold.has_changed());
     assert!(ready(std::pin::pin!(at_fold.changed())), "a failure");
+    // A failed ledger's claim read is refused, as every read is.
+    let claim = ironflowx_execution::Command::Claim {
+        functions: vec!["charge@v1".into()],
+        lease_seconds: None,
+        wait_seconds: None,
+    };
+    let read = ledger.claimable(&claim, &clock()).await;
+    assert_eq!(read, Err(ReadError::Unavailable));
     ledger.close().await;
 
     let dir = tempfile::tempdir().unwrap();
