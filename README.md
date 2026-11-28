@@ -70,7 +70,7 @@ tokio = { version = "1", default-features = false, features = ["rt"] }
 
 From 0.4 (unreleased; 0.3 re-exports every crate), the facade re-exports `core`, `proto`, `cell` and `operations`. The engine's own crates, `ironflowx-store`, `ironflowx-authz` and `ironflowx-events`, are published for it, not for apps.
 
-[`examples/embed`](https://github.com/ironflowx/foundation/tree/main/examples/embed) bootstraps an engine, emits an event, reads it back with a read-only key and sees that key's emit refused. The engine refuses 0.1 ledger directories (D39, [changelog](https://github.com/ironflowx/foundation/blob/main/CHANGELOG.md)).
+[`examples/embed`](https://github.com/ironflowx/foundation/tree/main/examples/embed) bootstraps an engine with a seed it wrote to disk first, emits an event, reads it back with a read-only key and sees that key's emit refused, then restarts the engine and reads the event with the seed from disk ([Engine open](https://github.com/ironflowx/foundation/blob/main/docs/architecture.md#engine-open)). The engine refuses 0.1 ledger directories (D39, [changelog](https://github.com/ironflowx/foundation/blob/main/CHANGELOG.md)).
 
 ### Call a served engine
 
