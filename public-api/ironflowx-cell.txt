@@ -96,9 +96,10 @@ pub fn ironflowx_cell::SubmitError::fmt(&self, &mut core::fmt::Formatter<'_>) ->
 impl core::fmt::Display for ironflowx_cell::SubmitError
 pub fn ironflowx_cell::SubmitError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_cell::SubmitError
-pub struct ironflowx_cell::Changes(_)
+pub struct ironflowx_cell::Changes
 impl ironflowx_cell::Changes
 pub async fn ironflowx_cell::Changes::changed(&mut self)
+pub fn ironflowx_cell::Changes::has_changed(&self) -> bool
 pub struct ironflowx_cell::Committed
 pub ironflowx_cell::Committed::outcome: ironflowx_cell::Outcome
 impl core::clone::Clone for ironflowx_cell::Committed

@@ -2489,8 +2489,8 @@ fn the_earliest_due_time_is_of_a_pair_the_claim_names() {
     drop(ledger);
 }
 
-/// A waiting claim's wake: `Changes` resolves at a commit, and at a failure; after a close it
-/// never does, as the close is no change.
+/// A waiting claim's wake: `Changes` resolves once a commit is folded, once for it, and at a
+/// failure; after a close it never does, as the close is no change.
 #[tokio::test]
 async fn changes_resolve_at_a_commit_and_a_failure_and_never_after_a_close() {
     let dir = tempfile::tempdir().unwrap();
@@ -2498,15 +2498,25 @@ async fn changes_resolve_at_a_commit_and_a_failure_and_never_after_a_close() {
     let mut changes = ledger.changes();
     assert!(!ready(std::pin::pin!(changes.changed())));
     let a = emit(&ledger, named("a")).await.unwrap();
-    assert!(ready(std::pin::pin!(changes.changed())), "a commit");
     // Folded, by a read, so the hold below holds b's fold, not a's.
     get(&ledger, a).await.unwrap();
-    // Taken once b is committed, and before its fold fails.
+    assert!(changes.has_changed());
+    assert!(ready(std::pin::pin!(changes.changed())), "a fold");
+    assert!(!changes.has_changed());
+    assert!(
+        !ready(std::pin::pin!(changes.changed())),
+        "a fold tells once"
+    );
+    // Taken once b is committed, and before its fold fails: a commit is no change until folded.
     ledger.hold_fold();
     ledger.fail_next_fold();
     emit(&ledger, named("b")).await.unwrap();
     let mut at_fold = ledger.changes();
     assert!(!ready(std::pin::pin!(at_fold.changed())));
+    assert!(
+        !ready(std::pin::pin!(changes.changed())),
+        "b committed, not folded"
+    );
     ledger.release_fold();
     ledger.faulted().await;
     assert!(ready(std::pin::pin!(at_fold.changed())), "a failure");

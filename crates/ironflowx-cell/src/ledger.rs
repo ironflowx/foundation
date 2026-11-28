@@ -426,17 +426,20 @@ impl Ledger {
             .await
     }
 
-    /// What a waiting claim watches: it wakes after each commit and when the ledger fails.
-    /// Taken before a read, it misses nothing committed after that read's snapshot.
+    /// What a waiting claim watches: it wakes once each commit is folded, and when the ledger
+    /// fails. Taken before a read, it misses nothing folded after that read's snapshot.
     pub fn changes(&self) -> Changes {
-        Changes(self.progress.subscribe())
+        let rx = self.progress.subscribe();
+        let seen = rx.borrow().applied;
+        Changes { rx, seen }
     }
 
-    /// How long until a run that `claim` may take is due, by the event clock, once the read store
-    /// holds every write acknowledged before this call: zero when one is due now, `None` when no
-    /// run of its pairs is queued. The claim is checked as a submission's is. `clock` is the one
-    /// the ledger was opened with: it is read after the snapshot, and the event time is the later
-    /// of it and the snapshot's last record (D7), as a submission's is.
+    /// How long until a run that `claim` may take is due, by the event clock, in the read store as
+    /// it is: zero when one is due now, `None` when no run of its pairs is queued. It waits for no
+    /// fold: a commit it does not see is folded later, and `changes` tells of it. The claim is
+    /// checked as a submission's is. `clock` is the one the ledger was opened with: it is read
+    /// after the snapshot, and the event time is the later of it and the snapshot's last record
+    /// (D7), as a submission's is.
     ///
     /// # Errors
     ///
@@ -454,7 +457,7 @@ impl Ledger {
         let pairs = ironflowx_execution::claim_pairs(claim).map_err(ReadError::Refused)?;
         let progress = self.progress.clone();
         let (due, last) = self
-            .read(move |v| {
+            .query(move |v| {
                 let due = v.earliest_due(&pairs).map_err(Error::Store)?;
                 // The fold moves it holding the store's lock, which this read holds.
                 Ok((due, progress.borrow().time))
@@ -508,6 +511,18 @@ impl Ledger {
             wait.is_ok_and(|p| !p.failed)
         };
         if !ready {
+            return Err(ReadError::Unavailable);
+        }
+        self.query(q).await
+    }
+
+    /// Runs a query on the read store as it is, folds still to come or not; `Unavailable` if the
+    /// ledger has failed.
+    async fn query<R: Send + 'static>(
+        &self,
+        q: impl FnOnce(&ReadStore<'_>) -> Result<R, Error<StoreError>> + Send + 'static,
+    ) -> Result<R, ReadError> {
+        if self.progress.borrow().failed {
             return Err(ReadError::Unavailable);
         }
         let store = self.store.clone();
@@ -594,15 +609,31 @@ impl Drop for Ledger {
 }
 
 /// A ledger's commits and failure, from [`Ledger::changes`].
-pub struct Changes(watch::Receiver<Progress>);
+pub struct Changes {
+    rx: watch::Receiver<Progress>,
+    /// The folded position it last told of.
+    seen: u64,
+}
 
 impl Changes {
-    /// Resolves at the first commit or failure since this was taken or last resolved; never once
-    /// the ledger has closed.
+    /// Whether a fold or a failure has come since this was taken or last resolved.
+    pub fn has_changed(&self) -> bool {
+        let p = self.rx.borrow();
+        p.failed || p.applied != self.seen
+    }
+
+    /// Resolves at the first fold or failure it has not told of since it was taken, so a fold tells
+    /// once; never once the ledger has closed, which is no change.
     pub async fn changed(&mut self) {
-        // A close marks the progress closed, which is no change.
-        if self.0.changed().await.is_err() || self.0.borrow_and_update().closed {
-            std::future::pending::<()>().await;
+        let seen = self.seen;
+        let told = self
+            .rx
+            .wait_for(|p| p.failed || p.closed || p.applied != seen)
+            .await;
+        match told.map(|p| (p.failed, p.closed, p.applied)) {
+            Ok((failed, closed, applied)) if failed || !closed => self.seen = applied,
+            // Closed, and not failed: no change comes.
+            _ => std::future::pending::<()>().await,
         }
     }
 }

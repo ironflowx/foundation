@@ -553,15 +553,16 @@ impl Operations for Engine {
         // Execution rules check it at the first read.
         let wait = Duration::from_secs(req.wait_seconds.unwrap_or(DEFAULT_WAIT_SECONDS).into());
         let cmd = execution::claim(req);
+        let mut last_read = false;
         loop {
-            // Taken before the read, so a commit after its snapshot wakes the wait (RUN-16).
+            // Taken before the read, so a fold after its snapshot wakes the wait (RUN-16). The read
+            // waits for no fold, so no fold holds a drain up (RUN-15).
             let mut changes = self.ledger(&a).changes();
-            // A read that waits on another call's fold does not hold a drain up (RUN-15).
-            let read = self.ledger(&a).claimable(&cmd, &*self.clock);
-            let Some(due) = unless_drained(&mut drain, read).await else {
-                return Err(draining());
-            };
-            let due = due.map_err(events::read_error)?;
+            let due = self
+                .ledger(&a)
+                .claimable(&cmd, &*self.clock)
+                .await
+                .map_err(events::read_error)?;
             let mut nap = RECHECK;
             match due {
                 Some(Duration::ZERO) => {
@@ -585,6 +586,11 @@ impl Operations for Engine {
             }
             let left = wait.saturating_sub(started.elapsed());
             if left.is_zero() {
+                // A commit folded since the read comes before the end: one read more, at most.
+                if changes.has_changed() && !last_read {
+                    last_read = true;
+                    continue;
+                }
                 return Ok(None);
             }
             let mut woken = pin!(changes.changed());
@@ -607,8 +613,10 @@ impl Operations for Engine {
     ///
     /// # Errors
     ///
-    /// As [`Engine::claim_run`]; `NotFound` for a lease that does not parse or names no run;
-    /// `Conflict` for a lease that is not the run's current execution, or that another key holds.
+    /// As [`Engine::whoami`]; `PermissionDenied` without `execute`; `Invalid` for a request outside
+    /// execution rules; `Unknown` and `Unavailable` as [`Engine::put_function`]; `NotFound` for a
+    /// lease that does not parse or names no run; `Conflict` for a lease that is not the run's
+    /// current execution, or that another key holds. A drain does not end it.
     async fn begin_step(
         &self,
         cx: &Call,

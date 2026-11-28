@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use cucumber::gherkin::Scenario;
 use ironflowx_cell::HostClock;
+use ironflowx_core::Clock;
 use ironflowx_doors::{Readiness, Slot, WaitingOn, router};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
@@ -53,7 +54,15 @@ impl Adapter {
     /// Opens a fresh engine on `data_dir`, on the machine's clock as a host's is, and serves it
     /// through the door: the adapter, and the bootstrap key.
     pub async fn served(data_dir: &Path) -> (Self, String) {
-        let opened = Engine::open(data_dir, HostClock, None).await.unwrap();
+        Self::served_on(data_dir, HostClock).await
+    }
+
+    /// As `served`, on `clock`.
+    pub async fn served_on(
+        data_dir: &Path,
+        clock: impl Clock + Clone + Send + Sync + 'static,
+    ) -> (Self, String) {
+        let opened = Engine::open(data_dir, clock, None).await.unwrap();
         let key = opened.minted.expect("a fresh engine mints a key");
         let engine = Arc::new(opened.engine);
         let slot = Arc::new(Slot::starting());

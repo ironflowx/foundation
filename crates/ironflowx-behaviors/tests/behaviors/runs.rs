@@ -4,12 +4,14 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
-use ironflowx_cell::ManualClock;
-use ironflowx_core::{ErrorKind, Lease, Scope, Secret, Timestamp};
+use ironflowx_cell::{HostClock, ManualClock};
+use ironflowx_core::{Clock, ErrorKind, Lease, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
     BeginStepRequest, Call, Claim, ClaimRunRequest, CompleteRunRequest, CompleteStepRequest,
@@ -57,6 +59,8 @@ pub struct Runs {
     claimed: Vec<String>,
     /// A claim is to wait while the next step starts a run.
     waiting: bool,
+    /// Where the engine's clock tells of each reading off the writer's thread, once armed.
+    told: Arc<Mutex<Option<Sender<()>>>>,
     /// How the last call ended.
     outcome: Option<Result<(), OpError>>,
 }
@@ -68,6 +72,34 @@ impl fmt::Debug for Runs {
             .field("claim", &self.claim)
             .field("outcome", &self.outcome)
             .finish_non_exhaustive()
+    }
+}
+
+/// The scenario's clock, which tells `told` of each reading off the ledger writer's thread: an
+/// admission's, or a claim's read's.
+#[derive(Clone)]
+struct Told<C> {
+    clock: C,
+    told: Arc<Mutex<Option<Sender<()>>>>,
+}
+
+impl<C> Told<C> {
+    fn new(clock: C, told: &Arc<Mutex<Option<Sender<()>>>>) -> Self {
+        Self {
+            clock,
+            told: told.clone(),
+        }
+    }
+}
+
+impl<C: Clock> Clock for Told<C> {
+    fn now(&self) -> Timestamp {
+        if std::thread::current().name() != Some("ironflowx-ledger-writer")
+            && let Some(tx) = &*self.told.lock().unwrap()
+        {
+            let _ = tx.send(());
+        }
+        self.clock.now()
     }
 }
 
@@ -101,6 +133,7 @@ impl Runs {
             claim: None,
             claimed: Vec::new(),
             waiting: false,
+            told: Arc::default(),
             outcome: None,
         }
     }
@@ -179,12 +212,13 @@ impl Runs {
 #[given("a fresh engine")]
 async fn fresh(w: &mut Runs) {
     if w.remote {
-        let (served, key) = Adapter::served(&w.dir.path().join("data")).await;
+        let clock = Told::new(HostClock, &w.told);
+        let (served, key) = Adapter::served_on(&w.dir.path().join("data"), clock).await;
         w.bootstrap = Some(key);
         w.ops = Some(served);
         return;
     }
-    let clock = ManualClock::new(Timestamp::from_millis(T));
+    let clock = Told::new(ManualClock::new(Timestamp::from_millis(T)), &w.told);
     let opened = Engine::open(w.dir.path(), clock, None).await.unwrap();
     w.bootstrap = Some(
         opened
@@ -447,13 +481,19 @@ async fn builder_starts(w: &mut Runs) {
         functions: vec!["charge@v1".into()],
         ..ClaimRunRequest::default()
     };
+    let (tx, readings) = std::sync::mpsc::channel();
+    *w.told.lock().unwrap() = Some(tx);
     let (claim, run_id) = {
         let mut claim = std::pin::pin!(ops.claim_run(&executor, req));
-        // Gives the claim time to find nothing and wait: no door shows its read. It must not
-        // answer before a run exists.
-        tokio::select! {
-            early = &mut claim => panic!("the claim answered before a run existed: {early:?}"),
-            () = tokio::time::sleep(Duration::from_millis(250)) => {}
+        // Its admission and its read, through either adapter: it found nothing and waits.
+        let mut read = 0;
+        while read < 2 {
+            tokio::select! {
+                biased;
+                early = &mut claim => panic!("the claim answered before a run existed: {early:?}"),
+                () = tokio::time::sleep(Duration::from_millis(5)) => {}
+            }
+            read += readings.try_iter().count();
         }
         let req = StartRunRequest {
             function: "charge".into(),

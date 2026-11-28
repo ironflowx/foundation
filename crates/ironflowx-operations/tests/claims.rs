@@ -283,30 +283,55 @@ async fn a_run_due_at_the_last_record_is_due_with_the_clock_set_back() {
     f.close().await;
 }
 
-/// A fault or a drain comes before the end of the wait: a claim whose wait is over when the ledger
-/// fails, or the engine drains, after its last read is `Unavailable`, not empty.
+/// RUN-16's order when several happen at once: a due run, then a fault or a drain, then the end of
+/// the wait. The claim is held at the clock reading after its first read's snapshot, which saw no
+/// run, while both happen; then it goes on. A run folded since that read is taken by one read more
+/// at the end of the wait. A run on a ledger that then failed cannot be read or taken.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fault_or_a_drain_after_the_last_read_is_no_empty_claim() {
-    for fault in [true, false] {
+async fn a_run_a_fault_a_drain_and_the_end_of_the_wait_at_one_barrier() {
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Event {
+        Run,
+        Fault,
+        Drain,
+        End,
+    }
+    use Event::{Drain, End, Fault, Run};
+    for pair in [[Run, End], [Run, Fault], [Fault, End], [Drain, End]] {
         let clock = Probe::at(T);
         let f = fixture(clock.clone()).await;
-        // Past its admission, at its read's reading, after the snapshot.
         let (read, go) = clock.stop_other(1);
-        let claim = f.spawn_claim(Some(0));
+        let claim = f.spawn_claim(Some(1));
         receive(&read, 1);
-        if fault {
-            f.fail_next_start().await;
-            let req = StartRunRequest {
-                function: "charge".into(),
-            };
-            f.engine.start_run(&f.admin, req).await.unwrap();
-            f.engine.faulted().await;
-        } else {
-            f.engine.begin_drain();
+        let mut run = None;
+        for event in pair {
+            match event {
+                Run => {
+                    let started = f.start().await;
+                    // Folded, by a read.
+                    assert_eq!(f.status(&started).await, RunStatus::Queued);
+                    run = Some(started);
+                }
+                Fault => {
+                    f.fail_next_start().await;
+                    let req = StartRunRequest {
+                        function: "charge".into(),
+                    };
+                    f.engine.start_run(&f.admin, req).await.unwrap();
+                    f.engine.faulted().await;
+                }
+                Drain => f.engine.begin_drain(),
+                End => tokio::time::sleep(Duration::from_millis(1_100)).await,
+            }
         }
         go.send(()).unwrap();
         let (claimed, _) = claim.await.unwrap();
-        assert!(unavailable(&claimed), "fault: {fault}: {claimed:?}");
+        if pair == [Run, End] {
+            let taken = claimed.unwrap().expect("the run");
+            assert_eq!(Some(taken.lease.run.to_string()), run);
+        } else {
+            assert!(unavailable(&claimed), "{pair:?}: {claimed:?}");
+        }
         f.close().await;
     }
 }
@@ -368,5 +393,35 @@ async fn a_due_run_comes_before_a_drain_at_one_barrier() {
         claimed.unwrap().expect("the run").lease.run.to_string(),
         run
     );
+    f.close().await;
+}
+
+/// RUN-16's order: a due run comes before a drain that begins after the run is folded, when the
+/// claim reads only after both. The claim is driven to its wait, then not polled while the run is
+/// started and folded and the drain begins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_folded_run_comes_before_a_later_drain() {
+    let clock = Probe::at(T);
+    let f = fixture(clock.clone()).await;
+    let readings = clock.tell_others();
+    let (taken, run) = {
+        let cx = f.executor();
+        let mut claim = std::pin::pin!(f.engine.claim_run(&cx, claim(None)));
+        // Its admission and its read: it found nothing and waits.
+        let mut read = 0;
+        while read < 2 {
+            tokio::select! {
+                biased;
+                early = &mut claim => panic!("answered before a run existed: {early:?}"),
+                () = tokio::time::sleep(Duration::from_millis(5)) => {}
+            }
+            read += readings.try_iter().count();
+        }
+        let run = f.start().await;
+        assert_eq!(f.status(&run).await, RunStatus::Queued);
+        f.engine.begin_drain();
+        (claim.await, run)
+    };
+    assert_eq!(taken.unwrap().expect("the run").lease.run.to_string(), run);
     f.close().await;
 }
