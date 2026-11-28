@@ -830,7 +830,8 @@ fn replay(
     let expected = if from > 1 {
         let (id, record, _) = read_events(log, from - 1, env)?;
         last_time = Some(record.time);
-        Some(id)
+        // The fold stores the canonical text, the only form the log decodes.
+        Some(id.to_string())
     } else {
         None
     };
@@ -843,9 +844,9 @@ fn replay(
         let record = if from == 0 {
             None
         } else {
-            let read = read_events(log, from, env)?;
-            last_time = Some(read.1.time);
-            Some(read)
+            let (id, record, emitted_by) = read_events(log, from, env)?;
+            last_time = Some(record.time);
+            Some((id, record, emitted_by))
         };
         if let Err(e) = store::apply(
             &mut conn,

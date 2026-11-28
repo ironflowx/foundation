@@ -155,15 +155,9 @@ fn existing(path: &Path, env: EnvRef, watermark: u64) -> Option<Connection> {
     (agrees && intact().unwrap_or(false)).then_some(conn)
 }
 
-/// The ID of the last applied record; none while only the genesis record is (D117).
-pub(crate) fn last_record(conn: &Connection) -> rusqlite::Result<Option<Uuid>> {
-    let id: Option<String> = conn.query_row("SELECT record_id FROM meta", [], |r| r.get(0))?;
-    id.map(|id| {
-        id.parse().map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })
-    })
-    .transpose()
+/// The ID of the last applied record, as stored; none while only the genesis record is (D117).
+pub(crate) fn last_record(conn: &Connection) -> rusqlite::Result<Option<String>> {
+    conn.query_row("SELECT record_id FROM meta", [], |r| r.get(0))
 }
 
 pub(crate) fn applied(conn: &Connection) -> rusqlite::Result<u64> {

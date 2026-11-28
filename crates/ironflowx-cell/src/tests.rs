@@ -664,8 +664,11 @@ fn records_round_trip() {
         events: vec![],
         ..record
     };
-    unknown[record::events(env.token(), id, &emitter(), &empty).len()] = 0xFF;
-    assert_eq!(record::decode(&unknown), None);
+    let kind = record::events(env.token(), id, &emitter(), &empty).len();
+    for byte in [1, 0xFF] {
+        unknown[kind] = byte;
+        assert_eq!(record::decode(&unknown), None, "kind {byte}");
+    }
     // A record ID that is not a UUIDv7 in its canonical text form, put in place of a good one.
     let good = record::events(env.token(), id, &emitter(), &empty);
     let at = good
@@ -682,6 +685,12 @@ fn records_round_trip() {
         bytes[at..at + 36].copy_from_slice(bad.as_bytes());
         assert_eq!(record::decode(&bytes), None, "{bad}");
     }
+    let simple = id.simple().to_string();
+    let mut bytes = good[..at - 4].to_vec();
+    bytes.extend_from_slice(&32u32.to_le_bytes());
+    bytes.extend_from_slice(simple.as_bytes());
+    bytes.extend_from_slice(&good[at + 36..]);
+    assert_eq!(record::decode(&bytes), None, "{simple}");
 }
 
 fn append(log: &SegmentLog, expected: ExpectedRevision, payload: Vec<u8>) {
@@ -1049,9 +1058,11 @@ async fn a_fresh_ledger_writes_format_3() {
     assert_eq!(records.iter().map(format).collect::<Vec<_>>(), [3, 3]);
 }
 
-/// The writer draws each record's ID at the append, so a copy's next record has its own (D117).
+/// The writer draws each record's ID at the append: a copy keeps the IDs it copied, and every
+/// record each copy appends next has its own (D117). That the writer draws only UUIDv7s is
+/// pinned by the decoder, which refuses any other ID at the reopen.
 #[tokio::test]
-async fn two_copies_of_a_directory_never_share_a_record_id() {
+async fn records_appended_to_two_copies_of_a_directory_have_their_own_ids() {
     let dir = tempfile::tempdir().unwrap();
     let copy = tempfile::tempdir().unwrap();
     let env = new_env_ref();
@@ -1062,16 +1073,14 @@ async fn two_copies_of_a_directory_never_share_a_record_id() {
     for path in [dir.path(), copy.path()] {
         let ledger = open(path, env).await;
         emit(&ledger, named("b")).await.unwrap();
+        emit(&ledger, named("c")).await.unwrap();
         ledger.close().await;
     }
     let (mine, theirs) = (record_ids(dir.path()), record_ids(copy.path()));
-    assert_eq!((mine.len(), theirs.len()), (2, 2));
+    assert_eq!((mine.len(), theirs.len()), (3, 3));
     assert_eq!(mine[0], theirs[0], "the copied record keeps its ID");
-    assert_ne!(mine[1], theirs[1]);
-    for id in mine.iter().chain(&theirs) {
-        assert_eq!(id.get_version(), Some(uuid::Version::SortRand), "{id}");
-        assert_eq!(id.get_variant(), uuid::Variant::RFC4122, "{id}");
-    }
+    let all: BTreeSet<_> = mine.iter().chain(&theirs[1..]).collect();
+    assert_eq!(all.len(), 5, "{mine:?} {theirs:?}");
 }
 
 /// Open compares the last applied record's ID with the log's record at that position (D117,
@@ -1100,7 +1109,7 @@ async fn a_read_store_of_a_copy_diverged_by_a_record_without_events_is_rebuilt()
         let ledger = open(dir.path(), env).await;
         assert_eq!(names(&ledger).await, ["a"], "{open_}");
         let last = crate::store::last_record(&ledger.store.lock().unwrap()).unwrap();
-        assert_eq!(last, Some(ours[1]), "{open_}");
+        assert_eq!(last, Some(ours[1].to_string()), "{open_}");
         ledger.close().await;
         assert_eq!(
             log_records(dir.path()).1,
@@ -1133,6 +1142,8 @@ async fn a_read_store_is_kept_only_when_its_record_id_matches() {
         conn.execute_batch(&format!("UPDATE events SET name = 'kept'; {damage}"))
             .unwrap();
         drop(conn);
+        // The log's end is past the applied position: open compares at the position.
+        append_eventless(dir.path(), env);
         let ledger = open(dir.path(), env).await;
         let expected = if kept { "kept" } else { "a" };
         assert_eq!(names(&ledger).await, [expected], "{damage}");
@@ -1142,8 +1153,8 @@ async fn a_read_store_is_kept_only_when_its_record_id_matches() {
         let meta: (u64, Option<String>) = conn
             .query_row(sql, [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
-        let id = record_ids(dir.path())[0].to_string();
-        assert_eq!(meta, (2, Some(id)), "{damage}");
+        let id = record_ids(dir.path())[1].to_string();
+        assert_eq!(meta, (3, Some(id)), "{damage}");
     }
 }
 
