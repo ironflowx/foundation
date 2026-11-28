@@ -184,7 +184,8 @@ impl Engine {
     /// as it stops (its Stop, step 1). A new claim admitted after it answers `Unavailable` with no
     /// read. A waiting claim reads once more, takes a run if one is claimable, and else answers
     /// `Unavailable`. A claim at the writer is not ended: given a run, it answers with that run; if
-    /// it lost the run to another claim, it is a waiting claim again. That one read can be
+    /// it lost the run to another claim, it is a waiting claim again, with at most the one read
+    /// begun after the drain. That one read can be
     /// stretched, as every operation's, by a busy blocking pool or a fold holding the read store.
     /// Not an operation: it takes no key (TEN-1). Every other operation is served as before.
     pub fn begin_drain(&self) {

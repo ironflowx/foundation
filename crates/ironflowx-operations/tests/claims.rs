@@ -591,5 +591,7 @@ async fn a_claim_that_loses_its_run_at_the_writer_during_a_drain_waits_again() {
     );
     // The start and the two claims' decisions, and no other.
     assert_eq!(clock.writer_readings(), written + 3);
+    // The loser read once more before it answered.
+    assert_eq!(readings.try_iter().count(), 1);
     f.close().await;
 }
