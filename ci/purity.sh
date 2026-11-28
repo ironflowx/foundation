@@ -69,7 +69,12 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     'disallowed type `std::collections::HashMap`' \
     'use of `println!`' \
     'disallowed method `std::env::vars_os`' \
-    'disallowed method `std::env::temp_dir`' -- \
+    'disallowed method `std::env::temp_dir`' \
+    'disallowed method `std::env::home_dir`' \
+    'disallowed method `std::env::current_exe`' \
+    'disallowed method `std::env::args`' \
+    'disallowed method `std::env::args_os`' \
+    'disallowed method `std::process::id`' -- \
     cargo clippy --locked --manifest-path ci/fixtures/forbidden-call/Cargo.toml -- -D warnings
   # The same calls under execution rules' copy of the bans (LED-15, extended).
   ci/must-reject.sh \
@@ -82,7 +87,12 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     'disallowed type `std::collections::HashMap`' \
     'use of `println!`' \
     'disallowed method `std::env::vars_os`' \
-    'disallowed method `std::env::temp_dir`' -- \
+    'disallowed method `std::env::temp_dir`' \
+    'disallowed method `std::env::home_dir`' \
+    'disallowed method `std::env::current_exe`' \
+    'disallowed method `std::env::args`' \
+    'disallowed method `std::env::args_os`' \
+    'disallowed method `std::process::id`' -- \
     cargo clippy --locked --manifest-path ci/fixtures/forbidden-call-execution/Cargo.toml -- -D warnings
   ci/must-reject.sh \
     "engine-dep/direct/Cargo.toml: engine crate: 'ironflowx-operations'" \
@@ -163,6 +173,12 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "weak-debug/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" \
     "target-only/Cargo.toml: published crate can enable __fault-points on ironflowx-cell" -- \
     ci/no-fault-points.sh ci/fixtures/fault-points
+}
+
+# An exempt file with no use, or with its helper's one, passes.
+(cd ci/fixtures/sequenced-time-exempt-ok && ../../no-event-clock-outside-ledger.sh crates) || {
+  echo "purity: ci/no-event-clock-outside-ledger.sh refuses ci/fixtures/sequenced-time-exempt-ok"
+  exit 1
 }
 
 # ci/no-engine-event.sh matches the name alone: the fixture's longer one passes.

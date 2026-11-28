@@ -17,7 +17,8 @@ for exempt in crates/ironflowx-events/tests/rules.rs crates/ironflowx-execution/
     file=${dir%/}/${exempt#crates/}
     [ "${dir%/}" = crates ] || [ "${dir%/}" = ./crates ] || continue
     [ -e "$file" ] || continue
-    uses=$(grep -o 'from_event_clock' "$file" | wc -l | tr -d ' ')
+    # No match is zero uses: grep's exit 1 must not end the script under pipefail.
+    uses=$({ grep -o 'from_event_clock' "$file" || true; } | wc -l | tr -d ' ')
     if [ "$uses" -gt 1 ]; then
       found+="${found:+$'\n'}$file: $uses uses, beyond its one helper"
     fi

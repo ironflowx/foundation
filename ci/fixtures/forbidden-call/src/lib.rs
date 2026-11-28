@@ -44,3 +44,11 @@ pub fn reads_the_environment() -> usize {
 pub fn reads_the_temporary_directory() -> std::path::PathBuf {
     std::env::temp_dir()
 }
+
+pub fn reads_the_process() -> usize {
+    let home = std::env::home_dir().is_some();
+    let exe = std::env::current_exe().is_ok();
+    std::env::args().count() + std::env::args_os().count() + std::process::id() as usize
+        + usize::from(home)
+        + usize::from(exe)
+}
