@@ -739,3 +739,26 @@ fn an_answer_without_an_error_info_holds_no_error() {
         assert_eq!(wire::op_error(&broken), None, "{value}");
     }
 }
+
+/// What a key's call sends and receives is byte for byte what it was before the embedder's call
+/// (D121), in binary and in JSON: a whoami answer, and a key a key created. The bytes were taken
+/// at foundation `44fb45a`, before `key_id` became optional and `created_by` an `Emitter`.
+#[test]
+fn a_keys_answers_are_the_bytes_they_were() {
+    const WHOAMI_BIN: &str = "0a2430313930623566302d303030302d373030302d383030302d303030303030303030303031120577726974651a0c64656661756c742f6d61696e220b0880a4a7da0610c0a9d33a";
+    const WHOAMI_JSON: &str = r#"{"key_id":"0190b5f0-0000-7000-8000-000000000001","scopes":["write"],"environment":"default/main","expires_at":"2027-01-15T08:00:00.123Z"}"#;
+    const INFO_BIN: &str = "0a2430313930623566302d303030302d373030302d383030302d3030303030303030303030311a04726561642207637265617465642a2430313930623566302d303030302d373030302d383030302d30303030303030303030303232004206616374697665";
+    const INFO_JSON: &str = r#"{"key_id":"0190b5f0-0000-7000-8000-000000000001","scopes":["read"],"origin":"created","created_by":"0190b5f0-0000-7000-8000-000000000002","created_at":"1970-01-01T00:00:00Z","status":"active"}"#;
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let whoami = whoami(Some(1_800_000_000_123));
+    let sent = WhoamiResponse::from(whoami.clone());
+    assert_eq!(hex(&sent.encode_to_vec()), WHOAMI_BIN);
+    assert_eq!(serde_json::to_string(&sent).unwrap(), WHOAMI_JSON);
+    let read: WhoamiResponse = serde_json::from_str(WHOAMI_JSON).unwrap();
+    assert_eq!(Whoami::try_from(read), Ok(whoami));
+    let sent = wire::KeyInfo::from(info());
+    assert_eq!(hex(&sent.encode_to_vec()), INFO_BIN);
+    assert_eq!(serde_json::to_string(&sent).unwrap(), INFO_JSON);
+    let read: wire::KeyInfo = serde_json::from_str(INFO_JSON).unwrap();
+    assert_eq!(KeyInfo::try_from(read), Ok(info()));
+}
