@@ -13,6 +13,9 @@ disallowed-methods = [
   # ci/no-digest-codec.sh backs this up by name.
   { path = "ironflowx_authz::KeyDigest::to_stored", reason = "only the control plane stores a key digest (TEN-4)", allow-invalid = true },
   { path = "ironflowx_authz::KeyDigest::from_stored", reason = "only the control plane stores a key digest (TEN-4)", allow-invalid = true },
+  # The engine's own events: core does not depend on events, and inside ironflowx-events, which
+  # links this file, the path does not resolve, hence allow-invalid.
+  { path = "ironflowx_events::engine_event", reason = "only ironflowx-execution makes the engine's events (RUN-14)", allow-invalid = true },
 
   { path = "std::time::SystemTime::now", reason = "pure crates read no ambient clock; take a Timestamp or SequencedTime" },
   { path = "std::time::Instant::now", reason = "pure crates read no ambient clock" },

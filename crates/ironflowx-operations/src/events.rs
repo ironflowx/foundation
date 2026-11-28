@@ -33,7 +33,7 @@ fn refused(r: Refusal) -> OpError {
     OpError {
         kind: r.kind(),
         message: r.message().to_owned(),
-        hint: None,
+        hint: r.hint().map(str::to_owned),
     }
 }
 

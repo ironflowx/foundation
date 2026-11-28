@@ -60,7 +60,7 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 | Module | Does | Interface | Crate |
 |---|---|---|---|
 | Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time; reports whether it has failed, and signals a ledger fault | `open`, `open_blocking`, `open_existing_blocking`, `submit`, `get_event`, `list_events`, `state`, `faulted`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
-| Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `check_emit`, `fold`, queries | `ironflowx-events` |
+| Event rules | Decides what an event is and when an emit is refused; makes and sequences the engine's own events, which it refuses from a client; a refusal may carry a hint. Pure | `decide`, `check_emit`, `engine_event`, `sequence`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types, which the wire maps onto (D53) | `Operations` trait and messages | `ironflowx-proto` |
 | Proto | Defines an operation once, on the wire (D49) | `proto/ironflowx/v1/*.proto`: services, messages, the method options `cli`, `summary` and `example`, the field option `json_text` | `ironflowx-proto` (the `.proto` files; compiled, `wire::FILE_DESCRIPTOR_SET`) |
 | Wire mapping | Converts `Operations` requests and answers to and from wire messages, validating what arrives | `TryFrom` for requests, both ways; `From` for answers sent and `TryFrom` for answers received; `OpError` ↔ `ErrorInfo` ↔ the Connect error | `ironflowx-proto` (`wire`, `server`) |
@@ -290,6 +290,11 @@ fn new_env_ref() -> EnvRef;   // a fresh UUIDv7 ID and a 128-bit token from the 
 fn decide<V: EventsView>(view: &V, sub: &Submission, now: SequencedTime,
           fresh: &mut impl Iterator<Item = EventId>) -> Result<Decision, Error<V::Error>>;
 fn check_emit(emit: &Emit) -> Result<(), Refusal>;   // decide's item rules for one emit, which is all a single emit meets
+// EngineEvent RunCompleted { run_id, function, code } | RunFailed { run_id, function, code, error_code, error_message }
+fn engine_event(event: EngineEvent) -> EngineEmit;   // EngineEmit is opaque: nothing else makes one; only execution rules call it (RUN-14)
+fn sequence<V: EventsView>(view: &V, emits: Vec<EngineEmit>,
+          fresh: &mut impl Iterator<Item = EventId>) -> Result<Vec<NewEvent>, Error<V::Error>>;   // after every stored event, in order
+// Refusal: kind(), message(), hint() -> Option<&str>
 fn fold<T: EventTables>(tx: &mut T, record: &Record, emitted_by: &Emitter) -> Result<(), T::Error>;
 fn get_event<V: EventsView>(view: &V, id: &str) -> Result<Event, Error<V::Error>>;
 fn list_events<V: EventsView>(view: &V, token: IncarnationToken, limit: Option<NonZeroU32>,
@@ -329,6 +334,14 @@ The byte limits above, a batch's 100 events and 4 MiB, a key's label (0–128 by
 A repeated JSON key is refused as `Invalid`, with a message of the form `event data is invalid: repeated key at line L column C` (`event metadata is invalid: …` for metadata), at any depth and even when the two spellings differ only in escapes. A repeated key has no portable meaning, so JSON with one cannot be stored as event data. A recorder that must keep such a body byte for byte stores it as a JSON string instead, such as `{"raw":"{\"a\":1,\"a\":2}"}`. A first-class content type is D22's recorded direction for non-JSON payloads; nothing is built for it.
 
 If a build turns on `serde_json`'s `arbitrary_precision` feature, which Cargo's feature unification can do from any crate in the embedder's graph, an object whose first key is `$serde_json::private::Number` is read as a number and so may be refused. A default build reads that key like any other. A door, or the CLI's `--json`, in such a build also refuses a JSON `limit` or `version` written with a fraction or an exponent (`5.0`, `1e0`), which a default build reads as the nearest `f64`, so a fraction too fine for one is lost. CI runs the event-rule tests in both builds, and the CLI's own: what it prints of an event is read the same in either.
+
+### The engine's own events
+
+The engine appends two events of its own, whose names are owned, so `decide` refuses them from every client, in an emit or a batch, as it refuses any owned name (D118): `ironflowx.run.completed` and `ironflowx.run.failed`. `engine_event` makes one from an `EngineEvent` and returns an `EngineEmit`, an opaque value that no client value converts into and nothing else constructs (compile-fail doctests on `EngineEmit`). Clippy `disallowed-methods` bans `engine_event` in every crate but `ironflowx-events` and `ironflowx-execution` (RUN-14; `ci/clippy-bans.sh` checks every `clippy.toml` carries the ban, and `ci/purity.sh` proves it on a fixture that calls it by name, through an alias and as a function value).
+
+An engine event has version 1, no metadata and no idempotency key. Its data is `{"run_id","function","code"}`, in that order, plus `"error":{"code","message"}` for a failure, each value a JSON string, escaped as `serde_json` escapes it. It holds no output. Error codes that begin with `ironflowx.` are the engine's own (D111). `sequence` gives engine events the next event sequences after every stored event, in order, one ID from `fresh` each, the sequences a client's events take; for none it reads nothing and draws no ID, and past the last sequence it refuses, as `decide` does. The record's time and attribution are the ledger's, as for an emit. Nothing appends one yet: execution rules will, in the record that ends a run.
+
+A refusal may carry a hint (`Refusal::hint`), which the engine copies into `OpError::hint`, and the wire carries as any other ([Errors](#errors)). No event rule gives one yet.
 
 A list query, not `decide`, checks the cursor: a token that does not decode, or names another incarnation, is `Invalid` (EVT-045, EVT-055). A cursor encodes the incarnation token and the last event sequence returned, and stays valid across reopen. A page lists the events older than the cursor's sequence, whether or not an event has that sequence, so a cursor past every sequence lists from the newest. It is an encoding, not a signature: a forged one is not detected.
 

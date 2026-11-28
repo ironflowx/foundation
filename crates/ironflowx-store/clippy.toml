@@ -4,4 +4,5 @@ disallowed-methods = [
   { path = "ironflowx_core::SequencedTime::from_event_clock", reason = "only ironflowx-cell produces event time (D17)" },
   { path = "ironflowx_core::SubmitAs::key", reason = "only the credentials crate attributes a submission to a key (D36)" },
   { path = "ironflowx_authz::Grant::submit_as", reason = "only the engine attributes a submission to a verified key (D36)" },
+  { path = "ironflowx_events::engine_event", reason = "only ironflowx-execution makes the engine's events (RUN-14)" },
 ]

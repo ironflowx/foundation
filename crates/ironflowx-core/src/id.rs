@@ -13,6 +13,10 @@ pub struct EnvironmentId(Uuid7);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EventId(Uuid7);
 
+/// The identity of a run: an opaque UUIDv7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RunId(Uuid7);
+
 /// The identity of a tenant: an opaque UUIDv7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TenantId(Uuid7);
@@ -99,6 +103,19 @@ impl FromStr for EventId {
 }
 
 impl fmt::Display for EventId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for RunId {
+    type Err = ParseError;
+    fn from_str(s: &str) -> Result<Self, ParseError> {
+        Uuid7::parse(s, "run ID").map(Self)
+    }
+}
+
+impl fmt::Display for RunId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }

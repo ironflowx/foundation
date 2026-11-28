@@ -1,6 +1,6 @@
 # Invariants
 
-The properties the system proves: LED for the ledger, TEN for tenancy, SRV for serving, whose rows land with what they cover. A behavior shows one example; an invariant holds for every input. The **S** properties are proven by the crash test below, and by a seeded fault simulator in a later release.
+The properties the system proves: LED for the ledger, TEN for tenancy, SRV for serving, RUN for runs, whose rows land with what they cover. A behavior shows one example; an invariant holds for every input. The **S** properties are proven by the crash test below, and by a seeded fault simulator in a later release.
 
 **Form:** **T** a type or API makes the violation unrepresentable · **U** a unit or integration test · **S** a property checked under faults · **B** a behavior scenario · **C** a CI check, which must reject a violating fixture.
 
@@ -51,6 +51,7 @@ The properties the system proves: LED for the ledger, TEN for tenancy, SRV for s
 | SRV-13 | Every host setting has a flag and variable, and an unread variable warns once at startup | The host's | | In [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow), with the binary (D85) |
 | SRV-14 | The build needs no `protoc` and no `buf` | `protox` in `build.rs`; `connectrpc-build` reads the precompiled descriptor set | C | `ci/no-protoc.sh` builds the workspace with neither on `PATH`, with a fixture that runs both and must fail there |
 | SRV-15 | A panic in the server process aborts it | The host's | | In [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow), with the binary (D85) |
+| RUN-14 | Only the engine makes an owned event | `EngineEmit` is opaque and only `engine_event` makes one; clippy `disallowed-methods` bans `engine_event` in every crate but `ironflowx-events` and `ironflowx-execution`, as D17 bans `SequencedTime`'s constructor; `check_name` still refuses owned names in emits (D118). That no function is triggered by an owned event, and that `decide` refuses owned error codes, land with execution rules | T, C, U | Compile-fail doctests on `EngineEmit`: an `Emit` is none, converts into none, and the struct cannot be built; the lint, with `ci/fixtures/engine-event-outside-execution` it must reject; `a_client_emit_of_an_engine_events_name_is_refused_as_any_owned_name` in `ironflowx-events/tests/rules.rs`; two engine events in one `sequence` take consecutive sequences after the stored ones |
 
 A public-API check compares `cargo-public-api` output for every workspace crate (the list is in `ci/public-api.sh`) with a committed snapshot; any difference fails (D21).
 

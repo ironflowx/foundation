@@ -9,8 +9,9 @@ use std::num::NonZeroU32;
 
 use ironflowx_core::{Emitter, ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
 use ironflowx_events::{
-    Decision, Emit, Error, Event, EventPage, EventTables, EventsView, ItemOutcome, NewEvent,
-    PageBudget, Record, Submission, decide, fold, get_event, list_events,
+    Decision, Emit, EngineEmit, EngineEvent, Error, Event, EventPage, EventTables, EventsView,
+    ItemOutcome, NewEvent, PageBudget, Record, Submission, check_emit, decide, engine_event, fold,
+    get_event, list_events, sequence,
 };
 
 /// The read tables, in memory: the one seam.
@@ -146,6 +147,7 @@ fn assert_refused(emit: Emit) -> String {
     let message = match env.emit(emit) {
         Err(Error::Refused(r)) => {
             assert_eq!(r.kind(), ErrorKind::Invalid);
+            assert_eq!(r.hint(), None, "no event rule hints yet");
             r.message().to_owned()
         }
         other => panic!("expected a refusal, got {other:?}"),
@@ -1227,5 +1229,172 @@ fn a_cursor_that_does_not_decode_or_names_another_incarnation_is_invalid() {
             Err(Error::Refused(r)) => assert_eq!(r.kind(), ErrorKind::Invalid),
             other => panic!("expected invalid for {cursor:?}, got {other:?}"),
         }
+    }
+}
+
+// ---- The engine's events ----
+
+/// RUN-14: only `ironflowx-execution` makes engine events; this helper stands in for it.
+#[expect(clippy::disallowed_methods)]
+fn made(event: EngineEvent) -> EngineEmit {
+    engine_event(event)
+}
+
+const RUN: &str = "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f";
+
+fn completed(function: &str, code: &str) -> EngineEvent {
+    EngineEvent::RunCompleted {
+        run_id: RUN.parse().expect("a run ID"),
+        function: function.into(),
+        code: code.into(),
+    }
+}
+
+fn failed(error_code: &str, error_message: &str) -> EngineEvent {
+    EngineEvent::RunFailed {
+        run_id: RUN.parse().expect("a run ID"),
+        function: "charge".into(),
+        code: "v1".into(),
+        error_code: error_code.into(),
+        error_message: error_message.into(),
+    }
+}
+
+/// Sequences engine events in `env` and folds them in one record, as the ledger would.
+fn append(env: &mut Env, emits: Vec<EngineEmit>) -> Vec<NewEvent> {
+    let events = sequence(&env.store, emits, &mut env.fresh).expect("sequenced");
+    let record = Record {
+        time: NOW,
+        events: events.clone(),
+    };
+    fold(&mut env.store, &record, &by()).expect("in memory");
+    events
+}
+
+#[test]
+fn engine_events_follow_the_stored_ones_with_version_1_and_nothing_a_client_sets() {
+    let mut env = Env::new();
+    env.emit(named("order.placed")).expect("emitted");
+    env.emit(named("order.paid")).expect("emitted");
+    let emits = vec![
+        made(completed("charge", "v1")),
+        made(failed("ironflowx.step_order", "expected \"pay\"")),
+    ];
+    let completed_data = format!(r#"{{"run_id":"{RUN}","function":"charge","code":"v1"}}"#);
+    let failed_data = format!(
+        r#"{{"run_id":"{RUN}","function":"charge","code":"v1","error":{{"code":"ironflowx.step_order","message":"expected \"pay\""}}}}"#
+    );
+    let event = |n: u32, name: &str, data: &str| NewEvent {
+        sequence: u64::from(n),
+        id: id(n),
+        name: name.into(),
+        data: data.into(),
+        metadata: None,
+        version: 1,
+        idempotency_key: None,
+    };
+    assert_eq!(
+        append(&mut env, emits),
+        [
+            event(3, "ironflowx.run.completed", &completed_data),
+            event(4, "ironflowx.run.failed", &failed_data),
+        ]
+    );
+    let read = get_event(&env.store, &id(4).to_string()).expect("readable");
+    assert_eq!((read.time, read.emitted_by), (NOW, by()));
+    // The next client event takes the next sequence.
+    env.emit(named("order.shipped")).expect("emitted");
+    assert_eq!(
+        env.store.events.keys().copied().collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5]
+    );
+}
+
+#[test]
+fn engine_event_data_is_json_that_event_rules_accept_and_holds_each_value() {
+    let awkward = "quote \" backslash \\ newline \n tab \t é 💸 \u{1}";
+    for (event, error) in [
+        (completed(awkward, awkward), None),
+        (failed(awkward, awkward), Some(awkward)),
+    ] {
+        let [new] = sequence(&Store::default(), vec![made(event)], &mut ids())
+            .expect("sequenced")
+            .try_into()
+            .expect("one event");
+        let emit = Emit {
+            data: Some(new.data.clone()),
+            ..named("order.placed")
+        };
+        assert_eq!(check_emit(&emit), Ok(()));
+        let data: serde_json::Value = serde_json::from_slice(&new.data).expect("JSON");
+        let mut expected = serde_json::json!({"run_id": RUN, "function": awkward, "code": awkward});
+        if let Some(e) = error {
+            expected["code"] = "v1".into();
+            expected["function"] = "charge".into();
+            expected["error"] = serde_json::json!({"code": e, "message": e});
+        }
+        assert_eq!(data, expected);
+    }
+}
+
+/// A view that fails the test if it is read.
+struct Unread;
+
+impl EventsView for Unread {
+    type Error = Infallible;
+    fn event_by_key(&self, _: &str) -> Result<Option<EventId>, Infallible> {
+        unreachable!("read")
+    }
+    fn last_sequence(&self) -> Result<u64, Infallible> {
+        unreachable!("read")
+    }
+    fn event(&self, _: EventId) -> Result<Option<Event>, Infallible> {
+        unreachable!("read")
+    }
+    fn events_before(&self, _: Option<u64>, _: &mut PageBudget) -> Result<Vec<Event>, Infallible> {
+        unreachable!("read")
+    }
+}
+
+#[test]
+fn no_engine_event_reads_nothing_and_draws_no_id() {
+    let mut fresh = ids();
+    assert_eq!(sequence(&Unread, Vec::new(), &mut fresh), Ok(Vec::new()));
+    assert_eq!(fresh.next(), Some(id(1)));
+}
+
+#[test]
+fn engine_events_past_the_last_sequence_are_refused() {
+    let mut env = at_last_sequence();
+    let refused = sequence(
+        &env.store,
+        vec![made(completed("charge", "v1"))],
+        &mut env.fresh,
+    );
+    match refused {
+        Err(Error::Refused(r)) => {
+            let got = (r.kind(), r.message(), r.hint());
+            assert_eq!(
+                got,
+                (ErrorKind::Invalid, "event sequences are used up", None)
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_client_emit_of_an_engine_events_name_is_refused_as_any_owned_name() {
+    for name in ["ironflowx.run.completed", "ironflowx.run.failed"] {
+        let message = assert_refused(named(name));
+        assert_eq!(message, "event name is owned by the engine", "{name}");
+        let mut env = Env::new();
+        let batch = Submission::Batch(vec![named(name), named("order.placed")]);
+        let outcome = env.submit(batch).expect("decided");
+        assert!(
+            matches!(&outcome[0], ItemOutcome::Refused(r) if r.message() == message),
+            "{outcome:?}"
+        );
+        assert_eq!(env.stored(), ["order.placed"]);
     }
 }

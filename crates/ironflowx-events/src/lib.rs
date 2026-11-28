@@ -1,6 +1,7 @@
 //! Ironflow X event rules: what an event is and when an emit is refused.
 //!
 //! [`decide`] checks a submission against the current state and returns what to append;
+//! [`engine_event`] makes one of the engine's own events, which [`sequence`] numbers instead;
 //! [`fold`] applies an appended record to the read store; [`get_event`] and [`list_events`]
 //! read events back. Nothing here does I/O, reads a clock or draws randomness (LED-15): state
 //! comes through [`EventsView`] and goes out through [`EventTables`].
@@ -20,7 +21,9 @@ use ironflowx_core::limits::{
     MAX_BATCH_BYTES, MAX_BATCH_EVENTS, MAX_DATA_BYTES, MAX_EVENT_NAME_BYTES,
     MAX_IDEMPOTENCY_KEY_BYTES, MAX_METADATA_BYTES,
 };
-use ironflowx_core::{Emitter, ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
+use ironflowx_core::{
+    Emitter, ErrorKind, EventId, IncarnationToken, RunId, SequencedTime, Timestamp,
+};
 
 // Not in `limits`: a page's bytes bound an answer, not what a caller sends.
 const MAX_PAGE_BYTES: usize = 3 * 1024 * 1024;
@@ -98,12 +101,13 @@ pub struct Decision {
     pub record: Option<Record>,
 }
 
-/// A rule refused the request. Its `Display` shows the message; it wraps no error, so it has no
-/// `source()` (D84).
+/// A rule refused the request. Its `Display` shows the message, not the hint; it wraps no error,
+/// so it has no `source()` (D84).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
     kind: ErrorKind,
     message: String,
+    hint: Option<String>,
 }
 
 impl Refusal {
@@ -111,6 +115,7 @@ impl Refusal {
         Self {
             kind: ErrorKind::Invalid,
             message: message.into(),
+            hint: None,
         }
     }
 
@@ -118,6 +123,7 @@ impl Refusal {
         Self {
             kind: ErrorKind::NotFound,
             message: message.into(),
+            hint: None,
         }
     }
 
@@ -127,6 +133,11 @@ impl Refusal {
 
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// What the caller can do about it, if a rule says.
+    pub fn hint(&self) -> Option<&str> {
+        self.hint.as_deref()
     }
 }
 
@@ -372,6 +383,125 @@ fn check_name(name: &str) -> Result<(), Refusal> {
         return Err(Refusal::invalid("event name is owned by the engine"));
     }
     Ok(())
+}
+
+/// One of the engine's own events (D118). Its name is owned, so [`decide`] refuses it from
+/// everyone; only [`engine_event`] turns one into what [`sequence`] takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineEvent {
+    /// `ironflowx.run.completed`.
+    RunCompleted {
+        run_id: RunId,
+        function: String,
+        code: String,
+    },
+    /// `ironflowx.run.failed`, with the run's error.
+    RunFailed {
+        run_id: RunId,
+        function: String,
+        code: String,
+        error_code: String,
+        error_message: String,
+    },
+}
+
+/// An engine event as [`engine_event`] made it, for [`sequence`]. Nothing else makes one: no
+/// client value converts into it.
+///
+/// ```compile_fail,E0308
+/// let _: ironflowx_events::EngineEmit = ironflowx_events::Emit::default();
+/// ```
+///
+/// ```compile_fail,E0277
+/// let _: ironflowx_events::EngineEmit = ironflowx_events::Emit::default().into();
+/// ```
+///
+/// ```compile_fail,E0451
+/// let _ = ironflowx_events::EngineEmit { name: "ironflowx.run.completed", data: Vec::new() };
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineEmit {
+    name: &'static str,
+    data: Vec<u8>,
+}
+
+/// Makes an engine event: version 1, no metadata, no idempotency key, and data
+/// `{"run_id","function","code"}`, plus `"error":{"code","message"}` for a failure. Only
+/// `ironflowx-execution` calls it (RUN-14; a clippy ban in every other crate).
+pub fn engine_event(event: EngineEvent) -> EngineEmit {
+    let text = |s: &str| serde_json::Value::from(s).to_string();
+    let (name, run_id, function, code, error) = match &event {
+        EngineEvent::RunCompleted {
+            run_id,
+            function,
+            code,
+        } => ("ironflowx.run.completed", run_id, function, code, None),
+        EngineEvent::RunFailed {
+            run_id,
+            function,
+            code,
+            error_code,
+            error_message,
+        } => (
+            "ironflowx.run.failed",
+            run_id,
+            function,
+            code,
+            Some((error_code, error_message)),
+        ),
+    };
+    let mut data = format!(
+        r#"{{"run_id":"{run_id}","function":{},"code":{}"#,
+        text(function),
+        text(code)
+    );
+    if let Some((code, message)) = error {
+        data += &format!(
+            r#","error":{{"code":{},"message":{}}}"#,
+            text(code),
+            text(message)
+        );
+    }
+    data.push('}');
+    EngineEmit {
+        name,
+        data: data.into_bytes(),
+    }
+}
+
+/// Sequences engine events after every stored event, in order, one ID from `fresh` each: the
+/// sequences a client's events take, never refused for their names (D118). Neither the last
+/// sequence nor `fresh` is read for none.
+///
+/// # Panics
+///
+/// If `fresh` runs out.
+pub fn sequence<V: EventsView>(
+    view: &V,
+    emits: Vec<EngineEmit>,
+    fresh: &mut impl Iterator<Item = EventId>,
+) -> Result<Vec<NewEvent>, Error<V::Error>> {
+    if emits.is_empty() {
+        return Ok(Vec::new());
+    }
+    let last = view.last_sequence().map_err(Error::Store)?;
+    (1..)
+        .zip(emits)
+        .map(|(n, emit)| {
+            let sequence = last
+                .checked_add(n)
+                .ok_or_else(|| Error::Refused(Refusal::invalid("event sequences are used up")))?;
+            Ok(NewEvent {
+                sequence,
+                id: fresh.next().expect("fresh yields an ID per engine event"),
+                name: emit.name.to_owned(),
+                data: emit.data,
+                metadata: None,
+                version: 1,
+                idempotency_key: None,
+            })
+        })
+        .collect()
 }
 
 /// Applies one appended record to the read store. Every event carries the record's one

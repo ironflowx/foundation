@@ -1,0 +1,9 @@
+[package]
+name = "engine-event-outside-execution"
+edition = "2024"
+publish = false
+
+[dependencies]
+ironflowx-events = { path = "../../../crates/ironflowx-events" }
+
+[workspace]

@@ -2,11 +2,12 @@
 # Usage: ci/purity.sh
 # LED-15, D17 and D36: the pure crates' dependency allowlists, the SequencedTime constructor
 # outside the ledger, SubmitAs::key outside the credentials crate, Grant::submit_as outside the
-# engine, the key digest codec outside the control plane (TEN-4), every crate-wide ban in every
-# clippy.toml; the doors' engine crates (SRV-1); what the generator refuses (SRV-2, SRV-12); the
-# crash test's fault points in no published build; ci/red.sh, which records test checks landing
-# red; ci/app-ref.sh, which reads the app branch conformance tests (D122); and each check
-# rejecting its fixture. The clippy job enforces the call bans on the real crates.
+# engine, engine_event outside event and execution rules (RUN-14), the key digest codec outside
+# the control plane (TEN-4), every crate-wide ban in every clippy.toml; the doors' engine crates
+# (SRV-1); what the generator refuses (SRV-2, SRV-12); the crash test's fault points in no
+# published build; ci/red.sh, which records test checks landing red; ci/app-ref.sh, which reads
+# the app branch conformance tests (D122); and each check rejecting its fixture. The clippy job
+# enforces the call bans on the real crates.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -85,7 +86,13 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "ci/fixtures/sequenced-time-outside-ledger/escaped/aliased.rs:11:" -- \
     ci/no-event-clock-outside-ledger.sh ci/fixtures/sequenced-time-outside-ledger
   ci/must-reject.sh \
+    "--> src/lib.rs:9:5" \
+    "--> src/lib.rs:13:5" \
+    "--> src/lib.rs:17:28" -- \
+    cargo clippy --locked --manifest-path ci/fixtures/engine-event-outside-execution/Cargo.toml -- -D warnings
+  ci/must-reject.sh \
     "crates/ironflowx-core/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
+    "crates/ironflowx-cell/clippy.toml: missing the ironflowx_events::engine_event ban" \
     "crates/ironflowx-cell/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
     "crates/ironflowx-events/clippy.toml: missing the ironflowx_core::SequencedTime::from_event_clock ban" \
     "crates/ironflowx-authz/clippy.toml: its bans differ" -- \

@@ -241,6 +241,25 @@ impl core::marker::StructuralPartialEq for ironflowx_core::ProjectId
 impl core::str::traits::FromStr for ironflowx_core::ProjectId
 pub type ironflowx_core::ProjectId::Err = ironflowx_core::ParseError
 pub fn ironflowx_core::ProjectId::from_str(&str) -> core::result::Result<Self, ironflowx_core::ParseError>
+pub struct ironflowx_core::RunId(_)
+impl core::clone::Clone for ironflowx_core::RunId
+pub fn ironflowx_core::RunId::clone(&self) -> Self
+impl core::clone::TrivialClone for ironflowx_core::RunId
+impl core::cmp::Eq for ironflowx_core::RunId
+pub fn ironflowx_core::RunId::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_core::RunId
+pub fn ironflowx_core::RunId::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_core::RunId
+pub fn ironflowx_core::RunId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for ironflowx_core::RunId
+pub fn ironflowx_core::RunId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for ironflowx_core::RunId
+pub fn ironflowx_core::RunId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for ironflowx_core::RunId
+impl core::marker::StructuralPartialEq for ironflowx_core::RunId
+impl core::str::traits::FromStr for ironflowx_core::RunId
+pub type ironflowx_core::RunId::Err = ironflowx_core::ParseError
+pub fn ironflowx_core::RunId::from_str(&str) -> core::result::Result<Self, ironflowx_core::ParseError>
 pub struct ironflowx_core::Secret(_)
 impl ironflowx_core::Secret
 pub fn ironflowx_core::Secret::expose(&self) -> &str
