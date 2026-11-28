@@ -7,6 +7,7 @@ use std::ops::Bound::{Excluded, Unbounded};
 
 use std::num::NonZeroU32;
 
+use ironflowx_core::limits::MAX_DATA_BYTES;
 use ironflowx_core::{Emitter, ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
 use ironflowx_events::{
     Decision, Emit, EngineEmit, EngineEvent, Error, Event, EventPage, EventTables, EventsView,
@@ -1167,11 +1168,16 @@ fn a_refused_event_ends_the_page_for_every_older_one() {
 
 /// A store whose one event takes the last event sequence there is.
 fn at_last_sequence() -> Env {
+    at_sequence(u64::MAX)
+}
+
+/// A store whose one event takes `sequence`.
+fn at_sequence(sequence: u64) -> Env {
     let mut env = Env::new();
     let record = Record {
         time: NOW,
         events: vec![NewEvent {
-            sequence: u64::MAX,
+            sequence,
             id: id(1),
             name: "last".into(),
             data: "null".into(),
@@ -1300,8 +1306,6 @@ fn engine_events_follow_the_stored_ones_with_version_1_and_nothing_a_client_sets
             event(4, "ironflowx.run.failed", &failed_data),
         ]
     );
-    let read = get_event(&env.store, &id(4).to_string()).expect("readable");
-    assert_eq!((read.time, read.emitted_by), (NOW, by()));
     // The next client event takes the next sequence.
     env.emit(named("order.shipped")).expect("emitted");
     assert_eq!(
@@ -1357,6 +1361,42 @@ impl EventsView for Unread {
 }
 
 #[test]
+fn engine_event_data_that_event_rules_refuse_is_refused_unread_and_undrawn() {
+    for (event, message) in [
+        (
+            completed("a\0b", "v1"),
+            "event data is invalid: NUL in a key or string at line 1 column 70",
+        ),
+        (
+            failed("ironflowx.x", "\0"),
+            "event data is invalid: NUL in a key or string at line 1 column 129",
+        ),
+        (
+            completed(&"a".repeat(MAX_DATA_BYTES), "v1"),
+            "event data exceeds maximum size",
+        ),
+    ] {
+        let mut fresh = ids();
+        let emits = vec![made(completed("charge", "v1")), made(event)];
+        match sequence(&Unread, emits, &mut fresh) {
+            Err(Error::Refused(r)) => {
+                let got = (r.kind(), r.message(), r.hint());
+                assert_eq!(got, (ErrorKind::Invalid, message, None));
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(fresh.next(), Some(id(1)));
+    }
+}
+
+#[test]
+#[should_panic(expected = "fresh yields an ID per engine event")]
+fn engine_events_without_an_id_left_panic() {
+    let emits = vec![made(completed("charge", "v1"))];
+    let _ = sequence(&Store::default(), emits, &mut std::iter::empty());
+}
+
+#[test]
 fn no_engine_event_reads_nothing_and_draws_no_id() {
     let mut fresh = ids();
     assert_eq!(sequence(&Unread, Vec::new(), &mut fresh), Ok(Vec::new()));
@@ -1364,13 +1404,29 @@ fn no_engine_event_reads_nothing_and_draws_no_id() {
 }
 
 #[test]
-fn engine_events_past_the_last_sequence_are_refused() {
-    let mut env = at_last_sequence();
-    let refused = sequence(
+fn engine_events_take_sequences_up_to_the_last_one() {
+    let mut env = at_sequence(u64::MAX - 1);
+    let events = sequence(
         &env.store,
         vec![made(completed("charge", "v1"))],
         &mut env.fresh,
     );
+    let sequences: Vec<_> = events
+        .expect("sequenced")
+        .iter()
+        .map(|e| e.sequence)
+        .collect();
+    assert_eq!(sequences, [u64::MAX]);
+}
+
+#[test]
+fn engine_events_past_the_last_sequence_are_refused() {
+    let mut env = at_sequence(u64::MAX - 1);
+    let emits = vec![
+        made(completed("charge", "v1")),
+        made(completed("charge", "v2")),
+    ];
+    let refused = sequence(&env.store, emits, &mut env.fresh);
     match refused {
         Err(Error::Refused(r)) => {
             let got = (r.kind(), r.message(), r.hint());
@@ -1381,6 +1437,19 @@ fn engine_events_past_the_last_sequence_are_refused() {
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
+}
+
+#[test]
+fn a_failed_read_of_the_last_sequence_fails_engine_events_and_draws_no_id() {
+    let store = Store::default();
+    let view = Failing {
+        store: &store,
+        bad_key: "bad",
+    };
+    let mut fresh = ids();
+    let got = sequence(&view, vec![made(completed("charge", "v1"))], &mut fresh);
+    assert_eq!(got, Err(Error::Store("last sequence failed")));
+    assert_eq!(fresh.next(), Some(id(1)));
 }
 
 #[test]

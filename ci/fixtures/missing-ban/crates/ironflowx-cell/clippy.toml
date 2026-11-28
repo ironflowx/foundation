@@ -1,2 +1,5 @@
-# Exempt from the event-clock ban, but lacks the SubmitAs::key ban.
-disallowed-methods = []
+# Exempt from the event-clock ban, but lacks the SubmitAs::key ban, and has the engine_event ban
+# only in a comment.
+disallowed-methods = [
+  # { path = "ironflowx_events::engine_event", reason = "fixture" },
+]

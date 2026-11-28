@@ -1,0 +1,6 @@
+# Clippy reads .clippy.toml too: this one carries every ban but engine_event.
+disallowed-methods = [
+  { path = "ironflowx_core::SequencedTime::from_event_clock", reason = "fixture" },
+  { path = "ironflowx_core::SubmitAs::key", reason = "fixture" },
+  { path = "ironflowx_authz::Grant::submit_as", reason = "fixture" },
+]

@@ -1,6 +1,6 @@
-//! Lint fixture: a crate other than ironflowx-execution makes the engine's events, called by
-//! name, through an alias and as a function value. `ci/must-reject.sh` requires clippy to refuse
-//! each (RUN-14).
+//! Fixture: a crate other than ironflowx-execution makes the engine's events by name, alias and
+//! function value, which clippy must refuse, and in a doctest and behind an off feature, which
+//! ci/no-engine-event.sh must (RUN-14).
 
 use ironflowx_events::engine_event as make;
 use ironflowx_events::{EngineEmit, EngineEvent};
@@ -15,4 +15,16 @@ pub fn by_alias(event: EngineEvent) -> EngineEmit {
 
 pub fn as_value(events: Vec<EngineEvent>) -> Vec<EngineEmit> {
     events.into_iter().map(ironflowx_events::engine_event).collect()
+}
+
+/// Named in a doctest, which clippy does not lint:
+///
+/// ```ignore
+/// let _ = ironflowx_events::engine_event;
+/// ```
+pub fn in_a_doctest() {}
+
+#[cfg(feature = "off")]
+pub fn behind_a_feature(event: EngineEvent) -> EngineEmit {
+    ironflowx_events::engine_event(event)
 }

@@ -119,7 +119,8 @@ mod tests {
             hint: hint.map(str::to_owned),
         };
         assert_eq!(refused(base.clone()), error(None));
-        let hinted = base.with_hint("name the event");
+        // A second hint replaces the first.
+        let hinted = base.with_hint("first").with_hint("name the event");
         assert_eq!(refused(hinted), error(Some("name the event")));
     }
 }

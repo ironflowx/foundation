@@ -336,11 +336,7 @@ const _: () = assert!(MAX_BATCH_BYTES.is_multiple_of(1 << 20));
 pub fn check_emit(emit: &Emit) -> Result<(), Refusal> {
     check_name(&emit.name)?;
     if let Some(data) = &emit.data {
-        if data.len() > MAX_DATA_BYTES {
-            return Err(Refusal::invalid("event data exceeds maximum size"));
-        }
-        json::check(data, json::Checked::Data)
-            .map_err(|e| Refusal::invalid(format!("event data is invalid: {e}")))?;
+        check_data(data)?;
     }
     if let Some(metadata) = &emit.metadata {
         if metadata.len() > MAX_METADATA_BYTES {
@@ -367,6 +363,14 @@ pub fn check_emit(emit: &Emit) -> Result<(), Refusal> {
         )));
     }
     Ok(())
+}
+
+fn check_data(data: &[u8]) -> Result<(), Refusal> {
+    if data.len() > MAX_DATA_BYTES {
+        return Err(Refusal::invalid("event data exceeds maximum size"));
+    }
+    json::check(data, json::Checked::Data)
+        .map_err(|e| Refusal::invalid(format!("event data is invalid: {e}")))
 }
 
 fn check_name(name: &str) -> Result<(), Refusal> {
@@ -464,11 +468,11 @@ pub fn engine_event(event: EngineEvent) -> EngineEmit {
         text(function),
         text(code)
     );
-    if let Some((code, message)) = error {
+    if let Some((error_code, error_message)) = error {
         data += &format!(
             r#","error":{{"code":{},"message":{}}}"#,
-            text(code),
-            text(message)
+            text(error_code),
+            text(error_message)
         );
     }
     data.push('}');
@@ -479,8 +483,10 @@ pub fn engine_event(event: EngineEvent) -> EngineEmit {
 }
 
 /// Sequences engine events after every stored event, in order, one ID from `fresh` each: the
-/// sequences a client's events take, never refused for their names (D118). Neither the last
-/// sequence nor `fresh` is read for none.
+/// sequences a client's events take, never refused for their names (D118). Their data meets
+/// event data's rules, or all are refused as an emit of it would be (a NUL or an oversized value,
+/// which execution rules refuse first). Neither the last sequence nor `fresh` is read for none,
+/// or for a refusal of data.
 ///
 /// # Panics
 ///
@@ -492,6 +498,9 @@ pub fn sequence<V: EventsView>(
 ) -> Result<Vec<NewEvent>, Error<V::Error>> {
     if emits.is_empty() {
         return Ok(Vec::new());
+    }
+    for emit in &emits {
+        check_data(&emit.data).map_err(Error::Refused)?;
     }
     let last = view.last_sequence().map_err(Error::Store)?;
     (1..)

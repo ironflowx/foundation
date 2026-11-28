@@ -7,3 +7,6 @@ publish = false
 ironflowx-events = { path = "../../../crates/ironflowx-events" }
 
 [workspace]
+
+[features]
+off = []

@@ -1,7 +1,7 @@
 # Purity bans for the pure crates (LED-15), plus the SequencedTime constructor ban every crate
 # but ironflowx-cell carries, the SubmitAs::key ban every crate but the credentials crate
 # carries, the key digest codec ban every crate but the control plane carries, and the
-# engine_event ban every crate but event and execution rules carries (D17, D36, TEN-4, RUN-14).
+# engine_event ban every crate but execution rules carries (D17, D36, TEN-4, RUN-14).
 # ironflowx-events links this file; ironflowx-authz copies it, less the SubmitAs::key ban.
 # Clippy cannot ban a whole module, so each function and type is listed.
 # shortcut: a list is never complete, and an #[allow] in a target without the crate root's
@@ -22,8 +22,9 @@ disallowed-methods = [
   # backs this up by name.
   { path = "ironflowx_authz::KeyDigest::to_stored", reason = "only the control plane stores a key digest (TEN-4)", allow-invalid = true },
   { path = "ironflowx_authz::KeyDigest::from_stored", reason = "only the control plane stores a key digest (TEN-4)", allow-invalid = true },
-  # The engine's own events: core does not depend on events, and inside ironflowx-events, which
-  # links this file, the path does not resolve, hence allow-invalid.
+  # The engine's own events: core does not depend on events, and in ironflowx-events' library,
+  # which links this file, the path does not resolve, hence allow-invalid; in its integration
+  # tests it does, so their one helper expects the lint. ci/no-engine-event.sh backs this up.
   { path = "ironflowx_events::engine_event", reason = "only ironflowx-execution makes the engine's events (RUN-14)", allow-invalid = true },
 
   { path = "std::time::SystemTime::now", reason = "pure crates read no ambient clock; take a Timestamp or SequencedTime" },

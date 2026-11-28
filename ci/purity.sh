@@ -18,6 +18,7 @@ ci/no-event-clock-outside-ledger.sh crates
 ci/no-key-attribution.sh crates
 ci/clippy-bans.sh .
 ci/no-digest-codec.sh crates
+ci/no-engine-event.sh crates examples
 # Comments may name the constructor.
 ci/no-key-attribution.sh ci/fixtures/key-attribution-in-comment
 ci/no-engine-deps.sh crates/ironflowx-doors/Cargo.toml crates/ironflowx-proto/Cargo.toml
@@ -85,14 +86,24 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "ci/fixtures/sequenced-time-outside-ledger/escaped/aliased.rs:6:" \
     "ci/fixtures/sequenced-time-outside-ledger/escaped/aliased.rs:11:" -- \
     ci/no-event-clock-outside-ledger.sh ci/fixtures/sequenced-time-outside-ledger
+  # Short messages put each finding's place and lint in one line.
   ci/must-reject.sh \
-    "--> src/lib.rs:9:5" \
-    "--> src/lib.rs:13:5" \
-    "--> src/lib.rs:17:28" -- \
-    cargo clippy --locked --manifest-path ci/fixtures/engine-event-outside-execution/Cargo.toml -- -D warnings
+    'src/lib.rs:9:5: error: use of a disallowed method `ironflowx_events::engine_event`' \
+    'src/lib.rs:13:5: error: use of a disallowed method `ironflowx_events::engine_event`' \
+    'src/lib.rs:17:28: error: use of a disallowed method `ironflowx_events::engine_event`' -- \
+    cargo clippy --locked --message-format=short \
+    --manifest-path ci/fixtures/engine-event-outside-execution/Cargo.toml -- -D warnings
+  ci/must-reject.sh \
+    "engine-event-outside-execution/src/lib.rs:5:" \
+    "engine-event-outside-execution/src/lib.rs:9:" \
+    "engine-event-outside-execution/src/lib.rs:17:" \
+    "engine-event-outside-execution/src/lib.rs:23:" \
+    "engine-event-outside-execution/src/lib.rs:29:" -- \
+    ci/no-engine-event.sh ci/fixtures/engine-event-outside-execution
   ci/must-reject.sh \
     "crates/ironflowx-core/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
     "crates/ironflowx-cell/clippy.toml: missing the ironflowx_events::engine_event ban" \
+    "crates/ironflowx-store/.clippy.toml: missing the ironflowx_events::engine_event ban" \
     "crates/ironflowx-cell/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
     "crates/ironflowx-events/clippy.toml: missing the ironflowx_core::SequencedTime::from_event_clock ban" \
     "crates/ironflowx-authz/clippy.toml: its bans differ" -- \

@@ -123,6 +123,9 @@ What a ledger's writer stamps records with: the clock the ledger was opened with
 **Idempotency key**:
 An optional client value on an emit. A second emit with a key already used in the environment returns the original event's ID, marked a duplicate, instead of storing another.
 
+**Run ID** (`RunId`):
+A run's identity: an opaque UUIDv7, as an event ID is. No run exists yet; an engine event names one.
+
 **Engine event**:
 An event the engine appends itself, under a name it owns: `ironflowx.run.completed` or `ironflowx.run.failed`. No client can emit one.
 _Avoid_: system event
