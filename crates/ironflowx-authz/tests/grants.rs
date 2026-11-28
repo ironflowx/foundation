@@ -3,7 +3,10 @@
 
 use std::collections::BTreeSet;
 
-use ironflowx_authz::{Grant, KeyRecord, Refused, admit, may_create, mint, parse, recheck, verify};
+use ironflowx_authz::{
+    Grant, KeyRecord, Refused, admit, may_create, may_create_as_embedder, mint, parse, recheck,
+    verify,
+};
 use ironflowx_core::{EnvRef, KeyId, Scope, Timestamp};
 
 const T: i64 = 1_800_000_000_000;
@@ -296,5 +299,26 @@ fn a_key_has_expired_from_its_expiry_on_or_once_one_is_recorded() {
             ..record(&BTreeSet::from([Scope::Read]), expires_at)
         };
         assert!(recorded.expired(at(T - HOUR)), "{expires_at:?}");
+    }
+}
+
+/// The embedding process, which no grant backs, creates as an unexpiring key with every scope
+/// would (D121).
+#[test]
+fn the_embedder_creates_as_an_unexpiring_key_with_every_scope() {
+    let every = grant(
+        &BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin, Scope::Execute]),
+        None,
+    );
+    for scopes in every_scope_set() {
+        for expires_at in [None, Some(at(T - 1)), Some(at(T)), Some(at(T + HOUR))] {
+            for label in [None, Some("agent-7"), Some("a\nb")] {
+                assert_eq!(
+                    may_create_as_embedder(&scopes, expires_at, label, at(T)),
+                    may_create(&every, &scopes, expires_at, label, at(T)),
+                    "{scopes:?} until {expires_at:?}, label {label:?}"
+                );
+            }
+        }
     }
 }

@@ -52,6 +52,8 @@ async fn one_client_sends_each_calls_own_key() {
         (call("clé"), Some("malformed")),
         (call("\u{7f}"), Some("malformed")),
         (call(" "), Some("malformed")),
+        // A grant goes on no wire: the call reaches the door with no key (D121).
+        (Call::with_grant(()), None),
     ] {
         assert_eq!(ask(&client, &cx).await, Ok(whoami()), "{sent:?}");
         assert_eq!(operations.take(), [sent.map(str::to_owned)]);
@@ -371,6 +373,28 @@ async fn an_expiry_outside_the_wires_years_is_not_sent() {
         assert_eq!(e, refused, "{outside}");
     }
     assert_eq!(operations.take(), []);
+}
+
+/// Only an embedder's call has no key ID, and no door carries one, so a remote answer without
+/// one is not an engine's: the client answers `Unavailable`, as for any answer it cannot decode
+/// (D121).
+#[tokio::test]
+async fn a_whoami_without_a_key_id_does_not_decode() {
+    let keyless = Whoami {
+        key_id: None,
+        ..whoami()
+    };
+    let (addr, _operations) = serving(Ok(keyless)).await;
+    let client = Client::new(&format!("http://{addr}/")).unwrap();
+    let err = ask(&client, &call(KEY)).await.unwrap_err();
+    assert_eq!(
+        err,
+        OpError {
+            kind: ErrorKind::Unavailable,
+            message: "the answer does not decode".into(),
+            hint: None,
+        }
+    );
 }
 
 #[tokio::test]

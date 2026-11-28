@@ -326,14 +326,41 @@ pub fn may_create(
     label: Option<&str>,
     now: Timestamp,
 ) -> Result<(), CreateRefusal> {
+    rules(Some(creator), scopes, expires_at, label, now)
+}
+
+/// Decides whether the embedding process may create a key holding `scopes` until `expires_at`,
+/// labelled `label`, at `now`: by [`may_create`]'s rules for a creator that holds every scope and
+/// never expires, which the embedding process does (D121). No grant backs it, so none is asked.
+///
+/// # Errors
+///
+/// [`CreateRefusal`], saying which rule the request breaks.
+pub fn may_create_as_embedder(
+    scopes: &BTreeSet<Scope>,
+    expires_at: Option<Timestamp>,
+    label: Option<&str>,
+    now: Timestamp,
+) -> Result<(), CreateRefusal> {
+    rules(None, scopes, expires_at, label, now)
+}
+
+/// The rules of a created key; a `creator` of `None` sets no limit of its own.
+fn rules(
+    creator: Option<&Grant>,
+    scopes: &BTreeSet<Scope>,
+    expires_at: Option<Timestamp>,
+    label: Option<&str>,
+    now: Timestamp,
+) -> Result<(), CreateRefusal> {
     let refuse = |why| Err(CreateRefusal(Reason::Message(why)));
     if scopes.is_empty() {
         return refuse("a key holds at least one scope");
     }
-    if !scopes.is_subset(&creator.scopes) {
+    if creator.is_some_and(|c| !scopes.is_subset(&c.scopes)) {
         return refuse("a key cannot hold a scope its creator lacks");
     }
-    match (creator.expires_at, expires_at) {
+    match (creator.and_then(|c| c.expires_at), expires_at) {
         (_, Some(t)) if t <= now => return refuse("the expiry must be after now"),
         (Some(_), None) => return refuse("a key cannot outlive its creator: give it an expiry"),
         (Some(c), Some(t)) if t > c => return refuse("a key cannot expire after its creator"),

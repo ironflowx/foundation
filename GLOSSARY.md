@@ -44,7 +44,7 @@ The admin key a host makes from the data directory alone, when no admin key's se
 What a key may do: `read`, `write`, `admin`, `execute`. A set, not a ladder.
 
 **Emitter**:
-Who made a change, as stored on every event: `key:<key-id>`, or `embedder:<name>` for an embedder that calls the ledger without keys.
+Who made a change, as stored on every event: `key:<key-id>`, or `embedder:<name>` for an embedder that calls the ledger without keys, or the engine with its own call. A created key's `created_by` names its creator too, but writes a key as its bare key ID, in `control.db` and on the wire.
 
 **Grant**:
 What a verified key may do: its ID, scopes, environment and expiry. Never stored.
@@ -200,6 +200,9 @@ The first door: turns Connect, gRPC and gRPC-Web calls into `Operations` calls a
 
 **Embedder**:
 An app that links foundation. One that calls the ledger directly, without keys, is trusted by it, the attribution it supplies included.
+
+**Embedder's call**:
+The call an embedder makes to its engine as itself, with no key (`Engine::embedder_call`): admitted as admin by any engine of its environment and incarnation, a copy of its directory included, as a key is, attributed `embedder:<name>`, never revoked or expired, and carried by no door (D121).
 
 **Host**:
 An embedder that opens an engine on a data directory and serves it through a door. The first is the `ironflowx` binary, built in `ironflowx/ironflow`, not here (D85).

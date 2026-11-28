@@ -55,7 +55,7 @@ message KeyInfo {
   repeated string scopes = 3;
   // "minted", "seed", "recovered", "created".
   string origin = 4;
-  // The ID of the key that created it. Absent: no key did.
+  // The ID of the key that created it, or "embedder:<name>" for an embedder. Absent: neither did.
   optional string created_by = 5 [json_name = "created_by"];
   google.protobuf.Timestamp created_at = 6 [json_name = "created_at"];
   // Absent: it never expires.

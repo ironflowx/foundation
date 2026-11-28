@@ -240,7 +240,10 @@ async fn got_charge(w: &mut Runs) {
     assert_eq!(f.triggers, ["order.placed"]);
     assert_eq!(f.max_attempts, Some(5));
     assert_eq!((f.first_delay_seconds, f.max_delay_seconds), (None, None));
-    assert_eq!(f.put_by.to_string(), format!("key:{}", me.key_id));
+    assert_eq!(
+        f.put_by.to_string(),
+        format!("key:{}", me.key_id.expect("a key's call"))
+    );
     // What the put answered is what reads back.
     assert_eq!(
         Some(&f),
@@ -342,7 +345,10 @@ async fn reads_queued(w: &mut Runs) {
     let me = w.ops().whoami(&builder, WhoamiRequest {}).await.unwrap();
     assert_eq!(run.status, RunStatus::Queued);
     assert_eq!(run.due_at, Some(run.created_at), "due at once");
-    assert_eq!(run.created_by.to_string(), format!("key:{}", me.key_id));
+    assert_eq!(
+        run.created_by.to_string(),
+        format!("key:{}", me.key_id.expect("a key's call"))
+    );
     assert_eq!((run.execution, run.lease_until), (0, None));
     assert_eq!(run.input.as_deref(), Some(b"null".as_slice()));
 }

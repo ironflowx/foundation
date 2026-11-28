@@ -114,7 +114,9 @@ impl core::marker::StructuralPartialEq for ironflowx_proto::BeginStepRequest
 pub struct ironflowx_proto::Call
 impl ironflowx_proto::Call
 pub const fn ironflowx_proto::Call::anonymous() -> Self
+pub fn ironflowx_proto::Call::grant(&self) -> core::option::Option<&(dyn core::any::Any + core::marker::Send + core::marker::Sync)>
 pub const fn ironflowx_proto::Call::key(&self) -> core::option::Option<&ironflowx_core::secret::Secret>
+pub fn ironflowx_proto::Call::with_grant(impl core::any::Any + core::marker::Send + core::marker::Sync + core::panic::unwind_safe::UnwindSafe + core::panic::unwind_safe::RefUnwindSafe) -> Self
 pub const fn ironflowx_proto::Call::with_key(ironflowx_core::secret::Secret) -> Self
 impl core::fmt::Debug for ironflowx_proto::Call
 pub fn ironflowx_proto::Call::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -382,7 +384,7 @@ pub fn ironflowx_proto::InvalidUrl::fmt(&self, &mut core::fmt::Formatter<'_>) ->
 impl core::marker::StructuralPartialEq for ironflowx_proto::InvalidUrl
 pub struct ironflowx_proto::KeyInfo
 pub ironflowx_proto::KeyInfo::created_at: ironflowx_core::time::Timestamp
-pub ironflowx_proto::KeyInfo::created_by: core::option::Option<ironflowx_core::id::KeyId>
+pub ironflowx_proto::KeyInfo::created_by: core::option::Option<ironflowx_core::who::Emitter>
 pub ironflowx_proto::KeyInfo::expires_at: core::option::Option<ironflowx_core::time::Timestamp>
 pub ironflowx_proto::KeyInfo::key_id: ironflowx_core::id::KeyId
 pub ironflowx_proto::KeyInfo::label: core::option::Option<alloc::string::String>
@@ -566,7 +568,7 @@ impl core::marker::StructuralPartialEq for ironflowx_proto::StartRunResponse
 pub struct ironflowx_proto::Whoami
 pub ironflowx_proto::Whoami::environment: ironflowx_core::tenancy::Address
 pub ironflowx_proto::Whoami::expires_at: core::option::Option<ironflowx_core::time::Timestamp>
-pub ironflowx_proto::Whoami::key_id: ironflowx_core::id::KeyId
+pub ironflowx_proto::Whoami::key_id: core::option::Option<ironflowx_core::id::KeyId>
 pub ironflowx_proto::Whoami::scopes: alloc::collections::btree::set::BTreeSet<ironflowx_core::tenancy::Scope>
 impl core::clone::Clone for ironflowx_proto::Whoami
 pub fn ironflowx_proto::Whoami::clone(&self) -> Self

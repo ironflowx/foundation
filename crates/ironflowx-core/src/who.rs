@@ -89,6 +89,23 @@ fn unreadable(c: char) -> bool {
         )
 }
 
+impl Emitter {
+    /// The key it names, if it names one.
+    pub fn key_id(&self) -> Option<KeyId> {
+        match self.0 {
+            Who::Key(id) => Some(id),
+            Who::Embedder(_) => None,
+        }
+    }
+}
+
+/// A key, as read back: what its text form `key:<key-id>` parses to.
+impl From<KeyId> for Emitter {
+    fn from(id: KeyId) -> Self {
+        Self(Who::Key(id))
+    }
+}
+
 impl From<SubmitAs> for Emitter {
     fn from(by: SubmitAs) -> Self {
         Self(by.0)
@@ -125,6 +142,12 @@ mod tests {
         let id: KeyId = "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f".parse().unwrap();
         let emitter = Emitter::from(SubmitAs::key(id));
         assert_eq!(emitter.to_string(), format!("key:{id}"));
+        assert_eq!(
+            (emitter.key_id(), Emitter::from(id)),
+            (Some(id), emitter.clone())
+        );
         assert_eq!(emitter.to_string().parse::<Emitter>(), Ok(emitter));
+        let app = Emitter::from(SubmitAs::embedder("app").unwrap());
+        assert_eq!(app.key_id(), None);
     }
 }

@@ -12,7 +12,9 @@ use buffa_types::google::protobuf::Timestamp as WireTime;
 use connectrpc::ConnectError;
 #[cfg(feature = "server")]
 use connectrpc::{ErrorCode, ErrorDetail};
-use ironflowx_core::{Address, ErrorKind, KeyOrigin, ParseError, Scope, Secret, Timestamp};
+use ironflowx_core::{
+    Address, Emitter, ErrorKind, KeyId, KeyOrigin, ParseError, Scope, Secret, Timestamp,
+};
 
 use crate::{KeyStatus, OpError, RunStatus};
 
@@ -302,7 +304,7 @@ impl TryFrom<crate::WhoamiRequest> for WhoamiRequest {
 impl From<crate::Whoami> for WhoamiResponse {
     fn from(a: crate::Whoami) -> Self {
         Self {
-            key_id: a.key_id.to_string(),
+            key_id: a.key_id.map(|id| id.to_string()),
             scopes: sent_scopes(&a.scopes),
             environment: a.environment.to_string(),
             expires_at: a.expires_at.map(sent_time).into(),
@@ -316,7 +318,11 @@ impl TryFrom<WhoamiResponse> for crate::Whoami {
 
     fn try_from(a: WhoamiResponse) -> Result<Self, Undecodable> {
         Ok(Self {
-            key_id: a.key_id.parse().map_err(|_| Undecodable)?,
+            key_id: a
+                .key_id
+                .map(|id| id.parse())
+                .transpose()
+                .map_err(|_| Undecodable)?,
             scopes: read_scopes(&a.scopes).map_err(|_| Undecodable)?,
             environment: address(&a.environment)?,
             expires_at: a.expires_at.into_option().map(read_time).transpose()?,
@@ -459,7 +465,7 @@ impl From<crate::KeyInfo> for KeyInfo {
             label: k.label,
             scopes: sent_scopes(&k.scopes),
             origin: origin(k.origin).to_owned(),
-            created_by: k.created_by.map(|id| id.to_string()),
+            created_by: k.created_by.map(|by| sent_creator(&by)),
             created_at: Some(sent_time(k.created_at)).into(),
             expires_at: k.expires_at.map(sent_time).into(),
             status: status(k.status).to_owned(),
@@ -472,7 +478,6 @@ impl TryFrom<KeyInfo> for crate::KeyInfo {
     type Error = Undecodable;
 
     fn try_from(k: KeyInfo) -> Result<Self, Undecodable> {
-        let created_by = k.created_by.map(|id| id.parse()).transpose();
         Ok(Self {
             key_id: k.key_id.parse().map_err(|_| Undecodable)?,
             label: k.label,
@@ -481,7 +486,7 @@ impl TryFrom<KeyInfo> for crate::KeyInfo {
                 .into_iter()
                 .find(|o| origin(*o) == k.origin)
                 .ok_or(Undecodable)?,
-            created_by: created_by.map_err(|_| Undecodable)?,
+            created_by: k.created_by.as_deref().map(read_creator).transpose()?,
             created_at: read_time(k.created_at.into_option().ok_or(Undecodable)?)?,
             expires_at: k.expires_at.into_option().map(read_time).transpose()?,
             status: STATUSES
@@ -1104,6 +1109,21 @@ fn sent_scopes(scopes: &BTreeSet<Scope>) -> Vec<String> {
 
 fn read_scopes(scopes: &[String]) -> Result<BTreeSet<Scope>, ParseError> {
     scopes.iter().map(|s| s.parse()).collect()
+}
+
+/// A creator on the wire: a key's bare ID, as since 0.2, or an embedder's `embedder:<name>`
+/// (D121).
+fn sent_creator(by: &Emitter) -> String {
+    by.key_id()
+        .map_or_else(|| by.to_string(), |id| id.to_string())
+}
+
+fn read_creator(text: &str) -> Result<Emitter, Undecodable> {
+    match text.parse::<KeyId>() {
+        Ok(id) => Ok(id.into()),
+        Err(_) if text.starts_with("embedder:") => text.parse().map_err(|_| Undecodable),
+        Err(_) => Err(Undecodable),
+    }
 }
 
 const ORIGINS: [KeyOrigin; 4] = [

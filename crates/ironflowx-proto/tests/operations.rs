@@ -72,7 +72,7 @@ impl Operations for Fixed {
 
     async fn whoami(&self, _cx: &Call, _req: WhoamiRequest) -> Result<Whoami, OpError> {
         Ok(Whoami {
-            key_id: KEY[4..40].parse().unwrap(),
+            key_id: Some(KEY[4..40].parse().unwrap()),
             scopes: BTreeSet::from([Scope::Read]),
             environment: Address::new("default", "default"),
             expires_at: None,
@@ -628,4 +628,12 @@ fn an_op_error_is_a_std_error_and_a_call_prints_no_field() {
 #[test]
 fn a_generic_caller_drives_any_adapter() {
     drive(&Fixed);
+}
+
+/// `Call` keeps the auto traits it had before it could hold a grant (D121): a caller may move it
+/// across threads and across `catch_unwind`.
+#[test]
+fn a_call_keeps_its_auto_traits() {
+    fn held<T: Send + Sync + Unpin + std::panic::UnwindSafe + std::panic::RefUnwindSafe>() {}
+    held::<Call>();
 }

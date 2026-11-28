@@ -278,7 +278,6 @@ fn domain_property(field: &FieldDescriptor, mut schema: Value) -> Value {
         "ironflowx.v1.RevokeKeyRequest.key_id"
         | "ironflowx.v1.WhoamiResponse.key_id"
         | "ironflowx.v1.KeyInfo.key_id"
-        | "ironflowx.v1.KeyInfo.created_by"
         | "ironflowx.v1.GetEventRequest.event_id"
         | "ironflowx.v1.Event.event_id"
         | "ironflowx.v1.EmitResponse.event_id"
@@ -291,8 +290,18 @@ fn domain_property(field: &FieldDescriptor, mut schema: Value) -> Value {
             schema["pattern"] =
                 json!("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
         }
-        "ironflowx.v1.Run.status" | "ironflowx.v1.RunEnd.status" => {
+        "ironflowx.v1.Run.status" => {
             schema["enum"] = json!(["queued", "running", "completed", "failed"]);
+        }
+        // An answer names a run that has ended.
+        "ironflowx.v1.RunEnd.status" => {
+            schema["enum"] = json!(["completed", "failed"]);
+        }
+        // A creating key's bare ID, or an embedder (D121).
+        "ironflowx.v1.KeyInfo.created_by" => {
+            schema["pattern"] = json!(
+                "^(?:[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|embedder:.+)$"
+            );
         }
         _ => {}
     }
@@ -348,6 +357,8 @@ fn always_printed(field: &FieldDescriptor) -> bool {
                 | "ironflowx.v1.StepCompleted.output"
                 | "ironflowx.v1.Ended.run"
                 | "ironflowx.v1.CompleteRunResponse.ended"
+                // Absent only for an embedder's call, which no door carries (D121).
+                | "ironflowx.v1.WhoamiResponse.key_id"
         )
 }
 

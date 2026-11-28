@@ -215,7 +215,10 @@ async fn a_completed_run_is_an_event_of_its_executor() {
         .await
         .unwrap();
     assert_eq!(event.name, "ironflowx.run.completed");
-    assert_eq!(event.emitted_by.to_string(), format!("key:{}", me.key_id));
+    assert_eq!(
+        event.emitted_by.to_string(),
+        format!("key:{}", me.key_id.expect("a key's call"))
+    );
     let data = format!(r#"{{"run_id":"{run_id}","function":"charge","code":"v1"}}"#);
     assert_eq!(String::from_utf8(event.data.clone()).unwrap(), data);
     assert_eq!(
@@ -245,7 +248,10 @@ async fn a_started_run_reads_back_queued() {
     assert_eq!(run.status, RunStatus::Queued);
     assert_eq!(run.input.as_deref(), Some(b"null".as_slice()));
     assert_eq!(run.due_at, Some(Timestamp::from_millis(T)));
-    assert_eq!(run.created_by.to_string(), format!("key:{}", me.key_id));
+    assert_eq!(
+        run.created_by.to_string(),
+        format!("key:{}", me.key_id.expect("a key's call"))
+    );
     assert_eq!((run.execution, run.steps, run.lease_until), (0, 0, None));
     let req = StartRunRequest {
         function: "refund".into(),

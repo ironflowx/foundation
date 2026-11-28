@@ -1,7 +1,8 @@
 //! Bootstraps an engine with a seed it wrote to disk first, emits one event with it, creates a
-//! read-only key, reads the event back with it and sees its emit refused; then restarts the engine
-//! and reads the event back with the seed from disk, using only `ironflowx` and `tokio`. Unix only:
-//! the seed file is written with mode 0600.
+//! read-only key, reads the event back with it and sees its emit refused; then restarts the engine,
+//! reads the event back with the seed from disk, and emits as the app itself with
+//! `embedder_call`, which needs no key, using only `ironflowx` and `tokio`. Unix only: the seed
+//! file is written with mode 0600.
 
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
@@ -98,6 +99,7 @@ fn main() {
             "the event takes the host clock's time"
         );
         let bootstrap = created.info.created_by.expect("the creating key");
+        assert!(bootstrap.key_id().is_some(), "a key created it");
         assert_eq!(
             event,
             Event {
@@ -108,7 +110,7 @@ fn main() {
                 version: 1,
                 idempotency_key: Some("order-1".to_owned()),
                 time: event.time,
-                emitted_by: format!("key:{bootstrap}").parse().expect("an emitter"),
+                emitted_by: bootstrap,
             }
         );
         let refused = engine
@@ -142,11 +144,32 @@ fn main() {
             .await
             .expect("the seed reads the event after the restart");
         assert_eq!(again, event);
+        // The app's own call: admin, attributed to the app, and backed by no secret on disk.
+        let app = engine.embedder_call("embed").expect("a valid name");
+        let shipped = EmitRequest {
+            name: "order.shipped".to_owned(),
+            data: None,
+            metadata: None,
+            version: None,
+            idempotency_key: None,
+        };
+        let emitted = engine.emit(&app, shipped).await.expect("the app emits");
+        let shipped = engine
+            .get_event(
+                &reader,
+                GetEventRequest {
+                    event_id: emitted.event_id.to_string(),
+                },
+            )
+            .await
+            .expect("the read key reads the app's event");
+        assert_eq!(shipped.emitted_by.to_string(), "embedder:embed");
         engine.close().await;
     });
     std::fs::remove_dir_all(&dir).expect("the app's directory is removed");
     println!(
         "embed: bootstrapped an engine with a seed, emitted one event, read it back with a read key \
-         and saw that key's emit refused, then restarted it and read the event with the seed"
+         and saw that key's emit refused, then restarted it, read the event with the seed and \
+         emitted as the app with no key"
     );
 }

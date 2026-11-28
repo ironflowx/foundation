@@ -19,7 +19,8 @@ use std::sync::Arc;
 
 use ironflowx_cell::{Ledger, Outcome, Submission};
 use ironflowx_core::{
-    Address, Clock, EnvRef, ErrorKind, IncarnationToken, Scope, Secret, Timestamp,
+    Address, Clock, Emitter, EnvRef, ErrorKind, IncarnationToken, ParseError, Scope, Secret,
+    SubmitAs, Timestamp,
 };
 use ironflowx_events::{ItemOutcome, Submission as Events};
 use ironflowx_execution::Command;
@@ -41,7 +42,7 @@ const MAX_KEY_PAGE: u32 = 1_000;
 /// The most created keys of an environment that hold a slot at once (TEN-15).
 const KEY_CAP: u32 = 1_000;
 
-use admission::Authorized;
+use admission::{Authorized, EmbedderGrant};
 pub use events::check_emit;
 pub use ironflowx_authz::SeedState;
 pub use ironflowx_cell::{Fault, HostClock, LedgerState, OpenError};
@@ -151,20 +152,37 @@ impl Engine {
         self.ledger.close_with_state().await
     }
 
+    /// A call for the embedding process itself, attributed `embedder:<name>`: admitted as admin
+    /// by this engine, and by a later one on the same directory, with no key, so an embedder
+    /// stores no secret to stay in across restarts (D121). It reaches no other environment or
+    /// incarnation (a copy of the directory is the same environment and incarnation, for a key as
+    /// for this call), and no door can carry it: the wire has no field for it.
+    ///
+    /// # Errors
+    ///
+    /// If `name` is empty, over [`limits::MAX_EMBEDDER_NAME_BYTES`] bytes or holds a control,
+    /// format or line or paragraph separator character.
+    ///
+    /// [`limits::MAX_EMBEDDER_NAME_BYTES`]: ironflowx_core::limits::MAX_EMBEDDER_NAME_BYTES
+    pub fn embedder_call(&self, name: &str) -> Result<Call, ParseError> {
+        let by = SubmitAs::embedder(name)?;
+        Ok(Call::with_grant(EmbedderGrant { by, env: self.env }))
+    }
+
     /// The ledger, reached only with a proof of admission (TEN-1).
     fn ledger(&self, _: &Authorized) -> &Ledger {
         &self.ledger
     }
 
-    /// The engine's one way to submit: attributed to the admitted call's grant (TEN-6). The hint
-    /// of an `Unknown` is `if_unknown`.
+    /// The engine's one way to submit: attributed to the admitted call's key or embedder (TEN-6).
+    /// The hint of an `Unknown` is `if_unknown`.
     async fn submit(
         &self,
         a: &Authorized,
         sub: Submission,
         if_unknown: &str,
     ) -> Result<Outcome, OpError> {
-        let by = a.grant().submit_as();
+        let by = a.submit_as();
         let committed = self.ledger(a).submit(sub, by).await;
         Ok(committed
             .map_err(|e| events::submit_error(e, if_unknown))?
@@ -206,13 +224,14 @@ impl Engine {
 
     async fn environment(&self, a: &Authorized) -> Result<EnvironmentRecord, OpError> {
         let keys = self.keys(a);
-        let env = a.grant().env();
+        let env = a.env();
         blocking(move || keys.environment(&env)).await
     }
 }
 
 impl Operations for Engine {
-    /// The calling key, as it sees itself. Any valid key may ask.
+    /// The calling key, as it sees itself. Any valid key may ask, and an embedder, which holds
+    /// every scope, no key and no expiry.
     ///
     /// # Errors
     ///
@@ -222,10 +241,10 @@ impl Operations for Engine {
         let a = self.admit(cx, Operation::Whoami).await?;
         let record = self.environment(&a).await?;
         Ok(Whoami {
-            key_id: a.grant().key_id(),
-            scopes: a.grant().scopes().clone(),
+            key_id: a.key_id(),
+            scopes: a.scopes(),
             environment: address(&record),
-            expires_at: a.grant().expires_at(),
+            expires_at: a.expires_at(),
         })
     }
 
@@ -250,7 +269,7 @@ impl Operations for Engine {
         }])
     }
 
-    /// Emits one event, attributed to the calling key.
+    /// Emits one event, attributed to the calling key, or to the embedder of an embedder's call.
     ///
     /// # Errors
     ///
@@ -265,8 +284,8 @@ impl Operations for Engine {
         events::response(outcome)
     }
 
-    /// Emits a batch, every event attributed to the calling key; one result per item, in
-    /// order.
+    /// Emits a batch, every event attributed to the calling key, or to the embedder of an
+    /// embedder's call; one result per item, in order.
     ///
     /// # Errors
     ///
@@ -335,7 +354,7 @@ impl Operations for Engine {
     /// If the OS random source fails.
     async fn create_key(&self, cx: &Call, req: CreateKeyRequest) -> Result<CreatedKey, OpError> {
         let a = self.admit(cx, Operation::CreateKey).await?;
-        let creator = a.grant().key_id();
+        let creator = Emitter::from(a.submit_as());
         let scopes = if req.scopes.is_empty() {
             BTreeSet::from([Scope::Read])
         } else {
@@ -352,7 +371,7 @@ impl Operations for Engine {
             expires_at: req.expires_at,
         };
         let (keys, env, clock) = (self.keys(&a), self.env, self.clock.clone());
-        let row = key_change(move || keys.insert_key(&env, new, creator, &*clock, KEY_CAP))
+        let row = key_change(move || keys.insert_key(&env, new, &creator, &*clock, KEY_CAP))
             .await
             .map_err(|e| match e.kind {
                 // Its commit may be unsettled (D48), and a retry would make a second key.
@@ -416,9 +435,9 @@ impl Operations for Engine {
     async fn revoke_key(&self, cx: &Call, req: RevokeKeyRequest) -> Result<(), OpError> {
         let a = self.admit(cx, Operation::RevokeKey).await?;
         let id = req.key_id.parse().map_err(|_| key_not_found())?;
-        let by = a.grant().key_id();
+        let by = Emitter::from(a.submit_as());
         let (keys, env, clock) = (self.keys(&a), self.env, self.clock.clone());
-        key_change(move || keys.revoke_key(&env, id, by, &*clock)).await
+        key_change(move || keys.revoke_key(&env, id, &by, &*clock)).await
     }
 
     /// Puts a function's definition, attributed to the calling key; one identical to the current

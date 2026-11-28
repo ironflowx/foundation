@@ -52,4 +52,5 @@ The runner is the `cucumber` crate, in an unpublished workspace crate (D20). It 
 | Users, roles, policies, audit, a key's last use, more than one environment | 0.9 |
 | A key in a live-stream handshake | 0.15 |
 | Restart durability as a scenario | A property: the crash test proves it (`../invariants.md`) |
+| The embedder's call as a scenario | In process only, and no door carries it, so the proto client adapter cannot run it: a test per operation in `ironflowx-operations`' `tests/embedder.rs` proves it (TEN-1, TEN-6, D121) |
 | What a restart does with its read store: keeps one that matches its log, rebuilds one that diverged from it whatever its last record holds, and refuses one ahead of it or a log in another format | LED-8 and LED-12: the deterministic tests and the crash test (`../invariants.md`) |
