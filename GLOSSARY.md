@@ -84,7 +84,7 @@ The one thread that takes each submission in turn: decides it, appends its recor
 `read.db`, the SQLite tables the fold builds from the commit log. Derived state: rebuilt from the log, never trusted over it.
 
 **Fold**:
-Writing one record's events and the new applied position to the read store, in one transaction.
+Writing one record's entries, its record ID and the new applied position to the read store, in one transaction.
 
 **Sealed log**:
 A commit log that takes no more appends, as a lossy repair leaves it. It still opens; its first append fails the ledger.
@@ -93,8 +93,17 @@ A commit log that takes no more appends, as a lossy repair leaves it. It still o
 An open ledger becoming `Unavailable`, whatever made it fail. It stays so until it is reopened. Closing a ledger is not one.
 
 **Record**:
-One entry in a ledger's commit log, holding everything one submission commits.
+One unit of a ledger's commit log, holding everything one submission commits: its envelope, then its ordered entries.
 _Avoid_: Log record (that is the segment log's own type)
+
+**Envelope**:
+The head of every record after the genesis record: format version, incarnation token, record ID, attribution and event-clock time.
+
+**Entry**:
+One change inside a record, of one kind: so far, always an event. A record's entries are ordered.
+
+**Record ID**:
+A record's own UUIDv7, drawn by the writer at the append and copied by replay, so two copies of a directory never share one. `read.db` keeps the last applied record's, and open compares it with the log's record at that position.
 
 **Genesis record**:
 The first record of a ledger's log, carrying the ledger's identity: format version, environment ID and incarnation token.

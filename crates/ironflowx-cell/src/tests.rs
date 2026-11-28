@@ -163,7 +163,8 @@ async fn replaying_folds_each_record_exactly_once() {
                 version: 1,
                 idempotency_key: None,
             }];
-            crate::store::apply(&mut conn, offset, Some((&record, &emitter())), false).unwrap();
+            let id = uuid::Uuid::now_v7();
+            crate::store::apply(&mut conn, offset, Some((id, &record, &emitter())), false).unwrap();
             assert_eq!(crate::store::applied(&conn).unwrap(), applied);
         }
     }
@@ -227,7 +228,12 @@ async fn a_later_record_with_another_token_is_refused() {
             time: Timestamp::from_millis(T),
             events: vec![],
         };
-        let foreign = record::events(new_env_ref().token(), &emitter(), &record);
+        let foreign = record::events(
+            new_env_ref().token(),
+            uuid::Uuid::now_v7(),
+            &emitter(),
+            &record,
+        );
         append(&log, ExpectedRevision::At(revision), foreign);
     }
     std::fs::remove_file(dir.path().join("read.db")).unwrap();
@@ -263,7 +269,7 @@ async fn a_log_without_a_genesis_record_is_refused() {
         append(
             &log,
             ExpectedRevision::Empty,
-            record::events(env.token(), &emitter(), &record),
+            record::events(env.token(), uuid::Uuid::now_v7(), &emitter(), &record),
         );
     }
     let err = Ledger::open(dir.path(), env, clock()).await.err();
@@ -629,12 +635,14 @@ fn records_round_trip() {
         }],
     };
     let key: Emitter = "key:019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f".parse().unwrap();
+    let id = uuid::Uuid::now_v7();
     for emitted_by in [emitter(), key] {
         assert_eq!(
-            record::decode(&record::events(env.token(), &emitted_by, &record)),
+            record::decode(&record::events(env.token(), id, &emitted_by, &record)),
             Some(record::Decoded::Events {
                 format: record::FORMAT,
                 token: env.token(),
+                id,
                 emitted_by,
                 record: record.clone(),
             })
@@ -650,6 +658,14 @@ fn records_round_trip() {
     let mut trailing = record::genesis(env);
     trailing.push(0);
     assert_eq!(record::decode(&trailing), None);
+    // An entry of a kind this format does not write: its kind follows the envelope and count.
+    let mut unknown = record::events(env.token(), id, &emitter(), &record);
+    let empty = ironflowx_events::Record {
+        events: vec![],
+        ..record
+    };
+    unknown[record::events(env.token(), id, &emitter(), &empty).len()] = 0xFF;
+    assert_eq!(record::decode(&unknown), None);
 }
 
 fn append(log: &SegmentLog, expected: ExpectedRevision, payload: Vec<u8>) {
@@ -962,6 +978,142 @@ async fn a_divergent_read_store_of_the_same_incarnation_is_rebuilt() {
     assert_eq!(names(&ledger).await, ["mine"]);
 }
 
+/// Every record of the closed ledger at `dir`, decoded, and its log's watermark.
+fn log_records(dir: &Path) -> (Vec<record::Decoded>, u64) {
+    let log = SegmentLog::open(dir.join("log"), Options::default()).unwrap();
+    let records = log.read(0, usize::MAX).unwrap();
+    let decoded = records.iter().map(|r| record::decode(&r.payload).unwrap());
+    (decoded.collect(), log.watermark())
+}
+
+/// The IDs of the records after the genesis record, in log order.
+fn record_ids(dir: &Path) -> Vec<uuid::Uuid> {
+    let (records, _) = log_records(dir);
+    let id = |r| match r {
+        record::Decoded::Events { id, .. } => Some(id),
+        record::Decoded::Genesis { .. } => None,
+    };
+    records.into_iter().filter_map(id).collect()
+}
+
+/// Copies every file under `from` into the empty directory `to`.
+fn copy_dir(from: &Path, to: &Path) {
+    for path in listing(from) {
+        if from.join(&path).is_dir() {
+            std::fs::create_dir_all(to.join(&path)).unwrap();
+        } else {
+            std::fs::create_dir_all(to.join(&path).parent().unwrap()).unwrap();
+            std::fs::copy(from.join(&path), to.join(&path)).unwrap();
+        }
+    }
+}
+
+/// Appends a record that holds no event to the closed ledger at `dir`, at time `T`.
+fn append_eventless(dir: &Path, env: EnvRef) {
+    let log = SegmentLog::open(dir.join("log"), Options::default()).unwrap();
+    let revision = log.stream_head(b"events").unwrap().revision;
+    let record = ironflowx_events::Record {
+        time: Timestamp::from_millis(T),
+        events: vec![],
+    };
+    let payload = record::events(env.token(), uuid::Uuid::now_v7(), &emitter(), &record);
+    append(&log, ExpectedRevision::At(revision), payload);
+}
+
+#[tokio::test]
+async fn a_fresh_ledger_writes_format_3() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = open(dir.path(), new_env_ref()).await;
+    emit(&ledger, named("a")).await.unwrap();
+    ledger.close().await;
+    let format = |r: &record::Decoded| match *r {
+        record::Decoded::Genesis { format, .. } | record::Decoded::Events { format, .. } => format,
+    };
+    let (records, _) = log_records(dir.path());
+    assert_eq!(records.iter().map(format).collect::<Vec<_>>(), [3, 3]);
+}
+
+/// The writer draws each record's ID at the append, so a copy's next record has its own (D117).
+#[tokio::test]
+async fn two_copies_of_a_directory_never_share_a_record_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let copy = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    emit(&ledger, named("a")).await.unwrap();
+    ledger.close().await;
+    copy_dir(dir.path(), copy.path());
+    for path in [dir.path(), copy.path()] {
+        let ledger = open(path, env).await;
+        emit(&ledger, named("b")).await.unwrap();
+        ledger.close().await;
+    }
+    let (mine, theirs) = (record_ids(dir.path()), record_ids(copy.path()));
+    assert_eq!((mine.len(), theirs.len()), (2, 2));
+    assert_eq!(mine[0], theirs[0], "the copied record keeps its ID");
+    assert_ne!(mine[1], theirs[1]);
+}
+
+/// Open compares the last applied record's ID with the log's record at that position (D117,
+/// LED-8 and LED-12 extended): a read store of a copy that diverged after its last event, by a
+/// record of the same kind at the same position and time, holding no event, is rebuilt. The
+/// open appends nothing, and the rebuilt store reopens as it is.
+#[tokio::test]
+async fn a_read_store_of_a_copy_diverged_by_a_record_without_events_is_rebuilt() {
+    let dir = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    emit(&ledger, named("a")).await.unwrap();
+    ledger.close().await;
+    copy_dir(dir.path(), other.path());
+    for path in [dir.path(), other.path()] {
+        append_eventless(path, env);
+        open(path, env).await.close().await;
+    }
+    std::fs::copy(other.path().join("read.db"), dir.path().join("read.db")).unwrap();
+    let ours = record_ids(dir.path());
+    assert_ne!(ours[1], record_ids(other.path())[1]);
+    let (_, watermark) = log_records(dir.path());
+    for open_ in ["rebuilds", "reopens"] {
+        let ledger = open(dir.path(), env).await;
+        assert_eq!(names(&ledger).await, ["a"], "{open_}");
+        let last = crate::store::last_record(&ledger.store.lock().unwrap()).unwrap();
+        assert_eq!(last, Some(ours[1]), "{open_}");
+        ledger.close().await;
+        assert_eq!(
+            log_records(dir.path()).1,
+            watermark,
+            "{open_}: open appended"
+        );
+    }
+}
+
+/// A read store that holds only the genesis record has no record ID; one that says otherwise is
+/// rebuilt (D117).
+#[tokio::test]
+async fn a_read_store_of_only_the_genesis_record_has_no_record_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    open(dir.path(), env).await.close().await;
+    let db = dir.path().join("read.db");
+    let meta = || {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let sql = "SELECT applied, record_id FROM meta";
+        let row = conn.query_row(sql, [], |r| Ok((r.get(0)?, r.get(1)?)));
+        row.unwrap()
+    };
+    assert_eq!(meta(), (1u64, None::<String>));
+    for id in [uuid::Uuid::now_v7().to_string(), "not a record ID".into()] {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("UPDATE meta SET record_id = ?1", [&id])
+            .unwrap();
+        drop(conn);
+        open(dir.path(), env).await.close().await;
+        assert_eq!(meta(), (1, None), "{id}");
+    }
+}
+
 #[tokio::test]
 async fn a_missing_log_preserves_a_populated_foreign_store() {
     let dir = tempfile::tempdir().unwrap();
@@ -1074,18 +1226,29 @@ async fn every_event_records_who_emitted_it_across_reopen_and_rebuild() {
     assert_eq!(emitters(&ledger).await, expected);
 }
 
+/// A directory from 0.1 (format 1) or 0.2–0.3 (format 2) is refused, not misread (D8).
 #[tokio::test]
-async fn a_format_1_directory_is_refused_as_another_format() {
-    let dir = tempfile::tempdir().unwrap();
-    let env = new_env_ref();
-    {
-        let log = SegmentLog::open(dir.path().join("log"), Options::default()).unwrap();
-        let mut genesis = record::genesis(env);
-        genesis[1..3].copy_from_slice(&1u16.to_le_bytes());
-        append(&log, ExpectedRevision::Empty, genesis);
+async fn an_older_format_directory_is_refused_as_another_format() {
+    for format in [1u16, 2] {
+        let dir = tempfile::tempdir().unwrap();
+        let env = new_env_ref();
+        {
+            let log = SegmentLog::open(dir.path().join("log"), Options::default()).unwrap();
+            let mut genesis = record::genesis(env);
+            genesis[1..3].copy_from_slice(&format.to_le_bytes());
+            append(&log, ExpectedRevision::Empty, genesis);
+        }
+        let err = Ledger::open(dir.path(), env, clock()).await.err();
+        assert!(
+            matches!(err, Some(OpenError::Format)),
+            "format {format}: {err:?}"
+        );
+        assert_eq!(
+            err.unwrap().to_string(),
+            "the ledger directory is in another format",
+            "format {format}"
+        );
     }
-    let err = Ledger::open(dir.path(), env, clock()).await.err();
-    assert!(matches!(err, Some(OpenError::Format)), "{err:?}");
 }
 
 /// Every file under `dir` with its bytes, and every directory.

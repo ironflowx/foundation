@@ -564,7 +564,8 @@ impl Writer {
                 continue;
             };
             let emitted_by = Emitter::from(job.by);
-            let payload = record::events(self.env.token(), &emitted_by, &record);
+            let id = uuid::Uuid::now_v7();
+            let payload = record::events(self.env.token(), id, &emitted_by, &record);
             let reply = AppendReply(Some(job.reply));
             let _on_panic = FailOnPanic(self.progress.clone());
             let offset = match self.append(payload) {
@@ -580,7 +581,7 @@ impl Writer {
             ironflowx_core::reach_fault_point(ironflowx_core::FaultPoint::AfterFsync);
             self.progress.send_modify(|p| p.committed = offset + 1);
             reply.send(answer);
-            self.fold(offset, &record, &emitted_by);
+            self.fold(offset, id, &record, &emitted_by);
         }
     }
 
@@ -629,7 +630,7 @@ impl Writer {
         Ok(position.offset)
     }
 
-    fn fold(&self, offset: u64, record: &Record, emitted_by: &Emitter) {
+    fn fold(&self, offset: u64, id: uuid::Uuid, record: &Record, emitted_by: &Emitter) {
         #[cfg(any(test, feature = "__fault-points"))]
         {
             self.faults.wait_while_held();
@@ -642,7 +643,7 @@ impl Writer {
             fail(&self.progress);
             return;
         };
-        match store::apply(&mut conn, offset, Some((record, emitted_by)), false) {
+        match store::apply(&mut conn, offset, Some((id, record, emitted_by)), false) {
             Ok(()) => self.progress.send_modify(|p| p.applied = offset + 1),
             Err(_) => fail(&self.progress),
         }
@@ -823,18 +824,17 @@ fn replay(
         Ok(applied) => applied,
         Err(e) => return Ok(Err(std::io::Error::other(e))),
     };
-    // Every non-genesis record written by the ledger ends with a freshly minted
-    // event ID. It identifies this prefix even across forks of the same incarnation.
+    // Every non-genesis record carries an ID the writer drew at the append, so the last applied
+    // one identifies this prefix even across copies of the directory, whatever it holds (D117).
     let mut last_time = None;
     let expected = if from > 1 {
-        let (record, _) = read_events(log, from - 1, env)?;
+        let (id, record, _) = read_events(log, from - 1, env)?;
         last_time = Some(record.time);
-        let event = record.events.last().ok_or(OpenError::Corrupt)?;
-        Some((event.sequence, event.id))
+        Some(id)
     } else {
         None
     };
-    match store::last_event(&conn) {
+    match store::last_record(&conn) {
         Ok(actual) if actual == expected => {}
         Ok(_) => return Ok(Err(std::io::Error::other("read store diverges from log"))),
         Err(e) => return Ok(Err(std::io::Error::other(e))),
@@ -844,13 +844,13 @@ fn replay(
             None
         } else {
             let read = read_events(log, from, env)?;
-            last_time = Some(read.0.time);
+            last_time = Some(read.1.time);
             Some(read)
         };
         if let Err(e) = store::apply(
             &mut conn,
             from,
-            record.as_ref().map(|(r, by)| (r, by)),
+            record.as_ref().map(|(id, r, by)| (*id, r, by)),
             true,
         ) {
             return Ok(Err(std::io::Error::other(e)));
@@ -861,14 +861,19 @@ fn replay(
 }
 
 /// A later record: it must carry this incarnation's token and format (LED-8).
-fn read_events(log: &SegmentLog, offset: u64, env: EnvRef) -> Result<(Record, Emitter), OpenError> {
+fn read_events(
+    log: &SegmentLog,
+    offset: u64,
+    env: EnvRef,
+) -> Result<(uuid::Uuid, Record, Emitter), OpenError> {
     match read_record(log, offset)? {
         record::Decoded::Events {
             format,
             token,
+            id,
             emitted_by,
             record,
-        } if format == FORMAT && token == env.token() => Ok((record, emitted_by)),
+        } if format == FORMAT && token == env.token() => Ok((id, record, emitted_by)),
         _ => Err(OpenError::Corrupt),
     }
 }
