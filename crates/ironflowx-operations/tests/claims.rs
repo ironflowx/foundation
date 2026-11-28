@@ -261,6 +261,8 @@ async fn of_two_claims_that_see_one_run_the_other_waits_on() {
         r = &mut b => (taken(r.unwrap().0), a),
     };
     assert_eq!(winner.as_deref(), Some(first.as_str()));
+    // The loser's next read: its submission came back empty, and it went back to waiting.
+    receive(&readings, 1);
     let second = f.start().await;
     assert_eq!(taken(loser.await.unwrap().0), Some(second));
     f.close().await;
