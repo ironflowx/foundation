@@ -32,7 +32,12 @@ const fn tested(op: Operation) -> &'static str {
 
 #[test]
 fn every_operation_has_a_test() {
-    assert_eq!(Operation::ALL.iter().map(|op| tested(*op)).count(), 9);
+    let names: BTreeSet<_> = Operation::ALL.iter().map(|op| tested(*op)).collect();
+    assert_eq!(
+        names.len(),
+        Operation::ALL.len(),
+        "one test each: {names:?}"
+    );
 }
 
 fn clock() -> ManualClock {
