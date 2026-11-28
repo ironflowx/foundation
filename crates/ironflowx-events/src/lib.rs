@@ -139,6 +139,15 @@ impl Refusal {
     pub fn hint(&self) -> Option<&str> {
         self.hint.as_deref()
     }
+
+    /// The same refusal, with a hint for the caller in place of any it had.
+    #[must_use]
+    pub fn with_hint(self, hint: impl Into<String>) -> Self {
+        Self {
+            hint: Some(hint.into()),
+            ..self
+        }
+    }
 }
 
 impl fmt::Display for Refusal {

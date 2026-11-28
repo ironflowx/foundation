@@ -165,6 +165,7 @@ impl ironflowx_events::Refusal
 pub fn ironflowx_events::Refusal::hint(&self) -> core::option::Option<&str>
 pub const fn ironflowx_events::Refusal::kind(&self) -> ironflowx_core::error::ErrorKind
 pub fn ironflowx_events::Refusal::message(&self) -> &str
+pub fn ironflowx_events::Refusal::with_hint(self, impl core::convert::Into<alloc::string::String>) -> Self
 impl core::clone::Clone for ironflowx_events::Refusal
 pub fn ironflowx_events::Refusal::clone(&self) -> Self
 impl core::cmp::Eq for ironflowx_events::Refusal

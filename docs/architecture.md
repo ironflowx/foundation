@@ -294,7 +294,7 @@ fn check_emit(emit: &Emit) -> Result<(), Refusal>;   // decide's item rules for 
 fn engine_event(event: EngineEvent) -> EngineEmit;   // EngineEmit is opaque: nothing else makes one; only execution rules call it (RUN-14)
 fn sequence<V: EventsView>(view: &V, emits: Vec<EngineEmit>,
           fresh: &mut impl Iterator<Item = EventId>) -> Result<Vec<NewEvent>, Error<V::Error>>;   // after every stored event, in order
-// Refusal: kind(), message(), hint() -> Option<&str>
+// Refusal: kind(), message(), hint() -> Option<&str>, with_hint(hint) -> Refusal
 fn fold<T: EventTables>(tx: &mut T, record: &Record, emitted_by: &Emitter) -> Result<(), T::Error>;
 fn get_event<V: EventsView>(view: &V, id: &str) -> Result<Event, Error<V::Error>>;
 fn list_events<V: EventsView>(view: &V, token: IncarnationToken, limit: Option<NonZeroU32>,
@@ -341,7 +341,7 @@ The engine appends two events of its own, whose names are owned, so `decide` ref
 
 An engine event has version 1, no metadata and no idempotency key. Its data is `{"run_id","function","code"}`, in that order, plus `"error":{"code","message"}` for a failure, each value a JSON string, escaped as `serde_json` escapes it. It holds no output. Error codes that begin with `ironflowx.` are the engine's own (D111). `sequence` gives engine events the next event sequences after every stored event, in order, one ID from `fresh` each, the sequences a client's events take; for none it reads nothing and draws no ID, and past the last sequence it refuses, as `decide` does. The record's time and attribution are the ledger's, as for an emit. Nothing appends one yet: execution rules will, in the record that ends a run.
 
-A refusal may carry a hint (`Refusal::hint`), which the engine copies into `OpError::hint`, and the wire carries as any other ([Errors](#errors)). No event rule gives one yet.
+A refusal may carry a hint (`Refusal::hint`; `with_hint` adds one), which the engine copies into `OpError::hint`, and the wire carries as any other ([Errors](#errors)). No event rule gives one yet; execution rules will.
 
 A list query, not `decide`, checks the cursor: a token that does not decode, or names another incarnation, is `Invalid` (EVT-045, EVT-055). A cursor encodes the incarnation token and the last event sequence returned, and stays valid across reopen. A page lists the events older than the cursor's sequence, whether or not an event has that sequence, so a cursor past every sequence lists from the newest. It is an encoding, not a signature: a forged one is not detected.
 
