@@ -28,6 +28,6 @@ pub use ironflowx_execution::{
     RunEnd, Status,
 };
 pub use ledger::{
-    Committed, Fault, Ledger, LedgerState, OpenError, Outcome, ReadError, Submission, SubmitError,
-    new_env_ref,
+    Changes, Committed, Fault, Ledger, LedgerState, OpenError, Outcome, ReadError, Submission,
+    SubmitError, new_env_ref,
 };

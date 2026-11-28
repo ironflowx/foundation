@@ -6,7 +6,8 @@ use ironflowx_core::limits::MAX_DATA_BYTES;
 use ironflowx_core::{Emitter, ErrorKind, Lease, RunId, SequencedTime, Timestamp};
 use ironflowx_execution::{
     Begun, Command, Decision, Definition, Draws, Entry, Error, ExecutionTables, ExecutionView,
-    Function, Outcome, Refusal, Run, RunEnd, Status, Step, decide, decode, encode, fold,
+    Function, Outcome, Refusal, Run, RunEnd, Status, Step, claim_pairs, decide, decode, encode,
+    fold,
 };
 
 const T: i64 = 1_800_000_000_000;
@@ -602,6 +603,9 @@ fn a_claim_outside_the_rules_is_refused() {
     ] {
         let refused = s.outcome(cmd.clone(), &key(1)).unwrap_err();
         assert_eq!(refused.kind(), ErrorKind::Invalid, "{cmd:?}");
+        // A waiting claim checks it the same way before it reads.
+        let refused = claim_pairs(&cmd).unwrap_err();
+        assert_eq!(refused.kind(), ErrorKind::Invalid, "{cmd:?}");
     }
     let hundred = &many[..100];
     assert_eq!(
@@ -614,8 +618,22 @@ fn a_claim_outside_the_rules_is_refused() {
             lease_seconds: Some(lease),
             wait_seconds: Some(wait),
         };
+        assert_eq!(claim_pairs(&cmd), Ok(vec![("x".into(), "v1".into())]));
         assert_eq!(s.outcome(cmd, &key(1)), Ok(Outcome::Claimed(None)));
     }
+}
+
+/// A waiting claim's pairs: in name order, as the claim's query takes them; a command that is no
+/// claim is `Invalid`.
+#[test]
+fn a_waiting_claims_pairs_are_its_own() {
+    let pairs = claim_pairs(&claim(&["refund@v2", "charge@v1"])).unwrap();
+    let pair = |n: &str, c: &str| (n.to_owned(), c.to_owned());
+    assert_eq!(pairs, [pair("charge", "v1"), pair("refund", "v2")]);
+    assert_eq!(
+        claim_pairs(&start()).unwrap_err().kind(),
+        ErrorKind::Invalid
+    );
 }
 
 /// A put follows the function rules this release checks, and an identical one appends nothing.

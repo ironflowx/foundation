@@ -45,6 +45,7 @@ impl core::fmt::Display for ironflowx_operations::EngineError
 pub fn ironflowx_operations::EngineError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct ironflowx_operations::Engine
 impl ironflowx_operations::Engine
+pub fn ironflowx_operations::Engine::begin_drain(&self)
 pub async fn ironflowx_operations::Engine::close(self)
 pub async fn ironflowx_operations::Engine::close_with_state(self) -> ironflowx_cell::ledger::LedgerState
 pub fn ironflowx_operations::Engine::embedder_call(&self, &str) -> core::result::Result<ironflowx_proto::Call, ironflowx_core::error::ParseError>

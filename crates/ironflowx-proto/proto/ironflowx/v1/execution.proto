@@ -13,8 +13,9 @@ service ExecutionService {
   rpc ClaimRun(ClaimRunRequest) returns (ClaimRunResponse) {
     option (ironflowx.v1.cli) = "executions claim";
     option (ironflowx.v1.summary) =
-      "Claim one due run of the functions named as name@code, under a lease; no claim when none "
-      "is due. Sent again it is a new claim, and the run of a lost answer stays claimed";
+      "Claim one due run of the functions named as name@code, under a lease, waiting up to "
+      "wait_seconds (20 when absent) for one; no claim when none is due by then. Sent again it is "
+      "a new claim, and the run of a lost answer stays claimed";
     option (ironflowx.v1.example) = "{\"functions\": [\"charge@v1\"], \"wait_seconds\": 0}";
   }
   // Asks about a step of a claimed run.
@@ -54,7 +55,7 @@ message ClaimRunRequest {
   repeated string functions = 1;
   // 10 to 900. Absent: 60.
   optional uint32 lease_seconds = 2 [json_name = "lease_seconds"];
-  // 0 to 20. The claim answers at once whatever this says.
+  // 0 to 20. Absent: 20. How long the claim waits for a run to be due, appending nothing.
   optional uint32 wait_seconds = 3 [json_name = "wait_seconds"];
 }
 

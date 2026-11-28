@@ -677,7 +677,7 @@ pub struct ClaimRunRequest {
     pub functions: Vec<String>,
     /// 10 to 900; `None`: 60.
     pub lease_seconds: Option<u32>,
-    /// 0 to 20. The claim answers at once whatever it says (the wait arrives later).
+    /// 0 to 20; `None`: 20. How long the claim waits for a run to be due, appending nothing.
     pub wait_seconds: Option<u32>,
 }
 

@@ -647,3 +647,28 @@ impl ExecutionView for ReadStore<'_> {
         )
     }
 }
+
+impl ReadStore<'_> {
+    /// The earliest due time of a queued run of one of `pairs`, due or not; `None` when there is
+    /// none. What a waiting claim reads (D113).
+    pub(crate) fn earliest_due(
+        &self,
+        pairs: &[(String, String)],
+    ) -> Result<Option<Timestamp>, StoreError> {
+        if pairs.is_empty() {
+            return Ok(None);
+        }
+        // One indexed MIN per pair: an OR of pairs scans every queued run of them.
+        let pair = "SELECT MIN(due_at) AS d FROM runs WHERE function = ? AND code = ? \
+                    AND status = 'queued'";
+        let sql = format!(
+            "SELECT MIN(d) FROM ({})",
+            vec![pair; pairs.len()].join(" UNION ALL ")
+        );
+        let values = pairs.iter().flat_map(|(name, code)| [name, code]);
+        let due = self.0.query_row(&sql, params_from_iter(values), |r| {
+            r.get::<_, Option<Millis>>(0)
+        });
+        store_err(due).map(|due| due.map(|m| m.0))
+    }
+}

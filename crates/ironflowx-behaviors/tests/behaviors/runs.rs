@@ -4,11 +4,14 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
 use ironflowx_cell::ManualClock;
-use ironflowx_core::{ErrorKind, Lease, Scope, Secret, Timestamp};
+use ironflowx_core::{Clock, ErrorKind, Lease, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
     BeginStepRequest, Call, Claim, ClaimRunRequest, CompleteRunRequest, CompleteStepRequest,
@@ -24,8 +27,8 @@ use super::adapter::{Adapter, SERVED, runs_remotely};
 /// example; and how many are pending, on the engine and through the door.
 pub const FUNCTION_RUNS: (usize, usize) = (27, 27);
 pub const FUNCTION_PENDING: (usize, usize) = (19, 19);
-pub const EXECUTION_RUNS: (usize, usize) = (6, 6);
-pub const EXECUTION_PENDING: (usize, usize) = (76, 62);
+pub const EXECUTION_RUNS: (usize, usize) = (15, 15);
+pub const EXECUTION_PENDING: (usize, usize) = (67, 53);
 
 const T: i64 = 1_800_000_000_000;
 
@@ -56,8 +59,18 @@ pub struct Runs {
     claims: Vec<Option<Claim>>,
     /// The run a scenario is about, and the lease of its claim.
     run_id: Option<String>,
+    /// The runs a scenario started, in order.
+    started: Vec<String>,
+    /// How long the last claim took.
+    took: Option<Duration>,
     lease: Option<String>,
     claim: Option<Result<Option<Claim>, OpError>>,
+    /// The runs of the last claims, in order.
+    claimed: Vec<String>,
+    /// A claim is to wait while the next step starts a run.
+    waiting: bool,
+    /// Where the engine's clock tells of each reading off the writer's thread, once armed.
+    told: Arc<Mutex<Option<Sender<()>>>>,
     /// How the last call ended.
     outcome: Option<Result<(), OpError>>,
 }
@@ -69,6 +82,34 @@ impl fmt::Debug for Runs {
             .field("claim", &self.claim)
             .field("outcome", &self.outcome)
             .finish_non_exhaustive()
+    }
+}
+
+/// The scenario's clock, which tells `told` of each reading off the ledger writer's thread: an
+/// admission's, or a claim's read's.
+#[derive(Clone)]
+struct Told<C> {
+    clock: C,
+    told: Arc<Mutex<Option<Sender<()>>>>,
+}
+
+impl<C> Told<C> {
+    fn new(clock: C, told: &Arc<Mutex<Option<Sender<()>>>>) -> Self {
+        Self {
+            clock,
+            told: told.clone(),
+        }
+    }
+}
+
+impl<C: Clock> Clock for Told<C> {
+    fn now(&self) -> Timestamp {
+        if std::thread::current().name() != Some("ironflowx-ledger-writer")
+            && let Some(tx) = &*self.told.lock().unwrap()
+        {
+            let _ = tx.send(());
+        }
+        self.clock.now()
     }
 }
 
@@ -101,8 +142,13 @@ impl Runs {
             other_run: None,
             claims: Vec::new(),
             run_id: None,
+            started: Vec::new(),
+            took: None,
             lease: None,
             claim: None,
+            claimed: Vec::new(),
+            waiting: false,
+            told: Arc::default(),
             outcome: None,
         }
     }
@@ -148,6 +194,7 @@ impl Runs {
         let started = self.ops().start_run(&builder, req).await.unwrap();
         assert!(!started.duplicate);
         self.run_id = Some(started.run_id.to_string());
+        self.started.push(started.run_id.to_string());
     }
 
     async fn claim(&self, cx: &Call, functions: &[&str]) -> Result<Option<Claim>, OpError> {
@@ -200,14 +247,14 @@ impl Runs {
 async fn fresh(w: &mut Runs) {
     if w.remote {
         let data = w.dir.path().join("data");
-        let (served, key) = Adapter::served_on(&data, w.clock.clone()).await;
+        let clock = Told::new(w.clock.clone(), &w.told);
+        let (served, key) = Adapter::served_on(&data, clock).await;
         w.bootstrap = Some(key);
         w.ops = Some(served);
         return;
     }
-    let opened = Engine::open(w.dir.path(), w.clock.clone(), None)
-        .await
-        .unwrap();
+    let clock = Told::new(w.clock.clone(), &w.told);
+    let opened = Engine::open(w.dir.path(), clock, None).await.unwrap();
     w.bootstrap = Some(
         opened
             .minted
@@ -714,8 +761,120 @@ async fn claims_pair(w: &mut Runs, pair: String) {
 async fn claim_empty(w: &mut Runs) {
     let claim = w.claim.as_ref().expect("a claim");
     assert_eq!(claim, &Ok(None));
-    // Nothing was taken.
-    assert_eq!(w.run().await.status, RunStatus::Queued);
+    if w.run_id.is_some() {
+        // Nothing was taken.
+        assert_eq!(w.run().await.status, RunStatus::Queued);
+    }
+    if let Some(took) = w.took {
+        // It waited what it asked for, and no longer.
+        let asked = Duration::from_secs(1);
+        assert!(asked <= took && took < asked * 2, "{took:?}");
+    }
+}
+
+#[given(regex = r#"^runs 1, 2 and 3 of "charge" were started in that order$"#)]
+async fn three_started(w: &mut Runs) {
+    for _ in 0..3 {
+        w.start().await;
+    }
+}
+
+#[when("the executor claims three times")]
+async fn claims_three_times(w: &mut Runs) {
+    let mut got = Vec::new();
+    for _ in 0..3 {
+        let claim = w.claim(&w.executor(), &["charge@v1"]).await.unwrap();
+        got.push(claim.expect("a due run").lease.run.to_string());
+    }
+    w.claimed = got;
+}
+
+#[then("it gets runs 1, 2 and 3")]
+fn got_in_order(w: &mut Runs) {
+    assert_eq!(w.claimed, w.started);
+}
+
+#[given(regex = r#"^the executor is waiting on a claim of "charge"$"#)]
+fn waiting(w: &mut Runs) {
+    // The claim is sent with the start, in the next step, so that the two run at once.
+    w.waiting = true;
+}
+
+#[when(regex = r#"^the builder starts "charge"$"#)]
+async fn builder_starts(w: &mut Runs) {
+    assert!(w.waiting, "a waiting claim");
+    let builder = w.builder().await;
+    let (ops, executor) = (w.ops(), w.executor());
+    let req = ClaimRunRequest {
+        functions: vec!["charge@v1".into()],
+        ..ClaimRunRequest::default()
+    };
+    let (tx, readings) = std::sync::mpsc::channel();
+    *w.told.lock().unwrap() = Some(tx);
+    let sent = std::time::Instant::now();
+    let (claim, run_id) = {
+        let mut claim = std::pin::pin!(ops.claim_run(&executor, req));
+        // Its admission and its read, through either adapter: it found nothing and waits.
+        let mut read = 0;
+        while read < 2 {
+            tokio::select! {
+                biased;
+                early = &mut claim => panic!("the claim answered before a run existed: {early:?}"),
+                () = tokio::time::sleep(Duration::from_millis(5)) => {}
+            }
+            read += readings.try_iter().count();
+        }
+        let req = StartRunRequest {
+            function: "charge".into(),
+        };
+        let (claim, started) = tokio::join!(claim, ops.start_run(&builder, req));
+        (claim, started.unwrap().run_id.to_string())
+    };
+    // It returned on the commit, not at a later 5 s reading.
+    let took = sent.elapsed();
+    assert!(took < Duration::from_secs(2), "{took:?}");
+    w.run_id = Some(run_id);
+    w.claim = Some(claim);
+}
+
+#[then("the claim returns that run")]
+fn claim_returns_it(w: &mut Runs) {
+    let claim = w.claim.as_ref().expect("a claim").as_ref().unwrap();
+    let claim = claim.as_ref().expect("a run");
+    assert_eq!(Some(claim.lease.run.to_string()), w.run_id);
+    assert_eq!(claim.lease.execution, 1);
+}
+
+#[when(regex = r#"^the executor claims "charge" and waits 1 second$"#)]
+async fn claims_waiting_a_second(w: &mut Runs) {
+    let req = ClaimRunRequest {
+        functions: vec!["charge@v1".into()],
+        wait_seconds: Some(1),
+        ..ClaimRunRequest::default()
+    };
+    let at = std::time::Instant::now();
+    w.claim = Some(w.ops().claim_run(&w.executor(), req).await);
+    w.took = Some(at.elapsed());
+}
+
+#[when(regex = r"^the executor claims with (.+)$")]
+async fn claims_with(w: &mut Runs, what: String) {
+    let pair = |n| format!("f{n}@v1");
+    let mut req = ClaimRunRequest {
+        functions: vec!["charge@v1".into()],
+        wait_seconds: Some(0),
+        ..ClaimRunRequest::default()
+    };
+    match what.as_str() {
+        "no function" => req.functions.clear(),
+        "101 functions" => req.functions = (0..101).map(pair).collect(),
+        r#"the function "charge""# => req.functions = vec!["charge".into()],
+        "a lease of 9 seconds" => req.lease_seconds = Some(9),
+        "a lease of 901 seconds" => req.lease_seconds = Some(901),
+        "a wait of 21 seconds" => req.wait_seconds = Some(21),
+        other => panic!("no such claim: {other}"),
+    }
+    w.outcome = Some(w.ops().claim_run(&w.executor(), req).await.map(drop));
 }
 
 // ---- Leases and the fence ----

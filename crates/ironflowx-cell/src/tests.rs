@@ -2093,7 +2093,7 @@ async fn a_runs_end_and_its_event_are_one_record() {
     let Answer::RunStarted { run, .. } = execute(&ledger, start).await.unwrap() else {
         panic!("a run");
     };
-    let claim = Command::Claim {
+    let claim = ironflowx_execution::Command::Claim {
         functions: vec!["charge@v1".into()],
         lease_seconds: None,
         wait_seconds: None,
@@ -2168,7 +2168,7 @@ async fn a_replayed_step_appends_nothing() {
         function: "charge".into(),
     };
     execute(&ledger, start).await.unwrap();
-    let claim = Command::Claim {
+    let claim = ironflowx_execution::Command::Claim {
         functions: vec!["charge@v1".into()],
         lease_seconds: None,
         wait_seconds: None,
@@ -2438,6 +2438,103 @@ fn a_run_is_claimable_from_its_due_time() {
     assert_eq!(at(T + 1_000), Some(run));
     drop(conn);
     drop(ledger);
+}
+
+/// A waiting claim's read at the read store: the earliest due time of a queued run of its pairs,
+/// due or not, and none of another pair's.
+#[test]
+fn the_earliest_due_time_is_of_a_pair_the_claim_names() {
+    use ironflowx_execution::Entry;
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open_blocking(dir.path(), new_env_ref(), clock()).unwrap();
+    let mut conn = ledger.store.lock().unwrap();
+    // refund@v1 due at T + 500, then charge@v1 at T + 2,000 and at T + 1,000.
+    for (n, function, due) in [
+        (1, "refund", 500),
+        (2, "charge", 2_000),
+        (3, "charge", 1_000),
+    ] {
+        let applied = crate::store::applied(&conn).unwrap();
+        let created = Entry::RunCreated {
+            run: format!("0190b5f0-0000-7000-8000-00000000012{n}")
+                .parse()
+                .unwrap(),
+            sequence: n,
+            function: function.into(),
+            code: "v1".into(),
+            input: b"null".to_vec(),
+        };
+        let entries = Entries {
+            record: ironflowx_events::Record {
+                time: Timestamp::from_millis(T + due),
+                events: vec![],
+            },
+            execution: vec![created.into()],
+        };
+        let record = Some((uuid::Uuid::now_v7(), &entries, &emitter()));
+        crate::store::apply(&mut conn, applied, record, false).unwrap();
+    }
+    let due = |pairs: &[(&str, &str)]| {
+        let pairs: Vec<_> = pairs
+            .iter()
+            .map(|(n, c)| ((*n).to_owned(), (*c).to_owned()))
+            .collect();
+        ReadStore(&conn).earliest_due(&pairs).unwrap()
+    };
+    let at = |ms| Some(Timestamp::from_millis(T + ms));
+    assert_eq!(due(&[("charge", "v1")]), at(1_000));
+    assert_eq!(due(&[("charge", "v2"), ("refund", "v1")]), at(500));
+    assert_eq!(due(&[("charge", "v2")]), None);
+    // Two pairs, each with a queued run: the earlier of the two.
+    assert_eq!(due(&[("charge", "v1"), ("refund", "v1")]), at(500));
+    drop(conn);
+    drop(ledger);
+}
+
+/// A waiting claim's wake: `Changes` resolves once a commit is folded, once for it, and at a
+/// failure; after a close it never does, as the close is no change.
+#[tokio::test]
+async fn changes_resolve_at_a_commit_and_a_failure_and_never_after_a_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = open(dir.path(), new_env_ref()).await;
+    let mut changes = ledger.changes();
+    assert!(!ready(std::pin::pin!(changes.changed())));
+    let a = emit(&ledger, named("a")).await.unwrap();
+    // Folded, by a read, so the hold below holds b's fold, not a's.
+    get(&ledger, a).await.unwrap();
+    assert!(ready(std::pin::pin!(changes.changed())), "a fold");
+    assert!(
+        !ready(std::pin::pin!(changes.changed())),
+        "a fold tells once"
+    );
+    // Taken once b is committed, and before its fold fails: a commit is no change until folded.
+    ledger.hold_fold();
+    ledger.fail_next_fold();
+    emit(&ledger, named("b")).await.unwrap();
+    let mut at_fold = ledger.changes();
+    assert!(!ready(std::pin::pin!(at_fold.changed())));
+    assert!(
+        !ready(std::pin::pin!(changes.changed())),
+        "b committed, not folded"
+    );
+    ledger.release_fold();
+    ledger.faulted().await;
+    assert!(ready(std::pin::pin!(at_fold.changed())), "a failure");
+    // A failed ledger's claim read is refused, as every read is.
+    let claim = ironflowx_execution::Command::Claim {
+        functions: vec!["charge@v1".into()],
+        lease_seconds: None,
+        wait_seconds: None,
+    };
+    let read = ledger.claimable(&claim, &clock()).await;
+    assert_eq!(read, Err(ReadError::Unavailable));
+    ledger.close().await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = open(dir.path(), new_env_ref()).await;
+    let mut changes = ledger.changes();
+    ledger.close().await;
+    assert!(!ready(std::pin::pin!(changes.changed())), "a close");
 }
 
 fn listed(page: &crate::FunctionPage) -> Vec<&str> {

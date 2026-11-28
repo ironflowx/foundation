@@ -15,7 +15,11 @@ mod recover;
 
 use std::collections::BTreeSet;
 use std::fs::File;
+use std::future::poll_fn;
+use std::pin::pin;
 use std::sync::Arc;
+use std::task::Poll;
+use std::time::Duration;
 
 use ironflowx_cell::{Ledger, Outcome, Submission};
 use ironflowx_core::{
@@ -34,6 +38,7 @@ use ironflowx_proto::{
     StartRunRequest, StartRunResponse, Whoami, WhoamiRequest,
 };
 use ironflowx_store::{ControlPlane, EnvironmentRecord, KeyChangeError, KeyRow, NewKey};
+use tokio::sync::watch;
 
 /// A page of keys when none is asked for, and the most one page holds: one page can show
 /// every key the cap allows.
@@ -41,6 +46,10 @@ const KEY_PAGE: u32 = 100;
 const MAX_KEY_PAGE: u32 = 1_000;
 /// The most created keys of an environment that hold a slot at once (TEN-15).
 const KEY_CAP: u32 = 1_000;
+/// A claim's wait when it names none (D90).
+const DEFAULT_WAIT_SECONDS: u32 = 20;
+/// The longest a waiting claim goes without reading: how late it sees a clock that was set.
+const RECHECK: Duration = Duration::from_secs(5);
 
 use admission::{Authorized, EmbedderGrant};
 pub use events::check_emit;
@@ -60,8 +69,10 @@ pub struct Engine {
     ledger: Ledger,
     control: Arc<ControlPlane>,
     env: EnvRef,
-    /// The clock the engine was opened with, which decides key expiry.
+    /// The clock the engine was opened with, which decides key expiry and a claim's read.
     clock: Arc<dyn Clock + Send + Sync>,
+    /// Set by `begin_drain`: claims answer `Unavailable`.
+    drain: watch::Sender<bool>,
     // Held until `close`, after the ledger closes.
     _lock: Arc<File>,
 }
@@ -167,6 +178,18 @@ impl Engine {
     pub fn embedder_call(&self, name: &str) -> Result<Call, ParseError> {
         let by = SubmitAs::embedder(name)?;
         Ok(Call::with_grant(EmbedderGrant { by, env: self.env }))
+    }
+
+    /// Ends claims, for good, so that no claim's 20 s wait holds a stop up: the host calls it first
+    /// as it stops (its Stop, step 1). A new claim admitted after it answers `Unavailable` with no
+    /// read. A waiting claim reads once more, takes a run if one is claimable, and else answers
+    /// `Unavailable`. A claim at the writer is not ended: given a run, it answers with that run; if
+    /// it lost the run to another claim, it is a waiting claim again, with at most the one read
+    /// begun after the drain. That one read can be
+    /// stretched, as every operation's, by a busy blocking pool or a fold holding the read store.
+    /// Not an operation: it takes no key (TEN-1). Every other operation is served as before.
+    pub fn begin_drain(&self) {
+        self.drain.send_replace(true);
     }
 
     /// The ledger, reached only with a proof of admission (TEN-1).
@@ -534,28 +557,103 @@ impl Operations for Engine {
             .map_err(events::read_error)
     }
 
-    /// Claims one due run of the pairs named, under a lease held by the calling key. It answers at
-    /// once.
+    /// Claims one due run of the pairs named, under a lease held by the calling key, waiting up to
+    /// `wait_seconds` (20 when absent) by a monotonic clock for one to be due (D113). It reads
+    /// first and submits only when a run is due, so an idle claim appends nothing; otherwise it
+    /// waits for the first of a commit, the earliest due time of its runs, 5 seconds, the end of
+    /// the wait, a ledger fault or [`Engine::begin_drain`], then reads again. The key is admitted
+    /// again before every submission. When several happen at once, a due run comes first, then a
+    /// fault or a drain, then the end of the wait.
     ///
     /// # Errors
     ///
-    /// As [`Engine::whoami`]; `PermissionDenied` without `execute`; `Invalid` for a request outside
-    /// execution rules; `Unknown` and `Unavailable` as [`Engine::put_function`].
+    /// As [`Engine::whoami`], at the first admission or a later one; `PermissionDenied` without
+    /// `execute`; `Invalid` for a request outside execution rules; `Unknown` and `Unavailable` as
+    /// [`Engine::put_function`]; `Unavailable` once the engine drains.
+    ///
+    /// # Panics
+    ///
+    /// A claim that waits, on a runtime without its timer enabled.
     async fn claim_run(&self, cx: &Call, req: ClaimRunRequest) -> Result<Option<Claim>, OpError> {
-        let cmd = execution::claim(req);
         let op = Operation::ClaimRun;
-        let outcome = self
-            .execute(cx, op, cmd, execution::CLAIM_IF_UNKNOWN)
-            .await?;
-        Ok(execution::claim_answer(outcome))
+        let mut a = self.admit(cx, op).await?;
+        let mut drain = self.drain.subscribe();
+        if *drain.borrow() {
+            return Err(draining());
+        }
+        let started = tokio::time::Instant::now();
+        // Execution rules check it at the first read.
+        let wait = Duration::from_secs(req.wait_seconds.unwrap_or(DEFAULT_WAIT_SECONDS).into());
+        let cmd = execution::claim(req);
+        loop {
+            // Admitted and past the check above, the claim ends empty, or `Unavailable`, only from
+            // a read that began once its wait was over, or the drain or a fault had begun; else it
+            // reads once more, so a run claimable by then is taken first (RUN-16). A lost race at
+            // the writer is a waiting claim again. The fault check is the read's own.
+            let over = started.elapsed() >= wait;
+            let drained = *drain.borrow();
+            // Taken before the read, so a fold after its snapshot wakes the wait (RUN-16). The read
+            // waits for no fold, so no fold holds a drain up (RUN-15).
+            let mut changes = self.ledger(&a).changes();
+            let due = self
+                .ledger(&a)
+                .claimable(&cmd, &*self.clock)
+                .await
+                .map_err(events::read_error)?;
+            let mut nap = RECHECK;
+            match due {
+                Some(Duration::ZERO) => {
+                    a = self.admit(cx, op).await?;
+                    let sub = Submission::Execution(cmd.clone());
+                    let o = self.submit(&a, sub, execution::CLAIM_IF_UNKNOWN).await?;
+                    if let Some(claim) = execution::claim_answer(execution::outcome(o)) {
+                        return Ok(Some(claim));
+                    }
+                    // Another claim took it first: wait for the next change.
+                }
+                Some(until) => nap = nap.min(until),
+                None => {}
+            }
+            if self.ledger(&a).state() == LedgerState::Unavailable {
+                continue;
+            }
+            if *drain.borrow() {
+                if drained {
+                    return Err(draining());
+                }
+                continue;
+            }
+            let left = wait.saturating_sub(started.elapsed());
+            if left.is_zero() {
+                if over {
+                    return Ok(None);
+                }
+                continue;
+            }
+            let mut woken = pin!(changes.changed());
+            let mut slept = pin!(tokio::time::sleep(nap.min(left)));
+            let either = poll_fn(|cx| {
+                let ready =
+                    woken.as_mut().poll(cx).is_ready() || slept.as_mut().poll(cx).is_ready();
+                if ready {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            });
+            // Read again whichever it was: a due run comes before a drain.
+            unless_drained(&mut drain, either).await;
+        }
     }
 
     /// Asks about a step of a run the calling key claimed.
     ///
     /// # Errors
     ///
-    /// As [`Engine::claim_run`]; `NotFound` for a lease that does not parse or names no run;
-    /// `Conflict` for a lease that is not the run's current execution, or that another key holds.
+    /// As [`Engine::whoami`]; `PermissionDenied` without `execute`; `Invalid` for a request outside
+    /// execution rules; `Unknown` and `Unavailable` as [`Engine::put_function`]; `NotFound` for a
+    /// lease that does not parse or names no run; `Conflict` for a lease that is not the run's
+    /// current execution, or that another key holds. A drain does not end it.
     async fn begin_step(
         &self,
         cx: &Call,
@@ -677,6 +775,33 @@ async fn blocking<T: Send + 'static>(
     match tokio::task::spawn_blocking(f).await {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(_)) | Err(_) => Err(unavailable()),
+    }
+}
+
+/// `f`'s output, or `None` once the engine drains while `f` is pending.
+async fn unless_drained<T>(
+    drain: &mut watch::Receiver<bool>,
+    f: impl Future<Output = T>,
+) -> Option<T> {
+    let mut f = pin!(f);
+    let mut drained = pin!(drain.wait_for(|d| *d));
+    poll_fn(|cx| {
+        if let Poll::Ready(t) = f.as_mut().poll(cx) {
+            return Poll::Ready(Some(t));
+        }
+        match drained.as_mut().poll(cx) {
+            Poll::Ready(_) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    })
+    .await
+}
+
+fn draining() -> OpError {
+    OpError {
+        kind: ErrorKind::Unavailable,
+        message: "the engine is stopping".into(),
+        hint: Some("claim again once the engine is back".into()),
     }
 }
 
