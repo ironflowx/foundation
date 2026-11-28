@@ -159,8 +159,9 @@ async fn list_environments_shows_the_engines() {
 async fn create_key_records_the_embedder_as_creator() {
     let dir = tempfile::tempdir().unwrap();
     let (engine, _, app_call) = open(dir.path()).await;
+    let every_scope = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin, Scope::Execute]);
     let req = CreateKeyRequest {
-        scopes: BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin, Scope::Execute]),
+        scopes: every_scope.clone(),
         label: Some("worker".into()),
         ..CreateKeyRequest::default()
     };
@@ -173,6 +174,9 @@ async fn create_key_records_the_embedder_as_creator() {
     let made = Call::with_key(created.key);
     let me = engine.whoami(&made, WhoamiRequest {}).await.unwrap();
     assert_eq!(me.key_id, Some(info.key_id));
+    // It holds what it was given, `execute` included.
+    assert_eq!(me.scopes, info.scopes);
+    assert_eq!(info.scopes, every_scope);
     let label = CreateKeyRequest {
         label: Some("a\nb".into()),
         ..CreateKeyRequest::default()
