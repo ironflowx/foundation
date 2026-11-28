@@ -574,7 +574,7 @@ An engine's data directory, `<root>`:
 | Where | Holds |
 |---|---|
 | `<root>/engine.lock` | The engine's lock file; never deleted |
-| `<root>/control.db` (SQLite, WAL, `synchronous=FULL`, `fullfsync`) | `tenants` (id, name, created_at) · `projects` (id, tenant_id, name, created_at) · `environments` (id, project_id, name, token, created_at, ledger_created_at) · `keys` (seq, id, environment_id, environment_token, scopes, digest, origin, created_by, label, expires_at, expiry_recorded, revoked_at, created_at) · `meta` (format version, 2: keys may hold `execute`, which a build of format 1 cannot read, so it is refused as another format; a change to this schema, or to what a column may hold, changes it, D47). Times are `Timestamp`'s `i64` milliseconds (D18); the digest is `KeyDigest::to_stored()`; no last-used time (D38) |
+| `<root>/control.db` (SQLite, WAL, `synchronous=FULL`, `fullfsync`) | `tenants` (id, name, created_at) · `projects` (id, tenant_id, name, created_at) · `environments` (id, project_id, name, token, created_at, ledger_created_at) · `keys` (seq, id, environment_id, environment_token, scopes, digest, origin, created_by, label, expires_at, expiry_recorded, revoked_at, created_at) · `meta` (format version, 2: keys may hold `execute`, which a build of format 1 cannot read, so it is refused as another format; a change to this schema, or to what a column may hold, changes it, D47, D107). Times are `Timestamp`'s `i64` milliseconds (D18); the digest is `KeyDigest::to_stored()`; no last-used time (D38) |
 | `<root>/ledgers/<environment-id>/` | The environment's ledger, laid out as below |
 | `<root>/ledgers/.staging/` | A ledger being built; deleted by any open that locks the root and reads its control plane |
 
