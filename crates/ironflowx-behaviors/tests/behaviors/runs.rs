@@ -8,12 +8,14 @@ use std::fmt;
 use cucumber::writer::Stats as _;
 use cucumber::{World, given, then, when};
 use ironflowx_cell::ManualClock;
+use ironflowx_core::Clock as _;
 use ironflowx_core::{ErrorKind, Lease, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
-    BeginStepRequest, Call, Claim, ClaimRunRequest, CompleteRunRequest, CompleteStepRequest,
-    CreateKeyRequest, EmitRequest, GetFunctionRequest, GetRunRequest, ListFunctionsRequest,
-    OpError, Operations, PutFunctionRequest, PutFunctionResponse, Run, RunStatus, StartRunRequest,
+    BeginStepRequest, BeginStepResponse, Call, Claim, ClaimRunRequest, CompleteRunRequest,
+    CompleteStepRequest, CompleteStepResponse, CreateKeyRequest, EmitRequest, GetFunctionRequest,
+    GetRunRequest, HeartbeatRequest, HeartbeatResponse, ListFunctionsRequest, OpError, Operations,
+    PutFunctionRequest, PutFunctionResponse, ReleaseRunRequest, Run, RunStatus, StartRunRequest,
     WhoamiRequest,
 };
 use tempfile::TempDir;
@@ -22,10 +24,10 @@ use super::adapter::{Adapter, SERVED, runs_remotely};
 
 /// How many cases of each file pass on the engine, and through the door, an outline once per
 /// example; and how many are pending, on the engine and through the door.
-pub const FUNCTION_RUNS: (usize, usize) = (27, 27);
-pub const FUNCTION_PENDING: (usize, usize) = (19, 19);
-pub const EXECUTION_RUNS: (usize, usize) = (6, 6);
-pub const EXECUTION_PENDING: (usize, usize) = (76, 62);
+pub const FUNCTION_RUNS: (usize, usize) = (29, 29);
+pub const FUNCTION_PENDING: (usize, usize) = (17, 17);
+pub const EXECUTION_RUNS: (usize, usize) = (17, 10);
+pub const EXECUTION_PENDING: (usize, usize) = (65, 58);
 
 const T: i64 = 1_800_000_000_000;
 
@@ -58,6 +60,14 @@ pub struct Runs {
     run_id: Option<String>,
     lease: Option<String>,
     claim: Option<Result<Option<Claim>, OpError>>,
+    /// The leases of a step that claims more than one run, in order.
+    leases: Vec<String>,
+    /// The run as it read before the call a step compares it after.
+    before: Option<Run>,
+    /// What the last begin, step completion or heartbeat answered.
+    begun: Option<BeginStepResponse>,
+    completed: Option<CompleteStepResponse>,
+    beat: Option<HeartbeatResponse>,
     /// How the last call ended.
     outcome: Option<Result<(), OpError>>,
 }
@@ -103,6 +113,11 @@ impl Runs {
             run_id: None,
             lease: None,
             claim: None,
+            leases: Vec::new(),
+            before: None,
+            begun: None,
+            completed: None,
+            beat: None,
             outcome: None,
         }
     }
@@ -151,12 +166,55 @@ impl Runs {
     }
 
     async fn claim(&self, cx: &Call, functions: &[&str]) -> Result<Option<Claim>, OpError> {
+        self.claim_for(cx, functions, None).await
+    }
+
+    /// A claim that asks for a lease of `lease_seconds`.
+    async fn claim_for(
+        &self,
+        cx: &Call,
+        functions: &[&str],
+        lease_seconds: Option<u32>,
+    ) -> Result<Option<Claim>, OpError> {
         let req = ClaimRunRequest {
             functions: functions.iter().map(|f| (*f).to_owned()).collect(),
+            lease_seconds,
             wait_seconds: Some(0),
-            ..ClaimRunRequest::default()
         };
         self.ops().claim_run(cx, req).await
+    }
+
+    /// The call of "another executor", made with a second `execute` key if the scenario has none.
+    async fn another(&mut self) -> Call {
+        if self.another.is_none() {
+            self.another = Some(self.create(scopes("execute")).await);
+        }
+        call(self.another.as_ref().unwrap())
+    }
+
+    /// Another executor's claim of "charge", without waiting: the run as it read before, and the
+    /// claim, for the steps that follow.
+    async fn another_claims(&mut self) {
+        let another = self.another().await;
+        self.before = Some(self.run().await);
+        self.claim = Some(self.claim(&another, &["charge@v1"]).await);
+    }
+
+    async fn begin(&self, cx: &Call, lease: &str, position: u32, name: &str) -> BeginStepResponse {
+        let req = BeginStepRequest {
+            lease: lease.to_owned(),
+            position,
+            name: name.to_owned(),
+            ..BeginStepRequest::default()
+        };
+        self.ops().begin_step(cx, req).await.unwrap()
+    }
+
+    async fn release(&self, cx: &Call, lease: &str) -> Result<Timestamp, OpError> {
+        let req = ReleaseRunRequest {
+            lease: lease.to_owned(),
+        };
+        self.ops().release_run(cx, req).await
     }
 
     /// The executor claims the scenario's run: its lease.
@@ -602,6 +660,16 @@ async fn key_calls(w: &mut Runs, operation: String) {
             };
             ops.complete_run(&cx, req).await.map(drop)
         }
+        "heartbeat" => {
+            let req = HeartbeatRequest {
+                leases: vec![lease],
+            };
+            ops.heartbeat(&cx, req).await.map(drop)
+        }
+        "release a run" => {
+            let req = ReleaseRunRequest { lease };
+            ops.release_run(&cx, req).await.map(drop)
+        }
         other => panic!("no such call: {other}"),
     };
     w.outcome = Some(outcome);
@@ -707,6 +775,7 @@ async fn v1_claims_first(w: &mut Runs) {
 
 #[when(regex = r#"^the executor claims "([^"]+)" without waiting$"#)]
 async fn claims_pair(w: &mut Runs, pair: String) {
+    w.before = Some(w.run().await);
     w.claim = Some(w.claim(&w.executor(), &[&pair]).await);
 }
 
@@ -714,8 +783,72 @@ async fn claims_pair(w: &mut Runs, pair: String) {
 async fn claim_empty(w: &mut Runs) {
     let claim = w.claim.as_ref().expect("a claim");
     assert_eq!(claim, &Ok(None));
-    // Nothing was taken.
-    assert_eq!(w.run().await.status, RunStatus::Queued);
+    // Nothing was taken: no claim raised the execution number.
+    let before = w.before.as_ref().expect("the run before the claim");
+    assert_eq!(w.run().await.execution, before.execution);
+}
+
+#[given(regex = r#"^a run of "charge" was started and the executor claimed it$"#)]
+async fn started_and_claimed(w: &mut Runs) {
+    w.start().await;
+    w.claim_it().await;
+}
+
+#[when("another executor claims without waiting")]
+async fn another_claims(w: &mut Runs) {
+    w.another_claims().await;
+}
+
+#[then("the run reads as running with a lease deadline")]
+async fn running_with_deadline(w: &mut Runs) {
+    let run = w.run().await;
+    assert_eq!((run.status, run.execution), (RunStatus::Running, 1));
+    assert!(run.lease_until.is_some_and(|t| t > w.clock.now()));
+}
+
+// ---- Steps and replay ----
+
+#[given(
+    regex = r#"^an execution completed step 1 "reserve" with output (.+) and then released its run$"#
+)]
+async fn completed_and_released(w: &mut Runs, output: String) {
+    w.start().await;
+    w.claim_it().await;
+    let (cx, lease) = (w.executor(), w.lease.clone().unwrap());
+    let begun = w.begin(&cx, &lease, 1, "reserve").await;
+    assert_eq!(begun, BeginStepResponse::Run { attempt: 1 });
+    let req = CompleteStepRequest {
+        lease: lease.clone(),
+        position: 1,
+        output: Some(output.into_bytes()),
+    };
+    w.ops().complete_step(&cx, req).await.unwrap();
+    w.release(&cx, &lease).await.unwrap();
+}
+
+#[when(regex = r#"^another execution begins step 1 "reserve"$"#)]
+async fn another_begins(w: &mut Runs) {
+    let another = w.another().await;
+    let claim = w.claim(&another, &["charge@v1"]).await.unwrap();
+    let claim = claim.expect("the released run is due");
+    assert_eq!(claim.lease.execution, 2);
+    let lease = claim.lease.to_string();
+    w.begun = Some(w.begin(&another, &lease, 1, "reserve").await);
+    w.lease = Some(lease);
+}
+
+#[then(regex = r"^the engine answers completed, with (.+) byte for byte$")]
+fn answers_recorded(w: &mut Runs, output: String) {
+    let output = output.into_bytes();
+    let begun = w.begun.as_ref().expect("a begin");
+    assert_eq!(begun, &BeginStepResponse::Completed { output });
+}
+
+#[then(regex = r#"^beginning step 2 "pay" answers run$"#)]
+async fn step_2_runs(w: &mut Runs) {
+    let (cx, lease) = (w.another().await, w.lease.clone().unwrap());
+    let begun = w.begin(&cx, &lease, 2, "pay").await;
+    assert_eq!(begun, BeginStepResponse::Run { attempt: 1 });
 }
 
 // ---- Leases and the fence ----
@@ -752,6 +885,228 @@ async fn reads_running(w: &mut Runs) {
         (run.status, run.execution, run.output),
         (RunStatus::Running, 1, None)
     );
+}
+
+#[given(regex = r#"^an execution of a 10 second lease began step 1 "pay"$"#)]
+async fn ten_second_lease_began(w: &mut Runs) {
+    w.start().await;
+    let claim = w.claim_for(&w.executor(), &["charge@v1"], Some(10)).await;
+    let lease = claim.unwrap().expect("a due run").lease.to_string();
+    let begun = w.begin(&w.executor(), &lease, 1, "pay").await;
+    assert_eq!(begun, BeginStepResponse::Run { attempt: 1 });
+    w.lease = Some(lease);
+}
+
+#[given("its deadline passed and another executor claimed the run")]
+async fn superseded(w: &mut Runs) {
+    w.clock.step(10_000);
+    let another = w.another().await;
+    let claim = w.claim(&another, &["charge@v1"]).await.unwrap();
+    assert_eq!(claim.expect("a lapsed lease is taken").lease.execution, 2);
+    w.before = Some(w.run().await);
+}
+
+#[when(regex = r"^the first execution (.+)$")]
+async fn first_execution(w: &mut Runs, call: String) {
+    let (cx, lease) = (w.executor(), w.lease.clone().unwrap());
+    let ops = w.ops();
+    let outcome = match call.as_str() {
+        "begins step 1" => {
+            let req = BeginStepRequest {
+                lease,
+                position: 1,
+                name: "pay".into(),
+                ..BeginStepRequest::default()
+            };
+            ops.begin_step(&cx, req).await.map(drop)
+        }
+        "completes step 1" => {
+            let req = CompleteStepRequest {
+                lease,
+                position: 1,
+                output: None,
+            };
+            ops.complete_step(&cx, req).await.map(drop)
+        }
+        "completes the run" => {
+            let req = CompleteRunRequest {
+                lease,
+                steps: 1,
+                output: None,
+            };
+            ops.complete_run(&cx, req).await.map(drop)
+        }
+        "releases the run" => w.release(&cx, &lease).await.map(drop),
+        other => panic!("no such call: {other}"),
+    };
+    w.outcome = Some(outcome);
+}
+
+#[then("it is refused as a conflict, with a hint to stop")]
+fn conflict_stop(w: &mut Runs) {
+    let e = w.refused(ErrorKind::Conflict);
+    let stop = "this execution was superseded: stop working on this run";
+    assert_eq!(e.hint.as_deref(), Some(stop));
+}
+
+#[then("the run is as it was")]
+async fn as_it_was(w: &mut Runs) {
+    assert_eq!(Some(w.run().await), w.before);
+}
+
+#[given("the executor claimed runs 1 and 2 with 10 second leases")]
+async fn claimed_two(w: &mut Runs) {
+    w.start().await;
+    let first = w.run_id.clone();
+    w.start().await;
+    w.other_run = w.run_id.replace(first.unwrap());
+    for _ in 0..2 {
+        let claim = w.claim_for(&w.executor(), &["charge@v1"], Some(10)).await;
+        w.leases
+            .push(claim.unwrap().expect("a due run").lease.to_string());
+    }
+}
+
+#[when("8 seconds pass, and it heartbeats run 1 only, and 4 seconds pass")]
+async fn heartbeats_run_1(w: &mut Runs) {
+    w.clock.step(8_000);
+    let req = HeartbeatRequest {
+        leases: vec![w.leases[0].clone()],
+    };
+    let beat = w.ops().heartbeat(&w.executor(), req).await.unwrap();
+    let renewed = Timestamp::from_millis(w.clock.now().as_millis() + 10_000);
+    assert_eq!(beat.results, [Ok(renewed)]);
+    w.clock.step(4_000);
+}
+
+#[when("another executor claims without waiting, twice")]
+async fn another_claims_twice(w: &mut Runs) {
+    let another = w.another().await;
+    for _ in 0..2 {
+        let claim = w.claim(&another, &["charge@v1"]).await.unwrap();
+        w.claims.push(claim);
+    }
+}
+
+#[then("the first claim is run 2, and the second claim is empty")]
+fn first_is_run_2(w: &mut Runs) {
+    let [first, second] = w.claims.as_slice() else {
+        panic!("two claims: {:?}", w.claims);
+    };
+    let first = first.as_ref().expect("a claim");
+    assert_eq!(Some(first.lease.run.to_string()), w.other_run);
+    assert_eq!(first.lease.execution, 2);
+    assert_eq!(second, &None);
+}
+
+#[given("the executor claimed run 1 and released run 2")]
+async fn claimed_one_released_two(w: &mut Runs) {
+    claimed_two(w).await;
+    let released = w.leases[1].clone();
+    w.release(&w.executor(), &released).await.unwrap();
+}
+
+#[when("it heartbeats both")]
+async fn heartbeats_both(w: &mut Runs) {
+    let req = HeartbeatRequest {
+        leases: w.leases.clone(),
+    };
+    w.beat = Some(w.ops().heartbeat(&w.executor(), req).await.unwrap());
+}
+
+#[then("run 1 is renewed and run 2 is a conflict")]
+async fn renewed_and_conflict(w: &mut Runs) {
+    let run = w.run().await;
+    let beat = w.beat.as_ref().expect("a heartbeat");
+    let [renewed, refused] = beat.results.as_slice() else {
+        panic!("two results: {beat:?}");
+    };
+    assert_eq!(renewed, &Ok(run.lease_until.expect("running")));
+    let e = refused.as_ref().unwrap_err();
+    let over = (ErrorKind::Conflict, Some("this execution is over"));
+    assert_eq!((e.kind, e.hint.as_deref()), over);
+}
+
+#[given(regex = r#"^a run of "charge" lost 9 leases in a row with no step outcome$"#)]
+async fn lost_nine(w: &mut Runs) {
+    w.start().await;
+    let claim = w.claim_for(&w.executor(), &["charge@v1"], Some(10)).await;
+    claim.unwrap().expect("a due run");
+    let another = w.another().await;
+    for _ in 0..9 {
+        w.clock.step(10_000);
+        let claim = w.claim_for(&another, &["charge@v1"], Some(10)).await;
+        claim.unwrap().expect("a lapsed lease is taken");
+    }
+    let run = w.run().await;
+    assert_eq!((run.lost_leases, run.execution), (9, 10));
+}
+
+#[when("the tenth lapses and an executor claims without waiting")]
+async fn tenth_lapses(w: &mut Runs) {
+    w.clock.step(10_000);
+    w.before = Some(w.run().await);
+    w.claim = Some(w.claim(&w.executor(), &["charge@v1"]).await);
+}
+
+#[then(regex = r#"^the run reads as failed with "([^"]+)"$"#)]
+async fn reads_failed(w: &mut Runs, code: String) {
+    let run = w.run().await;
+    assert_eq!(run.status, RunStatus::Failed);
+    assert_eq!(run.error.map(|e| e.code), Some(code));
+    assert_eq!((run.lost_leases, run.lease_until), (10, None));
+    assert!(run.ended_at.is_some());
+}
+
+#[when("30 seconds pass and it completes step 1 with output 1")]
+async fn late_completion(w: &mut Runs) {
+    w.clock.step(30_000);
+    let req = CompleteStepRequest {
+        lease: w.lease.clone().unwrap(),
+        position: 1,
+        output: Some(b"1".to_vec()),
+    };
+    w.completed = Some(w.ops().complete_step(&w.executor(), req).await.unwrap());
+}
+
+#[then("the engine answers completed")]
+fn answers_completed(w: &mut Runs) {
+    let output = b"1".to_vec();
+    let completed = w.completed.as_ref().expect("a completion");
+    assert_eq!(completed, &CompleteStepResponse::Completed { output });
+}
+
+#[then("its lease has a new deadline")]
+async fn new_deadline(w: &mut Runs) {
+    let run = w.run().await;
+    let renewed = Timestamp::from_millis(w.clock.now().as_millis() + 10_000);
+    assert_eq!(
+        (run.status, run.lease_until),
+        (RunStatus::Running, Some(renewed))
+    );
+}
+
+#[given("the executor claimed a run and released it")]
+async fn claimed_and_released(w: &mut Runs) {
+    w.start().await;
+    w.claim_it().await;
+    let lease = w.lease.clone().unwrap();
+    w.release(&w.executor(), &lease).await.unwrap();
+}
+
+#[then("it gets that run, execution 2")]
+fn gets_it(w: &mut Runs) {
+    let claim = w.claim.as_ref().expect("a claim").as_ref().unwrap();
+    let claim = claim.as_ref().expect("the released run is due at once");
+    assert_eq!(Some(claim.lease.run.to_string()), w.run_id);
+    assert_eq!(claim.lease.execution, 2);
+}
+
+/// "Failed no attempt" reads that no error is recorded; it cannot fail until failures are (#225).
+#[then("the run reads as having lost no lease and failed no attempt")]
+async fn nothing_counted(w: &mut Runs) {
+    let run = w.run().await;
+    assert_eq!((run.lost_leases, run.error), (0, None));
 }
 
 #[when(regex = r"^the executor completes the run of lease (.+)$")]

@@ -55,7 +55,7 @@ const MAX_LOST_LEASES: u32 = 10;
 /// The most runs one claim fails for their lost leases before it stops, empty.
 const MAX_FAILED_BY_CLAIM: u32 = 100;
 /// The engine's error code for a run that keeps losing its executor.
-pub const EXECUTOR_LOST: &str = "ironflowx.executor_lost";
+const EXECUTOR_LOST: &str = "ironflowx.executor_lost";
 /// A run's input until `StartRun` takes one (#222), and an absent output: JSON `null`.
 const NULL: &[u8] = b"null";
 

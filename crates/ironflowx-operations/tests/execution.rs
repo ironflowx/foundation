@@ -1,15 +1,17 @@
-//! Execution operations through the engine: the fence on every call that names a lease, and a
-//! run's end with its event.
+//! Execution operations through the engine: the fence on every call that names a lease, leases
+//! lost and released, claims that race, and a run's end with its event.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use ironflowx_cell::ManualClock;
 use ironflowx_core::{ErrorKind, Lease, Scope, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
     BeginStepRequest, Call, ClaimRunRequest, CompleteRunRequest, CompleteStepRequest,
-    CreateKeyRequest, GetRunRequest, ListEventsRequest, ListFunctionsRequest, OpError, Operations,
-    PutFunctionRequest, Run, RunStatus, StartRunRequest, WhoamiRequest,
+    CreateKeyRequest, GetRunRequest, HeartbeatRequest, ListEventsRequest, ListFunctionsRequest,
+    OpError, Operations, PutFunctionRequest, ReleaseRunRequest, Run, RunStatus, StartRunRequest,
+    WhoamiRequest,
 };
 
 const T: i64 = 1_800_000_000_000;
@@ -19,13 +21,14 @@ struct Fixture {
     admin: Call,
     executor: Call,
     other: Call,
+    clock: ManualClock,
     _dir: tempfile::TempDir,
 }
 
 async fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let clock = ManualClock::new(Timestamp::from_millis(T));
-    let opened = Engine::open(dir.path(), clock, None).await.unwrap();
+    let opened = Engine::open(dir.path(), clock.clone(), None).await.unwrap();
     let engine = opened.engine;
     let admin = Call::with_key(opened.minted.unwrap());
     let mut execute = Vec::new();
@@ -51,6 +54,7 @@ async fn fixture() -> Fixture {
         admin,
         executor,
         other,
+        clock,
         _dir: dir,
     }
 }
@@ -65,12 +69,16 @@ impl Fixture {
     }
 
     async fn claim(&self) -> Lease {
+        self.claim_as(&self.executor).await.expect("a due run")
+    }
+
+    async fn claim_as(&self, cx: &Call) -> Option<Lease> {
         let req = ClaimRunRequest {
             functions: vec!["charge@v1".into()],
             ..ClaimRunRequest::default()
         };
-        let claim = self.engine.claim_run(&self.executor, req).await.unwrap();
-        claim.expect("a due run").lease
+        let claim = self.engine.claim_run(cx, req).await.unwrap();
+        claim.map(|c| c.lease)
     }
 
     async fn run(&self, run_id: &str) -> Run {
@@ -109,10 +117,28 @@ impl Fixture {
                 };
                 self.engine.complete_run(cx, req).await.map(drop)
             }
+            // A heartbeat of one lease: its one result.
+            "heartbeat" => {
+                let req = HeartbeatRequest {
+                    leases: vec![lease],
+                };
+                let results = self.engine.heartbeat(cx, req).await?.results;
+                let [result] = results.as_slice() else {
+                    panic!("one result: {results:?}");
+                };
+                result.clone().map(drop)
+            }
+            "release" => {
+                let req = ReleaseRunRequest { lease };
+                self.engine.release_run(cx, req).await.map(drop)
+            }
             _ => unreachable!(),
         }
     }
 }
+
+/// Every call that names a lease.
+const CALLS: [&str; 5] = ["begin", "complete-step", "complete", "heartbeat", "release"];
 
 /// RUN-1: every call that names a lease meets the fence, in its order, and a refused one changes
 /// nothing a client can read.
@@ -153,7 +179,7 @@ async fn the_fence_holds_every_call_that_names_a_lease() {
         // Wrong in both: the first failure answers.
         (stale.to_string(), &f.other, ErrorKind::Conflict, superseded),
     ];
-    for call in ["begin", "complete-step", "complete"] {
+    for call in CALLS {
         for (lease, cx, kind, hint) in &cases {
             let before = f.run(&run_id).await;
             let err = f.call(call, cx, lease).await.unwrap_err();
@@ -171,6 +197,165 @@ async fn the_fence_holds_every_call_that_names_a_lease() {
         (run.status, run.step.as_deref()),
         (RunStatus::Running, Some("pay"))
     );
+    // Superseded for real: the lease lapsed and another key claimed the run.
+    f.clock.step(60_000);
+    let second = f.claim_as(&f.other).await.expect("a lapsed lease is taken");
+    assert_eq!(second.execution, 2);
+    for call in CALLS {
+        let before = f.run(&run_id).await;
+        let err = f
+            .call(call, &f.executor, &lease.to_string())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (err.kind, err.hint.as_deref()),
+            (ErrorKind::Conflict, superseded),
+            "{call}"
+        );
+        assert_eq!(f.run(&run_id).await, before, "{call}");
+    }
+    let run = f.run(&run_id).await;
+    assert_eq!((run.execution, run.lost_leases), (2, 1));
+    f.engine.close().await;
+}
+
+/// The fence's table for a released run: until the next claim its execution's calls are
+/// `Conflict`, "this execution is over", changing nothing, and its release answers the same due
+/// time; the next claim, at once, counts nothing.
+#[tokio::test]
+async fn a_released_execution_is_over_until_the_next_claim() {
+    let f = fixture().await;
+    let run_id = f.start().await;
+    let lease = f.claim().await.to_string();
+    f.call("begin", &f.executor, &lease).await.unwrap();
+    let req = || ReleaseRunRequest {
+        lease: lease.clone(),
+    };
+    f.clock.step(1_000);
+    let due_at = f.engine.release_run(&f.executor, req()).await.unwrap();
+    assert_eq!(due_at, Timestamp::from_millis(T + 1_000));
+    let run = f.run(&run_id).await;
+    assert_eq!(
+        (run.status, run.due_at, run.lease_until, run.step.as_deref()),
+        (RunStatus::Queued, Some(due_at), None, Some("pay"))
+    );
+    f.clock.step(1_000);
+    let over = Some("this execution is over");
+    for call in ["begin", "complete-step", "complete", "heartbeat"] {
+        let before = f.run(&run_id).await;
+        let err = f.call(call, &f.executor, &lease).await.unwrap_err();
+        assert_eq!(
+            (err.kind, err.hint.as_deref()),
+            (ErrorKind::Conflict, over),
+            "{call}"
+        );
+        assert_eq!(f.run(&run_id).await, before, "{call}");
+    }
+    let before = f.run(&run_id).await;
+    assert_eq!(f.engine.release_run(&f.executor, req()).await, Ok(due_at));
+    assert_eq!(f.run(&run_id).await, before, "a release sent again");
+    let next = f.claim_as(&f.other).await.expect("due at once");
+    let run = f.run(&run_id).await;
+    assert_eq!((next.execution, run.lost_leases), (2, 0));
+    f.engine.close().await;
+}
+
+/// RUN-8: 50 claims racing for one run, queued and then with its lease lapsed: one takes it each
+/// time, and the execution number goes up by one.
+#[tokio::test]
+async fn of_50_claims_racing_for_one_run_one_takes_it() {
+    let f = fixture().await;
+    let run_id = f.start().await;
+    let Fixture {
+        engine,
+        clock,
+        admin,
+        ..
+    } = f;
+    let engine = Arc::new(engine);
+    for execution in [1, 2] {
+        let mut racing = tokio::task::JoinSet::new();
+        for i in 0..50 {
+            let engine = engine.clone();
+            racing.spawn(async move {
+                let cx = engine.embedder_call(&format!("racer-{i}")).unwrap();
+                let req = ClaimRunRequest {
+                    functions: vec!["charge@v1".into()],
+                    ..ClaimRunRequest::default()
+                };
+                engine.claim_run(&cx, req).await.unwrap()
+            });
+        }
+        let claims: Vec<_> = racing.join_all().await.into_iter().flatten().collect();
+        let [claim] = claims.as_slice() else {
+            panic!("one claim takes the run: {claims:?}");
+        };
+        assert_eq!(claim.lease.execution, execution);
+        assert_eq!(claim.lease.run.to_string(), run_id);
+        clock.step(60_000);
+    }
+    let req = GetRunRequest { run_id };
+    let run = engine.get_run(&admin, req).await.unwrap();
+    assert_eq!((run.execution, run.lost_leases), (2, 1));
+    let engine = Arc::try_unwrap(engine).ok().expect("the racers are done");
+    engine.close().await;
+}
+
+/// RUN-9 through the engine: one lost lease counts 1, and the tenth in a row fails the run with
+/// `ironflowx.executor_lost` and `ironflowx.run.failed`, emitted as the key whose claim failed it.
+#[tokio::test]
+async fn the_tenth_lost_lease_fails_the_run_with_its_event() {
+    let f = fixture().await;
+    let run_id = f.start().await;
+    f.claim().await;
+    for lost in 1..=9 {
+        f.clock.step(60_000);
+        f.claim_as(&f.other).await.expect("a lapsed lease is taken");
+        assert_eq!(f.run(&run_id).await.lost_leases, lost);
+    }
+    f.clock.step(60_000);
+    assert_eq!(f.claim_as(&f.executor).await, None);
+    let run = f.run(&run_id).await;
+    let error = run.error.clone().expect("an error");
+    assert_eq!(
+        (
+            run.status,
+            run.execution,
+            run.lost_leases,
+            error.code.as_str()
+        ),
+        (RunStatus::Failed, 10, 10, "ironflowx.executor_lost")
+    );
+    assert_eq!(
+        (run.ended_at, run.lease_until),
+        (Some(Timestamp::from_millis(T + 600_000)), None)
+    );
+    let events = f.engine.list_events(
+        &f.admin,
+        ListEventsRequest {
+            limit: None,
+            cursor: None,
+        },
+    );
+    let events = events.await.unwrap().events;
+    let [event] = events.as_slice() else {
+        panic!("one event: {events:?}");
+    };
+    let me = f
+        .engine
+        .whoami(&f.executor, WhoamiRequest {})
+        .await
+        .unwrap();
+    assert_eq!(event.name, "ironflowx.run.failed");
+    assert_eq!(
+        event.emitted_by.to_string(),
+        format!("key:{}", me.key_id.expect("a key's call"))
+    );
+    let data = format!(
+        r#"{{"run_id":"{run_id}","function":"charge","code":"v1","error":{{"code":"ironflowx.executor_lost","message":"{}"}}}}"#,
+        error.message
+    );
+    assert_eq!(String::from_utf8(event.data.clone()).unwrap(), data);
     f.engine.close().await;
 }
 

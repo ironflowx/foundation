@@ -54,11 +54,13 @@ pub ironflowx_proto::Operation::EmitBatch
 pub ironflowx_proto::Operation::GetEvent
 pub ironflowx_proto::Operation::GetFunction
 pub ironflowx_proto::Operation::GetRun
+pub ironflowx_proto::Operation::Heartbeat
 pub ironflowx_proto::Operation::ListEnvironments
 pub ironflowx_proto::Operation::ListEvents
 pub ironflowx_proto::Operation::ListFunctions
 pub ironflowx_proto::Operation::ListKeys
 pub ironflowx_proto::Operation::PutFunction
+pub ironflowx_proto::Operation::ReleaseRun
 pub ironflowx_proto::Operation::RevokeKey
 pub ironflowx_proto::Operation::StartRun
 pub ironflowx_proto::Operation::Whoami
@@ -169,11 +171,13 @@ pub async fn ironflowx_proto::Client::emit_batch(&self, &ironflowx_proto::Call, 
 pub async fn ironflowx_proto::Client::get_event(&self, &ironflowx_proto::Call, ironflowx_proto::GetEventRequest) -> core::result::Result<ironflowx_proto::Event, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::get_function(&self, &ironflowx_proto::Call, ironflowx_proto::GetFunctionRequest) -> core::result::Result<ironflowx_proto::Function, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::get_run(&self, &ironflowx_proto::Call, ironflowx_proto::GetRunRequest) -> core::result::Result<ironflowx_proto::Run, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::heartbeat(&self, &ironflowx_proto::Call, ironflowx_proto::HeartbeatRequest) -> core::result::Result<ironflowx_proto::HeartbeatResponse, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::list_environments(&self, &ironflowx_proto::Call, ironflowx_proto::ListEnvironmentsRequest) -> core::result::Result<alloc::vec::Vec<ironflowx_proto::Environment>, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::list_events(&self, &ironflowx_proto::Call, ironflowx_proto::ListEventsRequest) -> core::result::Result<ironflowx_proto::EventPage, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::list_functions(&self, &ironflowx_proto::Call, ironflowx_proto::ListFunctionsRequest) -> core::result::Result<ironflowx_proto::FunctionPage, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::put_function(&self, &ironflowx_proto::Call, ironflowx_proto::PutFunctionRequest) -> core::result::Result<ironflowx_proto::PutFunctionResponse, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::release_run(&self, &ironflowx_proto::Call, ironflowx_proto::ReleaseRunRequest) -> core::result::Result<ironflowx_core::time::Timestamp, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> core::result::Result<(), ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::start_run(&self, &ironflowx_proto::Call, ironflowx_proto::StartRunRequest) -> core::result::Result<ironflowx_proto::StartRunResponse, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::whoami(&self, &ironflowx_proto::Call, ironflowx_proto::WhoamiRequest) -> core::result::Result<ironflowx_proto::Whoami, ironflowx_proto::OpError>
@@ -384,6 +388,30 @@ pub fn ironflowx_proto::GetRunRequest::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_proto::GetRunRequest
 pub fn ironflowx_proto::GetRunRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_proto::GetRunRequest
+pub struct ironflowx_proto::HeartbeatRequest
+pub ironflowx_proto::HeartbeatRequest::leases: alloc::vec::Vec<alloc::string::String>
+impl core::clone::Clone for ironflowx_proto::HeartbeatRequest
+pub fn ironflowx_proto::HeartbeatRequest::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_proto::HeartbeatRequest
+pub fn ironflowx_proto::HeartbeatRequest::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_proto::HeartbeatRequest
+pub fn ironflowx_proto::HeartbeatRequest::eq(&self, &Self) -> bool
+impl core::default::Default for ironflowx_proto::HeartbeatRequest
+pub fn ironflowx_proto::HeartbeatRequest::default() -> Self
+impl core::fmt::Debug for ironflowx_proto::HeartbeatRequest
+pub fn ironflowx_proto::HeartbeatRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_proto::HeartbeatRequest
+pub struct ironflowx_proto::HeartbeatResponse
+pub ironflowx_proto::HeartbeatResponse::results: alloc::vec::Vec<core::result::Result<ironflowx_core::time::Timestamp, ironflowx_proto::OpError>>
+impl core::clone::Clone for ironflowx_proto::HeartbeatResponse
+pub fn ironflowx_proto::HeartbeatResponse::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_proto::HeartbeatResponse
+pub fn ironflowx_proto::HeartbeatResponse::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_proto::HeartbeatResponse
+pub fn ironflowx_proto::HeartbeatResponse::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_proto::HeartbeatResponse
+pub fn ironflowx_proto::HeartbeatResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_proto::HeartbeatResponse
 pub struct ironflowx_proto::InvalidUrl
 impl core::clone::Clone for ironflowx_proto::InvalidUrl
 pub fn ironflowx_proto::InvalidUrl::clone(&self) -> Self
@@ -523,6 +551,19 @@ pub fn ironflowx_proto::PutFunctionResponse::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_proto::PutFunctionResponse
 pub fn ironflowx_proto::PutFunctionResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_proto::PutFunctionResponse
+pub struct ironflowx_proto::ReleaseRunRequest
+pub ironflowx_proto::ReleaseRunRequest::lease: alloc::string::String
+impl core::clone::Clone for ironflowx_proto::ReleaseRunRequest
+pub fn ironflowx_proto::ReleaseRunRequest::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_proto::ReleaseRunRequest
+pub fn ironflowx_proto::ReleaseRunRequest::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_proto::ReleaseRunRequest
+pub fn ironflowx_proto::ReleaseRunRequest::eq(&self, &Self) -> bool
+impl core::default::Default for ironflowx_proto::ReleaseRunRequest
+pub fn ironflowx_proto::ReleaseRunRequest::default() -> Self
+impl core::fmt::Debug for ironflowx_proto::ReleaseRunRequest
+pub fn ironflowx_proto::ReleaseRunRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_proto::ReleaseRunRequest
 pub struct ironflowx_proto::RevokeKeyRequest
 pub ironflowx_proto::RevokeKeyRequest::key_id: alloc::string::String
 impl core::clone::Clone for ironflowx_proto::RevokeKeyRequest
@@ -540,10 +581,12 @@ pub ironflowx_proto::Run::created_at: ironflowx_core::time::Timestamp
 pub ironflowx_proto::Run::created_by: ironflowx_core::who::Emitter
 pub ironflowx_proto::Run::due_at: core::option::Option<ironflowx_core::time::Timestamp>
 pub ironflowx_proto::Run::ended_at: core::option::Option<ironflowx_core::time::Timestamp>
+pub ironflowx_proto::Run::error: core::option::Option<ironflowx_proto::RunError>
 pub ironflowx_proto::Run::execution: u32
 pub ironflowx_proto::Run::function: alloc::string::String
 pub ironflowx_proto::Run::input: core::option::Option<alloc::vec::Vec<u8>>
 pub ironflowx_proto::Run::lease_until: core::option::Option<ironflowx_core::time::Timestamp>
+pub ironflowx_proto::Run::lost_leases: u32
 pub ironflowx_proto::Run::output: core::option::Option<alloc::vec::Vec<u8>>
 pub ironflowx_proto::Run::run_id: ironflowx_core::id::RunId
 pub ironflowx_proto::Run::status: ironflowx_proto::RunStatus
@@ -570,6 +613,18 @@ pub fn ironflowx_proto::RunEnd::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_proto::RunEnd
 pub fn ironflowx_proto::RunEnd::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_proto::RunEnd
+pub struct ironflowx_proto::RunError
+pub ironflowx_proto::RunError::code: alloc::string::String
+pub ironflowx_proto::RunError::message: alloc::string::String
+impl core::clone::Clone for ironflowx_proto::RunError
+pub fn ironflowx_proto::RunError::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_proto::RunError
+pub fn ironflowx_proto::RunError::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_proto::RunError
+pub fn ironflowx_proto::RunError::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_proto::RunError
+pub fn ironflowx_proto::RunError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_proto::RunError
 pub struct ironflowx_proto::StartRunRequest
 pub ironflowx_proto::StartRunRequest::function: alloc::string::String
 impl core::clone::Clone for ironflowx_proto::StartRunRequest
@@ -629,11 +684,13 @@ pub fn ironflowx_proto::Operations::emit_batch(&self, &ironflowx_proto::Call, ir
 pub fn ironflowx_proto::Operations::get_event(&self, &ironflowx_proto::Call, ironflowx_proto::GetEventRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::Event, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::get_function(&self, &ironflowx_proto::Call, ironflowx_proto::GetFunctionRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::Function, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::get_run(&self, &ironflowx_proto::Call, ironflowx_proto::GetRunRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::Run, ironflowx_proto::OpError>> + core::marker::Send
+pub fn ironflowx_proto::Operations::heartbeat(&self, &ironflowx_proto::Call, ironflowx_proto::HeartbeatRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::HeartbeatResponse, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::list_environments(&self, &ironflowx_proto::Call, ironflowx_proto::ListEnvironmentsRequest) -> impl core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<ironflowx_proto::Environment>, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::list_events(&self, &ironflowx_proto::Call, ironflowx_proto::ListEventsRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::EventPage, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::list_functions(&self, &ironflowx_proto::Call, ironflowx_proto::ListFunctionsRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::FunctionPage, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::put_function(&self, &ironflowx_proto::Call, ironflowx_proto::PutFunctionRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::PutFunctionResponse, ironflowx_proto::OpError>> + core::marker::Send
+pub fn ironflowx_proto::Operations::release_run(&self, &ironflowx_proto::Call, ironflowx_proto::ReleaseRunRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_core::time::Timestamp, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> impl core::future::future::Future<Output = core::result::Result<(), ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::start_run(&self, &ironflowx_proto::Call, ironflowx_proto::StartRunRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::StartRunResponse, ironflowx_proto::OpError>> + core::marker::Send
 pub fn ironflowx_proto::Operations::whoami(&self, &ironflowx_proto::Call, ironflowx_proto::WhoamiRequest) -> impl core::future::future::Future<Output = core::result::Result<ironflowx_proto::Whoami, ironflowx_proto::OpError>> + core::marker::Send
@@ -648,11 +705,13 @@ pub async fn ironflowx_proto::Client::emit_batch(&self, &ironflowx_proto::Call, 
 pub async fn ironflowx_proto::Client::get_event(&self, &ironflowx_proto::Call, ironflowx_proto::GetEventRequest) -> core::result::Result<ironflowx_proto::Event, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::get_function(&self, &ironflowx_proto::Call, ironflowx_proto::GetFunctionRequest) -> core::result::Result<ironflowx_proto::Function, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::get_run(&self, &ironflowx_proto::Call, ironflowx_proto::GetRunRequest) -> core::result::Result<ironflowx_proto::Run, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::heartbeat(&self, &ironflowx_proto::Call, ironflowx_proto::HeartbeatRequest) -> core::result::Result<ironflowx_proto::HeartbeatResponse, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::list_environments(&self, &ironflowx_proto::Call, ironflowx_proto::ListEnvironmentsRequest) -> core::result::Result<alloc::vec::Vec<ironflowx_proto::Environment>, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::list_events(&self, &ironflowx_proto::Call, ironflowx_proto::ListEventsRequest) -> core::result::Result<ironflowx_proto::EventPage, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::list_functions(&self, &ironflowx_proto::Call, ironflowx_proto::ListFunctionsRequest) -> core::result::Result<ironflowx_proto::FunctionPage, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::list_keys(&self, &ironflowx_proto::Call, ironflowx_proto::ListKeysRequest) -> core::result::Result<ironflowx_proto::KeyPage, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::put_function(&self, &ironflowx_proto::Call, ironflowx_proto::PutFunctionRequest) -> core::result::Result<ironflowx_proto::PutFunctionResponse, ironflowx_proto::OpError>
+pub async fn ironflowx_proto::Client::release_run(&self, &ironflowx_proto::Call, ironflowx_proto::ReleaseRunRequest) -> core::result::Result<ironflowx_core::time::Timestamp, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::revoke_key(&self, &ironflowx_proto::Call, ironflowx_proto::RevokeKeyRequest) -> core::result::Result<(), ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::start_run(&self, &ironflowx_proto::Call, ironflowx_proto::StartRunRequest) -> core::result::Result<ironflowx_proto::StartRunResponse, ironflowx_proto::OpError>
 pub async fn ironflowx_proto::Client::whoami(&self, &ironflowx_proto::Call, ironflowx_proto::WhoamiRequest) -> core::result::Result<ironflowx_proto::Whoami, ironflowx_proto::OpError>

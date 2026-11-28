@@ -337,22 +337,25 @@ fn decide<V: ExecutionView>(view: &V, cmd: &Command, by: &Emitter, now: Sequence
     -> Result<Decision, Error<V::Error>>;   // Error and Refusal are event rules', re-exported
 // Command PutFunction(Definition) | StartRun { function } | Claim { functions, lease_seconds, wait_seconds }
 //       | BeginStep { lease, position, name, once, input } | CompleteStep { lease, position, output }
-//       | Complete { lease, steps, output }                  // a lease and a name@code pair stay text
+//       | Complete { lease, steps, output } | Heartbeat { leases } | Release { lease }   // a lease and a name@code pair stay text
 // Decision::into_parts() -> (Outcome, Vec<Entry>, Vec<EngineEmit>)   // the ledger sequences the events into the same record
-// Entry FunctionPut(Definition) | RunCreated { run, sequence, function, code, input } | Claimed { run, execution, lease_until }
+// Entry FunctionPut(Definition) | RunCreated { run, sequence, function, code, input }
+//     | Claimed { run, execution, lease_until, lease_seconds } | LeaseRenewed { run, lease_until }
+//     | LeaseLost { run, lost_leases } | Released { run }
 //     | StepBegan { run, position, name, once, input, execution } | StepCompleted { run, position, output }
-//     | RunCompleted(RunCompleted)   // private fields: only decide makes one, with its end event (RUN-2)
+//     | RunCompleted(RunCompleted) | RunFailed(RunFailed)   // private fields: only decide makes one, with its end event (RUN-2)
 // Stored: an entry as a record holds it; From<Entry>, compared with an Entry, and nothing turns one back
 fn fold<T: ExecutionTables>(tables: &mut T, entry: &Stored, time: Timestamp, by: &Emitter) -> Result<(), T::Error>;
 fn get_function<V: ExecutionView>(view: &V, name: &str) -> Result<Function, Error<V::Error>>;
 fn list_functions<V: ExecutionView>(view: &V, token: IncarnationToken, limit: Option<NonZeroU32>,
           cursor: Option<&str>) -> Result<FunctionPage, Error<V::Error>>;   // FunctionPage { functions, next }
 fn get_run<V: ExecutionView>(view: &V, id: &str) -> Result<Run, Error<V::Error>>;
-fn encode(entry: &Stored, out: &mut Vec<u8>);   // led by its kind, 1 to 6
+fn encode(entry: &Stored, out: &mut Vec<u8>);   // led by its kind, 1 to 10
 fn decode(bytes: &mut &[u8]) -> Option<Stored>;   // a decoded RunCompleted joins no decision
 // ExecutionView: function, triggered_by(event, other_than), function_count, functions_after(after, limit), run,
-// step (one the run counts: none is the store's failure), last_run_sequence, claimable(pairs, now)
-// ExecutionTables: put_function, create_run, claim, begin_step, complete_step, complete_run
+// step (one the run counts: none is the store's failure), last_run_sequence, claimable(pairs, now, limit)
+// ExecutionTables: put_function, create_run, claim, renew, lose_lease, release, begin_step, complete_step,
+// complete_run, fail_run
 ```
 
 ## Event rules
@@ -388,7 +391,7 @@ If a build turns on `serde_json`'s `arbitrary_precision` feature, which Cargo's 
 
 The engine appends two events of its own, whose names are owned, so `decide` refuses them from every client, in an emit or a batch, as it refuses any owned name (D118): `ironflowx.run.completed` and `ironflowx.run.failed`. `engine_event` makes one from an `EngineEvent` and returns an `EngineEmit`, an opaque value that no client value converts into and nothing else constructs (compile-fail doctests on `EngineEmit`). Clippy `disallowed-methods` bans `engine_event` in every crate but `ironflowx-execution` (RUN-14). `ironflowx-events` carries the ban too, through core's file: its library forbids the lint, so it cannot call `engine_event` itself, and its tests' one helper expects it. `ci/clippy-bans.sh` checks every `clippy.toml` and `.clippy.toml` carries the ban outside a comment; `ci/no-engine-event.sh` backs it up by name in every Rust and Markdown file of the repository outside `ironflowx-events`, `ironflowx-execution` and the docs, doctests, included files and code behind an off feature included; `ci/purity.sh` proves both on fixtures.
 
-An engine event has version 1, no metadata and no idempotency key. Its data is `{"run_id","function","code"}`, in that order, plus `"error":{"code","message"}` for a failure, each value a JSON string, escaped as `serde_json` escapes it. It holds no output. Error codes that begin with `ironflowx.` are the engine's own (D111). `sequence` gives engine events the next event sequences after every stored event, in order, one ID from `fresh` each, the sequences a client's events take. Their data meets event data's rules (no NUL, at most 524,288 bytes), or all of them are refused as an emit of that data would be, before anything is read or drawn. Execution rules check the values they put in one: a function name and a code label are `[A-Za-z0-9._-]`, so hold no NUL (LED-3, LED-4, LED-5 extended); this holds whatever they check. For none it reads nothing and draws no ID, and past the last sequence it refuses, as `decide` does. The record's time and attribution are the ledger's, as for an emit. `CompleteRun` appends `ironflowx.run.completed` in the record that completes the run, attributed as that record ([Execution rules](#execution-rules)); nothing appends `ironflowx.run.failed` yet.
+An engine event has version 1, no metadata and no idempotency key. Its data is `{"run_id","function","code"}`, in that order, plus `"error":{"code","message"}` for a failure, each value a JSON string, escaped as `serde_json` escapes it. It holds no output. Error codes that begin with `ironflowx.` are the engine's own (D111). `sequence` gives engine events the next event sequences after every stored event, in order, one ID from `fresh` each, the sequences a client's events take. Their data meets event data's rules (no NUL, at most 524,288 bytes), or all of them are refused as an emit of that data would be, before anything is read or drawn. Execution rules check the values they put in one: a function name and a code label are `[A-Za-z0-9._-]`, so hold no NUL (LED-3, LED-4, LED-5 extended); this holds whatever they check. For none it reads nothing and draws no ID, and past the last sequence it refuses, as `decide` does. The record's time and attribution are the ledger's, as for an emit. `CompleteRun` appends `ironflowx.run.completed` in the record that completes the run, attributed as that record ([Execution rules](#execution-rules)); a claim that fails a run for its tenth lost lease appends `ironflowx.run.failed`, with the run's error, in the claim's record, attributed as that record.
 
 A refusal may carry a hint (`Refusal::hint`; `with_hint` adds one), which the engine copies into `OpError::hint`, and the wire carries as any other ([Errors](#errors)). No event rule gives one yet; execution rules give one with each `Conflict`. A rule builds a refusal with `Refusal::invalid`, `not_found` or `conflict`, and travels as `SubmitError::Refused` or `ReadError::Refused` to the engine's one mapping to `OpError`, which copies the hint.
 
@@ -398,7 +401,7 @@ A page holds 20 events unless asked otherwise, at most 200, and stops before its
 
 ## Execution rules
 
-A function is a definition in the ledger; a run is one durable invocation of it; an executor claims a run and asks the engine about each step. What #219 (the tracer) and #220 (definitions) build of it is below; the rest of 0.4's design lands with later tickets of [#209](https://github.com/ironflowx/foundation/issues/209).
+A function is a definition in the ledger; a run is one durable invocation of it; an executor claims a run and asks the engine about each step. What #219 (the tracer), #220 (definitions) and #223 (leases and the fence) build of it is below; the rest of 0.4's design lands with later tickets of [#209](https://github.com/ironflowx/foundation/issues/209).
 
 | Operation | Scope | Does |
 |---|---|---|
@@ -406,11 +409,13 @@ A function is a definition in the ledger; a run is one durable invocation of it;
 | `GetFunction` | `read` | The function as put, with `put_at` and `put_by`, the record's time and attribution. An unknown name is `NotFound`, `function not found` |
 | `ListFunctions` | `read` | A page of functions in name order, each as `GetFunction` reads it: 20 when no limit is asked, at most 200. Its cursor is `<incarnation token>.<last name>`, an encoding, not a signature, of the events cursor's form: an events cursor reads as a functions cursor after the name that is its sequence, and a functions cursor as an events cursor only when its name is a sequence as an events cursor writes it; it is checked as an events cursor is: one that does not decode, or names another incarnation, is `Invalid`, `invalid cursor`. It stays valid across a reopen and a rebuilt `read.db`, and a page goes on after its name whatever is put since. Only the last page lacks `next`, also when it is full |
 | `StartRun` | `write` | Creates a run of the function: `queued`, due at once, with the function's code label at that moment (D88), the next run sequence, and a `null` input. It takes `function` only; an input and an idempotency key arrive later, so it answers `duplicate: false`. An unknown function is `NotFound` |
-| `GetRun` | `read` | The run: status, input, creation, due time while queued, execution number, lease deadline while running, steps begun and the open one's name, output and end once completed. An unknown or malformed ID is `NotFound`, `run not found` |
-| `ClaimRun` | `execute` | Names 1–100 different `name@code` pairs and takes at most one `queued` run of them that is due, the earliest due first, then the first created (RUN-7). The execution number goes up by one, the status becomes `running`, and the lease runs `lease_seconds` (10–900, 60 when absent), held by the calling key. `wait_seconds` (0–20) is checked, and the claim answers at once whatever it says. Nothing due: no claim, and nothing appended |
+| `GetRun` | `read` | The run: status, input, creation, due time while queued, execution number, lease deadline while running, steps begun and the open one's name, leases lost in a row, the last error, output and end once completed. An unknown or malformed ID is `NotFound`, `run not found` |
+| `ClaimRun` | `execute` | Names 1–100 different `name@code` pairs and takes at most one run of them: `queued` and due, or `running` with a lease whose deadline has been reached; the earliest due first, a lapsed lease due at its deadline, then the first created (RUN-7). The execution number goes up by one, the status becomes `running`, and the lease runs `lease_seconds` (10–900, 60 when absent), held by the calling key. Taking a `running` run counts one lost lease; the tenth in a row fails the run instead (below), and the claim goes on to the next run in the same record, failing at most 100 before it stops, empty. `wait_seconds` (0–20) is checked, and the claim answers at once whatever it says. Nothing claimable: no claim, and nothing appended |
 | `BeginStep` | `execute` | Asks about step `position` of the claimed run (below) |
 | `CompleteStep` | `execute` | Records the open step's output, begun by this execution; a step that has an output answers it, the first one standing |
 | `CompleteRun` | `execute` | Completes the run with its output, `ironflowx.run.completed` in the same record (RUN-2, D103). `steps`, the positions this execution reached, above the steps begun, or equal with the last open, is `Invalid` |
+| `Heartbeat` | `execute` | Names 1–100 different leases, else `Invalid`, and answers one result per lease, in their order: `renewed { lease_until }`, now plus the lease's length, for each the fence takes whose run is `running`, or that lease's own refusal. One record renews every accepted lease; when all are refused nothing is appended |
+| `ReleaseRun` | `execute` | Makes the claimed run `queued`, due now, and counts nothing; answers `due_at`. Sent again it answers the same due time and appends nothing |
 
 ### Functions
 
@@ -428,7 +433,18 @@ A put checks the name, the code label, the triggers and the policy, in that orde
 
 **The fence** (RUN-1, D95). Every call that names a lease is checked, in the decision that writes, in this order, and the first failure answers: what the request alone shows (`Invalid`: a position of 0, a step name that is not 1–256 bytes without a control character, an input or output outside its rules), then the lease parses and its run exists (`NotFound`, `run not found`), then its execution number is the run's current one (`Conflict`, hint `this execution was superseded: stop working on this run`; a run never claimed is at execution 0, which no lease names), then the call's key is the one that claimed it (`Conflict`, hint `another key holds this lease`). One function, `fence`, returns the run the rules then need, in a type whose field is private to the module that holds only the fence, so no rule of an execution call reaches a run without it. A refusal appends nothing. A step the run counts that the read store lacks is the store's failure, which fails the ledger, not a refusal.
 
-A run that has ended answers `BeginStep` and `CompleteRun` with `ended { run }` (D108), and `CompleteStep` with the step's output if it has one, else `Conflict`, hint `this execution is over`; each appends nothing.
+A deadline only makes a run claimable. Until a claim takes the run, an executor that wakes late is still its current execution, and its calls are accepted (D94). Every accepted call that appends renews its lease to now plus its length, in the same record: a begin, a step's output, a heartbeat; one that appends nothing, such as a replayed step, does not.
+
+When an execution is over, its own calls fare as below until the next claim supersedes it; each appends nothing, and `Conflict` has the hint `this execution is over`. A run scheduled for a retry joins the table with retries (#225); until then a `queued` run past its first claim was released, and the rules tell so by its status (a marked shortcut).
+
+| Call | The run has ended, whoever ended it | Released |
+|---|---|---|
+| `BeginStep`, `CompleteRun` | `ended { run }` (D108) | `Conflict` |
+| `CompleteStep` | The step's output, if it has one; else `Conflict` | The same |
+| `ReleaseRun` | `Conflict` | Its due time |
+| `Heartbeat`'s item | `Conflict` | `Conflict` |
+
+**Lost leases** (D97). A claim that takes a `running` run counts one lost lease; a step's output sets the count back to 0, and nothing else changes it: a release counts nothing, and a lost lease spends no attempt. The tenth in a row fails the run with `ironflowx.executor_lost`, message `the run lost 10 leases in a row without progress`, and `ironflowx.run.failed` in the same record (RUN-2); its count reads 10 and its execution number is unchanged, so its last execution's calls meet an ended run. A claim takes a lapsed lease at its deadline whatever the engine's downtime; the open's protection of leases is #227's.
 
 **Steps.** With `n` steps begun in the run's life, `BeginStep` at position `p`:
 
@@ -441,11 +457,11 @@ A run that has ended answers `BeginStep` and `CompleteRun` with `ended { run }` 
 | `p > n + 1` | `Invalid` | Nothing |
 | `p ≤ n` under another name; `p = 1,001`; `CompleteRun` with fewer steps than begun | `Invalid`, until the run's failure lands with `ironflowx.step_order` and `ironflowx.too_many_steps` | Nothing |
 
-A step's name, `once` and input are those of its first begin. Until a run can be claimed again, no step is open from an earlier execution.
+A step's name, `once` and input are those of its first begin. A begin of a step an earlier execution left open answers `Invalid` until #224 builds that row.
 
 **Values.** A step's input is JSON of at most 65,536 bytes (`limits::MAX_STEP_INPUT_BYTES`), a step's or a run's output at most 524,288 (`limits::MAX_DATA_BYTES`); each meets event data's JSON rules through event rules' `check_value`, with its own name in the message (`step output exceeds 524288 bytes`, `run output is invalid: …`). An absent output stores `null`.
 
-**Entries.** Each command that changes something appends one record of execution entries (D112), which carry every value `decide` computed; `fold` writes them and reads no policy, so a rebuilt `read.db` answers the same (RUN-11). No run entry but `RunCreated` carries a code label (RUN-7); `FunctionPut` carries the function's. A record's entries read back as `Stored`, which `fold` applies and from which no `Entry` comes out, so a decoded `RunCompleted` joins no decision. A run's attribution is its record's: its creator, its claimant, and its end event's emitter come from the verified grant (TEN-6).
+**Entries.** Each command that changes something appends one record of execution entries (D112), which carry every value `decide` computed; `fold` writes them and reads no policy, so a rebuilt `read.db` answers the same (RUN-11). No run entry but `RunCreated` carries a code label (RUN-7); `FunctionPut` carries the function's. A claim's record holds, for each run it takes while running or fails, `LeaseLost` before its `Claimed` or `RunFailed`; a renewal is a `LeaseRenewed` beside the begin or output that renews, or one per accepted lease of a heartbeat; a release is `Released`. `RunFailed`'s fields are private, as `RunCompleted`'s: only `decide` makes one, with its end event (RUN-2). A record's entries read back as `Stored`, which `fold` applies and from which no `Entry` comes out, so a decoded `RunCompleted` or `RunFailed` joins no decision. A run's attribution is its record's: its creator, its claimant, and its end event's emitter come from the verified grant (TEN-6).
 
 ## Keys
 
@@ -510,7 +526,7 @@ The kind is contract. Nine messages are contract too: `event name is required`, 
 | `ResourceExhausted` | From the proto client: a request over 16 MiB, which it does not send; or `resource_exhausted` without the engine's own error ([Wire](#wire), rule 4). No hint | No: a request too large stays so |
 | `Invalid` | From the proto client: `invalid_argument` or `out_of_range` without the engine's own error ([Wire](#wire), rule 4) | No |
 | `Internal` | From the proto client: `unimplemented` without the engine's own error ([Wire](#wire), rule 4), with the hint `the engine is older than this client` | No |
-| `Conflict` | The state a call relies on no longer holds, so an executor must stop (D106): a lease that is not its run's current execution, one another key holds, or a call on a run that has ended that has nothing to answer ([Execution rules](#execution-rules)). The hint says which | No |
+| `Conflict` | The state a call relies on no longer holds, so an executor must stop (D106): a lease that is not its run's current execution, one another key holds, or a call of an execution that is over, its run ended or released, that has nothing to answer ([Execution rules](#execution-rules)). The hint says which | No |
 
 | Kind | `retryable` | Exit | Connect code |
 |---|---|---|---|
@@ -695,8 +711,8 @@ A ledger's directory, `<dir>`:
 | Where | Holds |
 |---|---|
 | `<dir>/ledger.lock` | File used for exclusive ownership of the ledger directory, including during read-store rebuild |
-| `<dir>/log/` (segment log) | Position 0: the genesis record, with the ledger's own format version, 3 (a format-1 directory from 0.1, or a format-2 one from 0.2 or 0.3, answers `Format`). Then one record per submit that appends: its envelope (format version, incarnation token, record ID, emitter, event-clock time), then its ordered entries, each with its kind (D112). The record ID is a UUIDv7 the writer draws at the append and replay copies: a copy of a directory keeps the IDs of the records it copied, and what each copy appends next has its own (D117). A record ID that is not a UUIDv7 in its canonical text form does not decode. Kind 0 is an event: its sequence, ID, name, version, key, metadata and data. Kinds 1 to 6 are execution rules' entries, which `ironflowx-execution` encodes: a function put, a run created, a claim, a step begun, a step completed, a run completed. A record writes its events first, and reads the two kinds in any order. Binary and length-prefixed; data, metadata, inputs and outputs are the bytes as sent |
-| `<dir>/read.db` (SQLite) | `events` keyed by sequence, unique by ID, each with its `emitted_by` · `idempotency` key → event ID · `functions` by name, with their policy fields and `put_at`, `put_by`, and `triggers` (function, event name) · `runs` by ID, unique by sequence, with status, input, creation, due time, execution, lease deadline and claimant, steps begun, the open step, output and end, indexed by pair, status, due time and sequence for the claim · `steps` by run and position, with name, `once`, input, the execution that began it and its output · `meta`: applied position, the last applied record's ID (none while only the genesis record is applied), environment ID, incarnation token, format version. Open rebuilds a store whose tables do not prepare |
+| `<dir>/log/` (segment log) | Position 0: the genesis record, with the ledger's own format version, 3 (a format-1 directory from 0.1, or a format-2 one from 0.2 or 0.3, answers `Format`). Then one record per submit that appends: its envelope (format version, incarnation token, record ID, emitter, event-clock time), then its ordered entries, each with its kind (D112). The record ID is a UUIDv7 the writer draws at the append and replay copies: a copy of a directory keeps the IDs of the records it copied, and what each copy appends next has its own (D117). A record ID that is not a UUIDv7 in its canonical text form does not decode. Kind 0 is an event: its sequence, ID, name, version, key, metadata and data. Kinds 1 to 10 are execution rules' entries, which `ironflowx-execution` encodes: a function put, a run created, a claim, a step begun, a step completed, a run completed, a lease renewed, a lease lost, a run released, a run failed. A record writes its events first, and reads the two kinds in any order. Binary and length-prefixed; data, metadata, inputs and outputs are the bytes as sent |
+| `<dir>/read.db` (SQLite) | `events` keyed by sequence, unique by ID, each with its `emitted_by` · `idempotency` key → event ID · `functions` by name, with their policy fields and `put_at`, `put_by`, and `triggers` (function, event name) · `runs` by ID, unique by sequence, with status, input, creation, due time, execution, lease deadline, length and claimant, leases lost in a row, steps begun, the open step, output, error and end, indexed by pair, status, due time and sequence for the claim · `steps` by run and position, with name, `once`, input, the execution that began it and its output · `meta`: applied position, the last applied record's ID (none while only the genesis record is applied), environment ID, incarnation token, format version. Open rebuilds a store whose tables do not prepare |
 
 A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 4 MiB of data and metadata, under 4.1 MiB.
 
@@ -711,8 +727,8 @@ Package `ironflowx.v1`, in `crates/ironflowx-proto/proto/ironflowx/v1/`, so the 
 | `event.proto` | `EventService`: `Emit`, `EmitBatch`, `GetEvent` and `ListEvents`, likewise, `Event`, which is `GetEvent`'s answer, and `EmitBatchItem` |
 | `key.proto` | `KeyService`: `CreateKey`, `ListKeys` and `RevokeKey`, likewise, and `KeyInfo` |
 | `function.proto` | `FunctionService`: `PutFunction`, `GetFunction` and `ListFunctions`, likewise, and `Function` |
-| `run.proto` | `RunService`: `StartRun` and `GetRun`, likewise, `Run` and `RunEnd` |
-| `execution.proto` | `ExecutionService`: `ClaimRun`, `BeginStep`, `CompleteStep` and `CompleteRun`, likewise, `Claim`, and the answers' shapes |
+| `run.proto` | `RunService`: `StartRun` and `GetRun`, likewise, `Run`, `RunError` and `RunEnd` |
+| `execution.proto` | `ExecutionService`: `ClaimRun`, `BeginStep`, `CompleteStep`, `CompleteRun`, `Heartbeat` and `ReleaseRun`, likewise, `Claim`, and the answers' shapes |
 | `options.proto` | The custom options, which the generator reads |
 | `error.proto` | `ErrorInfo { kind, message, hint }`, the error a call fails with |
 
@@ -746,7 +762,7 @@ It writes `cli.rs`: each command with its RPC name, summary, input and output sc
 | Event data and metadata | `optional string` fields with `json_text`: the JSON text itself, so bytes, key order and large integers survive every codec (D54, SRV-5). A client sends `"data": "{\"id\": 1}"`; a JSON value that is neither a string nor `null` does not decode. An event's `data` is always there |
 | Presence | A field whose absence means something (`data`, `metadata`, `version`, `idempotency_key`, `expires_at`, `label`, `created_by`, `key_id` of `WhoamiResponse`, `limit`, `cursor`, `next`, `hint`) is `optional`; absent, and in JSON `null`, is `None` |
 | 64-bit integers | Strings in JSON, as protobuf prints them: `"version":"1"`. A number is read too |
-| A batch item's result | `oneof result { EmitResponse ok; ErrorInfo error; }`: one per item, in their order. `Client` takes no other number of them |
+| A batch item's result | `oneof result { EmitResponse ok; ErrorInfo error; }`: one per item, in their order. `Client` takes no other number of them. A heartbeat's result is the same form, `oneof result { Renewed renewed; ErrorInfo error; }`, one per lease |
 | An answer of several shapes | A `oneof`: in JSON, an object with the one field that is set (`{"run":{"attempt":1}}`), and in its schema a `oneOf` of each member required. `BeginStep` answers `run`, `completed` or `ended`; `CompleteStep`, `completed`. An `optional` field is no such shape |
 | Runs, steps and leases | Inputs and outputs are `json_text`, as event data is. A status is `queued`, `running`, `completed` or `failed`; a lease is `<run-id>.<execution>`; a `bool` request field (`once`) is false when absent |
 | Who emitted | `emitted_by` is the `Emitter`'s text: `key:<key-id>` or `embedder:<name>` |

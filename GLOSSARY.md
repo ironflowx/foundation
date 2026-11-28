@@ -100,7 +100,7 @@ _Avoid_: Log record (that is the segment log's own type)
 The head of every record after the genesis record: format version, incarnation token, record ID, attribution and event-clock time.
 
 **Entry**:
-One change inside a record, of one kind: an event, or one of execution rules' (a function put, a run created, a claim, a step begun or completed, a run completed). A record's entries are ordered.
+One change inside a record, of one kind: an event, or one of execution rules' (a function put, a run created, a claim, a lease renewed or lost, a run released, a step begun or completed, a run completed or failed). A record's entries are ordered.
 
 **Record ID**:
 A record's own UUIDv7, drawn by the writer at the append and copied by replay. A copy of a directory keeps the IDs of the records it copied, and what each copy appends next has its own. `read.db` keeps the last applied record's, and open compares it with the log's record at that position.
@@ -166,10 +166,22 @@ One durable invocation of a function. Its status is `queued`, `running`, `comple
 Any program that claims runs and performs their code, with a key that holds `execute`.
 
 **Execution**:
-One executor's turn at a run, from its claim; numbered from 1 per run.
+One executor's turn at a run, from its claim until it ends, is released or is superseded; numbered from 1 per run.
 
 **Lease**:
-An execution's hold on its run, with a deadline; its text is `<run-id>.<execution>`, and every call about the run sends it.
+An execution's hold on its run, with a deadline after which another claim may take the run; its text is `<run-id>.<execution>`, and every call about the run sends it. An accepted call that appends renews it.
+
+**Lost lease**:
+A lease whose deadline passed and whose run another claim then took. Ten in a row without a step's output fail the run with `ironflowx.executor_lost`.
+
+**Heartbeat**:
+A call that renews the leases it names, each answered on its own, in one record.
+
+**Release**:
+An executor's giving its run back: the run is due now, and nothing is counted against it.
+
+**Superseded**:
+Of an execution: a later claim took its run, so each of its calls is refused `Conflict`.
 
 **Fence**:
 The checks every call that names a lease meets, in the decision that writes: the run exists, the execution is its current one, and the key is the one that claimed it.

@@ -2163,6 +2163,153 @@ async fn a_runs_end_and_its_event_are_one_record() {
     ledger.close().await;
 }
 
+/// RUN-2 and RUN-11 for a failure: the tenth lost lease fails the run in the claim's record, with
+/// `ironflowx.run.failed`, and a rebuilt read store reads the run back the same.
+#[tokio::test]
+async fn a_runs_failure_and_its_event_are_one_record() {
+    use ironflowx_execution::{Command, Entry, Outcome as Answer};
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let clock = clock();
+    let ledger = Ledger::open(dir.path(), env, clock.clone()).await.unwrap();
+    execute(&ledger, put("charge", "v1", &[])).await.unwrap();
+    let run = started(&ledger, "charge").await;
+    let claim = || Command::Claim {
+        functions: vec!["charge@v1".into()],
+        lease_seconds: Some(10),
+        wait_seconds: None,
+    };
+    for execution in 1..=10 {
+        let Answer::Claimed(Some(c)) = execute(&ledger, claim()).await.unwrap() else {
+            panic!("claim {execution} takes the run");
+        };
+        assert_eq!(c.lease.execution, execution);
+        clock.step(10_000);
+    }
+    assert_eq!(
+        execute(&ledger, claim()).await.unwrap(),
+        Answer::Claimed(None)
+    );
+    let read = ledger.get_run(&run.to_string()).await.unwrap();
+    let error = read.error.clone().expect("an error");
+    assert_eq!(
+        (
+            read.status,
+            read.execution,
+            read.lost_leases,
+            error.code.as_str()
+        ),
+        (
+            ironflowx_execution::Status::Failed,
+            10,
+            10,
+            "ironflowx.executor_lost"
+        )
+    );
+    ledger.close().await;
+    let (records, _) = log_records(dir.path());
+    let Some(record::Decoded::Entries { entries, .. }) = records.last() else {
+        panic!("a record of entries");
+    };
+    let [lost, failed] = entries.execution.as_slice() else {
+        panic!("a loss and a failure: {entries:?}");
+    };
+    assert_eq!(
+        *lost,
+        Entry::LeaseLost {
+            run,
+            lost_leases: 10
+        }
+    );
+    let mut written = Vec::new();
+    ironflowx_execution::encode(failed, &mut written);
+    assert_eq!(written[0], 10, "a run's failure: {failed:?}");
+    let [event] = entries.record.events.as_slice() else {
+        panic!("one event: {entries:?}");
+    };
+    let data = format!(
+        r#"{{"run_id":"{run}","function":"charge","code":"v1","error":{{"code":"ironflowx.executor_lost","message":"{}"}}}}"#,
+        error.message
+    );
+    assert_eq!(
+        (event.name.as_str(), event.data.as_slice()),
+        ("ironflowx.run.failed", data.as_bytes())
+    );
+    std::fs::remove_file(dir.path().join("read.db")).unwrap();
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(ledger.get_run(&run.to_string()).await.unwrap(), read);
+    ledger.close().await;
+}
+
+/// The claim's query by status alone, on rows no fold writes: a running run with a due time
+/// before its deadline, and ended runs with a due time and a deadline reached, are none of them
+/// claimable; a running run is, from its deadline.
+#[test]
+fn the_claim_query_takes_a_queued_run_by_its_due_time_and_a_running_one_by_its_deadline() {
+    use ironflowx_execution::{Entry, ExecutionView};
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open_blocking(dir.path(), new_env_ref(), clock()).unwrap();
+    let mut conn = ledger.store.lock().unwrap();
+    let ids: Vec<ironflowx_core::RunId> = (1..=3)
+        .map(|i| {
+            format!("0190b5f0-0000-7000-8000-00000000012{i}")
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    let mut entries = Vec::new();
+    for (i, run) in ids.iter().enumerate() {
+        entries.push(Entry::RunCreated {
+            run: *run,
+            sequence: i as u64 + 1,
+            function: "charge".into(),
+            code: "v1".into(),
+            input: b"null".to_vec(),
+        });
+        entries.push(Entry::Claimed {
+            run: *run,
+            execution: 1,
+            lease_until: Timestamp::from_millis(T + 1_000),
+            lease_seconds: 1,
+        });
+    }
+    let entries = Entries {
+        record: ironflowx_events::Record {
+            time: Timestamp::from_millis(T),
+            events: vec![],
+        },
+        execution: entries.into_iter().map(Into::into).collect(),
+    };
+    let applied = crate::store::applied(&conn).unwrap();
+    let record = Some((uuid::Uuid::now_v7(), &entries, &emitter()));
+    crate::store::apply(&mut conn, applied, record, false).unwrap();
+    // Seeded below the fold: the first run is due long ago, the others ended with a deadline.
+    conn.execute(
+        "UPDATE runs SET due_at = ?1 WHERE sequence = 1",
+        [T - 1_000],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE runs SET status = 'completed', due_at = ?1 WHERE sequence = 2",
+        [T],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE runs SET status = 'failed', due_at = ?1 WHERE sequence = 3",
+        [T],
+    )
+    .unwrap();
+    let pairs = [("charge".to_owned(), "v1".to_owned())];
+    let at = |millis| {
+        let taken = ReadStore(&conn).claimable(&pairs, Timestamp::from_millis(millis), 10);
+        taken.unwrap().iter().map(|r| r.id).collect::<Vec<_>>()
+    };
+    assert_eq!(at(T + 999), []);
+    assert_eq!(at(T + 1_000), [ids[0]]);
+    drop(conn);
+    drop(ledger);
+}
+
 /// A recorded step asked about again is answered its output and appends nothing; so is its
 /// completion sent again.
 #[tokio::test]

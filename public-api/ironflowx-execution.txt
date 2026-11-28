@@ -36,7 +36,11 @@ pub ironflowx_execution::Command::CompleteStep
 pub ironflowx_execution::Command::CompleteStep::lease: alloc::string::String
 pub ironflowx_execution::Command::CompleteStep::output: core::option::Option<alloc::vec::Vec<u8>>
 pub ironflowx_execution::Command::CompleteStep::position: u32
+pub ironflowx_execution::Command::Heartbeat
+pub ironflowx_execution::Command::Heartbeat::leases: alloc::vec::Vec<alloc::string::String>
 pub ironflowx_execution::Command::PutFunction(ironflowx_execution::Definition)
+pub ironflowx_execution::Command::Release
+pub ironflowx_execution::Command::Release::lease: alloc::string::String
 pub ironflowx_execution::Command::StartRun
 pub ironflowx_execution::Command::StartRun::function: alloc::string::String
 impl core::clone::Clone for ironflowx_execution::Command
@@ -51,9 +55,18 @@ impl core::marker::StructuralPartialEq for ironflowx_execution::Command
 pub enum ironflowx_execution::Entry
 pub ironflowx_execution::Entry::Claimed
 pub ironflowx_execution::Entry::Claimed::execution: u32
+pub ironflowx_execution::Entry::Claimed::lease_seconds: u32
 pub ironflowx_execution::Entry::Claimed::lease_until: ironflowx_core::time::Timestamp
 pub ironflowx_execution::Entry::Claimed::run: ironflowx_core::id::RunId
 pub ironflowx_execution::Entry::FunctionPut(ironflowx_execution::Definition)
+pub ironflowx_execution::Entry::LeaseLost
+pub ironflowx_execution::Entry::LeaseLost::lost_leases: u32
+pub ironflowx_execution::Entry::LeaseLost::run: ironflowx_core::id::RunId
+pub ironflowx_execution::Entry::LeaseRenewed
+pub ironflowx_execution::Entry::LeaseRenewed::lease_until: ironflowx_core::time::Timestamp
+pub ironflowx_execution::Entry::LeaseRenewed::run: ironflowx_core::id::RunId
+pub ironflowx_execution::Entry::Released
+pub ironflowx_execution::Entry::Released::run: ironflowx_core::id::RunId
 pub ironflowx_execution::Entry::RunCompleted(ironflowx_execution::RunCompleted)
 pub ironflowx_execution::Entry::RunCreated
 pub ironflowx_execution::Entry::RunCreated::code: alloc::string::String
@@ -61,6 +74,7 @@ pub ironflowx_execution::Entry::RunCreated::function: alloc::string::String
 pub ironflowx_execution::Entry::RunCreated::input: alloc::vec::Vec<u8>
 pub ironflowx_execution::Entry::RunCreated::run: ironflowx_core::id::RunId
 pub ironflowx_execution::Entry::RunCreated::sequence: u64
+pub ironflowx_execution::Entry::RunFailed(ironflowx_execution::RunFailed)
 pub ironflowx_execution::Entry::StepBegan
 pub ironflowx_execution::Entry::StepBegan::execution: u32
 pub ironflowx_execution::Entry::StepBegan::input: core::option::Option<alloc::vec::Vec<u8>>
@@ -90,6 +104,9 @@ pub ironflowx_execution::Outcome::Claimed(core::option::Option<ironflowx_executi
 pub ironflowx_execution::Outcome::FunctionPut
 pub ironflowx_execution::Outcome::FunctionPut::changed: bool
 pub ironflowx_execution::Outcome::FunctionPut::function: ironflowx_execution::Function
+pub ironflowx_execution::Outcome::Released
+pub ironflowx_execution::Outcome::Released::due_at: ironflowx_core::time::Timestamp
+pub ironflowx_execution::Outcome::Renewed(alloc::vec::Vec<core::result::Result<ironflowx_core::time::Timestamp, ironflowx_events::Refusal>>)
 pub ironflowx_execution::Outcome::RunEnded(ironflowx_execution::RunEnd)
 pub ironflowx_execution::Outcome::RunStarted
 pub ironflowx_execution::Outcome::RunStarted::duplicate: bool
@@ -204,11 +221,14 @@ pub ironflowx_execution::Run::created_at: ironflowx_core::time::Timestamp
 pub ironflowx_execution::Run::created_by: ironflowx_core::who::Emitter
 pub ironflowx_execution::Run::due_at: core::option::Option<ironflowx_core::time::Timestamp>
 pub ironflowx_execution::Run::ended_at: core::option::Option<ironflowx_core::time::Timestamp>
+pub ironflowx_execution::Run::error: core::option::Option<ironflowx_execution::RunError>
 pub ironflowx_execution::Run::execution: u32
 pub ironflowx_execution::Run::function: alloc::string::String
 pub ironflowx_execution::Run::id: ironflowx_core::id::RunId
 pub ironflowx_execution::Run::input: alloc::vec::Vec<u8>
+pub ironflowx_execution::Run::lease_seconds: u32
 pub ironflowx_execution::Run::lease_until: core::option::Option<ironflowx_core::time::Timestamp>
+pub ironflowx_execution::Run::lost_leases: u32
 pub ironflowx_execution::Run::output: core::option::Option<alloc::vec::Vec<u8>>
 pub ironflowx_execution::Run::sequence: u64
 pub ironflowx_execution::Run::status: ironflowx_execution::Status
@@ -248,6 +268,31 @@ pub fn ironflowx_execution::RunEnd::eq(&self, &Self) -> bool
 impl core::fmt::Debug for ironflowx_execution::RunEnd
 pub fn ironflowx_execution::RunEnd::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for ironflowx_execution::RunEnd
+pub struct ironflowx_execution::RunError
+pub ironflowx_execution::RunError::code: alloc::string::String
+pub ironflowx_execution::RunError::message: alloc::string::String
+impl core::clone::Clone for ironflowx_execution::RunError
+pub fn ironflowx_execution::RunError::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_execution::RunError
+pub fn ironflowx_execution::RunError::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_execution::RunError
+pub fn ironflowx_execution::RunError::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_execution::RunError
+pub fn ironflowx_execution::RunError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_execution::RunError
+pub struct ironflowx_execution::RunFailed
+impl ironflowx_execution::RunFailed
+pub const fn ironflowx_execution::RunFailed::error(&self) -> &ironflowx_execution::RunError
+pub const fn ironflowx_execution::RunFailed::run(&self) -> ironflowx_core::id::RunId
+impl core::clone::Clone for ironflowx_execution::RunFailed
+pub fn ironflowx_execution::RunFailed::clone(&self) -> Self
+impl core::cmp::Eq for ironflowx_execution::RunFailed
+pub fn ironflowx_execution::RunFailed::assert_fields_are_eq(&self)
+impl core::cmp::PartialEq for ironflowx_execution::RunFailed
+pub fn ironflowx_execution::RunFailed::eq(&self, &Self) -> bool
+impl core::fmt::Debug for ironflowx_execution::RunFailed
+pub fn ironflowx_execution::RunFailed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for ironflowx_execution::RunFailed
 pub struct ironflowx_execution::Step
 pub ironflowx_execution::Step::execution: u32
 pub ironflowx_execution::Step::input: core::option::Option<alloc::vec::Vec<u8>>
@@ -281,14 +326,18 @@ impl core::marker::StructuralPartialEq for ironflowx_execution::Stored
 pub trait ironflowx_execution::ExecutionTables
 pub type ironflowx_execution::ExecutionTables::Error
 pub fn ironflowx_execution::ExecutionTables::begin_step(&mut self, ironflowx_core::id::RunId, &ironflowx_execution::Step) -> core::result::Result<(), Self::Error>
-pub fn ironflowx_execution::ExecutionTables::claim(&mut self, ironflowx_core::id::RunId, u32, ironflowx_core::time::Timestamp, &ironflowx_core::who::Emitter) -> core::result::Result<(), Self::Error>
+pub fn ironflowx_execution::ExecutionTables::claim(&mut self, ironflowx_core::id::RunId, u32, ironflowx_core::time::Timestamp, u32, &ironflowx_core::who::Emitter) -> core::result::Result<(), Self::Error>
 pub fn ironflowx_execution::ExecutionTables::complete_run(&mut self, ironflowx_core::id::RunId, &[u8], ironflowx_core::time::Timestamp) -> core::result::Result<(), Self::Error>
 pub fn ironflowx_execution::ExecutionTables::complete_step(&mut self, ironflowx_core::id::RunId, u32, &[u8]) -> core::result::Result<(), Self::Error>
 pub fn ironflowx_execution::ExecutionTables::create_run(&mut self, &ironflowx_execution::Run) -> core::result::Result<(), Self::Error>
+pub fn ironflowx_execution::ExecutionTables::fail_run(&mut self, ironflowx_core::id::RunId, &ironflowx_execution::RunError, ironflowx_core::time::Timestamp) -> core::result::Result<(), Self::Error>
+pub fn ironflowx_execution::ExecutionTables::lose_lease(&mut self, ironflowx_core::id::RunId, u32) -> core::result::Result<(), Self::Error>
 pub fn ironflowx_execution::ExecutionTables::put_function(&mut self, &ironflowx_execution::Function) -> core::result::Result<(), Self::Error>
+pub fn ironflowx_execution::ExecutionTables::release(&mut self, ironflowx_core::id::RunId, ironflowx_core::time::Timestamp) -> core::result::Result<(), Self::Error>
+pub fn ironflowx_execution::ExecutionTables::renew(&mut self, ironflowx_core::id::RunId, ironflowx_core::time::Timestamp) -> core::result::Result<(), Self::Error>
 pub trait ironflowx_execution::ExecutionView
 pub type ironflowx_execution::ExecutionView::Error
-pub fn ironflowx_execution::ExecutionView::claimable(&self, &[(alloc::string::String, alloc::string::String)], ironflowx_core::time::Timestamp) -> core::result::Result<core::option::Option<ironflowx_execution::Run>, Self::Error>
+pub fn ironflowx_execution::ExecutionView::claimable(&self, &[(alloc::string::String, alloc::string::String)], ironflowx_core::time::Timestamp, u32) -> core::result::Result<alloc::vec::Vec<ironflowx_execution::Run>, Self::Error>
 pub fn ironflowx_execution::ExecutionView::function(&self, &str) -> core::result::Result<core::option::Option<ironflowx_execution::Function>, Self::Error>
 pub fn ironflowx_execution::ExecutionView::function_count(&self) -> core::result::Result<u64, Self::Error>
 pub fn ironflowx_execution::ExecutionView::functions_after(&self, core::option::Option<&str>, u32) -> core::result::Result<alloc::vec::Vec<ironflowx_execution::Function>, Self::Error>

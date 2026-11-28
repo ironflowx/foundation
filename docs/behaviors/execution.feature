@@ -20,7 +20,7 @@ Feature: Running a function step by step
     When the executor claims it and completes it with output {"ok": true}
     Then the run reads as completed with output {"ok": true}, 0 steps and execution 1
 
-  @EXE-002 @release-0.4 @pending
+  @EXE-002 @release-0.4
   Scenario: A claimed run is not claimed again while its lease holds
     Given a run of "charge" was started and the executor claimed it
     When another executor claims without waiting
@@ -74,7 +74,7 @@ Feature: Running a function step by step
 
   # ---- Steps and replay ----
 
-  @EXE-010 @release-0.4 @pending
+  @EXE-010 @release-0.4
   Scenario: A recorded step is not run again
     Given an execution completed step 1 "reserve" with output {"id":  9007199254740993} and then released its run
     When another execution begins step 1 "reserve"
@@ -217,7 +217,7 @@ Feature: Running a function step by step
 
   # ---- Leases and the fence ----
 
-  @EXE-030 @release-0.4 @local @pending
+  @EXE-030 @release-0.4 @local
   Scenario Outline: A superseded execution changes nothing
     Given an execution of a 10 second lease began step 1 "pay"
     And its deadline passed and another executor claimed the run
@@ -229,10 +229,14 @@ Feature: Running a function step by step
       | call              |
       | begins step 1     |
       | completes step 1  |
-      | fails step 1      |
       | completes the run |
-      | fails the run     |
       | releases the run  |
+
+    @pending
+    Examples:
+      | call              |
+      | fails step 1      |
+      | fails the run     |
 
   @EXE-031 @release-0.4
   Scenario: A lease belongs to the key that claimed it
@@ -241,14 +245,14 @@ Feature: Running a function step by step
     Then it is refused as a conflict
     And the run reads as running
 
-  @EXE-032 @release-0.4 @local @pending
+  @EXE-032 @release-0.4 @local
   Scenario: A heartbeat renews the leases it names
     Given the executor claimed runs 1 and 2 with 10 second leases
     When 8 seconds pass, and it heartbeats run 1 only, and 4 seconds pass
     And another executor claims without waiting, twice
     Then the first claim is run 2, and the second claim is empty
 
-  @EXE-033 @release-0.4 @pending
+  @EXE-033 @release-0.4
   Scenario: A heartbeat answers each lease on its own
     Given the executor claimed run 1 and released run 2
     When it heartbeats both
@@ -262,7 +266,7 @@ Feature: Running a function step by step
     Then it gets that run, execution 2, and beginning step 1 "pay" answers run
     And the run reads as having lost 1 lease
 
-  @EXE-035 @release-0.4 @local @pending
+  @EXE-035 @release-0.4 @local
   Scenario: A run that keeps losing its executor fails
     Given a run of "charge" lost 9 leases in a row with no step outcome
     When the tenth lapses and an executor claims without waiting
@@ -287,14 +291,14 @@ Feature: Running a function step by step
       | failed the run with a final failure   |
       | released the run                      |
 
-  @EXE-037 @release-0.4 @local @pending
+  @EXE-037 @release-0.4 @local
   Scenario: A late executor keeps a run nobody took
     Given an execution of a 10 second lease began step 1 "pay"
     When 30 seconds pass and it completes step 1 with output 1
     Then the engine answers completed
     And its lease has a new deadline
 
-  @EXE-038 @release-0.4 @pending
+  @EXE-038 @release-0.4
   Scenario: A released run is claimed at once and nothing is counted
     Given the executor claimed a run and released it
     When another executor claims without waiting

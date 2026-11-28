@@ -766,7 +766,12 @@ fn entries_round_trip() {
     }
     let (mut s, _) = lost(9);
     s.time += 60_000;
-    entries.extend(s.run_cmd(claim(&["charge@v1"]), &key(2)).unwrap().into_parts().1);
+    entries.extend(
+        s.run_cmd(claim(&["charge@v1"]), &key(2))
+            .unwrap()
+            .into_parts()
+            .1,
+    );
     for entry in entries {
         let mut bytes = Vec::new();
         encode(&entry.clone().into(), &mut bytes);
@@ -1496,7 +1501,10 @@ fn a_lapsed_lease_is_claimed_again_counting_one_lost_lease() {
     );
     assert!(matches!(
         entries.as_slice(),
-        [Entry::LeaseLost { lost_leases: 1, .. }, Entry::Claimed { execution: 2, .. }]
+        [
+            Entry::LeaseLost { lost_leases: 1, .. },
+            Entry::Claimed { execution: 2, .. }
+        ]
     ));
     assert!(events.is_empty());
     assert_eq!(
@@ -1505,7 +1513,10 @@ fn a_lapsed_lease_is_claimed_again_counting_one_lost_lease() {
     );
     let superseded = s.run_cmd(begin(&first, 1, "a"), &key(1)).unwrap_err();
     let stop = "this execution was superseded: stop working on this run";
-    assert_eq!(kind_and_hint(&superseded), (ErrorKind::Conflict, Some(stop)));
+    assert_eq!(
+        kind_and_hint(&superseded),
+        (ErrorKind::Conflict, Some(stop))
+    );
     let second = claim.lease.to_string();
     let begun = s.outcome(begin(&second, 1, "a"), &key(2)).unwrap();
     assert_eq!(begun, Outcome::StepBegun(Begun::Run { attempt: 1 }));
@@ -1540,7 +1551,10 @@ fn the_tenth_lost_lease_fails_the_run_and_the_claim_goes_on() {
     else {
         panic!("a loss, a failure and a claim: {entries:?}");
     };
-    assert_eq!((*lost_run, failed.run(), *claimed), (failing.id, failing.id, next));
+    assert_eq!(
+        (*lost_run, failed.run(), *claimed),
+        (failing.id, failing.id, next)
+    );
     let error = RunError {
         code: "ironflowx.executor_lost".into(),
         message: "the run lost 10 leases in a row without progress".into(),
@@ -1552,9 +1566,14 @@ fn the_tenth_lost_lease_fails_the_run_and_the_claim_goes_on() {
         (run.status, run.execution, run.lost_leases, run.error),
         (Status::Failed, 10, 10, Some(error))
     );
-    assert_eq!((run.ended_at, run.lease_until), (Some(Timestamp::from_millis(s.time)), None));
+    assert_eq!(
+        (run.ended_at, run.lease_until),
+        (Some(Timestamp::from_millis(s.time)), None)
+    );
     // Its last execution is told the run has ended.
-    let ended = s.outcome(begin(&lease.to_string(), 1, "a"), &key(2)).unwrap();
+    let ended = s
+        .outcome(begin(&lease.to_string(), 1, "a"), &key(2))
+        .unwrap();
     let end = RunEnd {
         run: failing.id,
         status: Status::Failed,
@@ -1584,12 +1603,22 @@ fn a_claim_fails_at_most_100_runs() {
         run.lost_leases = 9;
     }
     s.time += 60_000;
-    let (outcome, entries, events) = s.run_cmd(claim(&["charge@v1"]), &key(2)).unwrap().into_parts();
+    let (outcome, entries, events) = s
+        .run_cmd(claim(&["charge@v1"]), &key(2))
+        .unwrap()
+        .into_parts();
     assert_eq!(outcome, Outcome::Claimed(None));
     assert_eq!((entries.len(), events.len()), (200, 100));
-    let failed = s.runs.values().filter(|r| r.status == Status::Failed).count();
+    let failed = s
+        .runs
+        .values()
+        .filter(|r| r.status == Status::Failed)
+        .count();
     assert_eq!(failed, 100);
-    let (outcome, entries, _) = s.run_cmd(claim(&["charge@v1"]), &key(2)).unwrap().into_parts();
+    let (outcome, entries, _) = s
+        .run_cmd(claim(&["charge@v1"]), &key(2))
+        .unwrap()
+        .into_parts();
     assert_eq!((outcome, entries.len()), (Outcome::Claimed(None), 2));
     assert!(s.runs.values().all(|r| r.status == Status::Failed));
 }
@@ -1630,7 +1659,10 @@ fn a_heartbeat_renews_each_running_lease_and_refuses_the_rest() {
     ));
     assert_eq!(the_run(&s).lease_until, Some(until));
     // Another key's heartbeat renews nothing, and appends nothing.
-    let (outcome, entries, _) = s.run_cmd(heartbeat(&[&current]), &key(2)).unwrap().into_parts();
+    let (outcome, entries, _) = s
+        .run_cmd(heartbeat(&[&current]), &key(2))
+        .unwrap()
+        .into_parts();
     let held = (ErrorKind::Conflict, Some("another key holds this lease"));
     let Outcome::Renewed(results) = outcome else {
         panic!("renewals: {outcome:?}");
@@ -1674,7 +1706,11 @@ fn a_release_makes_the_run_due_now_and_counts_nothing() {
     let again = s.run_cmd(release(&lease), &key(1)).unwrap().into_parts();
     assert_eq!((again.0, again.1.len()), (Outcome::Released { due_at }, 0));
     let over = (ErrorKind::Conflict, Some("this execution is over"));
-    for cmd in [begin(&lease, 2, "b"), complete_step(&lease, 2, b"1"), complete(&lease, 2)] {
+    for cmd in [
+        begin(&lease, 2, "b"),
+        complete_step(&lease, 2, b"1"),
+        complete(&lease, 2),
+    ] {
         let r = s.run_cmd(cmd.clone(), &key(1)).unwrap_err();
         assert_eq!(kind_and_hint(&r), over, "{cmd:?}");
     }
@@ -1684,7 +1720,10 @@ fn a_release_makes_the_run_due_now_and_counts_nothing() {
     // Claimed at once by another key, nothing counted.
     let decision = s.run_cmd(claim(&["charge@v1"]), &key(2)).unwrap();
     let entries = decision.into_parts().1;
-    assert!(matches!(entries.as_slice(), [Entry::Claimed { execution: 2, .. }]));
+    assert!(matches!(
+        entries.as_slice(),
+        [Entry::Claimed { execution: 2, .. }]
+    ));
     assert_eq!(the_run(&s).lost_leases, 0);
     let stop = "this execution was superseded: stop working on this run";
     let r = s.run_cmd(release(&lease), &key(1)).unwrap_err();
@@ -1708,16 +1747,28 @@ fn an_accepted_call_that_appends_renews_its_lease() {
         _ => None,
     };
     s.time += 5_000;
-    let entries = s.run_cmd(begin(&lease, 1, "a"), &key(1)).unwrap().into_parts().1;
+    let entries = s
+        .run_cmd(begin(&lease, 1, "a"), &key(1))
+        .unwrap()
+        .into_parts()
+        .1;
     let until = Timestamp::from_millis(s.time + 60_000);
     assert_eq!(renewed(&entries), Some(until));
     s.time += 1_000;
-    let entries = s.run_cmd(begin(&lease, 1, "a"), &key(1)).unwrap().into_parts().1;
+    let entries = s
+        .run_cmd(begin(&lease, 1, "a"), &key(1))
+        .unwrap()
+        .into_parts()
+        .1;
     assert!(entries.is_empty(), "a replayed begin appends nothing");
     assert_eq!(the_run(&s).lease_until, Some(until));
     // Late, and nobody took the run.
     s.time += 120_000;
-    let entries = s.run_cmd(complete_step(&lease, 1, b"1"), &key(1)).unwrap().into_parts().1;
+    let entries = s
+        .run_cmd(complete_step(&lease, 1, b"1"), &key(1))
+        .unwrap()
+        .into_parts()
+        .1;
     let until = Timestamp::from_millis(s.time + 60_000);
     assert_eq!(renewed(&entries), Some(until));
     assert_eq!(the_run(&s).lease_until, Some(until));

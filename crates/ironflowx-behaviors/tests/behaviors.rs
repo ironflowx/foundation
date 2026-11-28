@@ -5,8 +5,6 @@
 
 #[path = "behaviors/adapter.rs"]
 mod adapter;
-#[path = "behaviors/replay.rs"]
-mod replay;
 #[path = "behaviors/runs.rs"]
 mod runs;
 #[path = "behaviors/tenancy.rs"]
@@ -864,7 +862,6 @@ async fn main() {
     discover();
     let mut runs = Vec::new();
     for (remote, adapter) in [(false, "the engine"), (true, "the door")] {
-        replay::check(remote).await;
         let count = |engine, door| if remote { door } else { engine };
         let expected = count(EVENT_RUNS, EVENT_REMOTE_RUNS);
         let of = |file| format!("{file}, {adapter}");

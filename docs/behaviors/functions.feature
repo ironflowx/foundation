@@ -91,13 +91,13 @@ Feature: Functions and triggers
       | complete a step | execute |
       | complete a run  | execute |
       | list functions  | read    |
+      | heartbeat       | execute |
+      | release a run   | execute |
 
     @pending
     Examples:
       | operation       | scope   |
       | list runs       | read    |
-      | heartbeat       | execute |
-      | release a run   | execute |
       | fail a step     | execute |
       | fail a run      | execute |
 
