@@ -8,7 +8,8 @@
 # does not forbid the lint, and in any integration test; a by-name grep backs each ban up
 # (ci/no-event-clock-outside-ledger.sh, no-key-attribution.sh, no-digest-codec.sh,
 # no-engine-event.sh). This repo's only suppressions are the event-rules test helpers that stand
-# in for the ledger and for execution rules (crates/ironflowx-events/tests/rules.rs). Nor is a
+# in for the ledger and for execution rules (crates/ironflowx-events/tests/rules.rs), and the
+# execution-rules test helper that stands in for the ledger (its tests/rules.rs). Nor is a
 # ban under another key than disallowed-methods, which a line-by-line read cannot tell; every
 # file here lists it under disallowed-methods. Nor is a clippy.toml outside the root and crates/*
 # (examples/embed has none, and takes the root's), or a manifest's [lints.clippy] allowing the
