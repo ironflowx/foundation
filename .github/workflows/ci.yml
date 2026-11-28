@@ -146,8 +146,9 @@ jobs:
             cargo check --locked --target wasm32-unknown-unknown -p "$crate"
           done
 
-  # ironflowx/ironflow's suite (its binary and CLI) against this checkout, through the [patch] its
-  # ci/conformance.sh writes: a change here that breaks the app fails before it merges.
+  # ironflowx/ironflow's suite (its binary and CLI), at the branch ci/app-ref names, against this
+  # checkout, through the [patch] its ci/conformance.sh writes: a change here that breaks the app
+  # fails before it merges.
   conformance:
     strategy:
       matrix:
@@ -170,11 +171,18 @@ jobs:
           else
             echo "conformance: the PR changes only docs/ and Markdown; the suite is skipped"
           fi
+      # D122: the app's branch is the one line of ci/app-ref, main unless a PR pairs with an app
+      # branch. ci/app-ref.sh prints it as refs/heads/<branch>; purity runs its fixtures.
+      - if: steps.scope.outputs.run == 'true'
+        id: app
+        run: |
+          ref=$(ci/app-ref.sh)
+          echo "ref=$ref" >>"$GITHUB_OUTPUT"
       - if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@v7
         with:
           repository: ironflowx/ironflow
-          ref: main
+          ref: ${{ steps.app.outputs.ref }}
           path: ironflow
           persist-credentials: false
       - if: steps.scope.outputs.run == 'true'
