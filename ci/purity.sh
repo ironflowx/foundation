@@ -146,7 +146,7 @@ grep -qx ok "$red/value.txt" || {
   exit 1
 }
 
-# ci/app-ref.sh: one fixture per refusal, and the real file, as the branch's full ref (D122).
+# ci/app-ref.sh: one fixture per refusal, and a branch read as its full ref (D122).
 app=ci/fixtures/app-ref
 ci/must-reject.sh "$app/missing is missing" -- ci/app-ref.sh "$app/missing"
 for case in empty newline-only; do
@@ -159,7 +159,9 @@ for case in crlf trailing-space bom nul; do
   ci/must-reject.sh "$app/$case holds a byte other than" -- ci/app-ref.sh "$app/$case"
 done
 ci/must-reject.sh "$app/dots names no branch: 'main..other'" -- ci/app-ref.sh "$app/dots"
-[ "$(ci/app-ref.sh)" = refs/heads/main ] || {
-  echo "purity: ci/app-ref.sh does not read ci/app-ref as refs/heads/main"
+# The full ref, of a branch that is not main; the real file may name any branch (a paired PR's).
+[ "$(ci/app-ref.sh "$app/pair-branch")" = refs/heads/pair/runs-214 ] || {
+  echo "purity: ci/app-ref.sh does not read $app/pair-branch as refs/heads/pair/runs-214"
   exit 1
 }
+ci/app-ref.sh >/dev/null

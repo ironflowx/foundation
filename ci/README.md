@@ -72,7 +72,8 @@ branch name, and nothing else: a missing file, an empty one, more than one line,
 an ASCII letter, a digit, `.`, `_`, `-` or `/` (a trailing space, a CR, a BOM), or a name git
 refuses for a branch (`git check-ref-format --branch`) fails `conformance` with a message that names
 the file. A well-formed name of no branch, a typo or `origin/<branch>`, fails at the checkout, whose
-message names the ref but not the file. A commit or a tag cannot be named.
+message names the ref but not the file (a tag literally named `refs/heads/<name>` would stand in for
+the branch; the app has no such tag). A commit or a tag cannot be named.
 
 ## Pure crates
 
