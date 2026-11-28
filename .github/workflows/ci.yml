@@ -186,8 +186,8 @@ jobs:
         run: ironflow/ci/conformance.sh "$GITHUB_WORKSPACE"
 
   # The PRD's last "Done when": a crate outside the workspace, on `ironflowx` and `tokio` only,
-  # bootstraps an engine, emits, reads with a `read` key and sees its emit refused. Its
-  # .cargo/config.toml patches `ironflowx` to this checkout.
+  # bootstraps an engine with a seed, emits, reads with a `read` key and sees its emit refused, then
+  # restarts it and reads with the seed. Its .cargo/config.toml patches `ironflowx` to this checkout.
   embed:
     strategy:
       matrix:
