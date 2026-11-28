@@ -543,11 +543,20 @@ impl Operations for Client {
         let req = req.try_into()?;
         let options = self.options(cx);
         let answer = self.identity.whoami_with_options(req, options).await;
-        answered(
+        let me: Whoami = answered(
             Operation::Whoami,
             None,
             answer.map(UnaryResponse::into_owned),
-        )
+        )?;
+        // Only an embedder's call has no key ID, and no door carries one (D121).
+        if me.key_id.is_none() {
+            return Err(OpError {
+                kind: ErrorKind::Unavailable,
+                message: wire::Undecodable.to_string(),
+                hint: None,
+            });
+        }
+        Ok(me)
     }
 
     /// The environments the calling key reaches: only its own.

@@ -214,6 +214,14 @@ fn an_embedder_changes_keys_with_no_record() {
         "{refused:?}"
     );
     cp.revoke_key(&env(1), id, &by, &Fixed(T + 1)).unwrap();
+    // An embedder of no current environment and incarnation changes nothing, as a key of one.
+    let stale: EnvRef = format!("{}.{:032x}", env(1).id(), 8).parse().unwrap();
+    let elsewhere = new_key(43, &[Scope::Read], None, None);
+    let refused = cp.insert_key(&stale, elsewhere, &by, &Fixed(T), CAP);
+    assert!(
+        matches!(refused, Err(KeyChangeError::Caller)),
+        "{refused:?}"
+    );
     let admin_by: Emitter = format!("key:{}", admin.id).parse().unwrap();
     let made = new_key(42, &[Scope::Read], None, None);
     let made_id = made.id;

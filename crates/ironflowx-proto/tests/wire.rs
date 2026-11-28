@@ -750,15 +750,25 @@ fn a_keys_answers_are_the_bytes_they_were() {
     const INFO_BIN: &str = "0a2430313930623566302d303030302d373030302d383030302d3030303030303030303030311a04726561642207637265617465642a2430313930623566302d303030302d373030302d383030302d30303030303030303030303232004206616374697665";
     const INFO_JSON: &str = r#"{"key_id":"0190b5f0-0000-7000-8000-000000000001","scopes":["read"],"origin":"created","created_by":"0190b5f0-0000-7000-8000-000000000002","created_at":"1970-01-01T00:00:00Z","status":"active"}"#;
     let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let unhex = |h: &str| -> Vec<u8> {
+        (0..h.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
+            .collect()
+    };
     let whoami = whoami(Some(1_800_000_000_123));
     let sent = WhoamiResponse::from(whoami.clone());
     assert_eq!(hex(&sent.encode_to_vec()), WHOAMI_BIN);
     assert_eq!(serde_json::to_string(&sent).unwrap(), WHOAMI_JSON);
     let read: WhoamiResponse = serde_json::from_str(WHOAMI_JSON).unwrap();
+    assert_eq!(Whoami::try_from(read), Ok(whoami.clone()));
+    let read = WhoamiResponse::decode_from_slice(&unhex(WHOAMI_BIN)).unwrap();
     assert_eq!(Whoami::try_from(read), Ok(whoami));
     let sent = wire::KeyInfo::from(info());
     assert_eq!(hex(&sent.encode_to_vec()), INFO_BIN);
     assert_eq!(serde_json::to_string(&sent).unwrap(), INFO_JSON);
     let read: wire::KeyInfo = serde_json::from_str(INFO_JSON).unwrap();
+    assert_eq!(KeyInfo::try_from(read), Ok(info()));
+    let read = wire::KeyInfo::decode_from_slice(&unhex(INFO_BIN)).unwrap();
     assert_eq!(KeyInfo::try_from(read), Ok(info()));
 }

@@ -286,6 +286,28 @@ async fn an_expiry_outside_the_wires_years_is_not_sent() {
     assert_eq!(operations.take(), []);
 }
 
+/// Only an embedder's call has no key ID, and no door carries one, so a remote answer without
+/// one is not an engine's: the client answers `Unavailable`, as for any answer it cannot decode
+/// (D121).
+#[tokio::test]
+async fn a_whoami_without_a_key_id_does_not_decode() {
+    let keyless = Whoami {
+        key_id: None,
+        ..whoami()
+    };
+    let (addr, _operations) = serving(Ok(keyless)).await;
+    let client = Client::new(&format!("http://{addr}/")).unwrap();
+    let err = ask(&client, &call(KEY)).await.unwrap_err();
+    assert_eq!(
+        err,
+        OpError {
+            kind: ErrorKind::Unavailable,
+            message: "the answer does not decode".into(),
+            hint: None,
+        }
+    );
+}
+
 #[tokio::test]
 async fn an_address_prints_back_exactly() {
     let (addr, operations) = serving(Ok(whoami())).await;

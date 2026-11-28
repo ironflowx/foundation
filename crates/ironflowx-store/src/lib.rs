@@ -1016,7 +1016,8 @@ fn caller<'c>(
 }
 
 /// A key change's maker, as [`caller`] reads it: a key is read again and checked; an embedder,
-/// which no record backs (D121), is `Some((tx, None))`.
+/// which no record backs (D121), is `Some((tx, None))` while `env` is a current environment and
+/// incarnation, as a key's record is checked to be.
 fn changer<'c>(
     tx: Transaction<'c>,
     by: &Emitter,
@@ -1025,7 +1026,14 @@ fn changer<'c>(
 ) -> Result<Option<(Transaction<'c>, Option<Grant>)>, Error> {
     Ok(match by.key_id() {
         Some(id) => caller(tx, id, env, now)?.map(|(tx, grant)| (tx, Some(grant))),
-        None => Some((tx, None)),
+        None => {
+            let here: bool = tx.query_row(
+                "SELECT count(*) > 0 FROM environments WHERE id = ?1 AND token = ?2",
+                params![env.id().to_string(), env.token().to_string()],
+                |r| r.get(0),
+            )?;
+            here.then_some((tx, None))
+        }
     })
 }
 

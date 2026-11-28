@@ -149,8 +149,9 @@ impl Engine {
 
     /// A call for the embedding process itself, attributed `embedder:<name>`: admitted as admin
     /// by this engine, and by a later one on the same directory, with no key, so an embedder
-    /// stores no secret to stay in across restarts (D121). It reaches no other directory or
-    /// incarnation, and no door can carry it: the wire has no field for it.
+    /// stores no secret to stay in across restarts (D121). It reaches no other environment or
+    /// incarnation (a copy of the directory is the same environment and incarnation, for a key as
+    /// for this call), and no door can carry it: the wire has no field for it.
     ///
     /// # Errors
     ///

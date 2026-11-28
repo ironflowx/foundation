@@ -11,33 +11,32 @@ use ironflowx_core::{Emitter, ErrorKind, KeyOrigin, Scope, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
     Call, CreateKeyRequest, EmitBatchRequest, EmitRequest, GetEventRequest,
-    ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, Operation, Operations,
+    ListEnvironmentsRequest, ListEventsRequest, ListKeysRequest, OpError, Operation, Operations,
     RevokeKeyRequest, WhoamiRequest,
 };
 
-/// Names the test of each operation, so a new operation fails to compile here until it has one.
-const fn tested(op: Operation) -> &'static str {
+/// The test of each operation, by its function, so a new operation fails to compile here until
+/// it has one, and a removed test fails to compile too.
+fn tested(op: Operation) -> fn() {
     match op {
-        Operation::Emit => "emit_is_attributed_to_the_embedder",
-        Operation::EmitBatch => "a_batch_is_attributed_to_the_embedder",
-        Operation::GetEvent => "get_event_reads_any_event",
-        Operation::ListEvents => "list_events_lists_every_event",
-        Operation::Whoami => "whoami_shows_every_scope_and_no_key",
-        Operation::ListEnvironments => "list_environments_shows_the_engines",
-        Operation::CreateKey => "create_key_records_the_embedder_as_creator",
-        Operation::ListKeys => "list_keys_lists_every_key",
-        Operation::RevokeKey => "revoke_key_revokes_any_key",
+        Operation::Emit => emit_is_attributed_to_the_embedder,
+        Operation::EmitBatch => a_batch_is_attributed_to_the_embedder,
+        Operation::GetEvent => get_event_reads_any_event,
+        Operation::ListEvents => list_events_lists_every_event,
+        Operation::Whoami => whoami_shows_every_scope_and_no_key,
+        Operation::ListEnvironments => list_environments_shows_the_engines,
+        Operation::CreateKey => create_key_records_the_embedder_as_creator,
+        Operation::ListKeys => list_keys_lists_every_key,
+        Operation::RevokeKey => revoke_key_revokes_any_key,
     }
 }
 
 #[test]
 fn every_operation_has_a_test() {
-    let names: BTreeSet<_> = Operation::ALL.iter().map(|op| tested(*op)).collect();
-    assert_eq!(
-        names.len(),
-        Operation::ALL.len(),
-        "one test each: {names:?}"
-    );
+    // The guard is `tested`'s exhaustive match, at compile time; this only runs it.
+    for op in Operation::ALL {
+        let _: fn() = tested(*op);
+    }
 }
 
 fn clock() -> ManualClock {
@@ -239,10 +238,15 @@ async fn another_engines_grant_or_a_foreign_one_is_refused() {
         Call::with_grant("embedder:app"),
         Call::with_grant(()),
     ] {
+        let invalid = OpError {
+            kind: ErrorKind::Unauthenticated,
+            message: "invalid grant".into(),
+            hint: None,
+        };
         let err = engine.whoami(&cx, WhoamiRequest {}).await.unwrap_err();
-        assert_eq!(err.kind, ErrorKind::Unauthenticated, "{err:?}");
+        assert_eq!(err, invalid);
         let err = engine.emit(&cx, emit("x")).await.unwrap_err();
-        assert_eq!(err.kind, ErrorKind::Unauthenticated, "{err:?}");
+        assert_eq!(err, invalid);
     }
     for name in ["", "a\nb", "\u{202E}", &"x".repeat(129)] {
         assert!(engine.embedder_call(name).is_err(), "{name:?}");
