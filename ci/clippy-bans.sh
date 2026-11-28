@@ -10,7 +10,12 @@
 # no-engine-event.sh). This repo's only suppressions are the event-rules test helpers that stand
 # in for the ledger and for execution rules (crates/ironflowx-events/tests/rules.rs). Nor is a
 # ban under another key than disallowed-methods, which a line-by-line read cannot tell; every
-# file here lists it under disallowed-methods.
+# file here lists it under disallowed-methods. Nor is a clippy.toml outside the root and crates/*
+# (examples/embed has none, and takes the root's), or a manifest's [lints.clippy] allowing the
+# lint (the one [lints] here, ironflowx-cell's, only warns of two casts; the by-name greps catch
+# what it lets through). Wrongly refused: a ban after a literal string that
+# holds a # on its line, or one split over lines, or in a multi-line string; no file here has
+# one.
 set -euo pipefail
 root=$1
 # <path>|<crate exempt from it>
@@ -20,8 +25,8 @@ bans=(
   "ironflowx_authz::Grant::submit_as|ironflowx-operations"
   "ironflowx_authz::KeyDigest::to_stored|ironflowx-store"
   "ironflowx_authz::KeyDigest::from_stored|ironflowx-store"
-  # ironflowx-events carries this one too, through core's file: the path does not resolve in its
-  # library, and its tests' helper expects the lint.
+  # ironflowx-events carries this one too, through core's file: its library cannot call
+  # engine_event, and its tests' one helper expects the lint.
   "ironflowx_events::engine_event|ironflowx-execution"
 )
 missing=0
@@ -31,9 +36,13 @@ for config in "$root"/{,.}clippy.toml "$root"/crates/*/{,.}clippy.toml; do
   for ban in "${bans[@]}"; do
     path=${ban%|*} exempt=${ban#*|}
     [ "$crate" = "$exempt" ] && continue
+    # A line counts when the ban survives a cut at the first # outside a basic string, and again
+    # outside a basic or a literal ('...') string.
     if ! BAN=$path perl -ne '
-        s/^((?:[^"#]|"(?:[^"\\]|\\.)*")*)#.*/$1/;   # cut at the first # outside a string
-        $found = 1 if /\bpath\s*=\s*"\Q$ENV{BAN}\E"/;
+        my $ban = qr/\bpath\s*=\s*"\Q$ENV{BAN}\E"/;
+        (my $basic = $_) =~ s/^((?:[^"#]|"(?:[^"\\]|\\.)*")*)#.*/$1/;
+        (my $both = $_) =~ s/^((?:[^"#\x27]|"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27)*)#.*/$1/;
+        $found = 1 if $basic =~ $ban && $both =~ $ban;
         END { exit !$found }' "$config"; then
       echo "$config: missing the $path ban"
       missing=1

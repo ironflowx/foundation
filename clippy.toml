@@ -2,9 +2,8 @@
 # time; ironflowx-store: it alone may use the key digest's storage codec; ironflowx-operations:
 # it alone may attribute a submission to a verified key's grant. The pure crates
 # carry crates/ironflowx-core/clippy.toml. Only ironflowx-execution may make the engine's events
-# (RUN-14): ironflowx-events carries the ban through core's file, where its library cannot name
-# itself by that path. Each repeats these bans, since clippy configs cannot
-# include one another.
+# (RUN-14): ironflowx-events carries the ban through core's file, and only its tests' one helper
+# expects it. Each repeats these bans, since clippy configs cannot include one another.
 disallowed-methods = [
   { path = "ironflowx_core::SequencedTime::from_event_clock", reason = "only ironflowx-cell produces event time (D17)" },
   { path = "ironflowx_core::SubmitAs::key", reason = "only the credentials crate attributes a submission to a key (D36)" },

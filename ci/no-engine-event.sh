@@ -10,10 +10,13 @@
 # feature or cfg that CI's build leaves off, a doctest, a file pulled in with include!, and a lint
 # config or an #[allow] that loses the ban. It matches the bare name, so an alias's import is
 # caught too.
-# Not caught: a name a macro builds from pieces (`paste`), and a doctest in the docs above, if a
-# crate took one as its docs; no one writes either by accident, and no crate includes a file but
-# its own build output. Code it wrongly refuses: another crate's own function, prose, a string, a
-# block comment or a trailing comment naming engine_event; this repo has none.
+# Not caught: a name a macro builds from pieces (`paste`); a module or include! of a file with
+# another extension (`#[path = "x.inc"]`; clippy still lints an included one); a function an
+# exempt crate re-exports under another name; and a doctest in the docs above, if a crate took
+# one as its docs. No one writes these by accident; every #[path] here names a .rs file, and no
+# crate includes a file but its own build output. Code it wrongly refuses: another crate's own
+# function, prose, a string, a block comment or a trailing comment naming engine_event; this repo
+# has none.
 set -euo pipefail
 # The perl program is single-quoted on purpose: its $ARGV is perl's, not the shell's.
 # shellcheck disable=SC2016

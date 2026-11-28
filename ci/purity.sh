@@ -107,6 +107,7 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
     "crates/ironflowx-cell/clippy.toml: missing the ironflowx_events::engine_event ban" \
     "crates/ironflowx-store/.clippy.toml: missing the ironflowx_events::engine_event ban" \
     "crates/ironflowx-operations/clippy.toml: missing the ironflowx_events::engine_event ban" \
+    "crates/ironflowx-doors/clippy.toml: missing the ironflowx_events::engine_event ban" \
     "crates/ironflowx-cell/clippy.toml: missing the ironflowx_core::SubmitAs::key ban" \
     "crates/ironflowx-events/clippy.toml: missing the ironflowx_core::SequencedTime::from_event_clock ban" \
     "crates/ironflowx-authz/clippy.toml: its bans differ" -- \
@@ -134,8 +135,9 @@ grep -qF "checked: ci/fixtures/fault-points-forwarded/forwards/Cargo.toml" <<<"$
 }
 
 # ci/no-engine-event.sh matches the name alone: the fixture's longer one passes.
-if ci/no-engine-event.sh ci/fixtures/engine-event-outside-execution | grep -qF count_engine_events
-then
+# Captured first: under pipefail the check's own failure would hide the match.
+events=$(ci/no-engine-event.sh ci/fixtures/engine-event-outside-execution || true)
+if grep -qF count_engine_events <<<"$events"; then
   echo "purity: ci/no-engine-event.sh refuses a longer name, count_engine_events"
   exit 1
 fi

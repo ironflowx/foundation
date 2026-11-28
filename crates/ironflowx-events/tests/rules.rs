@@ -1376,16 +1376,19 @@ fn engine_event_data_that_event_rules_refuse_is_refused_unread_and_undrawn() {
             "event data exceeds maximum size",
         ),
     ] {
-        let mut fresh = ids();
-        let emits = vec![made(completed("charge", "v1")), made(event)];
-        match sequence(&Unread, emits, &mut fresh) {
-            Err(Error::Refused(r)) => {
-                let got = (r.kind(), r.message(), r.hint());
-                assert_eq!(got, (ErrorKind::Invalid, message, None));
+        let (ok, bad) = (made(completed("charge", "v1")), made(event));
+        // Bad last, then bad first: every emit is checked.
+        for emits in [vec![ok.clone(), bad.clone()], vec![bad, ok]] {
+            let mut fresh = ids();
+            match sequence(&Unread, emits, &mut fresh) {
+                Err(Error::Refused(r)) => {
+                    let got = (r.kind(), r.message(), r.hint());
+                    assert_eq!(got, (ErrorKind::Invalid, message, None));
+                }
+                other => panic!("expected a refusal, got {other:?}"),
             }
-            other => panic!("expected a refusal, got {other:?}"),
+            assert_eq!(fresh.next(), Some(id(1)));
         }
-        assert_eq!(fresh.next(), Some(id(1)));
     }
 }
 

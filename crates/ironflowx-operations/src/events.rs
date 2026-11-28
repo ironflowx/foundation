@@ -121,6 +121,11 @@ mod tests {
         assert_eq!(refused(base.clone()), error(None));
         // A second hint replaces the first.
         let hinted = base.with_hint("first").with_hint("name the event");
+        assert_eq!(
+            hinted.to_string(),
+            "event name is required",
+            "Display shows no hint"
+        );
         assert_eq!(refused(hinted), error(Some("name the event")));
     }
 }
