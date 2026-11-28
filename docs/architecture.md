@@ -428,7 +428,7 @@ The committed head and the applied position are exclusive positions: one past th
 | Directory state | Result |
 |---|---|
 | Empty or missing, or holding neither a log nor `read.db`, whatever else it holds | Creates the log and appends the genesis record (format version, environment ID, incarnation token) at position 0, then creates `read.db` and folds it; ready |
-| Log, genesis matches the `EnvRef` and format | Runs SQLite's `quick_check` over `read.db`, so open takes longer as it grows, and checks that the newest stored event ID and sequence match the last applied record, rebuilding on either failure. Replays one record at a time from the applied position |
+| Log, genesis matches the `EnvRef` and format | Runs SQLite's `quick_check` over `read.db`, so open takes longer as it grows, and checks that the record ID `meta` keeps matches the ID of the log's record at the applied position less one, whatever that record holds (D117); a store that holds only the genesis record keeps none. Rebuilds on either failure. Replays one record at a time from the applied position, and appends nothing |
 | Log, genesis differs in environment ID or token | `OpenError::WrongIncarnation` |
 | Log, genesis differs in format version, or the log's own format is unsupported | `OpenError::Format` |
 | `read.db` missing, without `meta`, unreadable, its tables damaged, or `meta` disagrees with the genesis record | Deletes `read.db` and its `-wal` and `-shm` files, rebuilds from position 0 |
@@ -572,8 +572,8 @@ A ledger's directory, `<dir>`:
 | Where | Holds |
 |---|---|
 | `<dir>/ledger.lock` | File used for exclusive ownership of the ledger directory, including during read-store rebuild |
-| `<dir>/log/` (segment log) | Position 0: the genesis record, with the ledger's own format version, 2 (D39; a format-1 directory from 0.1 answers `Format`). Then one record per submit that appends: format version, incarnation token, emitter, event-clock time, and for each new event its sequence, ID, name, version, key, metadata and data. Binary and length-prefixed; data and metadata are the bytes as sent |
-| `<dir>/read.db` (SQLite) | `events` keyed by sequence, unique by ID, each with its `emitted_by` · `idempotency` key → event ID · `meta`: applied position, environment ID, incarnation token, format version |
+| `<dir>/log/` (segment log) | Position 0: the genesis record, with the ledger's own format version, 3 (a format-1 directory from 0.1, or a format-2 one from 0.2 or 0.3, answers `Format`). Then one record per submit that appends: its envelope (format version, incarnation token, record ID, emitter, event-clock time), then its ordered entries, each with its kind (D112). The record ID is a UUIDv7 the writer draws at the append and replay copies: a copy of a directory keeps the IDs of the records it copied, and what each copy appends next has its own (D117). A record ID that is not a UUIDv7 in its canonical text form does not decode. The one kind so far is an event: its sequence, ID, name, version, key, metadata and data. Binary and length-prefixed; data and metadata are the bytes as sent |
+| `<dir>/read.db` (SQLite) | `events` keyed by sequence, unique by ID, each with its `emitted_by` · `idempotency` key → event ID · `meta`: applied position, the last applied record's ID (none while only the genesis record is applied), environment ID, incarnation token, format version |
 
 A record's worst case is 100 × (about 600 bytes of fixed fields and lengths) + 4 MiB of data and metadata, under 4.1 MiB.
 

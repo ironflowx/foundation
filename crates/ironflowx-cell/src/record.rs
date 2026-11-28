@@ -1,13 +1,19 @@
 //! The record's encoding: binary and length-prefixed. IDs and tokens go in their text forms.
+//! A later record is its envelope (format, incarnation token, record ID, attribution, time), then
+//! its ordered entries, each with its kind (D112).
 
 use ironflowx_core::{Emitter, EnvRef, IncarnationToken, Timestamp};
 use ironflowx_events::{NewEvent, Record};
+use uuid::Uuid;
 
 /// The directory format. A change refuses older directories at open (D8).
-pub(crate) const FORMAT: u16 = 2;
+pub(crate) const FORMAT: u16 = 3;
 
 const GENESIS: u8 = 0;
 const EVENTS: u8 = 1;
+
+/// An entry's kind. Execution entries join this list (D112).
+const EVENT: u8 = 0;
 
 /// A decoded record.
 #[derive(Debug, PartialEq, Eq)]
@@ -17,6 +23,9 @@ pub(crate) enum Decoded {
     Events {
         format: u16,
         token: IncarnationToken,
+        /// Drawn by the writer at the append: a copy of a directory keeps the IDs of the records it
+        /// copied, and what each copy appends next has its own (D117).
+        id: Uuid,
         emitted_by: Emitter,
         record: Record,
     },
@@ -29,14 +38,21 @@ pub(crate) fn genesis(env: EnvRef) -> Vec<u8> {
     out
 }
 
-pub(crate) fn events(token: IncarnationToken, emitted_by: &Emitter, record: &Record) -> Vec<u8> {
+pub(crate) fn events(
+    token: IncarnationToken,
+    id: Uuid,
+    emitted_by: &Emitter,
+    record: &Record,
+) -> Vec<u8> {
     let mut out = vec![EVENTS];
     out.extend_from_slice(&FORMAT.to_le_bytes());
     put(&mut out, token.to_string().as_bytes());
+    put(&mut out, id.to_string().as_bytes());
     put(&mut out, emitted_by.to_string().as_bytes());
     out.extend_from_slice(&record.time.as_millis().to_le_bytes());
     out.extend_from_slice(&len(record.events.len()).to_le_bytes());
     for e in &record.events {
+        out.push(EVENT);
         out.extend_from_slice(&e.sequence.to_le_bytes());
         put(&mut out, e.id.to_string().as_bytes());
         put(&mut out, e.name.as_bytes());
@@ -82,11 +98,15 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Decoded> {
         },
         EVENTS => {
             let token = d.text()?.parse().ok()?;
+            let id = record_id(d.text()?)?;
             let emitted_by = d.text()?.parse().ok()?;
             let time = Timestamp::from_millis(i64::from_le_bytes(d.take()?));
             let count = u32::from_le_bytes(d.take()?);
             let mut events = Vec::new();
             for _ in 0..count {
+                if d.take::<1>()?[0] != EVENT {
+                    return None;
+                }
                 events.push(NewEvent {
                     sequence: u64::from_le_bytes(d.take()?),
                     id: d.text()?.parse().ok()?,
@@ -104,6 +124,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Decoded> {
             Decoded::Events {
                 format,
                 token,
+                id,
                 emitted_by,
                 record: Record { time, events },
             }
@@ -111,6 +132,15 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<Decoded> {
         _ => return None,
     };
     d.0.is_empty().then_some(record)
+}
+
+/// A UUIDv7 in its canonical text form, as `ironflowx-core` parses its IDs; the writer draws
+/// nothing else.
+fn record_id(text: &str) -> Option<Uuid> {
+    let id = Uuid::try_parse(text).ok()?;
+    let v7 = id.get_version() == Some(uuid::Version::SortRand)
+        && id.get_variant() == uuid::Variant::RFC4122;
+    (v7 && id.hyphenated().to_string() == text).then_some(id)
 }
 
 struct Dec<'a>(&'a [u8]);

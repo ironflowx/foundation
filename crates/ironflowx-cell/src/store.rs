@@ -7,6 +7,7 @@ use ironflowx_core::{Emitter, EnvRef, EventId, Timestamp};
 use ironflowx_events::{Event, EventTables, EventsView, PageBudget, Record};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use uuid::Uuid;
 
 use crate::record::FORMAT;
 
@@ -71,7 +72,7 @@ CREATE TABLE events (
     emitted_by TEXT NOT NULL
 );
 CREATE TABLE idempotency (key TEXT PRIMARY KEY, event_id TEXT NOT NULL);
-CREATE TABLE meta (applied INTEGER NOT NULL, env_id TEXT NOT NULL, token TEXT NOT NULL, format INTEGER NOT NULL);
+CREATE TABLE meta (applied INTEGER NOT NULL, env_id TEXT NOT NULL, token TEXT NOT NULL, format INTEGER NOT NULL, record_id TEXT);
 ";
 
 /// Opens `read.db` if it exists, has `meta`, agrees with the genesis record and is not ahead of
@@ -103,7 +104,7 @@ fn create(path: &Path, env: EnvRef) -> rusqlite::Result<Connection> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.execute_batch(SCHEMA)?;
     conn.execute(
-        "INSERT INTO meta VALUES (0, ?1, ?2, ?3)",
+        "INSERT INTO meta VALUES (0, ?1, ?2, ?3, NULL)",
         params![env.id().to_string(), env.token().to_string(), FORMAT],
     )?;
     Ok(conn)
@@ -154,34 +155,30 @@ fn existing(path: &Path, env: EnvRef, watermark: u64) -> Option<Connection> {
     (agrees && intact().unwrap_or(false)).then_some(conn)
 }
 
-pub(crate) fn last_event(conn: &Connection) -> rusqlite::Result<Option<(u64, EventId)>> {
-    conn.query_row(
-        "SELECT sequence, id FROM events ORDER BY sequence DESC LIMIT 1",
-        [],
-        |r| Ok((r.get(0)?, r.get::<_, Text<EventId>>(1)?.0)),
-    )
-    .optional()
+/// The ID of the last applied record, as stored; none while only the genesis record is (D117).
+pub(crate) fn last_record(conn: &Connection) -> rusqlite::Result<Option<String>> {
+    conn.query_row("SELECT record_id FROM meta", [], |r| r.get(0))
 }
 
 pub(crate) fn applied(conn: &Connection) -> rusqlite::Result<u64> {
     conn.query_row("SELECT applied FROM meta", [], |r| r.get(0))
 }
 
-/// Folds the record at `position` and advances the applied position past it, in one
-/// transaction. A record below the applied position is skipped (LED-12). The genesis record
-/// has no events: `None`; any other comes with its emitter. `recovering` when open folds it,
-/// for the crash test's fault points.
+/// Folds the record at `position` and advances the applied position past it, with the record's
+/// ID, in one transaction. A record below the applied position is skipped (LED-12). The genesis
+/// record has no ID and no events: `None`; any other comes with its ID and emitter. `recovering`
+/// when open folds it, for the crash test's fault points.
 pub(crate) fn apply(
     conn: &mut Connection,
     position: u64,
-    record: Option<(&Record, &Emitter)>,
+    record: Option<(Uuid, &Record, &Emitter)>,
     #[cfg_attr(not(feature = "__fault-points"), allow(unused_variables))] recovering: bool,
 ) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     if position < applied(&tx)? {
         return Ok(());
     }
-    if let Some((record, emitted_by)) = record {
+    if let Some((_, record, emitted_by)) = record {
         ironflowx_events::fold(&mut Tables(&tx), record, emitted_by)?;
         #[cfg(feature = "__fault-points")]
         ironflowx_core::reach_fault_point(if recovering {
@@ -190,7 +187,10 @@ pub(crate) fn apply(
             ironflowx_core::FaultPoint::MidFold
         });
     }
-    tx.execute("UPDATE meta SET applied = ?1", [position + 1])?;
+    tx.execute(
+        "UPDATE meta SET applied = ?1, record_id = ?2",
+        params![position + 1, record.map(|(id, ..)| id.to_string())],
+    )?;
     tx.commit()
 }
 
