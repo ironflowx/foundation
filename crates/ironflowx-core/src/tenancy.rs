@@ -11,6 +11,8 @@ pub enum Scope {
     Read,
     Write,
     Admin,
+    /// Works on runs (D107).
+    Execute,
 }
 
 impl FromStr for Scope {
@@ -20,6 +22,7 @@ impl FromStr for Scope {
             "read" => Ok(Self::Read),
             "write" => Ok(Self::Write),
             "admin" => Ok(Self::Admin),
+            "execute" => Ok(Self::Execute),
             _ => Err(ParseError::new("scope")),
         }
     }
@@ -31,6 +34,7 @@ impl fmt::Display for Scope {
             Self::Read => "read",
             Self::Write => "write",
             Self::Admin => "admin",
+            Self::Execute => "execute",
         })
     }
 }

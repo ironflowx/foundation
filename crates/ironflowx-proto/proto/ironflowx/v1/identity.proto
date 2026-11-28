@@ -20,7 +20,7 @@ message WhoamiRequest {}
 
 message WhoamiResponse {
   string key_id = 1 [json_name = "key_id"];
-  // "read", "write", "admin".
+  // "read", "write", "admin", "execute".
   repeated string scopes = 2;
   // The text "project/environment".
   string environment = 3;

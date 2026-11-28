@@ -135,7 +135,7 @@ impl Work {
         let keys = vec![
             key(
                 key_id(SEED),
-                &[Scope::Read, Scope::Write, Scope::Admin],
+                &[Scope::Read, Scope::Write, Scope::Admin, Scope::Execute],
                 None,
             ),
             key(home.second, &[Scope::Write], Some(ADMIN)),

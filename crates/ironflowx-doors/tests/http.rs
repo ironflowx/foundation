@@ -534,6 +534,7 @@ async fn the_json_names_are_the_protos() {
         "resource_exhausted",
         "unavailable",
         "internal",
+        "conflict",
     ] {
         for hint in ["", r#","hint":"""#, r#","hint":"do\nthis""#] {
             items.push(format!(
@@ -606,6 +607,7 @@ async fn every_error_crosses_every_protocol() {
         (ErrorKind::ResourceExhausted, ErrorCode::ResourceExhausted),
         (ErrorKind::Unavailable, ErrorCode::Unavailable),
         (ErrorKind::Internal, ErrorCode::Internal),
+        (ErrorKind::Conflict, ErrorCode::FailedPrecondition),
     ] {
         for (message, hint) in [
             ("missing scope: réad % \"x\"".to_owned(), None),

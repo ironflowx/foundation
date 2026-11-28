@@ -653,6 +653,7 @@ fn an_error_info_names_a_kind_by_its_text() {
         (ErrorKind::ResourceExhausted, "resource_exhausted"),
         (ErrorKind::Unavailable, "unavailable"),
         (ErrorKind::Internal, "internal"),
+        (ErrorKind::Conflict, "conflict"),
     ] {
         let e = OpError {
             kind,
@@ -664,7 +665,7 @@ fn an_error_info_names_a_kind_by_its_text() {
         assert_eq!(info.hint.as_deref(), Some("h"));
         assert_eq!(OpError::try_from(info), Ok(e));
     }
-    for unknown in ["", "Invalid", "invalid_argument"] {
+    for unknown in ["", "Invalid", "invalid_argument", "failed_precondition"] {
         let info = ErrorInfo {
             kind: unknown.into(),
             ..ErrorInfo::default()

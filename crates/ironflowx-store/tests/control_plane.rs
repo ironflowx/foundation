@@ -106,7 +106,7 @@ fn the_bootstrap_names_each_parent_and_holds_one_admin_key() {
     assert_eq!(record.env, env(1));
     assert_eq!(
         record.scopes,
-        BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin])
+        BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin, Scope::Execute])
     );
     assert!(record.digest.ct_eq(&key.digest));
 }
@@ -563,7 +563,7 @@ fn seed_row(seed: &KeyParts, seq: i64, now: i64) -> BTreeMap<String, Value> {
         ("id", text(&seed.id.to_string())),
         ("environment_id", text(&env(1).id().to_string())),
         ("environment_token", text(&env(1).token().to_string())),
-        ("scopes", text("read,write,admin")),
+        ("scopes", text("read,write,admin,execute")),
         ("digest", Value::Blob(seed.digest.to_stored().to_vec())),
         ("origin", text("seed")),
         ("created_by", Value::Null),
@@ -602,7 +602,7 @@ fn a_seeded_bootstrap_holds_the_seed_as_its_one_admin_key() {
         (rows[0].record.id, rows[0].origin, rows[0].created_by),
         (a.id, KeyOrigin::Seed, None)
     );
-    let every = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]);
+    let every = BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin, Scope::Execute]);
     assert_eq!(rows[0].record.scopes, every);
     assert!(rows[0].record.digest.ct_eq(&a.digest));
     assert_eq!(
@@ -611,7 +611,7 @@ fn a_seeded_bootstrap_holds_the_seed_as_its_one_admin_key() {
     );
 }
 
-/// A new seed revokes the current one and becomes current, holding all three scopes and no
+/// A new seed revokes the current one and becomes current, holding all four scopes and no
 /// expiry; other admin keys, and seeds revoked before, keep what they were. A seed applied
 /// again, current or revoked, changes nothing (D33). At every step one seed is unrevoked.
 #[test]
@@ -1278,7 +1278,7 @@ fn a_file_is_opened_only_if_it_is_this_formats_control_plane_or_empty() {
         }
         assert!(std::fs::read(&path).unwrap() == before, "{case}");
     };
-    for format in ["0", "2", "-1", "65537", "4294967297"] {
+    for format in ["0", "1", "3", "-1", "65537", "4294967297"] {
         drop(ControlPlane::open(&path).unwrap());
         let db = rusqlite::Connection::open(&path).unwrap();
         db.execute_batch(&format!("UPDATE meta SET format = {format}"))
@@ -1302,10 +1302,11 @@ fn a_file_is_opened_only_if_it_is_this_formats_control_plane_or_empty() {
     ControlPlane::open(&path).expect("an empty file takes the schema");
 }
 
-/// Format 1 is this schema (D47). To change it is to change `FORMAT` too, so that a file made
+/// Format 2 is this schema, whose keys may hold `execute`; format 1, the same schema without it,
+/// is refused above (D47). To change the schema is to change `FORMAT` too, so that a file made
 /// before is refused, not misread.
 #[test]
-fn format_1_is_this_schema() {
+fn format_2_is_this_schema() {
     let dir = tempfile::tempdir().unwrap();
     drop(ControlPlane::open(&path(dir.path())).unwrap());
     let db = rusqlite::Connection::open(path(dir.path())).unwrap();
@@ -1338,7 +1339,7 @@ fn format_1_is_this_schema() {
     let format: i64 = db
         .query_row("SELECT format FROM meta", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(format, 1);
+    assert_eq!(format, 2);
 }
 
 /// Reading the state leaves no file behind (the directory may be one the engine refuses).

@@ -651,7 +651,7 @@ fn read_time(at: WireTime) -> Result<Timestamp, Undecodable> {
 }
 
 /// Every kind (architecture.md, Errors).
-const KINDS: [ErrorKind; 8] = [
+const KINDS: [ErrorKind; 9] = [
     ErrorKind::Invalid,
     ErrorKind::NotFound,
     ErrorKind::Unknown,
@@ -660,6 +660,7 @@ const KINDS: [ErrorKind; 8] = [
     ErrorKind::PermissionDenied,
     ErrorKind::ResourceExhausted,
     ErrorKind::Internal,
+    ErrorKind::Conflict,
 ];
 
 #[cfg(feature = "server")]
@@ -673,6 +674,7 @@ const fn connect_code(kind: ErrorKind) -> ErrorCode {
         ErrorKind::PermissionDenied => ErrorCode::PermissionDenied,
         ErrorKind::ResourceExhausted => ErrorCode::ResourceExhausted,
         ErrorKind::Internal => ErrorCode::Internal,
+        ErrorKind::Conflict => ErrorCode::FailedPrecondition,
     }
 }
 

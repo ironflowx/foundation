@@ -402,3 +402,21 @@ fn what_is_no_descriptor_set_and_where_nothing_can_be_written_are_refused() {
     let refused = ironflowx_codegen::generate(&set, &out.path().join("none")).unwrap_err();
     assert!(refused.to_string().contains("none/cli.rs: "), "{refused}");
 }
+
+/// Every schema that names a key's scopes lists all four, `execute` included (D107): the input of
+/// `CreateKey`, a `KeyInfo` of `CreateKey` and `ListKeys`, and `Whoami`'s answer.
+#[test]
+fn a_schema_of_scopes_names_all_four() {
+    let set = protox::Compiler::new([Path::new(PROTO)])
+        .unwrap()
+        .include_imports(true)
+        .open_files(["ironflowx/v1/key.proto", "ironflowx/v1/identity.proto"])
+        .unwrap()
+        .encode_file_descriptor_set();
+    let out = tempfile::tempdir().unwrap();
+    ironflowx_codegen::generate(&set, out.path()).unwrap();
+    let cli = std::fs::read_to_string(out.path().join("cli.rs")).unwrap();
+    let scopes = r#"{\"items\":{\"enum\":[\"read\",\"write\",\"admin\",\"execute\"],\"type\":\"string\"},\"type\":\"array\"}"#;
+    assert_eq!(cli.matches(scopes).count(), 4, "{cli}");
+    assert_eq!(cli.matches(r#"\"enum\""#).count(), 4, "{cli}");
+}
