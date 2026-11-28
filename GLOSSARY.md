@@ -178,7 +178,7 @@ The checks every call that names a lease meets, in the decision that writes: the
 A claim that found no due run and waits, up to `wait_seconds`, for a commit, a due time or 5 s, then reads again; it submits only once a run is due, so it appends nothing while it waits.
 
 **Drain** (of claims):
-`Engine::begin_drain`, which the host calls first as it stops: every claim, waiting or new, answers `Unavailable` after at most one read, unless that read finds a run to take; one already submitted to the writer answers as the writer decides.
+`Engine::begin_drain`, which the host calls first as it stops. A new claim admitted after the drain began answers `Unavailable` with no read. A waiting claim reads once more after the drain began, takes a run if one is claimable, and else answers `Unavailable`. A claim at the writer is not ended by the drain: if the writer gives it a run it answers with that run, and if it lost the run to another claim it is a waiting claim again.
 
 **Step**:
 A named unit of work inside a run whose outcome is recorded once. Its place in the run, from 1, with its name, is its identity; that place is not a record's position.

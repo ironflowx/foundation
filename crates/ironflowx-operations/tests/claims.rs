@@ -1,7 +1,8 @@
 //! The waiting claim (D113): an idle claim appends nothing and never reaches the writer, a key
-//! revoked or expired mid-wait takes no run, and a drain or a ledger fault ends every wait at once
-//! (RUN-15); a waiting claim takes a run as soon as one is committed or comes due, and within 5 s
-//! of the clock being set past a due time (RUN-16).
+//! revoked or expired mid-wait takes no run, and a drain or a ledger fault ends a wait after one
+//! read more (RUN-15); a waiting claim takes a run as soon as one is committed or comes due, and
+//! within 5 s of the clock being set past a due time (RUN-16); a claimable run comes before a
+//! fault, a drain and the end of the wait.
 //!
 //! The barriers are readings of the engine's clock: the writer reads it once per decision, on its
 //! own thread; off it, admission reads it once (`lookup_key`), and so does a claim's read, after
@@ -495,8 +496,8 @@ async fn a_run_come_due_comes_before_a_drain() {
     f.close().await;
 }
 
-/// A claim already submitted to the writer when the drain begins is not ended by it: it answers as
-/// the writer decides (D72), here with the run.
+/// A claim already submitted to the writer when the drain begins is not ended by it (D72): the
+/// writer gives it the run, and it answers with that run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_at_the_writer_when_the_drain_begins_gets_the_writers_answer() {
     let clock = Probe::at(T);
@@ -516,23 +517,79 @@ async fn a_claim_at_the_writer_when_the_drain_begins_gets_the_writers_answer() {
 }
 
 /// A key revoked while its claim waits, then a run made claimable, then a drain: the read after
-/// the drain finds the run, and admission refuses the key. The run stays queued.
+/// the drain finds the run, and admission refuses the key. The run stays queued. The claim is
+/// driven to its wait, then not polled while all three happen.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_revoked_key_then_a_run_then_a_drain_is_unauthenticated() {
     let clock = Probe::at(T);
     let f = fixture(clock.clone()).await;
     let readings = clock.tell_others();
-    let claim = f.spawn_claim(None);
-    // Its admission, and its read: it found nothing and waits.
-    receive(&readings, 2);
-    let req = RevokeKeyRequest {
-        key_id: f.executor_id.clone(),
+    let (claimed, run) = {
+        let cx = f.executor();
+        let mut claim = std::pin::pin!(f.engine.claim_run(&cx, claim(None)));
+        // Its admission and its read: it found nothing and waits.
+        let mut read = 0;
+        while read < 2 {
+            tokio::select! {
+                biased;
+                early = &mut claim => panic!("answered before a run existed: {early:?}"),
+                () = tokio::time::sleep(Duration::from_millis(5)) => {}
+            }
+            read += readings.try_iter().count();
+        }
+        let req = RevokeKeyRequest {
+            key_id: f.executor_id.clone(),
+        };
+        f.engine.revoke_key(&f.admin, req).await.unwrap();
+        let run = f.start().await;
+        assert_eq!(f.status(&run).await, RunStatus::Queued);
+        f.engine.begin_drain();
+        (claim.await, run)
     };
-    f.engine.revoke_key(&f.admin, req).await.unwrap();
-    let run = f.start().await;
-    f.engine.begin_drain();
-    let (claimed, _) = claim.await.unwrap();
     assert_eq!(claimed.unwrap_err().kind, ErrorKind::Unauthenticated);
     assert_eq!(f.status(&run).await, RunStatus::Queued);
+    f.close().await;
+}
+
+/// Two claims that see one run both submit, and the drain begins while they are at the writer:
+/// the winner answers with the run; the loser, a waiting claim again, reads once more, finds no
+/// run and answers `Unavailable`. Nothing more is appended.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_claim_that_loses_its_run_at_the_writer_during_a_drain_waits_again() {
+    let clock = Probe::at(T);
+    let f = fixture(clock.clone()).await;
+    let readings = clock.tell_others();
+    let claims = [f.spawn_claim(None), f.spawn_claim(None)];
+    // Each one's admission and read.
+    receive(&readings, 4);
+    // The start's decision passes; the first claim's stops.
+    let (at_writer, go) = clock.stop_writer(1);
+    let written = clock.writer_readings();
+    let run = f.start().await;
+    // The start's admission, then each claim's read and its admission to submit.
+    receive(&readings, 5);
+    receive(&at_writer, 1);
+    f.engine.begin_drain();
+    go.send(()).unwrap();
+    let mut answers = Vec::new();
+    for claim in claims {
+        answers.push(claim.await.unwrap().0);
+    }
+    let taken: Vec<_> = answers
+        .iter()
+        .filter(|a| matches!(a, Ok(Some(_))))
+        .collect();
+    assert_eq!(taken.len(), 1, "{answers:?}");
+    let Ok(Some(won)) = taken[0] else {
+        unreachable!()
+    };
+    assert_eq!(won.lease.run.to_string(), run);
+    assert_eq!(
+        answers.iter().filter(|a| unavailable(a)).count(),
+        1,
+        "{answers:?}"
+    );
+    // The start and the two claims' decisions, and no other.
+    assert_eq!(clock.writer_readings(), written + 3);
     f.close().await;
 }

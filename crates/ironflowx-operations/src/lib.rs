@@ -180,8 +180,12 @@ impl Engine {
         Ok(Call::with_grant(EmbedderGrant { by, env: self.env }))
     }
 
-    /// Ends every claim, waiting or new, as `Unavailable` at once, for good: the host calls it
-    /// first as it stops (its Stop, step 1), so that no claim's 20 s wait holds the stop up.
+    /// Ends claims, for good, so that no claim's 20 s wait holds a stop up: the host calls it first
+    /// as it stops (its Stop, step 1). A new claim admitted after it answers `Unavailable` with no
+    /// read. A waiting claim reads once more, takes a run if one is claimable, and else answers
+    /// `Unavailable`. A claim at the writer is not ended: given a run, it answers with that run; if
+    /// it lost the run to another claim, it is a waiting claim again. That one read can be
+    /// stretched, as every operation's, by a busy blocking pool or a fold holding the read store.
     /// Not an operation: it takes no key (TEN-1). Every other operation is served as before.
     pub fn begin_drain(&self) {
         self.drain.send_replace(true);
@@ -581,9 +585,10 @@ impl Operations for Engine {
         let wait = Duration::from_secs(req.wait_seconds.unwrap_or(DEFAULT_WAIT_SECONDS).into());
         let cmd = execution::claim(req);
         loop {
-            // The claim ends empty, or `Unavailable`, only from a read that began once its wait was
-            // over, or the drain or a fault had begun; else it reads once more, so a run claimable
-            // by then is taken first (RUN-16). The fault check is the read's own.
+            // Admitted and past the check above, the claim ends empty, or `Unavailable`, only from
+            // a read that began once its wait was over, or the drain or a fault had begun; else it
+            // reads once more, so a run claimable by then is taken first (RUN-16). A lost race at
+            // the writer is a waiting claim again. The fault check is the read's own.
             let over = started.elapsed() >= wait;
             let drained = *drain.borrow();
             // Taken before the read, so a fold after its snapshot wakes the wait (RUN-16). The read
