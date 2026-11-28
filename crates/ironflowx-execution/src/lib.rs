@@ -586,11 +586,13 @@ fn put_function<V: ExecutionView>(
             .triggered_by(trigger, &definition.name)
             .map_err(Error::Store)?;
         if others >= MAX_PER_EVENT {
+            // More than one to free only in a store already over the cap (a log from before it).
+            let free = others - MAX_PER_EVENT + 1;
             let r = Refusal::resource_exhausted(format!(
                 "an event name triggers at most {MAX_PER_EVENT} functions"
             ))
             .with_hint(format!(
-                "{trigger:?} triggers {MAX_PER_EVENT} functions already: put one of them without it first"
+                "{trigger:?} triggers {others} functions already: put {free} of them without it first"
             ));
             return Err(refused(r));
         }

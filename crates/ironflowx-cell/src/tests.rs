@@ -2532,9 +2532,7 @@ async fn the_read_store_counts_the_functions_an_event_name_triggers() {
         (r.kind(), r.hint()),
         (
             ErrorKind::ResourceExhausted,
-            Some(
-                "\"order.placed\" triggers 20 functions already: put one of them without it first"
-            )
+            Some("\"order.placed\" triggers 20 functions already: put 1 of them without it first")
         )
     );
     // Another name is not "order.placed"'s.
@@ -2584,5 +2582,30 @@ async fn the_read_store_counts_the_functions_of_an_environment() {
         )
     );
     execute(&ledger, put("new", "v2", &[])).await.unwrap();
+    ledger.close().await;
+}
+
+/// A stored function the read store cannot read fails the list, and the ledger, rather than drop
+/// out of a page.
+#[tokio::test]
+async fn a_function_the_read_store_cannot_read_fails_the_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let ledger = open(dir.path(), env).await;
+    execute(&ledger, put("a", "v1", &[])).await.unwrap();
+    execute(&ledger, put("b", "v1", &[])).await.unwrap();
+    ledger.close().await;
+    let conn = rusqlite::Connection::open(dir.path().join("read.db")).unwrap();
+    conn.execute(
+        "UPDATE functions SET put_by = 'nobody' WHERE name = 'b'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(
+        ledger.list_functions(None, None).await,
+        Err(ReadError::Unavailable)
+    );
     ledger.close().await;
 }

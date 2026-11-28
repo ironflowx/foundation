@@ -327,3 +327,28 @@ async fn page_of(
     };
     fx.engine.list_functions(&fx.admin, req).await
 }
+
+/// A listed function is the function `GetFunction` reads, every field of it, for a definition with
+/// triggers and the whole policy put.
+#[tokio::test]
+async fn a_listed_function_is_what_get_function_reads() {
+    let f = fixture().await;
+    let put = PutFunctionRequest {
+        name: "refund".into(),
+        code: "v7".into(),
+        triggers: vec!["order.refunded".into(), "order.cancelled".into()],
+        max_attempts: Some(3),
+        first_delay_seconds: Some(2),
+        max_delay_seconds: Some(40),
+    };
+    f.engine.put_function(&f.admin, put).await.unwrap();
+    let req = ironflowx_proto::GetFunctionRequest {
+        name: "refund".into(),
+    };
+    let got = f.engine.get_function(&f.admin, req).await.unwrap();
+    let req = ListFunctionsRequest::default();
+    let page = f.engine.list_functions(&f.admin, req).await.unwrap();
+    assert_eq!(page.functions.last(), Some(&got));
+    assert_eq!(page.functions.len(), 2);
+    f.engine.close().await;
+}

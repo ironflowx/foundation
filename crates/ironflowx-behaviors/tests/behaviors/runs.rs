@@ -476,7 +476,7 @@ async fn another(w: &mut Runs) {
 fn exhausted(w: &mut Runs, event: String) {
     let e = w.refused(ErrorKind::ResourceExhausted);
     assert_eq!(e.message, "an event name triggers at most 20 functions");
-    let hint = format!("{event:?} triggers 20 functions already: put one of them without it first");
+    let hint = format!("{event:?} triggers 20 functions already: put 1 of them without it first");
     assert_eq!(e.hint, Some(hint));
 }
 
