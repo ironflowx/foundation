@@ -7,7 +7,7 @@ use ironflowx_store::{BootstrapState, ControlPlane, RecoverError};
 
 use crate::open::new_admin_key;
 
-/// Stores a fresh admin key in the data directory `root` and returns its secret, once: all three
+/// Stores a fresh admin key in the data directory `root` and returns its secret, once: all four
 /// scopes, no expiry, origin `Recovered`, labelled `recovered`, holding no slot. For a host, not
 /// an operation: reaching the directory is the authority. It takes no engine lock, so it works
 /// beside a running engine, which accepts the key on its next call.

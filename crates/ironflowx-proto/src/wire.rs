@@ -384,7 +384,7 @@ impl TryFrom<CreateKeyRequest> for crate::CreateKeyRequest {
         let expires_at = r.expires_at.into_option().map(read_time).transpose();
         Ok(Self {
             scopes: read_scopes(&r.scopes)
-                .map_err(|_| invalid("a scope is read, write or admin"))?,
+                .map_err(|_| invalid("a scope is read, write, admin or execute"))?,
             expires_at: expires_at.map_err(|_| no_time())?,
             label: r.label,
         })
@@ -651,7 +651,7 @@ fn read_time(at: WireTime) -> Result<Timestamp, Undecodable> {
 }
 
 /// Every kind (architecture.md, Errors).
-const KINDS: [ErrorKind; 8] = [
+const KINDS: [ErrorKind; 9] = [
     ErrorKind::Invalid,
     ErrorKind::NotFound,
     ErrorKind::Unknown,
@@ -660,6 +660,7 @@ const KINDS: [ErrorKind; 8] = [
     ErrorKind::PermissionDenied,
     ErrorKind::ResourceExhausted,
     ErrorKind::Internal,
+    ErrorKind::Conflict,
 ];
 
 #[cfg(feature = "server")]
@@ -673,6 +674,7 @@ const fn connect_code(kind: ErrorKind) -> ErrorCode {
         ErrorKind::PermissionDenied => ErrorCode::PermissionDenied,
         ErrorKind::ResourceExhausted => ErrorCode::ResourceExhausted,
         ErrorKind::Internal => ErrorCode::Internal,
+        ErrorKind::Conflict => ErrorCode::FailedPrecondition,
     }
 }
 

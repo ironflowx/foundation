@@ -273,7 +273,7 @@ fn domain_property(field: &FieldDescriptor, mut schema: Value) -> Value {
         "ironflowx.v1.CreateKeyRequest.scopes"
         | "ironflowx.v1.KeyInfo.scopes"
         | "ironflowx.v1.WhoamiResponse.scopes" => {
-            schema["enum"] = json!(["read", "write", "admin"]);
+            schema["enum"] = json!(["read", "write", "admin", "execute"]);
         }
         "ironflowx.v1.RevokeKeyRequest.key_id"
         | "ironflowx.v1.WhoamiResponse.key_id"

@@ -117,7 +117,8 @@ async fn every_operation_admits_exactly_the_keys_holding_its_scope() {
         event_id,
         key_id: victim.info.key_id.to_string(),
     };
-    let revoked = make(BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin])).await;
+    let every = [Scope::Read, Scope::Write, Scope::Admin, Scope::Execute];
+    let revoked = make(BTreeSet::from(every)).await;
     let revoked_key = revoked.key.expose().to_owned();
     let req = RevokeKeyRequest {
         key_id: revoked.info.key_id.to_string(),
@@ -125,7 +126,7 @@ async fn every_operation_admits_exactly_the_keys_holding_its_scope() {
     engine.revoke_key(&admin, req).await.unwrap();
 
     let mut keys = Vec::new();
-    for scope in [Scope::Read, Scope::Write, Scope::Admin] {
+    for scope in every {
         let req = CreateKeyRequest {
             scopes: BTreeSet::from([scope]),
             ..CreateKeyRequest::default()
@@ -179,5 +180,50 @@ async fn every_operation_admits_exactly_the_keys_holding_its_scope() {
             }
         }
     }
+    opened.engine.close().await;
+}
+
+/// A key may hold `execute` alone; it says so, and no other scope implies it or it another (D107).
+#[tokio::test]
+async fn a_key_holds_execute_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = ManualClock::new(Timestamp::from_millis(1_800_000_000_000));
+    let opened = Engine::open(dir.path(), clock, None).await.unwrap();
+    let engine = &opened.engine;
+    let admin = Call::with_key(opened.minted.unwrap());
+    let me = engine.whoami(&admin, WhoamiRequest {}).await.unwrap();
+    let every = [Scope::Read, Scope::Write, Scope::Admin, Scope::Execute];
+    assert_eq!(me.scopes, BTreeSet::from(every), "a new engine's admin key");
+
+    let only = BTreeSet::from([Scope::Execute]);
+    let req = CreateKeyRequest {
+        scopes: only.clone(),
+        ..CreateKeyRequest::default()
+    };
+    let created = engine.create_key(&admin, req).await.unwrap();
+    assert_eq!(created.info.scopes, only);
+    let executor = Call::with_key(created.key);
+    let me = engine.whoami(&executor, WhoamiRequest {}).await.unwrap();
+    assert_eq!(me.scopes, only);
+    let listed = engine.list_keys(&admin, ListKeysRequest::default()).await;
+    let row = listed
+        .unwrap()
+        .keys
+        .into_iter()
+        .find(|k| k.key_id == me.key_id);
+    assert_eq!(row.expect("listed").scopes, only);
+
+    // A key without `execute` cannot give it, even an admin one.
+    let req = CreateKeyRequest {
+        scopes: BTreeSet::from([Scope::Admin, Scope::Read, Scope::Write]),
+        ..CreateKeyRequest::default()
+    };
+    let three = engine.create_key(&admin, req).await.unwrap();
+    let req = CreateKeyRequest {
+        scopes: only,
+        ..CreateKeyRequest::default()
+    };
+    let err = engine.create_key(&Call::with_key(three.key), req).await;
+    assert_eq!(err.unwrap_err().kind, ErrorKind::Invalid);
     opened.engine.close().await;
 }

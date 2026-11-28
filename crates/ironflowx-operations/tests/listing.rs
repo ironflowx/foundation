@@ -99,7 +99,7 @@ async fn keys_list_newest_first_with_their_origin_creator_and_status() {
     let bootstrap = &page.keys[3];
     assert_eq!(
         bootstrap.scopes,
-        BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin])
+        BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin, Scope::Execute])
     );
     assert_eq!((bootstrap.created_at, bootstrap.expires_at), (at(T), None));
     engine.close().await;

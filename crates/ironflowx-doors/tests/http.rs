@@ -379,6 +379,7 @@ async fn a_request_the_wire_cannot_carry_is_invalid_before_its_key_is_read() {
             let mut requests = vec![
                 create(&["own"], None),
                 create(&["read", "Write"], None),
+                create(&["execute", "exec"], None),
                 create(&[""], None),
                 create(&[], Some((1_800_000_000, 1))),
                 create(&[], Some((1_800_000_000, 999_999))),
@@ -403,7 +404,7 @@ async fn a_request_the_wire_cannot_carry_is_invalid_before_its_key_is_read() {
                 let message = if request.scopes.is_empty() {
                     "a time is in whole milliseconds and in years 0001 to 9999"
                 } else {
-                    "a scope is read, write or admin"
+                    "a scope is read, write, admin or execute"
                 };
                 assert_eq!(wire::op_error(&e), Some(invalid(message)), "{shown}");
                 assert_eq!(e.code, ErrorCode::InvalidArgument, "{shown}");
@@ -534,6 +535,7 @@ async fn the_json_names_are_the_protos() {
         "resource_exhausted",
         "unavailable",
         "internal",
+        "conflict",
     ] {
         for hint in ["", r#","hint":"""#, r#","hint":"do\nthis""#] {
             items.push(format!(
@@ -606,6 +608,7 @@ async fn every_error_crosses_every_protocol() {
         (ErrorKind::ResourceExhausted, ErrorCode::ResourceExhausted),
         (ErrorKind::Unavailable, ErrorCode::Unavailable),
         (ErrorKind::Internal, ErrorCode::Internal),
+        (ErrorKind::Conflict, ErrorCode::FailedPrecondition),
     ] {
         for (message, hint) in [
             ("missing scope: réad % \"x\"".to_owned(), None),

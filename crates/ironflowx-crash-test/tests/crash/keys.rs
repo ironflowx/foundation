@@ -135,7 +135,7 @@ impl Work {
         let keys = vec![
             key(
                 key_id(SEED),
-                &[Scope::Read, Scope::Write, Scope::Admin],
+                &[Scope::Read, Scope::Write, Scope::Admin, Scope::Execute],
                 None,
             ),
             key(home.second, &[Scope::Write], Some(ADMIN)),
@@ -186,7 +186,12 @@ impl Work {
                 self.keys.push(Key {
                     answered: None,
                     stored: accepted && landed,
-                    scopes: BTreeSet::from([Scope::Read, Scope::Write, Scope::Admin]),
+                    scopes: BTreeSet::from([
+                        Scope::Read,
+                        Scope::Write,
+                        Scope::Admin,
+                        Scope::Execute,
+                    ]),
                     created_by: Some(by),
                     created_at: self.now,
                     expires,

@@ -10,6 +10,7 @@ pub const ironflowx_core::limits::MAX_KEY_LABEL_BYTES: usize
 pub const ironflowx_core::limits::MAX_MESSAGE_BYTES: usize
 pub const ironflowx_core::limits::MAX_METADATA_BYTES: usize
 pub enum ironflowx_core::ErrorKind
+pub ironflowx_core::ErrorKind::Conflict
 pub ironflowx_core::ErrorKind::Internal
 pub ironflowx_core::ErrorKind::Invalid
 pub ironflowx_core::ErrorKind::NotFound
@@ -53,6 +54,7 @@ impl core::marker::Copy for ironflowx_core::KeyOrigin
 impl core::marker::StructuralPartialEq for ironflowx_core::KeyOrigin
 pub enum ironflowx_core::Scope
 pub ironflowx_core::Scope::Admin
+pub ironflowx_core::Scope::Execute
 pub ironflowx_core::Scope::Read
 pub ironflowx_core::Scope::Write
 impl core::clone::Clone for ironflowx_core::Scope

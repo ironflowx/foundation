@@ -21,7 +21,7 @@ Every part of the engine writes through one commit path. Foundation is that path
 Library crates: an engine that opens on a data directory and admits every call with a key, the HTTP door that serves it, and the proto client that calls it. The `ironflowx` binary, which serves an engine over Connect, gRPC and gRPC-Web, and its CLI are built in [`ironflowx/ironflow`](https://github.com/ironflowx/ironflow) from these crates (D85).
 
 - The first open bootstraps the engine: it mints the admin key, or takes the key you supply.
-- Create keys scoped `read`, `write` or `admin`, read-only unless asked otherwise, with an optional expiry; list them, and revoke one.
+- Create keys scoped `read`, `write`, `admin` or `execute`, read-only unless asked otherwise, with an optional expiry; list them, and revoke one.
 - Emit an event, or a batch of up to 100, with data, metadata, a version and an idempotency key; each records the key that emitted it.
 - Repeat an emit with its idempotency key and get the original event's ID back, with nothing new stored.
 - Read an event by ID, or list events newest first, as soon as any emit returns.
