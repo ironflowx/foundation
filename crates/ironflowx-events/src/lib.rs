@@ -16,15 +16,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::num::NonZeroU32;
 
+use ironflowx_core::limits::{
+    MAX_BATCH_BYTES, MAX_DATA_BYTES, MAX_EVENT_NAME_BYTES, MAX_IDEMPOTENCY_KEY_BYTES,
+    MAX_METADATA_BYTES,
+};
 use ironflowx_core::{Emitter, ErrorKind, EventId, IncarnationToken, SequencedTime, Timestamp};
 
-// The limits of architecture.md, "Event rules".
+// Not in `limits`, of architecture.md's "Event rules": a count, and the bytes of an answer.
 const MAX_BATCH_ITEMS: usize = 100;
-const MAX_BATCH_BYTES: usize = 4 * 1024 * 1024;
-const MAX_NAME_BYTES: usize = 256;
-const MAX_DATA_BYTES: usize = 524_288;
-const MAX_METADATA_BYTES: usize = 65_536;
-const MAX_KEY_BYTES: usize = 256;
 const MAX_PAGE_BYTES: usize = 3 * 1024 * 1024;
 
 /// One emit as a client sent it. Data and metadata are bytes that must hold JSON (D22).
@@ -227,9 +226,10 @@ pub fn decide<V: EventsView>(
         .map(|e| e.data.as_ref().map_or(0, Vec::len) + e.metadata.as_ref().map_or(0, Vec::len))
         .sum();
     if bytes > MAX_BATCH_BYTES {
-        return Err(Error::Refused(Refusal::invalid(
-            "batch data and metadata exceed 4 MiB",
-        )));
+        return Err(Error::Refused(Refusal::invalid(format!(
+            "batch data and metadata exceed {} MiB",
+            MAX_BATCH_BYTES >> 20
+        ))));
     }
     // 4. Every idempotency lookup, in input order, before anything is read or drawn for a new
     // event: `Ok(Ok(emit))` may be new, `Ok(Err(id))` repeats a stored key.
@@ -303,8 +303,16 @@ pub fn decide<V: EventsView>(
     Ok(Decision { outcome, record })
 }
 
-/// The item rules: every check on one emit, before any lookup (D5).
-fn check(emit: &Emit) -> Result<(), Refusal> {
+/// The item rules: every check [`decide`] makes of one emit, before any lookup (D5). A single
+/// emit that passes them is refused only once event sequences are used up.
+///
+/// # Errors
+///
+/// The [`Refusal`] [`decide`] would give the emit.
+// So `check` is all a single emit meets: the batch byte limit cannot refuse one.
+const _: () = assert!(MAX_DATA_BYTES + MAX_METADATA_BYTES <= MAX_BATCH_BYTES);
+
+pub fn check(emit: &Emit) -> Result<(), Refusal> {
     check_name(&emit.name)?;
     if let Some(data) = &emit.data {
         if data.len() > MAX_DATA_BYTES {
@@ -331,11 +339,11 @@ fn check(emit: &Emit) -> Result<(), Refusal> {
         return Err(Refusal::invalid("event version is outside 1 to 2147483647"));
     }
     if let Some(key) = &emit.idempotency_key
-        && (key.is_empty() || key.len() > MAX_KEY_BYTES || key.contains('\0'))
+        && (key.is_empty() || key.len() > MAX_IDEMPOTENCY_KEY_BYTES || key.contains('\0'))
     {
-        return Err(Refusal::invalid(
-            "idempotency key must be 1 to 256 bytes with no NUL",
-        ));
+        return Err(Refusal::invalid(format!(
+            "idempotency key must be 1 to {MAX_IDEMPOTENCY_KEY_BYTES} bytes with no NUL"
+        )));
     }
     Ok(())
 }
@@ -344,8 +352,10 @@ fn check_name(name: &str) -> Result<(), Refusal> {
     if name.is_empty() {
         return Err(Refusal::invalid("event name is required"));
     }
-    if name.len() > MAX_NAME_BYTES {
-        return Err(Refusal::invalid("event name exceeds 256 bytes"));
+    if name.len() > MAX_EVENT_NAME_BYTES {
+        return Err(Refusal::invalid(format!(
+            "event name exceeds {MAX_EVENT_NAME_BYTES} bytes"
+        )));
     }
     if name.split('.').any(str::is_empty) {
         return Err(Refusal::invalid("event name has an empty segment"));

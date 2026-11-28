@@ -37,6 +37,7 @@ const MAX_KEY_PAGE: u32 = 1_000;
 const KEY_CAP: u32 = 1_000;
 
 use admission::Authorized;
+pub use events::check_emit;
 pub use ironflowx_authz::SeedState;
 pub use ironflowx_cell::{Fault, HostClock, LedgerState, OpenError};
 pub use ironflowx_store::{RecoverError, StoreError};

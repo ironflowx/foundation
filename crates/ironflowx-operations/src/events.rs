@@ -6,6 +6,17 @@ use ironflowx_core::ErrorKind;
 use ironflowx_events::{Emit, ItemOutcome, Refusal};
 use ironflowx_proto::{EmitRequest, EmitResponse, Event, OpError};
 
+/// Runs event rules' checks of one emit without a submit (D120): an emit is refused, with the same
+/// kind and message, exactly when this is, unless event sequences are used up. A client sizes a
+/// payload with it before sending, rather than learning a limit from a refusal.
+///
+/// # Errors
+///
+/// The emit's refusal, as [`Operations::emit`](ironflowx_proto::Operations::emit) answers it.
+pub fn check_emit(req: &EmitRequest) -> Result<(), OpError> {
+    ironflowx_events::check(&emit(req.clone())).map_err(refused)
+}
+
 pub(crate) fn emit(req: EmitRequest) -> Emit {
     Emit {
         name: req.name,

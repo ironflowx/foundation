@@ -1,5 +1,6 @@
 //! Ironflow X core types: validated opaque IDs, the environment reference, attribution, scopes,
-//! addresses, secrets, stored and event-clock time, the clock trait and the error kinds.
+//! addresses, secrets, stored and event-clock time, the clock trait, the error kinds and the byte
+//! limits of what a caller sends.
 //!
 //! This crate is pure: no I/O, no async runtime, no ambient clock, no randomness.
 
@@ -12,6 +13,7 @@ mod error;
 #[cfg(feature = "__fault-points")]
 mod fault;
 mod id;
+pub mod limits;
 mod secret;
 mod tenancy;
 mod time;

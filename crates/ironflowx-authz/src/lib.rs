@@ -16,6 +16,7 @@ use std::fmt;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use ironflowx_core::limits::MAX_KEY_LABEL_BYTES;
 use ironflowx_core::{EnvRef, KeyId, KeyOrigin, Scope, Secret, SubmitAs, Timestamp};
 
 pub use digest::KeyDigest;
@@ -92,9 +93,6 @@ pub fn mint(id: KeyId, secret: [u8; 32]) -> (Secret, KeyDigest) {
     let digest = KeyDigest::of(&text);
     (Secret::new(text), digest)
 }
-
-/// The most bytes a key's label holds.
-const MAX_LABEL_BYTES: usize = 128;
 
 /// What credentials need to know about a stored key.
 #[derive(Debug, Clone)]
@@ -291,11 +289,23 @@ pub fn admit(grant: &Grant, required: Option<Scope>) -> Result<(), MissingScope>
 
 /// Why a key may not be created as asked. Its message is not contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CreateRefusal(&'static str);
+pub struct CreateRefusal(Why);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Why {
+    Rule(&'static str),
+    Label,
+}
 
 impl fmt::Display for CreateRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.0)
+        match self.0 {
+            Why::Rule(why) => f.write_str(why),
+            Why::Label => write!(
+                f,
+                "a label is at most {MAX_KEY_LABEL_BYTES} bytes, with no control character"
+            ),
+        }
     }
 }
 
@@ -303,7 +313,8 @@ impl std::error::Error for CreateRefusal {}
 
 /// Decides whether `creator` may create a key holding `scopes` until `expires_at`, labelled
 /// `label`, at `now`. The new key holds no scope its creator lacks and outlives it in no way
-/// (D28, TEN-5); its expiry is after now; its label is 0–128 bytes with no control character.
+/// (D28, TEN-5); its expiry is after now; its label is 0 to [`MAX_KEY_LABEL_BYTES`] bytes with
+/// no control character.
 ///
 /// # Errors
 ///
@@ -315,7 +326,7 @@ pub fn may_create(
     label: Option<&str>,
     now: Timestamp,
 ) -> Result<(), CreateRefusal> {
-    let refuse = |why| Err(CreateRefusal(why));
+    let refuse = |why| Err(CreateRefusal(Why::Rule(why)));
     if scopes.is_empty() {
         return refuse("a key holds at least one scope");
     }
@@ -328,8 +339,8 @@ pub fn may_create(
         (Some(c), Some(t)) if t > c => return refuse("a key cannot expire after its creator"),
         _ => {}
     }
-    if label.is_some_and(|l| l.len() > MAX_LABEL_BYTES || l.chars().any(char::is_control)) {
-        return refuse("a label is at most 128 bytes, with no control character");
+    if label.is_some_and(|l| l.len() > MAX_KEY_LABEL_BYTES || l.chars().any(char::is_control)) {
+        return Err(CreateRefusal(Why::Label));
     }
     Ok(())
 }

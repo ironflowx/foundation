@@ -1,4 +1,5 @@
 pub mod ironflowx_proto
+pub use ironflowx_proto::limits
 pub enum ironflowx_proto::KeyStatus
 pub ironflowx_proto::KeyStatus::Active
 pub ironflowx_proto::KeyStatus::Expired

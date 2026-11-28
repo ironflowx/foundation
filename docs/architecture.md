@@ -60,20 +60,20 @@ The rows behind it: [Open](#open); an engine's are in [Engine open](#engine-open
 | Module | Does | Interface | Crate |
 |---|---|---|---|
 | Ledger | Commits one environment's changes; answers reads that see every acknowledged commit; mints event IDs and stamps event time; reports whether it has failed, and signals a ledger fault | `open`, `open_blocking`, `open_existing_blocking`, `submit`, `get_event`, `list_events`, `state`, `faulted`, `close`, `HostClock`, `ManualClock` | `ironflowx-cell` |
-| Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `fold`, queries | `ironflowx-events` |
+| Event rules | Decides what an event is and when an emit is refused. Pure | `decide`, `check`, `fold`, queries | `ironflowx-events` |
 | `Operations` interface | The operations a client calls, with their request and answer types. Hand-written Rust types, which the wire maps onto (D53) | `Operations` trait and messages | `ironflowx-proto` |
 | Proto | Defines an operation once, on the wire (D49) | `proto/ironflowx/v1/*.proto`: services, messages, the method options `cli`, `summary` and `example`, the field option `json_text` | `ironflowx-proto` (the `.proto` files; compiled, `wire::FILE_DESCRIPTOR_SET`) |
 | Wire mapping | Converts `Operations` requests and answers to and from wire messages, validating what arrives | `TryFrom` for requests, both ways; `From` for answers sent and `TryFrom` for answers received; `OpError` ↔ `ErrorInfo` ↔ the Connect error | `ironflowx-proto` (`wire`, `server`) |
 | Proto client | Calls `Operations` over Connect, sending each `Call`'s key | `Client::new(url)`, `with_timeout`, `Operations` | `ironflowx-proto` (`client`; `client-tls` for `https`) |
 | HTTP door | Serves `Operations` over Connect, gRPC and gRPC-Web, with `/health` and `/ready`. Holds no rule | `router(slot)`, `Slot`, `Readiness` | `ironflowx-doors` (`http`) |
 | Generator | Derives a CLI's commands from the proto at build time, and refuses a proto that does not say enough | `generate(descriptor_set, out_dir)`, from `build.rs` | `ironflowx-codegen` |
-| Engine | Reads whether the bootstrap is marked; opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records; reports its health and a ledger fault to the host | `is_bootstrapped`, `Engine::open`, `health`, `faulted`, `close`, `Operations`, `recover_admin_key` | `ironflowx-operations` |
+| Engine | Reads whether the bootstrap is marked; opens a data directory, bootstrapping it on first open; admits every call (its key parsed, looked up and verified, and its scope checked) before the handler reaches the ledger or the key records; reports its health and a ledger fault to the host; checks an emit without a submit | `is_bootstrapped`, `Engine::open`, `health`, `faulted`, `close`, `Operations`, `recover_admin_key`, `check_emit` | `ironflowx-operations` |
 | Credentials | The key format and its digest; whether a presented key is valid for an environment at a time, whether a grant holds a scope, and what a new key may hold. Pure | `parse`, `mint`, `verify`, `recheck`, `verify_seed`, `admit`, `may_create` | `ironflowx-authz` |
 | Control plane | Remembers which tenants, projects, environments and keys exist, in `control.db` | `ControlPlane::open`, `bootstrap_state`, `ensure_bootstrap`, `undo_bootstrap`, `mark_ledger_created`, `finish_bootstrap`, `check_seed`, `apply_seed`, `lookup_key`, `record_expiry`, `insert_key`, `insert_recovered`, `revoke_key`, `list_keys`, `environment` | `ironflowx-store` |
-| Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Scope`, `KeyOrigin`, `Address`, `Secret`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors | Types | `ironflowx-core` |
+| Core types | Validated IDs, `EnvRef`, `Emitter`, `SubmitAs`, `Scope`, `KeyOrigin`, `Address`, `Secret`, `Timestamp`, `SequencedTime`, the `Clock` trait, errors; the byte limits of what a caller sends | Types, `limits` | `ironflowx-core` |
 | Facade | Gives embedders one dependency on foundation | Re-exports `core`, `proto`, `cell` and `operations`, not the engine's own `store`, `authz` and `events` (D83). `proto::Client` with `client`, also accepting `https` with `client-tls` | `ironflowx` |
 
-`Engine` is the one in-process `Operations`, so `Operations` always means credentialed (D36). For an event operation it maps the request to a submission or a query and the outcome to an answer, and holds no event rule: every check, default and limit is in event rules. It submits as its verified grant's `submit_as()`, so an event emitted with a key records `key:<key-id>`. An embedder that needs no keys calls `Ledger::submit`, `get_event` and `list_events` directly, as `SubmitAs::embedder(name)`; the ledger trusts it.
+`Engine` is the one in-process `Operations`, so `Operations` always means credentialed (D36). For an event operation it maps the request to a submission or a query and the outcome to an answer, and holds no event rule: every check and default is in event rules, and the byte limits they check are in `ironflowx_core::limits` (D120). `check_emit` runs event rules' checks of one emit without a submit, so an embedder or executor sizes a payload before it sends it instead of learning a limit from a refusal: an emit is refused, with the same kind and message, exactly when `check_emit` refuses it, unless event sequences are used up. It submits as its verified grant's `submit_as()`, so an event emitted with a key records `key:<key-id>`. An embedder that needs no keys calls `Ledger::submit`, `get_event` and `list_events` directly, as `SubmitAs::embedder(name)`; the ledger trusts it.
 
 | Type | Is |
 |---|---|
@@ -126,6 +126,7 @@ impl Operation {
     const fn changes_state(self) -> bool;          // Emit, EmitBatch, CreateKey, RevokeKey: an exhaustive match
 }
 const fn required_scope(op: Operation) -> Option<Scope>;   // an exhaustive match (D37); None: any valid key
+pub use ironflowx_core::limits;   // the byte limits of what a request sends (D120)
 // EmitRequest      { name: String, data: Option<Vec<u8>> /* one JSON value (D22); None stores null */,
 //                    metadata: Option<Vec<u8>> /* one JSON object */, version: Option<i64> /* None stores 1 */,
 //                    idempotency_key: Option<String> /* None: no key */ }
@@ -189,6 +190,7 @@ fn generate(descriptor_set: &[u8], out_dir: &Path) -> Result<(), CodegenError>; 
 
 // ironflowx-operations also exports HostClock, OpenError and StoreError.
 fn is_bootstrapped(root: &Path) -> Result<bool, EngineError>;   // blocking; reads the bootstrap mark
+fn check_emit(req: &EmitRequest) -> Result<(), OpError>;      // event rules' checks of one emit, without a submit (D120)
 // These Engine methods use tokio.
 impl Engine {
     async fn open(root: &Path, clock: impl Clock + Clone + Send + Sync + 'static, seed: Option<Secret>)
@@ -287,6 +289,7 @@ fn new_env_ref() -> EnvRef;   // a fresh UUIDv7 ID and a 128-bit token from the 
 // ironflowx-events: pure. `fresh` yields one event ID per new event, minted by the writer.
 fn decide<V: EventsView>(view: &V, sub: &Submission, now: SequencedTime,
           fresh: &mut impl Iterator<Item = EventId>) -> Result<Decision, Error<V::Error>>;
+fn check(emit: &Emit) -> Result<(), Refusal>;   // decide's item rules for one emit, which is all a single emit meets
 fn fold<T: EventTables>(tx: &mut T, record: &Record, emitted_by: &Emitter) -> Result<(), T::Error>;
 fn get_event<V: EventsView>(view: &V, id: &str) -> Result<Event, Error<V::Error>>;
 fn list_events<V: EventsView>(view: &V, token: IncarnationToken, limit: Option<NonZeroU32>,
@@ -320,6 +323,8 @@ fn PageBudget::take(&mut self, bytes: usize) -> bool;   // only list_events make
 | Version | Absent stores 1; otherwise 1 to 2,147,483,647 | EVT-002, EVT-008, EVT-009 |
 | Idempotency key | Absent means no key; otherwise 1–256 bytes, no NUL. One key per environment, across names, for as long as its event exists | EVT-030–037 |
 | Batch | An empty batch answers with no results | EVT-023 |
+
+The byte limits above, a batch's 4 MiB, a key's label (0–128 bytes) and an embedder's name (1–128 bytes) are constants in `ironflowx_core::limits`, their one home in code, which `ironflowx-proto` re-exports (D120): `MAX_EVENT_NAME_BYTES`, `MAX_DATA_BYTES`, `MAX_METADATA_BYTES`, `MAX_IDEMPOTENCY_KEY_BYTES`, `MAX_BATCH_BYTES`, `MAX_KEY_LABEL_BYTES`, `MAX_EMBEDDER_NAME_BYTES`. A door and a CLI reach them without linking a rule crate (SRV-1). The batch count and a page's 3 MiB stay in event rules: one is a count, which the proto's summary of `EmitBatch` states, and the other bounds an answer, not what a caller sends.
 
 A repeated JSON key is refused as `Invalid`, with a message of the form `event data is invalid: repeated key at line L column C` (`event metadata is invalid: …` for metadata), at any depth and even when the two spellings differ only in escapes. A repeated key has no portable meaning, so JSON with one cannot be stored as event data. A recorder that must keep such a body byte for byte stores it as a JSON string instead, such as `{"raw":"{\"a\":1,\"a\":2}"}`. A first-class content type is D22's recorded direction for non-JSON payloads; nothing is built for it.
 
