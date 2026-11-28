@@ -50,6 +50,8 @@ async fn one_client_sends_each_calls_own_key() {
         (call("clé"), Some("malformed")),
         (call("\u{7f}"), Some("malformed")),
         (call(" "), Some("malformed")),
+        // A grant goes on no wire: the call reaches the door with no key (D121).
+        (Call::with_grant(()), None),
     ] {
         assert_eq!(ask(&client, &cx).await, Ok(whoami()), "{sent:?}");
         assert_eq!(operations.take(), [sent.map(str::to_owned)]);

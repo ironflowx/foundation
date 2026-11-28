@@ -263,7 +263,8 @@ async fn another_engines_grant_or_a_foreign_one_is_refused() {
         assert_eq!(err, invalid);
     }
     for name in ["", "a\nb", "\u{202E}", &"x".repeat(129)] {
-        assert!(engine.embedder_call(name).is_err(), "{name:?}");
+        let refused = engine.embedder_call(name).map(drop).unwrap_err();
+        assert_eq!(refused.to_string(), "invalid embedder name", "{name:?}");
     }
     assert!(engine.embedder_call(&"x".repeat(128)).is_ok());
 }

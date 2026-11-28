@@ -376,8 +376,9 @@ A page holds 20 events unless asked otherwise, at most 200, and stops before its
 | `emit`, `emit_batch` | `write` |
 | `get_event`, `list_events`, `list_environments` | `read` |
 | `whoami` | any valid key |
-| every operation | an embedder's call (D121) |
 | `create_key`, `list_keys`, `revoke_key` | `admin` |
+
+An embedder's call holds every scope, so every operation admits it (D121).
 
 ## Errors
 
@@ -640,7 +641,7 @@ It writes `cli.rs`: each command with its RPC name, summary, input and output sc
 | 64-bit integers | Strings in JSON, as protobuf prints them: `"version":"1"`. A number is read too |
 | A batch item's result | `oneof result { EmitResponse ok; ErrorInfo error; }`: one per item, in their order. `Client` takes no other number of them |
 | Who emitted | `emitted_by` is the `Emitter`'s text: `key:<key-id>` or `embedder:<name>` |
-| Who created a key | `created_by` is the creating key's bare ID, as in 0.3, or `embedder:<name>` for an embedder (D121); a 0.3 client fails to decode a page holding a key an embedder created. `WhoamiResponse.key_id` is `optional`, absent only for an embedder's call, which no door carries; a key's call sends and receives the same bytes as in 0.3 |
+| Who created a key | `created_by` is the creating key's bare ID, as in 0.3, or `embedder:<name>` for an embedder (D121); a 0.3 client fails to decode a page holding a key an embedder created. `WhoamiResponse.key_id` is `optional`, absent only for an embedder's call, which no door carries, so the proto client answers a door's whoami without one `Unavailable`, as an answer that does not decode; a key's call sends and receives the same bytes as in 0.3 |
 | Times | `google.protobuf.Timestamp`, RFC 3339 in JSON, in whole milliseconds and in years 0001–9999. What the library reads as one is one: it also takes a `+` in place of the first digit of a part (`2027-+1-15T08:00:00Z`). A stored time outside years 0001–9999, which only an in-process caller or a wrong clock can make, is sent as the nearer bound, `0001-01-01T00:00:00Z` or `9999-12-31T23:59:59.999Z` (D76); the stored value still decides expiry |
 | IDs | Strings in their text form; an environment travels as its `EnvRef`'s, `env`, never a bare ID (LED-9) |
 | Addresses | The text `project/environment`. The client splits it at the first `/` for `Address::new`, so it prints back exactly, and never makes an ID from it (D75, TEN-8) |
