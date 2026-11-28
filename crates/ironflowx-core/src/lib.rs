@@ -1,5 +1,5 @@
 //! Ironflow X core types: validated opaque IDs, the environment reference, attribution, scopes,
-//! addresses, secrets, stored and event-clock time, the clock trait, the error kinds and the byte
+//! addresses, secrets, stored and event-clock time, the clock trait, the error kinds and the size
 //! limits of what a caller sends.
 //!
 //! This crate is pure: no I/O, no async runtime, no ambient clock, no randomness.

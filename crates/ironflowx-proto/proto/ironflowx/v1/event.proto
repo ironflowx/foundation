@@ -22,7 +22,7 @@ service EventService {
   rpc EmitBatch(EmitBatchRequest) returns (EmitBatchResponse) {
     option (ironflowx.v1.cli) = "events emit-batch";
     option (ironflowx.v1.summary) =
-      "Emit up to 100 events at once, with a result for each, in their order: an event or why it "
+      "Emit a batch of events at once, with a result for each, in their order: an event or why it "
       "was refused. Sent again, an item without an idempotency key stores a second event";
     option (ironflowx.v1.example) =
       "{\"items\": [{\"name\": \"order.placed\", \"data\": \"{\\\"id\\\": 1}\", "
