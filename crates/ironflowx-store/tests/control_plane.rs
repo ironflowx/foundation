@@ -222,6 +222,13 @@ fn an_embedder_changes_keys_with_no_record() {
         matches!(refused, Err(KeyChangeError::Caller)),
         "{refused:?}"
     );
+    // Nor of another environment ID with this incarnation's token.
+    let other = new_key(44, &[Scope::Read], None, None);
+    let refused = cp.insert_key(&env(2), other, &by, &Fixed(T), CAP);
+    assert!(
+        matches!(refused, Err(KeyChangeError::Caller)),
+        "{refused:?}"
+    );
     let admin_by: Emitter = format!("key:{}", admin.id).parse().unwrap();
     let made = new_key(42, &[Scope::Read], None, None);
     let made_id = made.id;

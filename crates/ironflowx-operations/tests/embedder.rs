@@ -1,6 +1,6 @@
 //! TEN-1 and TEN-6 for the embedder's own call (D121): `Engine::embedder_call` is admitted to
 //! each operation as admin, with no key, and what it writes is attributed `embedder:<name>`.
-//! It reaches only the directory and incarnation of the engine that made it, and a grant of any
+//! It reaches only the environment and incarnation of the engine that made it, and a grant of any
 //! other type is refused.
 
 use std::collections::BTreeSet;
@@ -178,7 +178,15 @@ async fn create_key_records_the_embedder_as_creator() {
         ..CreateKeyRequest::default()
     };
     let refused = engine.create_key(&app_call, label).await.unwrap_err();
-    assert_eq!(refused.kind, ErrorKind::Invalid, "{refused:?}");
+    let label_rule = "a label is at most 128 bytes, with no control character";
+    assert_eq!(
+        refused,
+        OpError {
+            kind: ErrorKind::Invalid,
+            message: label_rule.into(),
+            hint: None,
+        }
+    );
 
     engine.close().await;
     let reopened = Engine::open(dir.path(), clock(), None).await.unwrap();
@@ -207,7 +215,12 @@ async fn revoke_key_revokes_any_key() {
     };
     engine.revoke_key(&app_call, req).await.unwrap();
     let err = engine.whoami(&admin, WhoamiRequest {}).await.unwrap_err();
-    assert_eq!(err.kind, ErrorKind::Unauthenticated, "{err:?}");
+    let invalid = OpError {
+        kind: ErrorKind::Unauthenticated,
+        message: "invalid API key".into(),
+        hint: None,
+    };
+    assert_eq!(err, invalid);
     // The embedder needs no key, so revoking the last one locks it out of nothing.
     engine.emit(&app_call, emit("still.in")).await.unwrap();
 }

@@ -877,12 +877,7 @@ fn seed_state(
     env: &EnvRef,
     seed: &KeyParts,
 ) -> Result<Result<Option<SeedState>, SeedConflict>, Error> {
-    let here: bool = conn.query_row(
-        "SELECT count(*) > 0 FROM environments WHERE id = ?1 AND token = ?2",
-        params![env.id().to_string(), env.token().to_string()],
-        |r| r.get(0),
-    )?;
-    if !here {
+    if !is_current(conn, env)? {
         return Err(refused("no such environment"));
     }
     // Of any environment: a key ID is used once in the file.
@@ -1026,15 +1021,17 @@ fn changer<'c>(
 ) -> Result<Option<(Transaction<'c>, Option<Grant>)>, Error> {
     Ok(match by.key_id() {
         Some(id) => caller(tx, id, env, now)?.map(|(tx, grant)| (tx, Some(grant))),
-        None => {
-            let here: bool = tx.query_row(
-                "SELECT count(*) > 0 FROM environments WHERE id = ?1 AND token = ?2",
-                params![env.id().to_string(), env.token().to_string()],
-                |r| r.get(0),
-            )?;
-            here.then_some((tx, None))
-        }
+        None => is_current(&tx, env)?.then_some((tx, None)),
     })
+}
+
+/// Whether `env` is an environment of the file, in its current incarnation.
+fn is_current(conn: &Connection, env: &EnvRef) -> Result<bool, Error> {
+    Ok(conn.query_row(
+        "SELECT count(*) > 0 FROM environments WHERE id = ?1 AND token = ?2",
+        params![env.id().to_string(), env.token().to_string()],
+        |r| r.get(0),
+    )?)
 }
 
 /// A creator as stored: a creating key's bare ID, as since 0.2, or an embedder's

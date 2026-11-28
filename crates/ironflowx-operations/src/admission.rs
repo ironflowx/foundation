@@ -94,7 +94,7 @@ pub(crate) fn unauthenticated(message: &str, hint: Option<String>) -> OpError {
 impl Engine {
     pub(crate) async fn admit(&self, cx: &Call, op: Operation) -> Result<Authorized, OpError> {
         if let Some(grant) = cx.grant() {
-            // Another engine's grant, of another directory or incarnation, reaches nothing here.
+            // A grant of another environment or incarnation reaches nothing here.
             return match grant.downcast_ref::<EmbedderGrant>() {
                 Some(g) if g.env == self.env => Ok(Authorized {
                     caller: Caller::Embedder(g.by.clone(), g.env),

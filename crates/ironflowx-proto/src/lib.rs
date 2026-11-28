@@ -22,6 +22,7 @@ use std::any::Any;
 use std::fmt;
 use std::future::Future;
 use std::num::NonZeroU32;
+use std::panic::{RefUnwindSafe, UnwindSafe};
 
 use std::collections::BTreeSet;
 
@@ -184,7 +185,8 @@ pub const fn required_scope(op: Operation) -> Option<Scope> {
 /// ```
 pub struct Call {
     key: Option<Secret>,
-    grant: Option<Box<dyn Any + Send + Sync>>,
+    /// Unwind-safe as a key is, so `Call` keeps the auto traits it had before it held one.
+    grant: Option<Box<dyn Any + Send + Sync + UnwindSafe + RefUnwindSafe>>,
 }
 
 /// Prints no field, so the key cannot reach a log through `{:?}`.
@@ -214,7 +216,7 @@ impl Call {
     /// A call that carries `grant` in place of a key: a value of a type only its maker can name,
     /// as the engine's `embedder_call` makes, so only that maker reads it. No wire message has a
     /// field for it, so no door makes one (D121).
-    pub fn with_grant(grant: impl Any + Send + Sync) -> Self {
+    pub fn with_grant(grant: impl Any + Send + Sync + UnwindSafe + RefUnwindSafe) -> Self {
         Self {
             key: None,
             grant: Some(Box::new(grant)),
@@ -228,7 +230,7 @@ impl Call {
 
     /// The grant it carries, if any.
     pub fn grant(&self) -> Option<&(dyn Any + Send + Sync)> {
-        self.grant.as_deref()
+        self.grant.as_deref().map(|g| g as &(dyn Any + Send + Sync))
     }
 }
 
