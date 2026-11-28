@@ -13,6 +13,11 @@ disallowed-methods = [
   # ci/no-digest-codec.sh backs this up by name.
   { path = "ironflowx_authz::KeyDigest::to_stored", reason = "only the control plane stores a key digest (TEN-4)", allow-invalid = true },
   { path = "ironflowx_authz::KeyDigest::from_stored", reason = "only the control plane stores a key digest (TEN-4)", allow-invalid = true },
+  # The engine's own events: core and authz do not depend on events, hence allow-invalid. The ban
+  # holds in ironflowx-events too, which links this file: its library forbids the lint, so cannot
+  # call engine_event at all, and its tests' one helper expects it. ci/no-engine-event.sh backs
+  # this up.
+  { path = "ironflowx_events::engine_event", reason = "only ironflowx-execution makes the engine's events (RUN-14)", allow-invalid = true },
 
   { path = "std::time::SystemTime::now", reason = "pure crates read no ambient clock; take a Timestamp or SequencedTime" },
   { path = "std::time::Instant::now", reason = "pure crates read no ambient clock" },

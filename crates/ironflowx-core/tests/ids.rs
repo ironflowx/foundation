@@ -1,5 +1,6 @@
 use ironflowx_core::{
-    Emitter, EnvRef, EnvironmentId, EventId, IncarnationToken, KeyId, ProjectId, SubmitAs, TenantId,
+    Emitter, EnvRef, EnvironmentId, EventId, IncarnationToken, KeyId, ProjectId, RunId, SubmitAs,
+    TenantId,
 };
 
 const V7: &str = "019a9f3e-7c2b-7d41-8a3e-5f6b7c8d9e0f";
@@ -29,6 +30,14 @@ fn event_id_parses_only_a_uuidv7() {
     assert_eq!(V7.parse::<EventId>().unwrap().to_string(), V7);
     assert!(V4.parse::<EventId>().is_err());
     assert!("".parse::<EventId>().is_err());
+}
+
+#[test]
+fn run_id_parses_only_a_uuidv7() {
+    assert_eq!(V7.parse::<RunId>().unwrap().to_string(), V7);
+    assert!(V4.parse::<RunId>().is_err());
+    let err = "".parse::<RunId>().unwrap_err();
+    assert_eq!(err.to_string(), "invalid run ID");
 }
 
 #[test]

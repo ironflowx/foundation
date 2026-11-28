@@ -33,7 +33,7 @@ fn refused(r: Refusal) -> OpError {
     OpError {
         kind: r.kind(),
         message: r.message().to_owned(),
-        hint: None,
+        hint: r.hint().map(str::to_owned),
     }
 }
 
@@ -102,5 +102,30 @@ pub(crate) fn event(e: ironflowx_events::Event) -> Event {
         idempotency_key: e.idempotency_key,
         time: e.time,
         emitted_by: e.emitted_by,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A refusal's hint reaches the caller's `OpError`, and none is made up.
+    #[test]
+    fn a_refusals_hint_crosses_into_its_op_error() {
+        let base = ironflowx_events::check_emit(&Emit::default()).expect_err("no name");
+        let error = |hint: Option<&str>| OpError {
+            kind: ErrorKind::Invalid,
+            message: "event name is required".into(),
+            hint: hint.map(str::to_owned),
+        };
+        assert_eq!(refused(base.clone()), error(None));
+        // A second hint replaces the first.
+        let hinted = base.with_hint("first").with_hint("name the event");
+        assert_eq!(
+            hinted.to_string(),
+            "event name is required",
+            "Display shows no hint"
+        );
+        assert_eq!(refused(hinted), error(Some("name the event")));
     }
 }
