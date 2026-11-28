@@ -831,3 +831,26 @@ fn sequences_and_execution_numbers_run_out_refused() {
     );
     assert_eq!(s.runs.values().next().unwrap().status, Status::Queued);
 }
+
+/// RUN-10 in `decide`: a claim asks the store at the event clock's `now`, so a run due later is
+/// not taken a millisecond before its due time, and is at it.
+#[test]
+fn a_claim_takes_no_run_before_it_is_due() {
+    let mut s = Store {
+        time: T,
+        ..Store::default()
+    };
+    s.outcome(Command::PutFunction(definition()), &key(1))
+        .unwrap();
+    s.outcome(start(), &key(1)).unwrap();
+    // Due later than now; no command of this slice makes one, a retry will.
+    s.runs.values_mut().next().unwrap().due_at = Some(Timestamp::from_millis(T + 1_000));
+    s.time = T + 999;
+    assert_eq!(
+        s.outcome(claim(&["charge@v1"]), &key(1)),
+        Ok(Outcome::Claimed(None))
+    );
+    s.time = T + 1_000;
+    let taken = s.outcome(claim(&["charge@v1"]), &key(1)).unwrap();
+    assert!(matches!(taken, Outcome::Claimed(Some(_))), "{taken:?}");
+}
