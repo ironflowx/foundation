@@ -48,7 +48,9 @@ pub(crate) fn events(token: IncarnationToken, emitted_by: &Emitter, record: &Rec
     out
 }
 
-/// Event rules bound a record to 100 events and about 4.1 MiB, so every length fits.
+/// Event rules bound a record to [`MAX_BATCH_EVENTS`](ironflowx_core::limits::MAX_BATCH_EVENTS)
+/// events and [`MAX_BATCH_BYTES`](ironflowx_core::limits::MAX_BATCH_BYTES) of data and metadata
+/// beside their names and keys, so every length fits.
 fn len(n: usize) -> u32 {
     u32::try_from(n).expect("event rules bound a record's lengths")
 }

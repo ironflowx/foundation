@@ -706,9 +706,9 @@ fn ids_are_drawn_only_for_new_events() {
 fn a_batch_whose_accepted_data_and_metadata_total_over_4_mib_is_refused_whole() {
     let mut env = Env::new();
     let big = with_data(&blob("blob", 524_288));
-    assert_ne!(
+    assert_eq!(
         refusal_of(env.submit(Submission::Batch(vec![big.clone(); 9]))),
-        ""
+        "batch data and metadata exceed 4 MiB"
     );
     assert!(env.stored().is_empty());
 

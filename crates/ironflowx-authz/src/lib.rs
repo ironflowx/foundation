@@ -289,19 +289,19 @@ pub fn admit(grant: &Grant, required: Option<Scope>) -> Result<(), MissingScope>
 
 /// Why a key may not be created as asked. Its message is not contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CreateRefusal(Why);
+pub struct CreateRefusal(Reason);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Why {
-    Rule(&'static str),
+enum Reason {
+    Message(&'static str),
     Label,
 }
 
 impl fmt::Display for CreateRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
-            Why::Rule(why) => f.write_str(why),
-            Why::Label => write!(
+            Reason::Message(why) => f.write_str(why),
+            Reason::Label => write!(
                 f,
                 "a label is at most {MAX_KEY_LABEL_BYTES} bytes, with no control character"
             ),
@@ -326,7 +326,7 @@ pub fn may_create(
     label: Option<&str>,
     now: Timestamp,
 ) -> Result<(), CreateRefusal> {
-    let refuse = |why| Err(CreateRefusal(Why::Rule(why)));
+    let refuse = |why| Err(CreateRefusal(Reason::Message(why)));
     if scopes.is_empty() {
         return refuse("a key holds at least one scope");
     }
@@ -340,7 +340,7 @@ pub fn may_create(
         _ => {}
     }
     if label.is_some_and(|l| l.len() > MAX_KEY_LABEL_BYTES || l.chars().any(char::is_control)) {
-        return Err(CreateRefusal(Why::Label));
+        return Err(CreateRefusal(Reason::Label));
     }
     Ok(())
 }

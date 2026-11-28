@@ -52,74 +52,94 @@ fn blob(key: &str, size: usize) -> String {
     format!(r#"{{"{key}":"{}"}}"#, "a".repeat(size - key.len() - 7))
 }
 
-/// Every event rule's refusal, by the start of its message, and the accepted edges (`None`).
-fn cases() -> Vec<(EmitRequest, Option<String>)> {
-    let refused = |m: &str| Some(m.to_owned());
+/// What an emit answers: accepted, refused with exactly this message, or refused with a message
+/// that starts so, where `serde_json` writes the rest (a line and a column).
+#[derive(Debug)]
+enum Expect {
+    Accepted,
+    Is(String),
+    Starts(&'static str),
+}
+
+/// Every event rule's refusal, and the accepted edges.
+fn cases() -> Vec<(EmitRequest, Expect)> {
+    use Expect::{Accepted, Starts};
+    let is = |m: &str| Expect::Is(m.to_owned());
     let name_bytes = format!("event name exceeds {MAX_EVENT_NAME_BYTES} bytes");
-    let key_bytes = format!("idempotency key must be 1 to {MAX_IDEMPOTENCY_KEY_BYTES} bytes");
+    let key_bytes =
+        format!("idempotency key must be 1 to {MAX_IDEMPOTENCY_KEY_BYTES} bytes with no NUL");
+    let control = "event name contains whitespace or a control character";
+    let owned = "event name is owned by the engine";
+    let version = "event version is outside 1 to 2147483647";
     vec![
-        (named("order.placed"), None),
-        (named(&"a".repeat(MAX_EVENT_NAME_BYTES)), None),
-        (with_data(blob("b", MAX_DATA_BYTES).as_bytes()), None),
-        (with_metadata(&blob("t", MAX_METADATA_BYTES)), None),
-        (with_version(i64::from(i32::MAX)), None),
-        (with_key(&"k".repeat(MAX_IDEMPOTENCY_KEY_BYTES)), None),
-        (named(""), refused("event name is required")),
+        (named("order.placed"), Accepted),
+        (named(&"a".repeat(MAX_EVENT_NAME_BYTES)), Accepted),
+        (with_data(blob("b", MAX_DATA_BYTES).as_bytes()), Accepted),
+        (with_metadata(&blob("t", MAX_METADATA_BYTES)), Accepted),
+        (with_version(i64::from(i32::MAX)), Accepted),
+        (with_key(&"k".repeat(MAX_IDEMPOTENCY_KEY_BYTES)), Accepted),
+        (named(""), is("event name is required")),
         (
             named(&"a".repeat(MAX_EVENT_NAME_BYTES + 1)),
-            Some(name_bytes),
+            is(&name_bytes),
         ),
-        (named("a..b"), refused("event name has an empty segment")),
-        (named("a b"), refused("event name contains whitespace")),
-        (named("a\u{1}b"), refused("event name contains whitespace")),
-        (
-            named("ironflowx.run.completed"),
-            refused("event name is owned"),
-        ),
-        (named("$system"), refused("event name is owned")),
+        (named("a..b"), is("event name has an empty segment")),
+        (named("a b"), is(control)),
+        (named("a\u{1}b"), is(control)),
+        (named("ironflowx.run.completed"), is(owned)),
+        (named("$system"), is(owned)),
         (
             with_data(blob("b", MAX_DATA_BYTES + 1).as_bytes()),
-            refused("event data exceeds maximum size"),
+            is("event data exceeds maximum size"),
         ),
-        (with_data(b"{\"k\": 1"), refused("event data is invalid: ")),
-        (with_data(b"\xff"), refused("event data is invalid: ")),
+        (
+            with_data(b"{\"k\": 1"),
+            Starts("event data is invalid: EOF while parsing"),
+        ),
+        (
+            with_data(b"\"\xff\""),
+            Starts("event data is invalid: invalid unicode"),
+        ),
         (
             with_data(br#"{"a": 1, "a": 2}"#),
-            refused("event data is invalid: repeated key"),
+            Starts("event data is invalid: repeated key at"),
         ),
         (
             with_data(br#""x\u0000y""#),
-            refused("event data is invalid: NUL"),
+            Starts("event data is invalid: NUL in a key or string at"),
         ),
         (
             with_data(br#"{"$redacted": 1}"#),
-            refused("event data is invalid: top-level"),
+            Starts("event data is invalid: top-level $redacted key at"),
         ),
-        (with_data(b"1e400"), refused("event data is invalid: ")),
+        (
+            with_data(b"1e400"),
+            Starts("event data is invalid: number out of range at"),
+        ),
         (
             with_data(format!("{}{}", "[".repeat(128), "]".repeat(128)).as_bytes()),
-            refused("event data is invalid: recursion limit"),
+            Starts("event data is invalid: recursion limit exceeded at"),
         ),
         (
             with_metadata(&blob("t", MAX_METADATA_BYTES + 1)),
-            refused("event metadata exceeds maximum size"),
+            is("event metadata exceeds maximum size"),
         ),
-        (with_metadata("{"), refused("event metadata is invalid: ")),
+        (
+            with_metadata("{"),
+            Starts("event metadata is invalid: EOF while parsing"),
+        ),
         (
             with_metadata("[1]"),
-            refused("event metadata is not a JSON object"),
+            is("event metadata is not a JSON object"),
         ),
-        (with_version(0), refused("event version is outside")),
-        (
-            with_version(i64::from(i32::MAX) + 1),
-            refused("event version is outside"),
-        ),
-        (with_key(""), Some(key_bytes.clone())),
+        (with_version(0), is(version)),
+        (with_version(i64::from(i32::MAX) + 1), is(version)),
+        (with_key(""), is(&key_bytes)),
         (
             with_key(&"k".repeat(MAX_IDEMPOTENCY_KEY_BYTES + 1)),
-            Some(key_bytes.clone()),
+            is(&key_bytes),
         ),
-        (with_key("k\0"), Some(key_bytes)),
+        (with_key("k\0"), is(&key_bytes)),
     ]
 }
 
@@ -138,13 +158,15 @@ async fn check_emit_answers_as_an_emit_does() {
             .map(drop)
             .map_err(|e| (e.kind, e.message, e.hint));
         assert_eq!(checked, emitted, "{:?}", req.name);
-        match (&checked, expected) {
-            (Ok(()), None) => {}
-            (Err((ErrorKind::Invalid, message, None)), Some(start)) => {
-                assert!(message.starts_with(&start), "{message:?} for {start:?}");
+        let met = match (&checked, &expected) {
+            (Ok(()), Expect::Accepted) => true,
+            (Err((ErrorKind::Invalid, message, None)), Expect::Is(want)) => message == want,
+            (Err((ErrorKind::Invalid, message, None)), Expect::Starts(want)) => {
+                message.starts_with(want)
             }
-            (got, expected) => panic!("{got:?} where {expected:?} was expected"),
-        }
+            _ => false,
+        };
+        assert!(met, "{checked:?} where {expected:?} was expected");
     }
     engine.close().await;
 }

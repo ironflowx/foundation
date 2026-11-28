@@ -1,11 +1,13 @@
 pub mod ironflowx_core
 pub mod ironflowx_core::limits
 pub const ironflowx_core::limits::MAX_BATCH_BYTES: usize
+pub const ironflowx_core::limits::MAX_BATCH_EVENTS: usize
 pub const ironflowx_core::limits::MAX_DATA_BYTES: usize
 pub const ironflowx_core::limits::MAX_EMBEDDER_NAME_BYTES: usize
 pub const ironflowx_core::limits::MAX_EVENT_NAME_BYTES: usize
 pub const ironflowx_core::limits::MAX_IDEMPOTENCY_KEY_BYTES: usize
 pub const ironflowx_core::limits::MAX_KEY_LABEL_BYTES: usize
+pub const ironflowx_core::limits::MAX_MESSAGE_BYTES: usize
 pub const ironflowx_core::limits::MAX_METADATA_BYTES: usize
 pub enum ironflowx_core::ErrorKind
 pub ironflowx_core::ErrorKind::Internal
