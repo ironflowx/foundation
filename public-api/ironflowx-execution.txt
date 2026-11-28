@@ -336,7 +336,7 @@ pub fn ironflowx_execution::ExecutionTables::release(&mut self, ironflowx_core::
 pub fn ironflowx_execution::ExecutionTables::renew(&mut self, ironflowx_core::id::RunId, ironflowx_core::time::Timestamp) -> core::result::Result<(), Self::Error>
 pub trait ironflowx_execution::ExecutionView
 pub type ironflowx_execution::ExecutionView::Error
-pub fn ironflowx_execution::ExecutionView::claimable(&self, &[(alloc::string::String, alloc::string::String)], ironflowx_core::time::Timestamp, u32) -> core::result::Result<alloc::vec::Vec<ironflowx_execution::Run>, Self::Error>
+pub fn ironflowx_execution::ExecutionView::claimable(&self, &[(alloc::string::String, alloc::string::String)], ironflowx_core::time::Timestamp, u32) -> core::result::Result<core::option::Option<ironflowx_execution::Run>, Self::Error>
 pub fn ironflowx_execution::ExecutionView::function(&self, &str) -> core::result::Result<core::option::Option<ironflowx_execution::Function>, Self::Error>
 pub fn ironflowx_execution::ExecutionView::function_count(&self) -> core::result::Result<u64, Self::Error>
 pub fn ironflowx_execution::ExecutionView::functions_after(&self, core::option::Option<&str>, u32) -> core::result::Result<alloc::vec::Vec<ironflowx_execution::Function>, Self::Error>

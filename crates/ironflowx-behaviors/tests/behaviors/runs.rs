@@ -855,7 +855,9 @@ async fn another_claims(w: &mut Runs) {
 async fn running_with_deadline(w: &mut Runs) {
     let run = w.run().await;
     assert_eq!((run.status, run.execution), (RunStatus::Running, 1));
-    assert!(run.lease_until.is_some_and(|t| t > w.clock.now()));
+    // Claimed at the clock's reading, for the default 60 seconds.
+    let deadline = Timestamp::from_millis(w.clock.now().as_millis() + 60_000);
+    assert_eq!(run.lease_until, Some(deadline));
 }
 
 // ---- Steps and replay ----

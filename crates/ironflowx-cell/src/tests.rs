@@ -2240,12 +2240,61 @@ async fn a_runs_failure_and_its_event_are_one_record() {
     ledger.close().await;
 }
 
+/// A step's output sets a run's lost leases back to 0 at the read store, and a rebuilt one reads
+/// the same (RUN-9, RUN-11).
+#[tokio::test]
+async fn a_steps_output_sets_the_lost_leases_back_to_0() {
+    use ironflowx_execution::{Command, Outcome as Answer};
+    let dir = tempfile::tempdir().unwrap();
+    let env = new_env_ref();
+    let clock = clock();
+    let ledger = Ledger::open(dir.path(), env, clock.clone()).await.unwrap();
+    execute(&ledger, put("charge", "v1", &[])).await.unwrap();
+    let run = started(&ledger, "charge").await;
+    let claim = || Command::Claim {
+        functions: vec!["charge@v1".into()],
+        lease_seconds: Some(10),
+        wait_seconds: None,
+    };
+    execute(&ledger, claim()).await.unwrap();
+    clock.step(10_000);
+    let Answer::Claimed(Some(c)) = execute(&ledger, claim()).await.unwrap() else {
+        panic!("the lapsed lease is taken");
+    };
+    let id = run.to_string();
+    assert_eq!(ledger.get_run(&id).await.unwrap().lost_leases, 1);
+    let lease = c.lease.to_string();
+    let begin = Command::BeginStep {
+        lease: lease.clone(),
+        position: 1,
+        name: "pay".into(),
+        once: false,
+        input: None,
+    };
+    execute(&ledger, begin).await.unwrap();
+    let lost = ledger.get_run(&id).await.unwrap().lost_leases;
+    assert_eq!(lost, 1, "a begin is no progress");
+    let complete = Command::CompleteStep {
+        lease,
+        position: 1,
+        output: None,
+    };
+    execute(&ledger, complete).await.unwrap();
+    let read = ledger.get_run(&run.to_string()).await.unwrap();
+    assert_eq!((read.lost_leases, read.execution), (0, 2));
+    ledger.close().await;
+    std::fs::remove_file(dir.path().join("read.db")).unwrap();
+    let ledger = open(dir.path(), env).await;
+    assert_eq!(ledger.get_run(&run.to_string()).await.unwrap(), read);
+    ledger.close().await;
+}
+
 /// The claim's query by status alone, on rows no fold writes: a running run with a due time
 /// before its deadline, and ended runs with a due time and a deadline reached, are none of them
 /// claimable; a running run is, from its deadline.
 #[test]
 fn the_claim_query_takes_a_queued_run_by_its_due_time_and_a_running_one_by_its_deadline() {
-    use ironflowx_execution::{Entry, ExecutionView};
+    use ironflowx_execution::Entry;
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::open_blocking(dir.path(), new_env_ref(), clock()).unwrap();
     let mut conn = ledger.store.lock().unwrap();
@@ -2298,12 +2347,72 @@ fn the_claim_query_takes_a_queued_run_by_its_due_time_and_a_running_one_by_its_d
     )
     .unwrap();
     let pairs = [("charge".to_owned(), "v1".to_owned())];
-    let at = |millis| {
-        let taken = ReadStore(&conn).claimable(&pairs, Timestamp::from_millis(millis), 10);
-        taken.unwrap().iter().map(|r| r.id).collect::<Vec<_>>()
+    assert_eq!(claimable(&conn, &pairs, T + 999), []);
+    assert_eq!(claimable(&conn, &pairs, T + 1_000), [ids[0]]);
+    drop(conn);
+    drop(ledger);
+}
+
+/// Every run a claim of `pairs` may take at `millis`, in the order the read store gives them.
+fn claimable(
+    conn: &rusqlite::Connection,
+    pairs: &[(String, String)],
+    millis: i64,
+) -> Vec<ironflowx_core::RunId> {
+    use ironflowx_execution::ExecutionView;
+    let at = Timestamp::from_millis(millis);
+    let next = |skip| ReadStore(conn).claimable(pairs, at, skip).unwrap();
+    (0..).map_while(|skip| next(skip).map(|r| r.id)).collect()
+}
+
+/// The claim's order at the read store: the earliest due first, a running run due at its lease's
+/// deadline, then the first created; past the runs a claim skips.
+#[test]
+fn the_claim_query_takes_the_earliest_due_then_the_first_created() {
+    use ironflowx_execution::Entry;
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open_blocking(dir.path(), new_env_ref(), clock()).unwrap();
+    let mut conn = ledger.store.lock().unwrap();
+    let id = |n: u32| -> ironflowx_core::RunId {
+        format!("0190b5f0-0000-7000-8000-00000000013{n}")
+            .parse()
+            .unwrap()
     };
-    assert_eq!(at(T + 999), []);
-    assert_eq!(at(T + 1_000), [ids[0]]);
+    let created = |n: u32| Entry::RunCreated {
+        run: id(n),
+        sequence: n.into(),
+        function: "charge".into(),
+        code: "v1".into(),
+        input: b"null".to_vec(),
+    };
+    // Run 1, first created, running until T + 300; run 2 due at T + 100; 3 and 4 at T + 200.
+    let claimed = Entry::Claimed {
+        run: id(1),
+        execution: 1,
+        lease_until: Timestamp::from_millis(T + 300),
+    };
+    for (time, entries) in [
+        (T, vec![created(1), claimed]),
+        (T + 100, vec![created(2)]),
+        (T + 200, vec![created(3), created(4)]),
+    ] {
+        let entries = Entries {
+            record: ironflowx_events::Record {
+                time: Timestamp::from_millis(time),
+                events: vec![],
+            },
+            execution: entries.into_iter().map(Into::into).collect(),
+        };
+        let applied = crate::store::applied(&conn).unwrap();
+        let record = Some((uuid::Uuid::now_v7(), &entries, &emitter()));
+        crate::store::apply(&mut conn, applied, record, false).unwrap();
+    }
+    let pairs = [("charge".to_owned(), "v1".to_owned())];
+    assert_eq!(
+        claimable(&conn, &pairs, T + 1_000),
+        [id(2), id(3), id(4), id(1)]
+    );
+    assert_eq!(claimable(&conn, &pairs, T + 250), [id(2), id(3), id(4)]);
     drop(conn);
     drop(ledger);
 }
@@ -2552,6 +2661,12 @@ fn the_fold_refuses_an_entry_the_store_does_not_follow() {
             output: Some(b"1".to_vec()),
         };
         execute(&ledger, complete).await.unwrap();
+        let end = ironflowx_execution::Command::Complete {
+            lease: format!("{run}.1"),
+            steps: 1,
+            output: None,
+        };
+        execute(&ledger, end).await.unwrap();
         // A read waits for the fold of every acknowledged record, so the output is there.
         ledger.get_run(&run.to_string()).await.unwrap();
         run
@@ -2559,24 +2674,51 @@ fn the_fold_refuses_an_entry_the_store_does_not_follow() {
     let unknown = "0190b5f0-0000-7000-8000-000000000999".parse().unwrap();
     let mut conn = ledger.store.lock().unwrap();
     let applied = crate::store::applied(&conn).unwrap();
+    // Only execution rules make a `RunFailed`: read back from its bytes.
+    let mut failed = vec![10];
+    for text in [
+        run.to_string().as_bytes(),
+        b"ironflowx.executor_lost",
+        b"lost",
+    ] {
+        failed.extend_from_slice(&u32::try_from(text.len()).unwrap().to_le_bytes());
+        failed.extend_from_slice(text);
+    }
+    let failed = ironflowx_execution::decode(&mut failed.as_slice()).expect("an entry");
+    let time = Timestamp::from_millis(T);
+    // A lease kept, lost or given back, and a failure, are of a running run; this one completed.
     for entry in [
         Entry::Claimed {
             run: unknown,
             execution: 1,
-            lease_until: Timestamp::from_millis(T),
-        },
+            lease_until: time,
+        }
+        .into(),
         Entry::StepCompleted {
             run,
             position: 1,
             output: b"2".to_vec(),
-        },
+        }
+        .into(),
+        Entry::LeaseRenewed {
+            run,
+            lease_until: time,
+        }
+        .into(),
+        Entry::LeaseLost {
+            run,
+            lost_leases: 1,
+        }
+        .into(),
+        Entry::Released { run }.into(),
+        failed,
     ] {
         let entries = Entries {
             record: ironflowx_events::Record {
-                time: Timestamp::from_millis(T),
+                time,
                 events: vec![],
             },
-            execution: vec![entry.clone().into()],
+            execution: vec![entry.clone()],
         };
         let record = Some((uuid::Uuid::now_v7(), &entries, &emitter()));
         let folded = crate::store::apply(&mut conn, applied, record, false);
@@ -2620,8 +2762,8 @@ fn a_run_is_claimable_from_its_due_time() {
     crate::store::apply(&mut conn, applied, record, false).unwrap();
     let pairs = [("charge".to_owned(), "v1".to_owned())];
     let at = |millis| {
-        let taken = ReadStore(&conn).claimable(&pairs, Timestamp::from_millis(millis), 1);
-        taken.unwrap().first().map(|r| r.id)
+        let taken = ReadStore(&conn).claimable(&pairs, Timestamp::from_millis(millis), 0);
+        taken.unwrap().map(|r| r.id)
     };
     assert_eq!(at(T + 999), None);
     assert_eq!(at(T + 1_000), Some(run));

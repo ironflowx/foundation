@@ -513,7 +513,8 @@ impl ExecutionTables for Tables<'_> {
     }
 }
 
-/// The claim's query of `pairs` pairs: ?1 is the time, ?2 the limit, and the pairs take ?3 on.
+/// The claim's query of `pairs` pairs: ?1 is the time, ?2 how many to skip, and the pairs take ?3
+/// on.
 /// One branch per index, so neither reads ended runs: a queued run is due at its due time, a
 /// running one at its deadline. `due` follows the columns `row_run` reads.
 pub(crate) fn claim_sql(pairs: usize) -> String {
@@ -526,7 +527,7 @@ pub(crate) fn claim_sql(pairs: usize) -> String {
          UNION ALL
          SELECT {RUN_FIELDS}, lease_until AS due FROM runs
          WHERE status = 'running' AND lease_until <= ?1 AND ({pairs})
-         ORDER BY due, sequence LIMIT ?2"
+         ORDER BY due, sequence LIMIT 1 OFFSET ?2"
     )
 }
 
@@ -695,23 +696,23 @@ impl ExecutionView for ReadStore<'_> {
         &self,
         pairs: &[(String, String)],
         now: Timestamp,
-        limit: u32,
-    ) -> Result<Vec<Run>, StoreError> {
+        skip: u32,
+    ) -> Result<Option<Run>, StoreError> {
         if pairs.is_empty() {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let sql = claim_sql(pairs.len());
         let millis = now.as_millis();
-        let mut values: Vec<&dyn ToSql> = vec![&millis, &limit];
+        let mut values: Vec<&dyn ToSql> = vec![&millis, &skip];
         for (name, code) in pairs {
             values.push(name);
             values.push(code);
         }
-        let runs = || -> rusqlite::Result<Vec<Run>> {
-            let mut rows = self.0.prepare(&sql)?;
-            rows.query_map(params_from_iter(values), row_run)?.collect()
-        };
-        store_err(runs())
+        store_err(
+            self.0
+                .query_row(&sql, params_from_iter(values), row_run)
+                .optional(),
+        )
     }
 }
 

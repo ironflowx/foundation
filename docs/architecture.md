@@ -360,7 +360,7 @@ fn claim_pairs(claim: &Command) -> Result<Vec<(String, String)>, Refusal>;   // 
 fn encode(entry: &Stored, out: &mut Vec<u8>);   // led by its kind, 1 to 10
 fn decode(bytes: &mut &[u8]) -> Option<Stored>;   // a decoded RunCompleted joins no decision
 // ExecutionView: function, triggered_by(event, other_than), function_count, functions_after(after, limit), run,
-// step (one the run counts: none is the store's failure), last_run_sequence, claimable(pairs, now, limit)
+// step (one the run counts: none is the store's failure), last_run_sequence, claimable(pairs, now, skip)
 // ExecutionTables: put_function, create_run, claim, renew, lose_lease, release, begin_step, complete_step,
 // complete_run, fail_run
 ```

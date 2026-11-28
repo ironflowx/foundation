@@ -64,8 +64,8 @@ impl ExecutionView for Store {
         &self,
         pairs: &[(String, String)],
         now: Timestamp,
-        limit: u32,
-    ) -> Result<Vec<Run>, String> {
+        skip: u32,
+    ) -> Result<Option<Run>, String> {
         let due_at = |r: &Run| match r.status {
             Status::Queued => r.due_at,
             Status::Running => r.lease_until,
@@ -78,7 +78,7 @@ impl ExecutionView for Store {
             .filter(|r| due_at(r).is_some_and(|d| d <= now))
             .collect();
         due.sort_by_key(|r| (due_at(r), r.sequence));
-        Ok(due.into_iter().take(limit as usize).cloned().collect())
+        Ok(due.into_iter().nth(skip as usize).cloned())
     }
 }
 
@@ -1335,9 +1335,9 @@ impl ExecutionView for Failing<'_> {
         &self,
         pairs: &[(String, String)],
         now: Timestamp,
-        limit: u32,
-    ) -> Result<Vec<Run>, String> {
-        self.store.claimable(pairs, now, limit)
+        skip: u32,
+    ) -> Result<Option<Run>, String> {
+        self.store.claimable(pairs, now, skip)
     }
 }
 
@@ -1667,10 +1667,13 @@ fn a_claim_fails_at_most_100_runs() {
 fn a_heartbeat_renews_each_running_lease_and_refuses_the_rest() {
     let (mut s, current) = claimed();
     let current = current.to_string();
-    s.outcome(start(), &key(1)).unwrap();
-    s.outcome(start(), &key(1)).unwrap();
+    for _ in 0..3 {
+        s.outcome(start(), &key(1)).unwrap();
+    }
     let short = claim_10(&mut s, &key(1)).unwrap();
     let released = claim_10(&mut s, &key(1)).unwrap().to_string();
+    let ended = claim_10(&mut s, &key(1)).unwrap().to_string();
+    s.outcome(complete(&ended, 0), &key(1)).unwrap();
     s.outcome(release(&released), &key(1)).unwrap();
     s.time += 1_000;
     let unknown = "0190b5f0-0000-7000-8000-000000000999.1";
@@ -1681,6 +1684,7 @@ fn a_heartbeat_renews_each_running_lease_and_refuses_the_rest() {
         unknown,
         "not-a-lease",
         short_text.as_str(),
+        ended.as_str(),
     ];
     let (outcome, entries, _) = s.run_cmd(heartbeat(&leases), &key(1)).unwrap().into_parts();
     let Outcome::Renewed(results) = outcome else {
@@ -1701,6 +1705,12 @@ fn a_heartbeat_renews_each_running_lease_and_refuses_the_rest() {
             (ErrorKind::NotFound, None),
             (ErrorKind::NotFound, None),
         ]
+    );
+    let over = (ErrorKind::Conflict, Some("this execution is over"));
+    assert_eq!(
+        kind_and_hint(results[5].as_ref().unwrap_err()),
+        over,
+        "an ended run"
     );
     let first = the_run(&s).id;
     assert_eq!(

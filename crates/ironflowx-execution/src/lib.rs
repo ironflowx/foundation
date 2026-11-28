@@ -434,16 +434,15 @@ pub trait ExecutionView {
     fn step(&self, run: RunId, position: u32) -> Result<Step, Self::Error>;
     /// The highest run sequence; 0 when there is no run.
     fn last_run_sequence(&self) -> Result<u64, Self::Error>;
-    /// Up to `limit` runs a claim of `pairs` may take at `now`, in the order it tries them: of one
-    /// of those `(name, code)` pairs, queued and due by `now`, or running with a lease whose
-    /// deadline is by `now`; the earliest due first, a lapsed lease due at its deadline, then the
-    /// first created.
+    /// The run a claim of `pairs` takes at `now`, past the first `skip` of them: of one of those
+    /// `(name, code)` pairs, queued and due by `now`, or running with a lease whose deadline is by
+    /// `now`; the earliest due first, a lapsed lease due at its deadline, then the first created.
     fn claimable(
         &self,
         pairs: &[(String, String)],
         now: Timestamp,
-        limit: u32,
-    ) -> Result<Vec<Run>, Self::Error>;
+        skip: u32,
+    ) -> Result<Option<Run>, Self::Error>;
 }
 
 /// The read store, as `fold` writes it.
@@ -621,16 +620,14 @@ fn claim<V: ExecutionView>(
     lease_seconds: u32,
     now: Timestamp,
 ) -> Result<Decision, Error<V::Error>> {
-    let runs = view
-        .claimable(pairs, now, MAX_FAILED_BY_CLAIM + 1)
-        .map_err(Error::Store)?;
     let mut entries = Vec::new();
     let mut engine_events = Vec::new();
     let mut failed = 0;
-    for run in runs {
-        if failed == MAX_FAILED_BY_CLAIM {
+    // The view does not see what this decision failed: it skips as many.
+    while failed < MAX_FAILED_BY_CLAIM {
+        let Some(run) = view.claimable(pairs, now, failed).map_err(Error::Store)? else {
             break;
-        }
+        };
         if run.status == Status::Running {
             let lost_leases = run.lost_leases.saturating_add(1);
             entries.push(Entry::LeaseLost {
