@@ -685,12 +685,19 @@ fn records_round_trip() {
         bytes[at..at + 36].copy_from_slice(bad.as_bytes());
         assert_eq!(record::decode(&bytes), None, "{bad}");
     }
-    let simple = id.simple().to_string();
-    let mut bytes = good[..at - 4].to_vec();
-    bytes.extend_from_slice(&32u32.to_le_bytes());
-    bytes.extend_from_slice(simple.as_bytes());
-    bytes.extend_from_slice(&good[at + 36..]);
-    assert_eq!(record::decode(&bytes), None, "{simple}");
+    // The other text forms of the same ID, each with its own length prefix.
+    let forms = [
+        id.simple().to_string(),
+        id.braced().to_string(),
+        id.urn().to_string(),
+    ];
+    for form in forms {
+        let mut bytes = good[..at - 4].to_vec();
+        bytes.extend_from_slice(&u32::try_from(form.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(form.as_bytes());
+        bytes.extend_from_slice(&good[at + 36..]);
+        assert_eq!(record::decode(&bytes), None, "{form}");
+    }
 }
 
 fn append(log: &SegmentLog, expected: ExpectedRevision, payload: Vec<u8>) {
@@ -1130,7 +1137,12 @@ async fn a_read_store_of_a_copy_diverged_by_a_record_without_events_is_rebuilt()
 /// matching store being one the writer's own fold left; one without an ID there is rebuilt (D117).
 #[tokio::test]
 async fn a_read_store_is_kept_only_when_its_record_id_matches() {
-    for (damage, kept) in [("", true), ("UPDATE meta SET record_id = NULL", false)] {
+    for (damage, kept) in [
+        ("", true),
+        ("UPDATE meta SET record_id = NULL", false),
+        // The right ID in another text form: the fold stores only the canonical one.
+        ("UPDATE meta SET record_id = upper(record_id)", false),
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let env = new_env_ref();
         let ledger = open(dir.path(), env).await;
