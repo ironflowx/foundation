@@ -609,8 +609,15 @@ impl ExecutionView for ReadStore<'_> {
                 .optional(),
         )
     }
+}
 
-    fn earliest_due(&self, pairs: &[(String, String)]) -> Result<Option<Timestamp>, StoreError> {
+impl ReadStore<'_> {
+    /// The earliest due time of a queued run of one of `pairs`, due or not; `None` when there is
+    /// none. What a waiting claim reads (D113).
+    pub(crate) fn earliest_due(
+        &self,
+        pairs: &[(String, String)],
+    ) -> Result<Option<Timestamp>, StoreError> {
         if pairs.is_empty() {
             return Ok(None);
         }

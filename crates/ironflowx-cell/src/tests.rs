@@ -2444,7 +2444,7 @@ fn a_run_is_claimable_from_its_due_time() {
 /// due or not, and none of another pair's.
 #[test]
 fn the_earliest_due_time_is_of_a_pair_the_claim_names() {
-    use ironflowx_execution::{Entry, ExecutionView};
+    use ironflowx_execution::Entry;
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::open_blocking(dir.path(), new_env_ref(), clock()).unwrap();
     let mut conn = ledger.store.lock().unwrap();
@@ -2487,4 +2487,32 @@ fn the_earliest_due_time_is_of_a_pair_the_claim_names() {
     assert_eq!(due(&[("charge", "v2")]), None);
     drop(conn);
     drop(ledger);
+}
+
+/// A waiting claim's wake: `Changes` resolves at a commit, and at a failure; after a close it
+/// never does, as the close is no change.
+#[tokio::test]
+async fn changes_resolve_at_a_commit_and_a_failure_and_never_after_a_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = open(dir.path(), new_env_ref()).await;
+    let mut changes = ledger.changes();
+    assert!(!ready(std::pin::pin!(changes.changed())));
+    emit(&ledger, named("a")).await.unwrap();
+    assert!(ready(std::pin::pin!(changes.changed())), "a commit");
+    // Taken once b is committed, and before its fold fails.
+    ledger.hold_fold();
+    ledger.fail_next_fold();
+    emit(&ledger, named("b")).await.unwrap();
+    let mut at_fold = ledger.changes();
+    assert!(!ready(std::pin::pin!(at_fold.changed())));
+    ledger.release_fold();
+    ledger.faulted().await;
+    assert!(ready(std::pin::pin!(at_fold.changed())), "a failure");
+    ledger.close().await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = open(dir.path(), new_env_ref()).await;
+    let mut changes = ledger.changes();
+    ledger.close().await;
+    assert!(!ready(std::pin::pin!(changes.changed())), "a close");
 }

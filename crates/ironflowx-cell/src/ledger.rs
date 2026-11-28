@@ -451,19 +451,24 @@ impl Ledger {
         claim: &Command,
         clock: &(dyn Clock + Sync),
     ) -> Result<Option<Duration>, ReadError> {
-        let (claim, progress) = (claim.clone(), self.progress.clone());
+        let pairs = ironflowx_execution::claim_pairs(claim).map_err(ReadError::Refused)?;
+        let progress = self.progress.clone();
         let (due, last) = self
             .read(move |v| {
-                let due = ironflowx_execution::earliest_due(v, &claim)?;
+                let due = v.earliest_due(&pairs).map_err(Error::Store)?;
                 // The fold moves it holding the store's lock, which this read holds.
                 Ok((due, progress.borrow().time))
             })
             .await?;
-        let now = clock.now();
-        let now = last.map_or(now, |t| t.max(now));
+        let clock = clock.now();
+        let now = last.map_or(clock, |t| t.max(clock));
         Ok(due.map(|due| {
-            // Negative once it is due.
-            let millis = due.as_millis().saturating_sub(now.as_millis());
+            if due <= now {
+                return Duration::ZERO;
+            }
+            // Behind the last record, event time stands still until the clock passes it, or a
+            // commit, which wakes the claim, moves it: the distance is the clock's.
+            let millis = due.as_millis().saturating_sub(clock.as_millis());
             Duration::from_millis(u64::try_from(millis).unwrap_or(0))
         }))
     }
@@ -595,7 +600,8 @@ impl Changes {
     /// Resolves at the first commit or failure since this was taken or last resolved; never once
     /// the ledger has closed.
     pub async fn changed(&mut self) {
-        if self.0.changed().await.is_err() {
+        // A close marks the progress closed, which is no change.
+        if self.0.changed().await.is_err() || self.0.borrow_and_update().closed {
             std::future::pending::<()>().await;
         }
     }

@@ -4,8 +4,8 @@
 //! [`decide`] checks a [`Command`] against the current state and returns what to append: entries,
 //! and the engine's own events, which the ledger sequences with event rules; [`fold`] applies an
 //! appended entry to the read store; [`get_function`] and [`get_run`] read back, and
-//! [`earliest_due`] tells a waiting claim when to read again. Nothing here does I/O, reads a clock
-//! or draws randomness (LED-15): state comes through [`ExecutionView`], goes out through
+//! [`claim_pairs`] checks a waiting claim before it reads. Nothing here does I/O, reads a clock or
+//! draws randomness (LED-15): state comes through [`ExecutionView`], goes out through
 //! [`ExecutionTables`], and run IDs come from the caller's [`Draws`].
 
 // Purity (LED-15): forbid, so an inner #[allow] cannot switch these off.
@@ -347,8 +347,6 @@ pub trait ExecutionView {
         pairs: &[(String, String)],
         now: Timestamp,
     ) -> Result<Option<Run>, Self::Error>;
-    /// The earliest due time of a queued run of one of those pairs; `None` when there is none.
-    fn earliest_due(&self, pairs: &[(String, String)]) -> Result<Option<Timestamp>, Self::Error>;
 }
 
 /// The read store, as `fold` writes it.
@@ -571,8 +569,7 @@ fn label<E>(what: &str, text: &str) -> Result<(), Error<E>> {
     )))
 }
 
-/// A claim's `name@code` pairs: 1 to [`MAX_PAIRS`], none repeated.
-/// A claim's `(name, code)`.
+/// A function's name and a code label, as a claim names them.
 type Pair = (String, String);
 
 /// A claim's pairs and lease length, or why the claim is outside the rules. The engine waits; a
@@ -593,7 +590,8 @@ fn check_claim<E>(
     Ok((pairs, lease_seconds))
 }
 
-fn pairs<E>(functions: &[String]) -> Result<Vec<(String, String)>, Error<E>> {
+/// A claim's `name@code` pairs: 1 to [`MAX_PAIRS`], none repeated.
+fn pairs<E>(functions: &[String]) -> Result<Vec<Pair>, Error<E>> {
     if !(1..=MAX_PAIRS).contains(&functions.len()) {
         return Err(invalid(format!(
             "a claim names 1 to {MAX_PAIRS} functions as name@code"
@@ -937,25 +935,24 @@ pub fn get_run<V: ExecutionView>(view: &V, id: &str) -> Result<Run, Error<V::Err
     view.run(id).map_err(Error::Store)?.ok_or_else(not_found)
 }
 
-/// The earliest time a run that `claim` may take is due, for a claim that waits (D113): checked
-/// as [`decide`] checks it, and `None` when no queued run is of its pairs. A non-claim command is
-/// `Invalid`.
+/// A claim's `(name, code)` pairs, in order, for a claim that waits to read with (D113): the
+/// claim is checked as [`decide`] checks it.
 ///
 /// # Errors
 ///
-/// `Invalid`, or the view's error.
-pub fn earliest_due<V: ExecutionView>(
-    view: &V,
-    claim: &Command,
-) -> Result<Option<Timestamp>, Error<V::Error>> {
+/// `Invalid` for a claim outside the rules, or a command that is no claim.
+pub fn claim_pairs(claim: &Command) -> Result<Vec<(String, String)>, Refusal> {
     let Command::Claim {
         functions,
         lease_seconds,
         wait_seconds,
     } = claim
     else {
-        return Err(invalid("not a claim"));
+        return Err(Refusal::invalid("not a claim"));
     };
-    let (pairs, _) = check_claim(functions, *lease_seconds, *wait_seconds)?;
-    view.earliest_due(&pairs).map_err(Error::Store)
+    match check_claim::<std::convert::Infallible>(functions, *lease_seconds, *wait_seconds) {
+        Ok((pairs, _)) => Ok(pairs),
+        Err(Error::Refused(r)) => Err(r),
+        Err(Error::Store(never)) => match never {},
+    }
 }

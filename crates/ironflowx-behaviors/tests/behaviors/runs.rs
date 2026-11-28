@@ -406,7 +406,7 @@ async fn claim_empty(w: &mut Runs) {
     if let Some(took) = w.took {
         // It waited what it asked for, and no longer.
         let asked = Duration::from_secs(1);
-        assert!(asked <= took && took < asked * 5, "{took:?}");
+        assert!(asked <= took && took < asked * 2, "{took:?}");
     }
 }
 
@@ -447,16 +447,21 @@ async fn builder_starts(w: &mut Runs) {
         functions: vec!["charge@v1".into()],
         ..ClaimRunRequest::default()
     };
-    let start = async {
-        // Gives the claim time to find nothing and wait: the run exists only after this.
-        tokio::time::sleep(Duration::from_millis(250)).await;
+    let (claim, run_id) = {
+        let mut claim = std::pin::pin!(ops.claim_run(&executor, req));
+        // Gives the claim time to find nothing and wait: no door shows its read. It must not
+        // answer before a run exists.
+        tokio::select! {
+            early = &mut claim => panic!("the claim answered before a run existed: {early:?}"),
+            () = tokio::time::sleep(Duration::from_millis(250)) => {}
+        }
         let req = StartRunRequest {
             function: "charge".into(),
         };
-        ops.start_run(&builder, req).await.unwrap()
+        let (claim, started) = tokio::join!(claim, ops.start_run(&builder, req));
+        (claim, started.unwrap().run_id.to_string())
     };
-    let (claim, started) = tokio::join!(ops.claim_run(&executor, req), start);
-    w.run_id = Some(started.run_id.to_string());
+    w.run_id = Some(run_id);
     w.claim = Some(claim);
 }
 

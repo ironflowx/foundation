@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use ironflowx_core::{Clock, ErrorKind, Scope, Secret, Timestamp};
 use ironflowx_operations::Engine;
 use ironflowx_proto::{
-    Call, Claim, ClaimRunRequest, CreateKeyRequest, GetRunRequest, ListEnvironmentsRequest,
-    OpError, Operations, PutFunctionRequest, RunStatus, StartRunRequest,
+    Call, Claim, ClaimRunRequest, CreateKeyRequest, GetFunctionRequest, GetRunRequest,
+    ListEnvironmentsRequest, OpError, Operations, PutFunctionRequest, RunStatus, StartRunRequest,
 };
 
 pub const T: i64 = 1_800_000_000_000;
@@ -134,15 +134,16 @@ pub struct Fixture {
     pub dir: tempfile::TempDir,
 }
 
-/// An engine with function "charge" at code "v1", and an executor whose key expires at
-/// `T + 1 h`.
+/// An engine with function "charge" at code "v1", and an executor whose key expires an hour after
+/// the clock's reading now.
 pub async fn fixture(clock: impl Clock + Clone + Send + Sync + 'static) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
+    let expires = clock.now().as_millis() + 3_600_000;
     let opened = Engine::open(dir.path(), clock, None).await.unwrap();
     let (engine, admin) = (opened.engine, Call::with_key(opened.minted.unwrap()));
     let req = CreateKeyRequest {
         scopes: BTreeSet::from([Scope::Execute]),
-        expires_at: Some(Timestamp::from_millis(T + 3_600_000)),
+        expires_at: Some(Timestamp::from_millis(expires)),
         ..CreateKeyRequest::default()
     };
     let created = engine.create_key(&admin, req).await.unwrap();
@@ -152,6 +153,11 @@ pub async fn fixture(clock: impl Clock + Clone + Send + Sync + 'static) -> Fixtu
         ..PutFunctionRequest::default()
     };
     engine.put_function(&admin, put).await.unwrap();
+    // A read waits for the put's fold, so no fold wakes a claim the test sends next.
+    let get = GetFunctionRequest {
+        name: "charge".into(),
+    };
+    engine.get_function(&admin, get).await.unwrap();
     Fixture {
         engine: Arc::new(engine),
         admin,
@@ -208,6 +214,8 @@ impl Fixture {
 
     /// Moves a run's due time in the read store, with no record: as a retry's would be (#225).
     pub async fn due_at(&self, run_id: &str, ms: i64) {
+        // A read waits for the start's fold, which inserts the row.
+        assert_eq!(self.status(run_id).await, RunStatus::Queued);
         let db = rusqlite::Connection::open(self.ledger_dir().await.join("read.db")).unwrap();
         let sql = "UPDATE runs SET due_at = ?1 WHERE id = ?2";
         assert_eq!(db.execute(sql, rusqlite::params![ms, run_id]).unwrap(), 1);
@@ -218,6 +226,27 @@ impl Fixture {
         let db = rusqlite::Connection::open(self.ledger_dir().await.join("read.db")).unwrap();
         let sql = "CREATE TRIGGER t BEFORE INSERT ON runs BEGIN SELECT RAISE(ABORT, 'x'); END";
         db.execute_batch(sql).unwrap();
+    }
+
+    /// Closes the engine and opens it again on `clock`.
+    pub async fn reopen(self, clock: impl Clock + Clone + Send + Sync + 'static) -> Self {
+        let Self {
+            engine,
+            admin,
+            executor,
+            executor_id,
+            dir,
+        } = self;
+        let engine = Arc::try_unwrap(engine).ok().expect("no claim in flight");
+        engine.close().await;
+        let opened = Engine::open(dir.path(), clock, None).await.unwrap();
+        Self {
+            engine: Arc::new(opened.engine),
+            admin,
+            executor,
+            executor_id,
+            dir,
+        }
     }
 
     pub async fn close(self) {

@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
-use ironflowx_cell::{Ledger, Outcome, Submission};
+use ironflowx_cell::{Ledger, Outcome, ReadError, Submission};
 use ironflowx_core::{
     Address, Clock, Emitter, EnvRef, ErrorKind, IncarnationToken, ParseError, Scope, Secret,
     SubmitAs, Timestamp,
@@ -543,12 +543,12 @@ impl Operations for Engine {
     ///
     /// A claim that waits, on a runtime without its timer enabled.
     async fn claim_run(&self, cx: &Call, req: ClaimRunRequest) -> Result<Option<Claim>, OpError> {
+        let op = Operation::ClaimRun;
+        let mut a = self.admit(cx, op).await?;
         let mut drain = self.drain.subscribe();
         if *drain.borrow() {
             return Err(draining());
         }
-        let op = Operation::ClaimRun;
-        let mut a = self.admit(cx, op).await?;
         let started = tokio::time::Instant::now();
         // Execution rules check it at the first read.
         let wait = Duration::from_secs(req.wait_seconds.unwrap_or(DEFAULT_WAIT_SECONDS).into());
@@ -556,11 +556,12 @@ impl Operations for Engine {
         loop {
             // Taken before the read, so a commit after its snapshot wakes the wait (RUN-16).
             let mut changes = self.ledger(&a).changes();
-            let due = self
-                .ledger(&a)
-                .claimable(&cmd, &*self.clock)
-                .await
-                .map_err(events::read_error)?;
+            // A read that waits on another call's fold does not hold a drain up (RUN-15).
+            let read = self.ledger(&a).claimable(&cmd, &*self.clock);
+            let Some(due) = unless_drained(&mut drain, read).await else {
+                return Err(draining());
+            };
+            let due = due.map_err(events::read_error)?;
             let mut nap = RECHECK;
             match due {
                 Some(Duration::ZERO) => {
@@ -575,6 +576,10 @@ impl Operations for Engine {
                 Some(until) => nap = nap.min(until),
                 None => {}
             }
+            // A fault or a drain since the read comes before the end of the wait.
+            if self.ledger(&a).state() == LedgerState::Unavailable {
+                return Err(events::read_error(ReadError::Unavailable));
+            }
             if *drain.borrow() {
                 return Err(draining());
             }
@@ -584,18 +589,17 @@ impl Operations for Engine {
             }
             let mut woken = pin!(changes.changed());
             let mut slept = pin!(tokio::time::sleep(nap.min(left)));
-            let mut drained = pin!(drain.wait_for(|d| *d));
-            poll_fn(|cx| {
-                let ready = woken.as_mut().poll(cx).is_ready()
-                    || slept.as_mut().poll(cx).is_ready()
-                    || drained.as_mut().poll(cx).is_ready();
+            let either = poll_fn(|cx| {
+                let ready =
+                    woken.as_mut().poll(cx).is_ready() || slept.as_mut().poll(cx).is_ready();
                 if ready {
                     Poll::Ready(())
                 } else {
                     Poll::Pending
                 }
-            })
-            .await;
+            });
+            // Read again whichever it was: a due run comes before a drain.
+            unless_drained(&mut drain, either).await;
         }
     }
 
@@ -727,6 +731,25 @@ async fn blocking<T: Send + 'static>(
         Ok(Ok(value)) => Ok(value),
         Ok(Err(_)) | Err(_) => Err(unavailable()),
     }
+}
+
+/// `f`'s output, or `None` once the engine drains while `f` is pending.
+async fn unless_drained<T>(
+    drain: &mut watch::Receiver<bool>,
+    f: impl Future<Output = T>,
+) -> Option<T> {
+    let mut f = pin!(f);
+    let mut drained = pin!(drain.wait_for(|d| *d));
+    poll_fn(|cx| {
+        if let Poll::Ready(t) = f.as_mut().poll(cx) {
+            return Poll::Ready(Some(t));
+        }
+        match drained.as_mut().poll(cx) {
+            Poll::Ready(_) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    })
+    .await
 }
 
 fn draining() -> OpError {

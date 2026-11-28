@@ -24,19 +24,24 @@ async fn fifty_idle_claims_append_nothing_and_never_reach_the_writer() {
     let f = fixture(clock.clone()).await;
     let ledger = f.ledger_dir().await;
     let (before, readings) = (log(&ledger), clock.writer_readings());
+    let others = clock.tell_others();
     let sent = Instant::now();
     let claims: Vec<_> = (0..50).map(|_| f.spawn_claim(None)).collect();
     for claim in claims {
         let (claimed, at) = claim.await.unwrap();
         assert_eq!(claimed, Ok(None));
-        // It waited 20 s, as a claim that names no wait does.
-        assert!(at - sent >= Duration::from_secs(20), "{:?}", at - sent);
+        // It waited 20 s, as a claim that names no wait does, and no longer.
+        let waited = at - sent;
+        assert!(Duration::from_secs(20) <= waited, "{waited:?}");
+        assert!(waited < Duration::from_secs(21), "{waited:?}");
     }
     assert_eq!(
         clock.writer_readings(),
         readings,
         "a claim reached the writer"
     );
+    // Each claim's admission, and a read at 0, 5, 10, 15 and 20 s: it does not poll.
+    assert_eq!(others.try_iter().count(), 50 * 6);
     assert!(log(&ledger) == before, "the log changed");
     f.close().await;
 }
@@ -117,6 +122,14 @@ async fn a_drain_ends_fifty_waiting_claims_at_once() {
         assert!(unavailable(&claimed), "{claimed:?}");
         assert!(at - drained < Duration::from_secs(1), "{:?}", at - drained);
     }
+    // Admitted first (architecture.md, "Each call is admitted first").
+    let stranger = ironflowx_proto::Call::with_key(ironflowx_core::Secret::new("nope".into()));
+    let refused = f
+        .engine
+        .claim_run(&stranger, claim(None))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::Unauthenticated);
     // A new claim, with a run due: it takes nothing. Nothing else drains.
     let run = f.start().await;
     let new = f.engine.claim_run(&f.executor(), claim(None)).await;
@@ -218,7 +231,7 @@ async fn a_clock_set_past_a_due_time_is_seen_within_5_s() {
         claimed.unwrap().expect("the run").lease.run.to_string(),
         run
     );
-    assert!(at - set < Duration::from_secs(6), "{:?}", at - set);
+    assert!(at - set < Duration::from_millis(5_500), "{:?}", at - set);
     f.close().await;
 }
 
@@ -263,6 +276,88 @@ async fn a_run_due_at_the_last_record_is_due_with_the_clock_set_back() {
     let run = f.start().await;
     clock.set(T);
     let (claimed, _) = f.spawn_claim(Some(1)).await.unwrap();
+    assert_eq!(
+        claimed.unwrap().expect("the run").lease.run.to_string(),
+        run
+    );
+    f.close().await;
+}
+
+/// A fault comes before the end of the wait: a claim whose wait is over when the ledger fails
+/// after its last read is `Unavailable`, not empty.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fault_after_the_last_read_is_no_empty_claim() {
+    let clock = Probe::at(T);
+    let f = fixture(clock.clone()).await;
+    // Past its admission, at its read's reading, after the snapshot.
+    let (read, go) = clock.stop_other(1);
+    let claim = f.spawn_claim(Some(0));
+    receive(&read, 1);
+    f.fail_next_start().await;
+    let req = StartRunRequest {
+        function: "charge".into(),
+    };
+    f.engine.start_run(&f.admin, req).await.unwrap();
+    f.engine.faulted().await;
+    go.send(()).unwrap();
+    let (claimed, _) = claim.await.unwrap();
+    assert!(unavailable(&claimed), "{claimed:?}");
+    f.close().await;
+}
+
+/// With the clock behind the last record, event time stands still until the clock passes it: a run
+/// due 5 ms after that record is an hour away by the clock, and a claim that waits 1 s reads twice,
+/// not every 5 ms.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_claim_behind_the_last_record_does_not_spin() {
+    let clock = Probe::at(T);
+    let f = fixture(clock.clone()).await;
+    clock.set(T + 3_600_000);
+    let run = f.start().await;
+    f.due_at(&run, T + 3_600_005).await;
+    clock.set(T);
+    let readings = clock.tell_others();
+    let (claimed, _) = f.spawn_claim(Some(1)).await.unwrap();
+    assert_eq!(claimed, Ok(None));
+    // Its admission, its read, and its read at the end of the wait.
+    assert_eq!(readings.try_iter().count(), 3);
+    f.close().await;
+}
+
+/// The read's event time after an open is the later of the clock and the last record, as the
+/// writer's is (D7): reopened with the clock an hour behind the record that started a run, a claim
+/// takes the run at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_an_open_a_run_due_at_the_last_record_is_due() {
+    let clock = Probe::at(T);
+    let f = fixture(clock.clone()).await;
+    clock.set(T + 3_600_000);
+    let run = f.start().await;
+    let f = f.reopen(Probe::at(T)).await;
+    let (claimed, _) = f.spawn_claim(Some(1)).await.unwrap();
+    assert_eq!(
+        claimed.unwrap().expect("the run").lease.run.to_string(),
+        run
+    );
+    f.close().await;
+}
+
+/// RUN-16's order: a due run comes before a drain. The run is committed and folded, and the drain
+/// begins while the claim is held at the clock reading of the read that sees the run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_due_run_comes_before_a_drain_at_one_barrier() {
+    let clock = Probe::at(T);
+    let f = fixture(clock.clone()).await;
+    let readings = clock.tell_others();
+    // The claim's admission and first read, the start's admission, then the claim's next read.
+    let (read, go) = clock.stop_other(3);
+    let claim = f.spawn_claim(None);
+    receive(&readings, 2);
+    let run = f.start().await;
+    receive(&read, 1);
+    f.engine.begin_drain();
+    go.send(()).unwrap();
+    let (claimed, _) = claim.await.unwrap();
     assert_eq!(
         claimed.unwrap().expect("the run").lease.run.to_string(),
         run

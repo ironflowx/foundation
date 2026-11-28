@@ -55,19 +55,14 @@ async fn fail_next_emit(f: &Fixture) {
     db.execute_batch(sql).unwrap();
 }
 
-/// A run and the end of the wait: the run is taken. A run and a drain: the run is taken. A run
-/// and a fault (its own fold fails): a run the ledger cannot read is no run, so `Unavailable`. A
-/// fault, or a drain, and the end of the wait: `Unavailable`, not empty.
+/// A run and the end of the wait: the run is taken. A run and a fault (its own fold fails): a run
+/// the ledger cannot read is no run, so `Unavailable`. A fault, or a drain, and the end of the
+/// wait: `Unavailable`, not empty. (A run and a drain: `claims.rs`, held at the read that sees the
+/// run, since a drain ends a read held at a fold, as the last case here shows.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_run_a_fault_a_drain_and_the_end_of_the_wait_at_one_barrier() {
     set_fault_hook(hold_after_ack);
-    for pair in [
-        [Run, End],
-        [Run, Drain],
-        [Run, Fault],
-        [Fault, End],
-        [Drain, End],
-    ] {
+    for pair in [[Run, End], [Run, Fault], [Fault, End], [Drain, End]] {
         let clock = Probe::at(T);
         let f = fixture(clock.clone()).await;
         let readings = clock.tell_others();
@@ -103,7 +98,7 @@ async fn a_run_a_fault_a_drain_and_the_end_of_the_wait_at_one_barrier() {
         go.send(()).unwrap();
         let (claimed, _) = claim.await.unwrap();
         match pair {
-            [Run, End | Drain] => {
+            [Run, End] => {
                 let taken = claimed.unwrap().expect("the run");
                 assert_eq!(Some(taken.lease.run.to_string()), run, "{pair:?}");
             }
@@ -111,4 +106,23 @@ async fn a_run_a_fault_a_drain_and_the_end_of_the_wait_at_one_barrier() {
         }
         f.close().await;
     }
+    // RUN-15: a drain ends a claim whose read waits on another call's fold, without waiting for
+    // that fold: no claim delays a stop. One test, as the hook is one.
+    let clock = Probe::at(T);
+    let f = fixture(clock.clone()).await;
+    let readings = clock.tell_others();
+    let claim = f.spawn_claim(None);
+    receive(&readings, 2);
+    let (stop, acked, go) = Stop::new();
+    *AT_ACK.lock().unwrap() = Some(stop);
+    emit(&f).await;
+    receive(&acked, 1);
+    let drained = std::time::Instant::now();
+    f.engine.begin_drain();
+    let answered = tokio::time::timeout(Duration::from_secs(2), claim).await;
+    go.send(()).unwrap();
+    let (claimed, at) = answered.expect("no answer while the fold is held").unwrap();
+    assert!(unavailable(&claimed), "{claimed:?}");
+    assert!(at - drained < Duration::from_secs(1), "{:?}", at - drained);
+    f.close().await;
 }
