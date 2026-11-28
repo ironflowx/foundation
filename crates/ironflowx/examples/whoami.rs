@@ -21,6 +21,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let identity = runtime
         .block_on(client.whoami(&call, WhoamiRequest {}))
         .map_err(|error| format!("whoami failed: {:?}", error.kind))?;
-    println!("{} with scopes {:?}", identity.key_id, identity.scopes);
+    // A call through a client carries a key, so its answer names one (D121).
+    let key_id = identity.key_id.ok_or("whoami named no key")?;
+    println!("{key_id} with scopes {:?}", identity.scopes);
     Ok(())
 }
